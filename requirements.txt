@@ -9,6 +9,3 @@ python-dotenv>=1.0.0
 telegram
 httpx>=0.24.0
 requests>=2.31.0
-re
-json
-langchain-core
