@@ -14,6 +14,8 @@ from enhanced_orchestrator import EnhancedRestaurantRecommender
 from enhanced_telegram_bot import EnhancedRestaurantBot
 from editor_agent import RestaurantEditorAgent
 
+from whisper_transcriber import WhisperTranscriber
+
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -55,6 +57,11 @@ async def run_webhook_mode(args):
     # Initialize formatting agent
     formatting_agent = RestaurantFormattingAgent()
 
+    # Verify OpenAI API key for Whisper
+    if not config.OPENAI_API_KEY:
+        logger.error("OpenAI API key is required for voice transcription")
+        return
+
     # Create enhanced recommender with tracing enabled/disabled according to args
     recommender = EnhancedRestaurantRecommender(enable_tracing=not args.no_tracing)
 
@@ -89,6 +96,11 @@ def run_polling_mode(args):
 
     # Initialize formatting agent
     formatting_agent = RestaurantFormattingAgent()
+
+    # Verify OpenAI API key for Whisper
+    if not config.OPENAI_API_KEY:
+        logger.error("OpenAI API key is required for voice transcription")
+        return
 
     # Create enhanced recommender with tracing enabled/disabled according to args
     recommender = EnhancedRestaurantRecommender(enable_tracing=not args.no_tracing)

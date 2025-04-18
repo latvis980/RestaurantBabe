@@ -3,6 +3,7 @@ Enhanced Telegram Bot for the Restaurant Recommendation App.
 
 This module provides a flexible, conversational Telegram bot interface
 that can understand natural language queries and context for restaurant recommendations.
+Added support for voice messages using Whisper API for transcription.
 """
 import asyncio
 import logging
@@ -21,6 +22,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
 import config
+from whisper_transcriber import WhisperTranscriber
 
 # Configure logging
 logging.basicConfig(
@@ -32,7 +34,7 @@ logger = logging.getLogger("enhanced_telegram_bot")
 class EnhancedRestaurantBot:
     """
     Enhanced Telegram bot with natural language understanding capabilities
-    for providing restaurant recommendations.
+    and voice message handling for providing restaurant recommendations.
     """
 
     def __init__(self, recommender: Any):
@@ -45,6 +47,9 @@ class EnhancedRestaurantBot:
         self.token = config.TELEGRAM_BOT_TOKEN
         self.recommender = recommender
         self.application = None
+
+        # Initialize transcriber for voice messages
+        self.transcriber = WhisperTranscriber()
 
         # Initialize the OpenAI model for intent recognition
         self.llm = ChatOpenAI(
@@ -91,6 +96,7 @@ class EnhancedRestaurantBot:
             f"• \"Best sushi restaurants in Tokyo\"\n"
             f"• \"Romantic dinner spots in Paris\"\n"
             f"• \"Hidden cocktail bars in Manhattan\"\n\n"
+            f"You can also send me voice messages, and I'll transcribe and process your request!\n\n"
             f"What are you looking for today?"
         )
         await update.message.reply_text(welcome_message)
@@ -110,6 +116,7 @@ class EnhancedRestaurantBot:
             "  - \"Where can I find good coffee in Berlin?\"\n"
             "  - \"Best Thai food in San Francisco\"\n" 
             "  - \"Affordable breakfast places in Barcelona\"\n\n"
+            "• You can also send voice messages for your requests\n"
             "• You can ask follow-up questions about the results\n"
             "• You can request more details about a specific restaurant\n\n"
             "I always search reputable sources like Michelin Guide, Condé Nast, and professional food critics - never crowd-sourced review sites!"
@@ -118,7 +125,7 @@ class EnhancedRestaurantBot:
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """
-        Main handler for user messages that leverages the LangChain orchestrator.
+        Main handler for text messages that leverages the LangChain orchestrator.
         """
         user_message = update.message.text
         user_id = update.effective_user.id
@@ -137,6 +144,82 @@ class EnhancedRestaurantBot:
         if len(self.user_contexts[user_id]["conversation_history"]) > 5:
             self.user_contexts[user_id]["conversation_history"].pop(0)
 
+        # Process the text message
+        await self._process_user_input(update, context, user_message)
+
+    async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Handler for voice messages.
+        """
+        user_id = update.effective_user.id
+        voice = update.message.voice
+
+        # Ensure user context exists
+        if user_id not in self.user_contexts:
+            self.user_contexts[user_id] = {
+                "last_restaurants": [],
+                "last_query": None,
+                "last_location": None,
+                "conversation_history": []
+            }
+
+        # Send "transcribing" action
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action="typing"
+        )
+
+        # Let the user know we're processing their voice message
+        status_message = await update.message.reply_text(
+            "🎙️ Transcribing your voice message... Just a moment."
+        )
+
+        try:
+            # Get file info
+            file = await context.bot.get_file(voice.file_id)
+
+            # Download and transcribe the voice message
+            file_path = await self.transcriber.download_voice_file(file.file_path, self.token)
+            transcription = await self.transcriber.transcribe(file_path)
+
+            if not transcription:
+                await status_message.edit_text(
+                    "Sorry, I couldn't transcribe your voice message. Could you try again or type your request?"
+                )
+                return
+
+            # Update the status message to show the transcription
+            await status_message.edit_text(
+                f"🎙️ I heard: \"{transcription}\"\n\nProcessing your request..."
+            )
+
+            # Add transcription to conversation history
+            self.user_contexts[user_id]["conversation_history"].append(transcription)
+            if len(self.user_contexts[user_id]["conversation_history"]) > 5:
+                self.user_contexts[user_id]["conversation_history"].pop(0)
+
+            # Process the transcribed text
+            await self._process_user_input(update, context, transcription, status_message)
+
+        except Exception as e:
+            logger.error(f"Error handling voice message: {e}", exc_info=True)
+            await status_message.edit_text(
+                "Sorry, I encountered an error processing your voice message. Could you try again or type your request?"
+            )
+
+    async def _process_user_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
+                                user_input: str, status_message = None) -> None:
+        """
+        Process user input from either text or voice messages.
+
+        Args:
+            update: The update from Telegram
+            context: The context from Telegram
+            user_input: The text to process (either from text message or transcribed voice)
+            status_message: Optional message object to update instead of sending new messages
+        """
+        user_id = update.effective_user.id
+
         # Send "typing" action
         await context.bot.send_chat_action(
             chat_id=update.effective_chat.id,
@@ -145,14 +228,20 @@ class EnhancedRestaurantBot:
 
         try:
             # Identify user intent using LLM
-            intent_data = await self._identify_intent(user_message, user_id)
+            intent_data = await self._identify_intent(user_input, user_id)
             logger.info(f"Identified intent: {intent_data}")
 
             # For restaurant_search, use the orchestrator directly
             if intent_data["intent"] == "restaurant_search":
-                searching_message = await update.message.reply_text(
-                    "🔍 Searching for recommendations... This may take a moment."
-                )
+                if status_message:
+                    await status_message.edit_text(
+                        "🔍 Searching for recommendations... This may take a moment."
+                    )
+                    searching_message = status_message
+                else:
+                    searching_message = await update.message.reply_text(
+                        "🔍 Searching for recommendations... This may take a moment."
+                    )
 
                 # Extract information from intent_data
                 query = intent_data["query"]
@@ -172,11 +261,12 @@ class EnhancedRestaurantBot:
                     language=language
                 )
 
-                # Delete the "searching" message
-                await context.bot.delete_message(
-                    chat_id=update.effective_chat.id,
-                    message_id=searching_message.message_id
-                )
+                # Delete the "searching" message if we created a new one
+                if not status_message:
+                    await context.bot.delete_message(
+                        chat_id=update.effective_chat.id,
+                        message_id=searching_message.message_id
+                    )
 
                 # Store restaurants in context for follow-up questions
                 try:
@@ -197,44 +287,75 @@ class EnhancedRestaurantBot:
                     logger.error(f"Error parsing restaurant results: {parse_error}")
                     self.user_contexts[user_id]["last_restaurants"] = result.get("restaurant_results", [])
 
-                # Send the formatted response
+                # Get the formatted response
                 response_text = result.get("formatted_response", "Sorry, no recommendations found.")
 
-                # Split if too long
-                if len(response_text) > 4000:
-                    chunks = self._split_message(response_text)
-                    for chunk in chunks:
-                        await context.bot.send_message(
-                            chat_id=update.effective_chat.id,
-                            text=chunk,
+                # Update the status message or send a new message with the results
+                if status_message:
+                    # Split if too long
+                    if len(response_text) > 4000:
+                        # First, update the status message with the first chunk
+                        chunks = self._split_message(response_text)
+                        await status_message.edit_text(
+                            chunks[0],
+                            parse_mode=ParseMode.HTML
+                        )
+                        # Then send the rest as new messages
+                        for chunk in chunks[1:]:
+                            await context.bot.send_message(
+                                chat_id=update.effective_chat.id,
+                                text=chunk,
+                                parse_mode=ParseMode.HTML
+                            )
+                    else:
+                        await status_message.edit_text(
+                            response_text,
                             parse_mode=ParseMode.HTML
                         )
                 else:
-                    await context.bot.send_message(
-                        chat_id=update.effective_chat.id,
-                        text=response_text,
-                        parse_mode=ParseMode.HTML
-                    )
+                    # Split if too long
+                    if len(response_text) > 4000:
+                        chunks = self._split_message(response_text)
+                        for chunk in chunks:
+                            await context.bot.send_message(
+                                chat_id=update.effective_chat.id,
+                                text=chunk,
+                                parse_mode=ParseMode.HTML
+                            )
+                    else:
+                        await context.bot.send_message(
+                            chat_id=update.effective_chat.id,
+                            text=response_text,
+                            parse_mode=ParseMode.HTML
+                        )
 
             # For follow-up questions about restaurants
             elif intent_data["intent"] == "followup_question" or intent_data["intent"] == "more_info":
-                await self._handle_followup_with_orchestrator(update, context, intent_data)
+                await self._handle_followup_with_orchestrator(update, context, intent_data, status_message)
 
             # For conversational queries, use the LLM directly
             elif intent_data["intent"] == "conversation":
-                await self._handle_conversation(update, context, intent_data)
+                await self._handle_conversation(update, context, intent_data, status_message)
 
             # For help requests
             elif intent_data["intent"] == "help":
+                if status_message:
+                    await status_message.edit_text(
+                        "Let me help you with that..."
+                    )
                 await self.help_command(update, context)
 
         except Exception as e:
             logger.error(f"Error handling message: {e}", exc_info=True)
-            await update.message.reply_text(
-                "Sorry, I encountered an error processing your request. Please try again."
-            )
+            error_message = "Sorry, I encountered an error processing your request. Please try again."
 
-    async def _handle_followup_with_orchestrator(self, update: Update, context: ContextTypes.DEFAULT_TYPE, intent_data: Dict[str, Any]) -> None:
+            if status_message:
+                await status_message.edit_text(error_message)
+            else:
+                await update.message.reply_text(error_message)
+
+    async def _handle_followup_with_orchestrator(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
+                                              intent_data: Dict[str, Any], status_message = None) -> None:
         """
         Handle follow-up questions using the orchestrator.
         """
@@ -263,9 +384,15 @@ class EnhancedRestaurantBot:
                 search_query = f"Follow-up about {user_context.get('last_query')}: {query}"
 
         # Inform user search is in progress
-        searching_message = await update.message.reply_text(
-            "🔍 Finding that information for you... Just a moment."
-        )
+        if status_message:
+            await status_message.edit_text(
+                "🔍 Finding that information for you... Just a moment."
+            )
+            searching_message = status_message
+        else:
+            searching_message = await update.message.reply_text(
+                "🔍 Finding that information for you... Just a moment."
+            )
 
         try:
             # Get language from intent data or detect it
@@ -281,11 +408,12 @@ class EnhancedRestaurantBot:
                 language=language
             )
 
-            # Delete the "searching" message
-            await context.bot.delete_message(
-                chat_id=update.effective_chat.id,
-                message_id=searching_message.message_id
-            )
+            # Delete the "searching" message if we created a new one
+            if not status_message:
+                await context.bot.delete_message(
+                    chat_id=update.effective_chat.id,
+                    message_id=searching_message.message_id
+                )
 
             # Get the formatted response
             response = result.get("formatted_response", f"Sorry, I couldn't find specific information about that.")
@@ -293,30 +421,55 @@ class EnhancedRestaurantBot:
             # Split if too long
             if len(response) > 4000:
                 chunks = self._split_message(response)
-                for chunk in chunks:
-                    await context.bot.send_message(
-                        chat_id=update.effective_chat.id,
-                        text=chunk,
+
+                if status_message:
+                    # Update the status message with the first chunk
+                    await status_message.edit_text(
+                        chunks[0],
                         parse_mode=ParseMode.HTML
                     )
+                    # Send the rest as new messages
+                    for chunk in chunks[1:]:
+                        await context.bot.send_message(
+                            chat_id=update.effective_chat.id,
+                            text=chunk,
+                            parse_mode=ParseMode.HTML
+                        )
+                else:
+                    for chunk in chunks:
+                        await context.bot.send_message(
+                            chat_id=update.effective_chat.id,
+                            text=chunk,
+                            parse_mode=ParseMode.HTML
+                        )
             else:
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=response,
-                    parse_mode=ParseMode.HTML
-                )
+                if status_message:
+                    await status_message.edit_text(
+                        response,
+                        parse_mode=ParseMode.HTML
+                    )
+                else:
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text=response,
+                        parse_mode=ParseMode.HTML
+                    )
 
         except Exception as e:
             logger.error(f"Error during follow-up: {e}", exc_info=True)
-            # Delete the "searching" message
-            await context.bot.delete_message(
-                chat_id=update.effective_chat.id,
-                message_id=searching_message.message_id
-            )
+            error_message = f"Sorry, I couldn't find the specific information you requested."
 
-            await update.message.reply_text(
-                f"Sorry, I couldn't find the specific information you requested."
-            )
+            if status_message:
+                await status_message.edit_text(error_message)
+            else:
+                # Delete the "searching" message if it exists
+                if 'searching_message' in locals():
+                    await context.bot.delete_message(
+                        chat_id=update.effective_chat.id,
+                        message_id=searching_message.message_id
+                    )
+
+                await update.message.reply_text(error_message)
 
     async def _identify_intent(self, user_message: str, user_id: int) -> Dict[str, Any]:
         """
@@ -340,7 +493,7 @@ class EnhancedRestaurantBot:
             }
 
     async def _handle_conversation(self, update: Update, context: ContextTypes.DEFAULT_TYPE,
-                                 intent_data: Dict[str, Any]) -> None:
+                                 intent_data: Dict[str, Any], status_message = None) -> None:
         """
         Handle conversational messages that don't require a search using OpenAI.
         """
@@ -363,7 +516,10 @@ class EnhancedRestaurantBot:
             conversation_chain = conversation_prompt | self.llm | StrOutputParser()
             response = await conversation_chain.ainvoke({})
 
-            await update.message.reply_text(response)
+            if status_message:
+                await status_message.edit_text(response)
+            else:
+                await update.message.reply_text(response)
 
         except Exception as e:
             logger.error(f"Error generating conversational response: {e}")
@@ -371,376 +527,19 @@ class EnhancedRestaurantBot:
 
             # Check for simple patterns as fallback
             if any(word in query.lower() for word in ["thank", "thanks", "thx"]):
-                await update.message.reply_text(
-                    "You're welcome! Feel free to ask me for any restaurant recommendations."
-                )
+                response = "You're welcome! Feel free to ask me for any restaurant recommendations."
             elif any(word in query.lower() for word in ["hi", "hello", "hey", "greetings"]):
-                await update.message.reply_text(
-                    "Hello! How can I help you find great restaurants today?"
-                )
+                response = "Hello! How can I help you find great restaurants today?"
             elif any(word in query.lower() for word in ["bye", "goodbye", "farewell"]):
-                await update.message.reply_text(
-                    "Goodbye! Feel free to come back when you need restaurant recommendations."
-                )
+                response = "Goodbye! Feel free to come back when you need restaurant recommendations."
             else:
-                await update.message.reply_text(
-                    "I'm specialized in finding restaurant recommendations from trusted sources. "
-                    "How can I help you discover great places to eat or drink today?"
-                )
+                response = "I'm specialized in finding restaurant recommendations from trusted sources. " \
+                         "How can I help you discover great places to eat or drink today?"
 
-    async def _handle_restaurant_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
-                                      intent_data: Dict[str, Any]) -> None:
-        """
-        Handle a restaurant search request.
-
-        Args:
-            update: The update from Telegram
-            context: The context from Telegram
-            intent_data: Intent classification data
-        """
-        user_id = update.effective_user.id
-        query = intent_data["query"]
-        location = intent_data["location"]
-        cuisine = intent_data["cuisine"]
-
-        # Update user context
-        self.user_contexts[user_id]["last_query"] = query
-        self.user_contexts[user_id]["last_location"] = location
-
-        # Send searching message
-        searching_message = await update.message.reply_text(
-            "🔍 Searching for recommendations... This may take a moment."
-        )
-
-        try:
-            # Detect language using AI
-            language = await self._detect_language(query)
-
-            # Log the search
-            logger.info(f"Searching for: query='{query}', location='{location}', cuisine='{cuisine}', detected language='{language}'")
-
-            # Get recommendation using the recommender
-            result = await self.recommender.get_recommendation_async(
-                query=query,
-                location=location or "",
-                cuisine=cuisine or "",
-                language=language
-            )
-
-            # Store the restaurant results in context for follow-up questions
-            try:
-                # Try to extract restaurant names from the compiled results if available
-                if "compiled_results" in result and result["compiled_results"]:
-                    # Try to parse the compiled results if they're a string (JSON)
-                    if isinstance(result["compiled_results"], str):
-                        import re
-                        json_match = re.search(r'\[.*\]', result["compiled_results"], re.DOTALL)
-                        if json_match:
-                            json_str = json_match.group(0)
-                            restaurants = json.loads(json_str)
-                            self.user_contexts[user_id]["last_restaurants"] = restaurants
-                    # If compiled_results is already a list
-                    elif isinstance(result["compiled_results"], list):
-                        self.user_contexts[user_id]["last_restaurants"] = result["compiled_results"]
-            except Exception as parse_error:
-                logger.error(f"Error parsing restaurant results: {parse_error}")
-                # Store the raw search results as fallback
-                self.user_contexts[user_id]["last_restaurants"] = result.get("restaurant_results", [])
-
-            # Delete the "searching" message
-            await context.bot.delete_message(
-                chat_id=update.effective_chat.id,
-                message_id=searching_message.message_id
-            )
-
-            # Get the formatted response
-            response = result.get("formatted_response", "Sorry, no recommendations found.")
-
-            # Split response into chunks if it's too long
-            if len(response) > 4000:
-                chunks = self._split_message(response)
-                for chunk in chunks:
-                    await context.bot.send_message(
-                        chat_id=update.effective_chat.id,
-                        text=chunk,
-                        parse_mode=ParseMode.HTML
-                    )
+            if status_message:
+                await status_message.edit_text(response)
             else:
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=response,
-                    parse_mode=ParseMode.HTML
-                )
-
-        except Exception as e:
-            logger.error(f"Error during search: {e}")
-            # Delete the "searching" message
-            await context.bot.delete_message(
-                chat_id=update.effective_chat.id,
-                message_id=searching_message.message_id
-            )
-
-            await update.message.reply_text(
-                "Sorry, I encountered an error during the search. Please try again."
-            )
-
-    async def _handle_followup_question(self, update: Update, context: ContextTypes.DEFAULT_TYPE,
-                                      intent_data: Dict[str, Any]) -> None:
-        """
-        Handle follow-up questions about previously recommended restaurants.
-
-        Args:
-            update: The update from Telegram
-            context: The context from Telegram
-            intent_data: Intent classification data
-        """
-        user_id = update.effective_user.id
-        user_context = self.user_contexts.get(user_id, {})
-        query = intent_data["query"]
-        restaurant_name = intent_data["restaurant_name"]
-
-        # If we have a specific restaurant mentioned
-        if restaurant_name and restaurant_name != "null":
-            # Send typing indicator
-            await context.bot.send_chat_action(
-                chat_id=update.effective_chat.id,
-                action="typing"
-            )
-
-            # Get last location for context
-            location = user_context.get("last_location", "")
-
-            # Create a specific query for this restaurant
-            search_query = f"Information about {restaurant_name}"
-            if location:
-                search_query += f" in {location}"
-            search_query += f": {query}"
-
-            try:
-                # Get language from intent data if available, otherwise detect it
-                language = intent_data.get("language")
-                if not language:
-                    language = await self._detect_language(query)
-
-                # Use Perplexity for verified information
-                result = await self.recommender.get_recommendation_async(
-                    query=search_query,
-                    location=location or "",
-                    cuisine="",
-                    language=language
-                )
-
-                # Get the formatted response
-                response = result.get("formatted_response", 
-                                    f"Sorry, I couldn't find specific information about {restaurant_name}.")
-
-                await update.message.reply_text(
-                    response,
-                    parse_mode=ParseMode.HTML
-                )
-
-            except Exception as e:
-                logger.error(f"Error during follow-up search: {e}")
-                await update.message.reply_text(
-                    f"Sorry, I couldn't find the specific information about {restaurant_name} that you requested."
-                )
-        else:
-            # General follow-up about previous results
-            await self._handle_perplexity_search(update, context, query)
-
-    async def _handle_more_info_request(self, update: Update, context: ContextTypes.DEFAULT_TYPE,
-                                      intent_data: Dict[str, Any]) -> None:
-        """
-        Handle requests for more details about a specific restaurant.
-
-        Args:
-            update: The update from Telegram
-            context: The context from Telegram
-            intent_data: Intent classification data
-        """
-        user_id = update.effective_user.id
-        user_context = self.user_contexts.get(user_id, {})
-        restaurant_name = intent_data["restaurant_name"]
-
-        if not restaurant_name or restaurant_name == "null":
-            await update.message.reply_text(
-                "Could you please specify which restaurant you'd like more information about?"
-            )
-            return
-
-        # Send typing indicator
-        await context.bot.send_chat_action(
-            chat_id=update.effective_chat.id,
-            action="typing"
-        )
-
-        # Get last location for context
-        location = user_context.get("last_location", "")
-
-        try:
-            # Get language from intent data if available, otherwise detect it
-            language = intent_data.get("language")
-            if not language:
-                language = await self._detect_language(update.message.text)
-
-            # Check if we have the restaurant in our context
-            found_restaurant = None
-            for restaurant in user_context.get("last_restaurants", []):
-                if isinstance(restaurant, dict) and restaurant.get("name", "").lower() == restaurant_name.lower():
-                    found_restaurant = restaurant
-                    break
-
-            if found_restaurant:
-                # Use the restaurant data we already have
-                detail_response = self._format_restaurant_details(found_restaurant)
-                await update.message.reply_text(
-                    detail_response,
-                    parse_mode=ParseMode.HTML
-                )
-            else:
-                # If not found in context, search for it
-                search_query = f"Detailed information about {restaurant_name}"
-                if location:
-                    search_query += f" in {location}"
-
-                # Use Perplexity for verified information
-                result = await self.recommender.get_recommendation_async(
-                    query=search_query,
-                    location=location or "",
-                    cuisine="",
-                    language=language
-                )
-
-                # Get the formatted response
-                response = result.get("formatted_response", 
-                                    f"Sorry, I couldn't find specific information about {restaurant_name}.")
-
-                await update.message.reply_text(
-                    response,
-                    parse_mode=ParseMode.HTML
-                )
-
-        except Exception as e:
-            logger.error(f"Error during more info request: {e}")
-            await update.message.reply_text(
-                f"Sorry, I couldn't find more information about {restaurant_name}."
-            )
-
-    def _format_restaurant_details(self, restaurant: Dict[str, Any]) -> str:
-        """
-        Format detailed restaurant information from a restaurant object.
-
-        Args:
-            restaurant: Restaurant data dictionary
-
-        Returns:
-            Formatted restaurant details
-        """
-        # Extract available fields
-        name = restaurant.get("name", "Unknown restaurant")
-        description = restaurant.get("description", "No description available")
-        address = restaurant.get("address", "Address not available")
-        price_range = restaurant.get("price_range", "Price information not available")
-        website = restaurant.get("website", "")
-
-        # Handle recommended dishes
-        dishes = restaurant.get("recommended_dishes", restaurant.get("signature_dishes", []))
-        if isinstance(dishes, str):
-            dishes_text = dishes
-        elif isinstance(dishes, list) and dishes:
-            dishes_text = ", ".join(dishes)
-        else:
-            dishes_text = "Not specified"
-
-        # Handle opening hours
-        hours = restaurant.get("opening_hours", "Hours not available")
-
-        # Build the response
-        response = f"*{name}*\n\n"
-        response += f"*Description:* {description}\n\n"
-        response += f"*Address:* {address}\n\n"
-        response += f"*Price Range:* {price_range}\n\n"
-        response += f"*Recommended Dishes:* {dishes_text}\n\n"
-        response += f"*Opening Hours:* {hours}\n\n"
-
-        if website:
-            response += f"*Website:* {website}\n\n"
-
-        return response
-
-    async def _handle_perplexity_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE, query: str, language: str = None) -> None:
-        """
-        Handle a general search using Perplexity for verified information.
-
-        Args:
-            update: The update from Telegram
-            context: The context from Telegram
-            query: The search query
-            language: Detected language (or None to detect automatically)
-        """
-        user_id = update.effective_user.id
-        user_context = self.user_contexts.get(user_id, {})
-        location = user_context.get("last_location", "")
-
-        # Send typing indicator
-        await context.bot.send_chat_action(
-            chat_id=update.effective_chat.id,
-            action="typing"
-        )
-
-        searching_message = await update.message.reply_text(
-            "🔍 Searching for that information... This may take a moment."
-        )
-
-        try:
-            # Detect language if not provided
-            if not language:
-                language = await self._detect_language(query)
-
-            # Use Perplexity for verified information
-            result = await self.recommender.get_recommendation_async(
-                query=query,
-                location=location or "",
-                cuisine="",
-                language=language
-            )
-
-            # Delete the "searching" message
-            await context.bot.delete_message(
-                chat_id=update.effective_chat.id,
-                message_id=searching_message.message_id
-            )
-
-            # Get the formatted response
-            response = result.get("formatted_response", "Sorry, I couldn't find that information.")
-
-            # Split response into chunks if it's too long
-            if len(response) > 4000:
-                chunks = self._split_message(response)
-                for chunk in chunks:
-                    await context.bot.send_message(
-                        chat_id=update.effective_chat.id,
-                        text=chunk,
-                        parse_mode=ParseMode.HTML
-                    )
-            else:
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=response,
-                    parse_mode=ParseMode.HTML
-                )
-
-        except Exception as e:
-            logger.error(f"Error during Perplexity search: {e}")
-            # Delete the "searching" message
-            await context.bot.delete_message(
-                chat_id=update.effective_chat.id,
-                message_id=searching_message.message_id
-            )
-
-            await update.message.reply_text(
-                "Sorry, I couldn't find the information you requested. Could you try asking in a different way?"
-            )
+                await update.message.reply_text(response)
 
     async def _detect_language(self, text: str) -> str:
         """
@@ -837,6 +636,9 @@ class EnhancedRestaurantBot:
 
         # Add message handler for all text messages
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+
+        # Add handler for voice messages
+        self.application.add_handler(MessageHandler(filters.VOICE, self.handle_voice))
 
         # Add error handler
         self.application.add_error_handler(self.error_handler)

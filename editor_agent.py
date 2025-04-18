@@ -141,14 +141,14 @@ class RestaurantEditorAgent:
         Create a final JSON array of restaurant recommendations with all available information merged.
         For each restaurant, ensure you have the most complete:
         - name
-        - address
+        - street address
         - description (enhanced with any new details)
         - price_range
         - recommended_dishes (array)
         - opening_hours (if available)
-        - reservation_info (if available)
+        - reservation_info (if available, if not, omit)
         - website
-        - sources (array of recommendation sources)
+        - recommended by (NEVER mention Tripadvisor, Yelp, or Google)
         """
 
     @traceable(name="analyze_restaurant_results")
@@ -276,15 +276,13 @@ if __name__ == "__main__":
             "name": "Sushi Nakazawa",
             "description": "Acclaimed sushi restaurant offering an omakase experience with fish sourced from around the world.",
             "url": "https://guide.michelin.com/us/en/new-york-state/new-york/restaurant/sushi-nakazawa",
-            "source": "guide.michelin.com",
-            "score": 0.95
+            "source": "guide.michelin.com"
         },
         {
             "name": "Le Bernardin",
             "description": "Upscale French seafood restaurant with three Michelin stars, known for exquisite seafood preparations.",
             "url": "https://www.cntraveler.com/restaurants/new-york/le-bernardin",
-            "source": "cntraveler.com",
-            "score": 0.92
+            "source": "cntraveler.com"
         }
     ]
 
@@ -302,11 +300,10 @@ if __name__ == "__main__":
     # Mock enriched data
     mock_enriched = {
         "Sushi Nakazawa": {
-            "address": "23 Commerce St, New York, NY 10014",
+            "address": "23 Commerce St",
             "price_range": "$$$",
             "signature_dishes": ["Fatty Tuna", "Sea Urchin", "Horsehair Crab"],
-            "opening_hours": "5:00 PM - 10:30 PM, Closed Mondays",
-            "reservation_info": "Reservations required, available 30 days in advance"
+            "opening_hours": "5:00 PM - 10:30 PM, Closed Mondays"
         }
     }
 

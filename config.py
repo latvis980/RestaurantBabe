@@ -38,6 +38,16 @@ LANGSMITH_PROJECT = os.getenv("LANGSMITH_PROJECT", "enhanced-restaurant-recommen
 LANGSMITH_TRACING = os.getenv("LANGSMITH_TRACING", "true").lower() == "true"
 LANGSMITH_ENDPOINT = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
 
+# Whisper Configuration
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-1")
+WHISPER_TEMPERATURE = float(os.getenv("WHISPER_TEMPERATURE", "0.0"))  # Lower is more deterministic
+WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", None)  # None for auto-detection
+
+# Voice Message Configuration
+VOICE_TIMEOUT = int(os.getenv("VOICE_TIMEOUT", "300"))  # Maximum voice message duration in seconds
+VOICE_FILE_SIZE_LIMIT = int(os.getenv("VOICE_FILE_SIZE_LIMIT", "20000000"))  # 20MB max file size
+
+
 # Telegram Configuration
 TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
 
@@ -233,13 +243,14 @@ def validate_configuration():
     missing_keys = []
 
     if not OPENAI_API_KEY:
-        missing_keys.append("OPENAI_API_KEY")
+        missing_keys.append("OPENAI_API_KEY")  # This is used for both GPT models and Whisper
 
     if not PERPLEXITY_API_KEY:
         missing_keys.append("PERPLEXITY_API_KEY")
 
     if not TELEGRAM_BOT_TOKEN:
         missing_keys.append("TELEGRAM_BOT_TOKEN")
+
     if LANGSMITH_TRACING and not LANGSMITH_API_KEY:
         missing_keys.append("LANGSMITH_API_KEY")
 
@@ -251,4 +262,5 @@ def validate_configuration():
     print(f"Perplexity max results: {PERPLEXITY_MAX_RESULTS}")
     print(f"Editor model: {EDITOR_MODEL}")
     print(f"Formatting model: {OPENAI_MODEL}")
+    print(f"Whisper model: {WHISPER_MODEL}")
     print(f"LangSmith tracing: {LANGSMITH_TRACING}")

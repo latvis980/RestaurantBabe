@@ -10,3 +10,6 @@ telegram
 httpx>=0.24.0
 requests>=2.31.0
 psutil
+tempfile
+pydub
+langchain-core
