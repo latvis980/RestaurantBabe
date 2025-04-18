@@ -22,8 +22,8 @@ class RestaurantEditorAgent:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gpt-4o",
-        temperature: float = 0.4,  # Lower temperature for more reliable analysis
+        model: str = None,
+        temperature: float = None,  # Lower temperature for more reliable analysis
         system_prompt: Optional[str] = None
     ):
         """
@@ -36,27 +36,11 @@ class RestaurantEditorAgent:
             system_prompt: Custom system prompt (uses default if not provided)
         """
         self.api_key = api_key or config.OPENAI_API_KEY
-        self.model = model
-        self.temperature = temperature
+        self.model = model or config.EDITOR_MODEL
+        self.temperature = temperature if temperature is not None else config.EDITOR_TEMPERATURE
 
-        # Default system prompt for the editor role
-        self.system_prompt = system_prompt or """
-        You are a restaurant editor for a prestigious food magazine. Your job is to:
-
-        1. Analyze search results about restaurants from multiple sources
-        2. Identify the most interesting, high-quality restaurants worth recommending
-        3. Compile comprehensive profiles for each recommended restaurant
-        4. Identify missing information that would make recommendations more valuable
-
-        For each restaurant you recommend, include:
-        - Name and location (full address if available)
-        - Price range ($/$$/$$$)
-        - A compelling description that captures what makes it special (cuisine style, chef background, atmosphere)
-        - At least one recommended dish or menu highlight
-        - Source of the recommendation (which reputable guide or critic)
-
-        Your recommendations should prioritize quality over quantity. Focus on restaurants that have been positively reviewed by reputable sources.
-        """
+        # Use system prompt from config if not provided
+        self.system_prompt = system_prompt or config.EDITOR_SYSTEM_PROMPT
 
         # Initialize the OpenAI model
         self.llm = ChatOpenAI(

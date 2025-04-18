@@ -11,6 +11,9 @@ from langchain_core.output_parsers import StrOutputParser
 import json
 import config
 from langsmith import traceable
+from html.parser import HTMLParser
+from html import escape
+
 
 class RestaurantFormattingAgent:
     """
@@ -21,47 +24,29 @@ class RestaurantFormattingAgent:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gpt-4o",
-        temperature: float = 0.7,
+        model: str = None,
+        temperature: float = None,
         system_prompt: Optional[str] = None
     ):
-        """
-        Initialize the formatting agent with OpenAI.
-
-        Args:
-            api_key: OpenAI API key (uses OPENAI_API_KEY env var if not provided)
-            model: The OpenAI model to use
-            temperature: Sampling temperature (0.0 to 1.0)
-            system_prompt: Custom system prompt (uses default ToV if not provided)
-        """
         self.api_key = api_key or config.OPENAI_API_KEY
-        self.model = model
-        self.temperature = temperature
+        self.model = model or config.OPENAI_MODEL
+        self.temperature = temperature if temperature is not None else config.OPENAI_TEMPERATURE
         self.system_prompt = system_prompt or config.RESTAURANT_TOV_PROMPT
 
-        # Initialize the OpenAI model
         self.llm = ChatOpenAI(
             api_key=self.api_key,
             model=self.model,
             temperature=self.temperature,
         )
 
-        # Create the prompt template
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", self.system_prompt),
             ("human", self._get_human_prompt_template())
         ])
 
-        # Create the formatting chain
         self.chain = self.prompt | self.llm | StrOutputParser()
 
     def _get_human_prompt_template(self) -> str:
-        """
-        Get the human prompt template for formatting restaurant results.
-
-        Returns:
-            Human prompt template string
-        """
         return """
         USER QUERY: {query}
         USER LANGUAGE: {language}
@@ -70,43 +55,78 @@ class RestaurantFormattingAgent:
         {restaurant_results}
 
         Please format these restaurant recommendations according to the specified tone and format. Be conversational and friendly. Make sure to detect the language of the query and respond in the same language.
+        Use HTML formatting (<b>, <i>, <a>) for titles, highlights, and links. Output must be valid Telegram-compatible HTML.
         """
 
     @traceable(name="format_restaurant_results")
     def format(self, query: str, restaurant_results: List[Dict[str, Any]], language: str = "English") -> str:
-        """
-        Format restaurant search results into friendly recommendations.
+        if isinstance(restaurant_results, str):
+            results_str = restaurant_results
+        else:
+            results_str = json.dumps(restaurant_results, indent=2)
 
-        Args:
-            query: The original user query
-            restaurant_results: List of restaurant information dictionaries
-            language: The detected language of the user query
-
-        Returns:
-            Formatted restaurant recommendations
-        """
-        # Convert restaurant results to a readable string format
-        results_str = json.dumps(restaurant_results, indent=2)
-
-        # Invoke the formatting chain
         formatted_response = self.chain.invoke({
             "query": query,
             "restaurant_results": results_str,
             "language": language
         })
 
-        return formatted_response
+        return self.sanitize_telegram_html(formatted_response)
 
-# Example usage
+    @staticmethod
+    def sanitize_telegram_html(text: str) -> str:
+        """
+        Fully sanitize and auto-close AI-generated HTML for Telegram compatibility.
+        Allows only <b>, <i>, <a href="">.
+        """
+        class TelegramHTMLSanitizer(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.result = []
+                self.allowed_tags = {'b', 'i', 'a'}
+                self.open_tags = []
+
+            def handle_starttag(self, tag, attrs):
+                tag = tag.lower()
+                if tag not in self.allowed_tags:
+                    return
+                if tag == 'a':
+                    href = next((v for k, v in attrs if k == 'href'), None)
+                    if href:
+                        self.result.append(f'<a href="{escape(href)}">')
+                        self.open_tags.append('a')
+                else:
+                    self.result.append(f'<{tag}>')
+                    self.open_tags.append(tag)
+
+            def handle_endtag(self, tag):
+                tag = tag.lower()
+                if tag in self.allowed_tags and tag in self.open_tags:
+                    self.result.append(f'</{tag}>')
+                    self.open_tags.remove(tag)  # remove first open match
+
+            def handle_data(self, data):
+                self.result.append(escape(data))
+
+            def get_data(self):
+                while self.open_tags:
+                    tag = self.open_tags.pop()
+                    self.result.append(f'</{tag}>')
+                return ''.join(self.result)
+
+        parser = TelegramHTMLSanitizer()
+        parser.feed(text)
+        return parser.get_data()
+
+
+# Example usage for testing
 if __name__ == "__main__":
-    # For testing
     import os
     if "OPENAI_API_KEY" not in os.environ:
         print("Warning: OPENAI_API_KEY environment variable not set")
 
     formatter = RestaurantFormattingAgent()
 
-    # Mock restaurant results
     mock_results = [
         {
             "name": "Sushi Nakazawa",

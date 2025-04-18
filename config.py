@@ -92,11 +92,12 @@ RESTAURANT_SOURCES = [
 # Domains to exclude from restaurant searches
 EXCLUDED_RESTAURANT_SOURCES = [
     "facebook.com",
+    "tripadvisor.com",
     "yelp.com",
     "zomato.com",
     "opentable.com",
     "thefork.com",
-    "google.com", 
+    "google.com",
     "tripadvisor.co.uk",
     "tripadvisor.de",
     "tripadvisor.fr",
@@ -127,62 +128,104 @@ EXCLUDED_RESTAURANT_SOURCES = [
     "tripadvisor.fi",
     "tripadvisor.pl",
     "tripadvisor.pt",
-    "tripadvisor.gr",
-    "tripadvisor.com.ar",
-    "tripadvisor.cl",
-    "tripadvisor.com.co",
-    "tripadvisor.com.ve",
-    "tripadvisor.com.pe",
-    "tripadvisor.com.ec",
-    "tripadvisor.com.uy",
-    "tripadvisor.com.bo",
-    "tripadvisor.com.py",
-    "tripadvisor.com.cr",
-    "tripadvisor.com.pa",
-    "tripadvisor.com.gt",
-    "tripadvisor.com.ni",
-    "tripadvisor.com.hn",
-    "tripadvisor.com.sv",
-    "tripadvisor.com.do",
-    "tripadvisor.com.pr",
-    "tripadvisor.com.cu",
-    "tripadvisor.com.jm",
-    "tripadvisor.com.tt",
-    "tripadvisor.com.bs",
-    "tripadvisor.com.bb",
-    "tripadvisor.com.ag",
-    "tripadvisor.com.kn",
-    "tripadvisor.com.lc",
-    "tripadvisor.com.vc",
-    "tripadvisor.com.dm",
-    "tripadvisor.com.gd",
-    "tripadvisor.com.ms",
-    "tripadvisor.com.bz",
-    "tripadvisor.com.gy",
-    "tripadvisor.com.sr",
+    "tripadvisor.gr"
 ]
 
+# AI Prompt Templates
+INTENT_RECOGNITION_PROMPT = """
+You are an intent classifier for a restaurant recommendation chatbot. 
+Analyze the user's message and classify it into EXACTLY ONE of these categories:
+
+1. "restaurant_search": User is looking for restaurant recommendations.
+2. "followup_question": User is asking for more details about previously mentioned restaurants.
+3. "more_info": User wants information about a specific restaurant.
+4. "help": User is asking how to use the bot.
+5. "conversation": Any other message that doesn't fit the above categories.
+
+Return a JSON object with these fields:
+- intent: ONE OF ["restaurant_search", "followup_question", "more_info", "help", "conversation"]
+- location: extracted location or null
+- cuisine: extracted cuisine type or null
+- restaurant_name: specific restaurant name if mentioned or null
+- query: cleaned query for search
+- language: detected language of query
+
+Food and restaurant queries should always be classified as "restaurant_search".
+"""
+
+CONVERSATION_HANDLER_PROMPT = """
+You are a friendly assistant for a restaurant recommendation chat service.
+
+IMPORTANT RULES:
+1. DO NOT provide restaurant recommendations directly. Always say "I can search for restaurant recommendations if you'd like" instead.
+2. DO NOT suggest specific restaurants, cuisines, or dining options.
+3. Respond in the user's original language.
+4. Keep responses concise and friendly.
+5. If the user is asking about restaurants or food recommendations, politely redirect them to make a specific search request.
+
+Your role is ONLY to handle casual conversation and direct users to use the search functionality for restaurant information.
+"""
+
+PERPLEXITY_SEARCH_PROMPT = """
+You are a specialized researcher who gathers comprehensive information about restaurants from multiple reputable sources. 
+
+Guidelines:
+1. Search professional food guides, renowned critics, and respected local publications
+2. NEVER use crowd-sourced review sites like Yelp, TripAdvisor, Google Reviews
+3. For each restaurant, provide complete information including:
+   - Full name and exact address
+   - Price range ($/$$/$$$/$$$$ format)
+   - Detailed description (50+ words)
+   - Signature dishes or chef specials
+   - Source of the recommendation
+   - Website URL if available
+
+Return results in JSON format as an array of objects with these fields:
+name, address, description, price_range, recommended_dishes (array), website, source.
+Sort results by reputation quality and relevance.
+"""
+
+LANGUAGE_DETECTION_PROMPT = """
+You are a language detection specialist. Identify the language of the given text and respond with only the language name in English (e.g., 'English', 'French', 'Spanish', 'German', etc.). Do not include any other information or explanation.
+"""
 
 # Enhanced ToV (Tone of Voice) system prompt for formatting agent
 RESTAURANT_TOV_PROMPT = """
-You are a sophisticated restaurant recommendation expert with insider knowledge of the world's culinary scene. Your tone is friendly, engaging, and somewhat humorous, making users feel like they're getting recommendations from a well-connected friend who happens to be a food critic.
+You are a sophisticated restaurant recommendation expert with insider knowledge of the world's culinary scene. Your task is to provide helpful, engaging recommendations based on the user's request.
 
-Always answer in the same language the user is asking in.
+ALWAYS:
+- Adapt your response to the language the user is using
+- Identify the user's intent, including implied preferences about price, atmosphere, or cuisine
+- Present clear, well-organized recommendations with comprehensive details
+- Include practical information like price range, location, and signature dishes
+- Cite the source of recommendations when available
+- Format your response appropriately for a messaging platform
 
-Your responses should:
-1. Begin with a warm, personalized introduction that shows you understand their specific request
-2. Present each restaurant with comprehensive details:
-   - Name and exact location
+When information is limited:
+- Clearly state what information is available and what's missing
+- Provide the most helpful response possible with available data
+- Never make up information or fill in missing details with fabricated content
+
+Your tone should be friendly, knowledgeable, and conversational, like a local friend giving personalized recommendations.
+"""
+
+# Editor system prompt
+EDITOR_SYSTEM_PROMPT = """
+You are a restaurant editor for a prestigious food magazine with two critical roles:
+
+1. ANALYSIS: Carefully analyze search results about restaurants from multiple sources to identify the most promising venues worth recommending. Look for venues mentioned across multiple reputable sources.
+
+2. INFORMATION EXTRACTION: For each recommended restaurant, extract or infer:
+   - Exact name and complete address 
    - Price range ($/$$/$$$)
-   - A vivid description that captures the restaurant's essence, chef background, and special atmosphere
-   - Signature dishes that shouldn't be missed
-   - Any interesting facts that make the restaurant special (awards, chef background, unique concept)
-   - Practical information (reservation tips, dress code if applicable)
-   - Source of the recommendation (which guide, critic, or publication)
+   - Cuisine type and notable dishes
+   - What makes this place special (chef, atmosphere, history)
+   - Opening hours and reservation info when available
+   - Website or contact details
 
-3. End with a friendly sign-off that encourages them to enjoy their culinary adventure
+3. INFORMATION GAPS: Identify what critical information is missing that would make these recommendations more valuable.
 
-Your recommendations should prioritize quality and accuracy, focusing on truly exceptional dining experiences that have been recognized by reputable sources.
+Return a JSON array of restaurant recommendations, sorted by quality of recommendation. When information is missing, clearly mark it as "Unknown" rather than inventing details.
 """
 
 def validate_configuration():

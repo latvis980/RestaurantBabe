@@ -14,6 +14,11 @@ from enhanced_orchestrator import EnhancedRestaurantRecommender
 from enhanced_telegram_bot import EnhancedRestaurantBot
 from editor_agent import RestaurantEditorAgent
 
+
+from dotenv import load_dotenv
+load_dotenv()
+
+
 # Set up logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -92,8 +97,30 @@ def run_polling_mode(args):
     bot = EnhancedRestaurantBot(recommender=recommender)
     bot.run_polling()
 
+def check_for_existing_instance():
+    """Check if another instance is already running."""
+    import os
+    import psutil
+
+    current_pid = os.getpid()
+    current_process = psutil.Process(current_pid)
+
+    for process in psutil.process_iter(['pid', 'name', 'cmdline']):
+        if (process.info['pid'] != current_pid and 
+            'python' in process.info['name'] and 
+            any('main.py' in cmd for cmd in process.info['cmdline'] if cmd)):
+
+            print(f"Another instance is running (PID: {process.info['pid']}). Terminating it...")
+            try:
+                process.terminate()
+                print(f"Process {process.info['pid']} terminated.")
+            except:
+                print(f"Failed to terminate process {process.info['pid']}.")
+
 def main():
     """Main entry point for the application."""
+    check_for_existing_instance()  # Add this line
+
     print("""
     ╔═══════════════════════════════════════════════════════╗
     ║  Enhanced Restaurant Recommendation App                ║
@@ -104,6 +131,11 @@ def main():
     # Parse command line arguments
     args = parse_arguments()
 
+    # Disable tracing if requested
+    if args.no_tracing:
+        os.environ["LANGCHAIN_TRACING"] = "false"
+        os.environ["LANGSMITH_TRACING"] = "false"
+    
     # Debug configuration
     print(f"Current environment settings:")
     print(f"PERPLEXITY_API_KEY set: {'Yes' if config.PERPLEXITY_API_KEY else 'No'}")
@@ -126,11 +158,6 @@ def main():
     except ValueError as e:
         logger.error(f"Configuration error: {e}")
         exit(1)
-
-    # Set LangSmith tracing based on args
-    if args.no_tracing:
-        os.environ["LANGCHAIN_TRACING"] = "false"
-        os.environ["LANGSMITH_TRACING"] = "false"
 
     # Run in webhook or polling mode
     if args.webhook:

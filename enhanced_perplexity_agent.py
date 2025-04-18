@@ -76,7 +76,7 @@ class EnhancedPerplexitySearchAgent:
         # List recommended sources to search
         source_list = ", ".join(self.trusted_sources[:10])  # First 10 sources for brevity
 
-        search_query += f". IMPORTANT: Search MULTIPLE sources including but not limited to {source_list} and other reputable guides. DO NOT include results from {', '.join(self.excluded_sources[:5])} or similar crowd-sourced review sites. For each place, return COMPLETE data including: name, FULL address, detailed description (50+ words), website URL (if available), source website, price range ($/$/$$), and specialties or signature offerings when possible. Return at least 8-10 places if available. Format results as a JSON array."
+        search_query += f". IMPORTANT: Search MULTIPLE sources including but not limited to {source_list} and other reputable guides. DO NOT include results from Tripadvisor, TheFork, {', '.join(self.excluded_sources[:5])} or similar crowd-sourced review sites. For each place, return COMPLETE data including: name, FULL address, detailed description (50+ words), website URL (if available), source website, price range ($/$/$$), and specialties or signature offerings when possible. Return at least 8-10 places if available. Format results as a JSON array."
 
         try:
             # First approach: Use LangChain integration with Perplexity for better handling
@@ -84,15 +84,15 @@ class EnhancedPerplexitySearchAgent:
                 print(f"Using LangChain to search Perplexity for: {search_query}")
 
                 # Create extra body parameters for Perplexity-specific features
+                # Current parameters in your code
                 extra_params = {
                     "search_domain_filter": self.excluded_sources[:10],
                     "max_tokens": 4000,
-                    "web_search_options": {"search_context_size": "high"},
-                    "response_format": {"type": "json_object"}
+                    "web_search_options": {"search_context_size": "high"}
                 }
 
-                # Invoke the LangChain Perplexity model
-                system_message = f"You are a specialized researcher who gathers comprehensive information about {query_type} from multiple reputable sources. You search professional food guides, renowned critics, and respected local publications - never crowd-sourced review sites. For each place, provide complete information including name, full address, price range, detailed description, specialties, and the source of the information. Return results in JSON format as an array of objects with these fields: name, address, description, price_range, specialties, website, source. Sort results by relevance and quality."
+                # Invoke the LangChain Perplexity model with the config prompt
+                system_message = config.PERPLEXITY_SEARCH_PROMPT
 
                 response = self.langchain_pplx.invoke(
                     [
@@ -125,13 +125,13 @@ class EnhancedPerplexitySearchAgent:
                 "Content-Type": "application/json"
             }
 
-            # Set up the payload for the Perplexity API request
+            # Set up the payload for the Perplexity API request using the config prompt
             payload = {
                 "model": self.model,
                 "messages": [
                     {
                         "role": "system",
-                        "content": f"You are a specialized researcher who gathers comprehensive information about {query_type} from multiple reputable sources. You search professional guides, renowned critics, and respected local publications - never crowd-sourced review sites. For each place, provide complete information including name, full address, price range, detailed description, specialties, and the source of the information. Return results in JSON format as an array of objects with these fields: name, address, description, price_range, specialties, website, source. Sort results by relevance and quality."
+                        "content": config.PERPLEXITY_SEARCH_PROMPT
                     },
                     {
                         "role": "user",
@@ -142,8 +142,7 @@ class EnhancedPerplexitySearchAgent:
                 "max_tokens": 4000,  # Increased for more comprehensive results
                 "search_domain_filter": self.excluded_sources[:10],  # Exclude these domains
                 "return_images": False,
-                "return_related_questions": False,
-                "response_format": {"type": "json_object"}
+                "return_related_questions": False
             }
 
             # Make the direct API request
@@ -258,33 +257,36 @@ class EnhancedPerplexitySearchAgent:
                 "source": "Perplexity AI"
             }]
 
-    def follow_up_search(self, venue_name: str, location: str) -> Dict[str, Any]:
+    def follow_up_search(self, restaurant_name: str, location: str = "") -> Dict[str, Any]:
         """
         Perform a follow-up search to get more details about a specific venue.
 
         Args:
-            venue_name: Name of the venue (restaurant/bar/cafe) to search for
+            restaurant_name: Name of the venue (restaurant/bar/cafe) to search for
             location: Location of the venue
 
         Returns:
             Dictionary with additional venue details
         """
         # Detect venue type (restaurant, bar, cafe)
-        venue_type = self._detect_venue_type(venue_name)
+        venue_type = self._detect_venue_type(restaurant_name)
 
-        search_query = f"Find detailed information about {venue_type} '{venue_name}' in {location}. Include exact address, price range, signature offerings, opening hours, reservation details, and chef/owner information if available. Format as JSON."
+        # Create search query
+        search_query = f"Find detailed information about {venue_type} '{restaurant_name}'"
+        if location:
+            search_query += f" in {location}"
+        search_query += ". Include exact address, price range, signature offerings, opening hours, reservation details, and chef/owner information if available. Format as JSON."
 
         try:
             # First try using LangChain integration
             try:
-                print(f"Using LangChain for follow-up search on: {venue_name}")
+                print(f"Using LangChain for follow-up search on: {restaurant_name}")
 
                 # Create extra body parameters for Perplexity-specific features
                 extra_params = {
                     "search_domain_filter": self.excluded_sources[:10],
                     "max_tokens": 4000,
-                    "web_search_options": {"search_context_size": "high"},
-                    "response_format": {}  # Empty object as per the latest Perplexity API documentation
+                    "web_search_options": {"search_context_size": "high"}
                 }
 
                 # System prompt for follow-up details
@@ -334,7 +336,7 @@ class EnhancedPerplexitySearchAgent:
                 "messages": [
                     {
                         "role": "system", 
-                        "content": f"You are a specialized researcher who gathers comprehensive information about {query_type}s from multiple reputable sources. You search professional guides, renowned critics, and respected local publications - never crowd-sourced review sites. For each place, provide complete information including name, full address, price range, detailed description, specialties, and the source of the information. Return results in JSON format as an array of objects with these fields: name, address, description, price_range, specialties, website, source. Sort results by relevance and quality."
+                        "content": f"You are a detail specialist who finds specific information about {venue_type}s. Search for precise details and return structured data in JSON format with these fields: address, price_range, chef_or_owner, signature_offerings (array), opening_hours, reservation_info, website."
                     },
                     {
                         "role": "user",
@@ -345,12 +347,11 @@ class EnhancedPerplexitySearchAgent:
                 "max_tokens": 4000,
                 "search_domain_filter": self.excluded_sources[:10],
                 "return_images": False,
-                "return_related_questions": False,
-                "response_format": {}  # Empty object as per the latest Perplexity API documentation
+                "return_related_questions": False
             }
 
             # Make the API request
-            print(f"Sending direct follow-up search to Perplexity for: {venue_name}")
+            print(f"Sending direct follow-up search to Perplexity for: {restaurant_name}")
             response = requests.post(self.api_url, headers=headers, json=payload)
 
             if response.status_code != 200:

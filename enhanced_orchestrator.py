@@ -7,6 +7,9 @@ and the OpenAI formatting agent using LangChain.
 from typing import Dict, Any, Optional, List
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.tracers.context import tracing_v2_enabled
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 from langsmith import Client, traceable
 import os
 import json
@@ -48,7 +51,7 @@ class EnhancedRestaurantRecommender:
         # Initialize the LangSmith client (for custom tracing if needed)
         self.langsmith_client = Client(api_key=self.langsmith_api_key) if self.langsmith_api_key else None
 
-        # Initialize search agent
+        # Initialize search agent with configuration from config
         print(f"Using Enhanced Perplexity search provider with model: {config.PERPLEXITY_MODEL}")
         self.search_agent = EnhancedPerplexitySearchAgent(
             model=config.PERPLEXITY_MODEL,
@@ -60,6 +63,13 @@ class EnhancedRestaurantRecommender:
 
         # Initialize formatting agent
         self.formatting_agent = RestaurantFormattingAgent()
+
+        # Initialize OpenAI for conversation responses
+        self.llm = ChatOpenAI(
+            api_key=config.OPENAI_API_KEY,
+            model=config.OPENAI_MODEL,
+            temperature=0.7,
+        )
 
         # Create the combined chain
         self._create_chain()
@@ -108,15 +118,15 @@ class EnhancedRestaurantRecommender:
 
         Args:
             missing_info_queries: List of queries for missing information
-            location: The location context
+            location: Location context for the search
 
         Returns:
-            Dictionary of enriched data for each restaurant
+            Dictionary of enriched data for restaurants
         """
         enriched_data = {}
 
-        # Limit to top 5 follow-up searches to keep response times reasonable
-        for query_data in missing_info_queries[:5]:
+        # Limit to top 5 follow-up searches
+        for query_data in missing_info_queries[:config.EDITOR_MAX_FOLLOWUPS]:
             if not isinstance(query_data, dict):
                 continue
 
@@ -124,10 +134,9 @@ class EnhancedRestaurantRecommender:
             if not restaurant_name:
                 continue
 
-            # Log the follow-up search
             print(f"Performing follow-up search for: {restaurant_name}")
 
-            # Use the search agent to find more details
+            # Use the search agent with simplified parameters
             details = self.search_agent.follow_up_search(
                 restaurant_name=restaurant_name,
                 location=location or query_data.get("location", "")
@@ -137,6 +146,33 @@ class EnhancedRestaurantRecommender:
                 enriched_data[restaurant_name] = details
 
         return enriched_data
+
+    def get_conversation_response(self, query: str, language: str = "English") -> str:
+        """
+        Get a conversational response that explicitly avoids restaurant recommendations.
+
+        Args:
+            query: The user's message
+            language: The detected language
+
+        Returns:
+            A friendly response that doesn't include restaurant recommendations
+        """
+        conversation_prompt = ChatPromptTemplate.from_messages([
+            ("system", config.CONVERSATION_HANDLER_PROMPT),
+            ("human", f"User message: {query}\nUser message language: {language}")
+        ])
+
+        conversation_chain = conversation_prompt | self.llm | StrOutputParser()
+
+        # Use LangSmith tracing if enabled
+        if self.enable_tracing:
+            with tracing_v2_enabled(project_name=self.project_name):
+                response = conversation_chain.invoke({})
+        else:
+            response = conversation_chain.invoke({})
+
+        return response
 
     @traceable(name="get_enhanced_restaurant_recommendation")
     def get_recommendation(self, 
@@ -180,6 +216,15 @@ class EnhancedRestaurantRecommender:
                                      language: str = "English") -> Dict[str, Any]:
         """
         Async version of get_recommendation.
+
+        Args:
+            query: The user's restaurant request
+            location: Optional location filter
+            cuisine: Optional cuisine type filter
+            language: The detected language of the user query
+
+        Returns:
+            Dictionary with search results, analyzed data, and formatted response
         """
         # Create input dictionary
         inputs = {
@@ -197,6 +242,33 @@ class EnhancedRestaurantRecommender:
             result = await self.chain.ainvoke(inputs)
 
         return result
+
+    async def get_conversation_response_async(self, query: str, language: str = "English") -> str:
+        """
+        Async version of get_conversation_response.
+
+        Args:
+            query: The user's message
+            language: The detected language
+
+        Returns:
+            A friendly response that doesn't include restaurant recommendations
+        """
+        conversation_prompt = ChatPromptTemplate.from_messages([
+            ("system", config.CONVERSATION_HANDLER_PROMPT),
+            ("human", f"User message: {query}\nUser message language: {language}")
+        ])
+
+        conversation_chain = conversation_prompt | self.llm | StrOutputParser()
+
+        # Use LangSmith tracing if enabled
+        if self.enable_tracing:
+            with tracing_v2_enabled(project_name=self.project_name):
+                response = await conversation_chain.ainvoke({})
+        else:
+            response = await conversation_chain.ainvoke({})
+
+        return response
 
 # Example usage
 if __name__ == "__main__":
@@ -223,3 +295,8 @@ if __name__ == "__main__":
 
     print("\nFormatted Response:")
     print(result["formatted_response"])
+
+    # Conversation example
+    print("\nGetting conversation response...")
+    response = recommender.get_conversation_response("How are you today?")
+    print(response)

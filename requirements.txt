@@ -6,9 +6,9 @@ openai>=1.12.0
 python-telegram-bot>=13.7
 langsmith>=0.0.77
 python-dotenv>=1.0.0
-langchain-core
 telegram
 httpx>=0.24.0
 requests>=2.31.0
 re
 json
+langchain-core
