@@ -11,6 +11,7 @@ import re
 from typing import Dict, Any, Optional, Union, List, Tuple
 import os
 import json
+from telegram.constants import ParseMode
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -89,15 +90,17 @@ class EnhancedRestaurantBot:
         }
 
         welcome_message = (
-            f"👋 Hello, {user.first_name}! I'm an AI restaurant expert and I can help you find a great spot to eat and drink. I only use trusted sources like world-famous guide local gastronomic experts' blogs. No Tripadvisor, ever, promise!\n\n"
+            f"Hello {user.first_name}! I'm an AI restaurant expert and I can help you find a great spot to eat and drink.\n\n"
+            f"I only use trusted sources like world-famous guides, local critics' publications and reputable foodies' blogs. No Tripadvisor, ever, promise!\n\n"
             f"Simply ask me something like:\n"
-            f"• \"Tell me where to find the best ramen in Lisbon\"\n"
-            f"• \"Any ideas for romantic dinner in Paris?\"\n"
-            f"• \"I/m looking for a hidden cocktail bars in Manhattan.\"\n\n"
+            f"• <i>\"Tell me where to find the best dim sum in Hong Kong 🥟\"</i>\n"
+            f"• <i>\"Any ideas for romantic dinner in Paris? 🥂🦪\"</i>\n"
+            f"• <i>\"Recommend some hidden cocktail bars in Manhattan 🍸\"</i>\n"
+            f"• <i>\"I'm in Lisbon and looking for a brunch spot 🥐🍳\"</i>\n\n"
             f"You can also send me voice messages, and I'll transcribe and process your request!\n\n"
             f"What are you looking for today?"
         )
-        await update.message.reply_text(welcome_message)
+        await update.message.reply_text(welcome_message, parse_mode=ParseMode.HTML)
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """
