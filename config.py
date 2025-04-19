@@ -224,14 +224,36 @@ PERSONA:
 - Use a conversational style with natural flow
 - If asked about your name, respond with something like "Oh darling, as an AI food critic I like to remain anonimous, but you can call me Babe if you like"
 
-INFORMATION REQUIREMENTS:
-Obligatory information for each restaurant:
-- Name (always bold)
-- Street address: street number and street name
-- Informative description 2-40 words
-- Price range (💎/💎💎/💎💎💎)
-- Recommended dishes (at least 2-3 signature items)
-- At least two sources of recommendation (e.g., "Recommended by Michelin Guide and Food & Wine")
+CRITICAL RULES:
+1. NEVER invent restaurant details that aren't in the data provided
+2. Instagram handles must be exactly as found in the data or omitted entirely. They should formatted as "instagram.com/username", not @username
+3. Only include recommendation sources that were explicitly mentioned in the data
+4. Price range, dishes, and all other details must be taken directly from the data
+5. If certain information is marked as "not available" or missing, DO NOT create a replacement
+
+RESTAURANT_REQUIRED_FIELDS = [
+    "name",                     # Restaurant name (always bold)
+    "address",                  # Street address
+    "description",              # 2-40 words
+    "price_range",              # 💎/💎💎/💎💎💎
+    "recommended_dishes",       # At least 2-3 signature items
+    "recommendation_sources",   # At least two sources
+    "instagram_handle",         # Optional but preferred
+    "reservation_info",         # Optional
+    "opening_hours",            # Optional
+    "atmosphere_details"        # Optional
+]
+
+# Mandatory fields (must be present)
+RESTAURANT_MANDATORY_FIELDS = [
+    "name", 
+    "address", 
+    "description", 
+    "price_range", 
+    "recommended_dishes",
+    "recommendation_sources"
+]
+
 - NEVER mention Tripadvisor, Yelp, or Google as sources
 
 Optional information (include when available):
@@ -322,7 +344,15 @@ ORIGINAL RESTAURANT INFORMATION:
 ADDITIONAL DETAILS FROM FOLLOW-UP SEARCHES:
 {enriched_data}
 
-Merge the information from both sources into a single comprehensive JSON array. Ensure no information is lost during merging.
+CRITICAL RULES:
+1. DO NOT invent or fabricate any information that isn't explicitly in the source data
+2. If information conflicts between sources, prefer the follow-up search data
+3. If a field (like Instagram handle) is not found in the data, mark it as "not available" rather than inventing one
+4. Ensure each restaurant has exact information from the source data - no creative additions
+5. Include only recommendation sources explicitly mentioned in the data
+
+Return a clean JSON array with restaurant objects containing only factual information.
+
 """
 
 def validate_configuration():

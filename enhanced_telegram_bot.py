@@ -92,7 +92,7 @@ class EnhancedRestaurantBot:
         welcome_message = (
             f"Hello {user.first_name}! \n\nI'm an AI restaurant expert and I can help you find a great spot to eat and drink.\n\n"
             f"I only use trusted sources like world-famous guides, local critics' publications and reputable foodies' blogs. No Tripadvisor, ever, promise!\n\n"
-            f"<b>\"Simply ask me something like:\"</b>\n"
+            f"<b>\Simply ask me something like:\</b>\n"
             f"• <i>\"Tell me where to find the best dim sum in Hong Kong 🥟\"</i>\n"
             f"• <i>\"Any ideas for romantic dinner in Paris? 🥂🦪\"</i>\n"
             f"• <i>\"Recommend some hidden cocktail bars in Manhattan 🍸\"</i>\n"

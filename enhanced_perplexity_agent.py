@@ -368,51 +368,66 @@ class EnhancedPerplexitySearchAgent:
                 "source": "Perplexity AI"
             }]
 
-    def follow_up_search(self, restaurant_name: str, location: str = "") -> Dict[str, Any]:
+    def follow_up_search(self, restaurant_name: str, location: str = "", missing_fields: List[str] = None) -> Dict[str, Any]:
         """
-        Perform a follow-up search to get more details about a specific venue,
-        with support for local language searches.
+        Perform a targeted follow-up search to get specific missing details about a restaurant.
 
         Args:
-            restaurant_name: Name of the venue (restaurant/bar/cafe) to search for
-            location: Location of the venue
+            restaurant_name: Name of the restaurant to search for
+            location: Location of the restaurant
+            missing_fields: List of specific fields that are missing and need to be found
 
         Returns:
-            Dictionary with additional venue details
+            Dictionary with the requested restaurant details
         """
-        # REMOVE: Detect venue type (restaurant, bar, cafe)
-        # venue_type = self._detect_venue_type(restaurant_name)
+        # If no missing fields specified, default to a comprehensive search
+        if not missing_fields:
+            missing_fields = config.RESTAURANT_REQUIRED_FIELDS
 
         # Detect location language if provided
         location_language = self._detect_language(location) if location else "English"
 
-        # Create search query with instructions for local language results if needed
-        # CHANGE: use "restaurant" instead of venue_type variable
-        search_query = f"Find detailed information about restaurant '{restaurant_name}'"
+        # Create a dynamic search query focused on the missing fields
+        search_query = f"Find specific information about restaurant '{restaurant_name}'"
         if location:
             search_query += f" in {location}"
 
         # Add language instruction if it's a non-English location
         if location_language != "English":
-            search_query += f". Search in both {location_language} AND English language sources for more authentic local information."
+            search_query += f". Search in both {location_language} AND English language sources."
 
-        search_query += ". Include exact address, price range, signature offerings, opening hours, reservation details, and chef/owner information if available. Format as JSON."
+        # Create a focused query for the missing fields
+        search_query += ". Specifically looking for: "
+
+        field_descriptions = {
+            "name": "exact restaurant name",
+            "address": "full street address with street number",
+            "description": "brief description",
+            "price_range": "price range ($/$$/$$$)",
+            "recommended_dishes": "signature dishes or menu items",
+            "recommendation_sources": "reputable sources that recommend this venue (excluding TripAdvisor, Yelp)",
+            "instagram_handle": "official Instagram handle referenced in reviews",
+            "reservation_info": "make a note if the reservation is highly recommended",
+            "opening_hours": "opening hours"
+        }
+
+        # Add each missing field with its description
+        field_queries = [field_descriptions[field] for field in missing_fields if field in field_descriptions]
+        search_query += ", ".join(field_queries)
 
         try:
-            # First try using LangChain integration
+            # First try using LangChain integration with minimal system prompt
             try:
-                print(f"Using LangChain for follow-up search on: {restaurant_name}")
+                print(f"Using LangChain for follow-up search on: {restaurant_name}, missing fields: {missing_fields}")
 
-                # Create extra body parameters for Perplexity-specific features
                 extra_params = {
                     "search_domain_filter": self.excluded_sources[:10],
                     "max_tokens": 4000,
                     "web_search_options": {"search_context_size": "high"}
                 }
 
-                # System prompt for follow-up details
-                # CHANGE: use "restaurants" instead of venue_type variable
-                system_message = "You are a detail specialist who finds specific information about restaurants. Search for precise details and return structured data in JSON format with these fields: address, price_range, chef_or_owner, signature_offerings (array), opening_hours, reservation_info, website."
+                # Simple system prompt - let Perplexity do the web search
+                system_message = "Find and return factual information about this restaurant. Return as JSON."
 
                 # Invoke the LangChain Perplexity model
                 response = self.langchain_pplx.invoke(
@@ -435,8 +450,8 @@ class EnhancedPerplexitySearchAgent:
                         result = json.loads(json_str)
                         if result and isinstance(result, dict) and len(result) > 1:
                             return result
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"Error extracting JSON from response: {e}")
 
                 # If we're here, either extraction failed or result was invalid
                 print("Could not extract valid JSON from LangChain response, trying direct API")
@@ -445,7 +460,7 @@ class EnhancedPerplexitySearchAgent:
                 print(f"LangChain follow-up error: {lc_error}")
                 print("Falling back to direct API for follow-up search")
 
-            # Fall back to direct API call
+            # Fall back to direct API call with the same approach
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json"
@@ -457,7 +472,7 @@ class EnhancedPerplexitySearchAgent:
                 "messages": [
                     {
                         "role": "system", 
-                        "content": "You are a detail specialist who finds specific information about food venues. Search for precise details and return structured data in JSON format with these fields: address, price_range, chef_or_owner, signature_offerings (array), opening_hours, reservation_info, website."
+                        "content": "Find information about this restaurant. Return as JSON."
                     },
                     {
                         "role": "user",

@@ -115,13 +115,6 @@ class EnhancedRestaurantRecommender:
     def _perform_follow_up_searches(self, missing_info_queries: List[Dict[str, Any]], location: str) -> Dict[str, Any]:
         """
         Perform follow-up searches for missing restaurant information.
-
-        Args:
-            missing_info_queries: List of queries for missing information
-            location: Location context for the search
-
-        Returns:
-            Dictionary of enriched data for restaurants
         """
         enriched_data = {}
 
@@ -134,12 +127,15 @@ class EnhancedRestaurantRecommender:
             if not restaurant_name:
                 continue
 
-            print(f"Performing follow-up search for: {restaurant_name}")
+            # Extract missing fields from the query data
+            missing_fields = query_data.get("missing_fields", [])
+            print(f"Performing follow-up search for: {restaurant_name}, missing fields: {missing_fields}")
 
-            # Use the search agent with simplified parameters
+            # Use the search agent with missing fields parameter
             details = self.search_agent.follow_up_search(
                 restaurant_name=restaurant_name,
-                location=location or query_data.get("location", "")
+                location=location or query_data.get("location", ""),
+                missing_fields=missing_fields  # Pass the missing fields
             )
 
             if details:
