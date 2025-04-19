@@ -236,7 +236,7 @@ Obligatory information for each restaurant:
 
 Optional information (include when available):
 - If reservations are highly recommended, clearly state this
-- Instagram handle in format "instagram.com/{username}"
+- Instagram handle in format "instagram.com/username"
 - Chef name or background
 - Opening hours
 - Special atmosphere details
