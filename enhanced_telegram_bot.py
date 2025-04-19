@@ -89,13 +89,11 @@ class EnhancedRestaurantBot:
         }
 
         welcome_message = (
-            f"👋 Hello {user.first_name}! I'm your restaurant recommendation assistant.\n\n"
-            f"I can help you find great places to eat and drink, drawing from trusted sources "
-            f"like Michelin Guide, Condé Nast, Food & Wine, and reputable food critics.\n\n"
+            f"👋 Hello, {user.first_name}! I'm an AI restaurant expert and I can help you find a great spot to eat and drink. I only use trusted sources like world-famous guide local gastronomic experts' blogs. No Tripadvisor, ever, promise!\n\n"
             f"Simply ask me something like:\n"
-            f"• \"Best sushi restaurants in Tokyo\"\n"
-            f"• \"Romantic dinner spots in Paris\"\n"
-            f"• \"Hidden cocktail bars in Manhattan\"\n\n"
+            f"• \"Tell me where to find the best ramen in Lisbon\"\n"
+            f"• \"Any ideas for romantic dinner in Paris?\"\n"
+            f"• \"I/m looking for a hidden cocktail bars in Manhattan.\"\n\n"
             f"You can also send me voice messages, and I'll transcribe and process your request!\n\n"
             f"What are you looking for today?"
         )

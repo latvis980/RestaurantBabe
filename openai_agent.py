@@ -21,6 +21,8 @@ class RestaurantFormattingAgent:
     with a friendly, engaging, and somewhat humorous tone.
     """
 
+    # In openai_agent.py
+
     def __init__(
         self,
         api_key: Optional[str] = None,
@@ -31,7 +33,9 @@ class RestaurantFormattingAgent:
         self.api_key = api_key or config.OPENAI_API_KEY
         self.model = model or config.OPENAI_MODEL
         self.temperature = temperature if temperature is not None else config.OPENAI_TEMPERATURE
-        self.system_prompt = system_prompt or config.RESTAURANT_TOV_PROMPT
+
+        # Use the combined prompt from config by default
+        self.system_prompt = system_prompt or config.get_combined_restaurant_prompt()
 
         self.llm = ChatOpenAI(
             api_key=self.api_key,
@@ -47,6 +51,7 @@ class RestaurantFormattingAgent:
         self.chain = self.prompt | self.llm | StrOutputParser()
 
     def _get_human_prompt_template(self) -> str:
+        # Simplified human prompt that just passes the necessary variables
         return """
         USER QUERY: {query}
         USER LANGUAGE: {language}
@@ -54,8 +59,8 @@ class RestaurantFormattingAgent:
         RESTAURANT SEARCH RESULTS:
         {restaurant_results}
 
-        Please format these restaurant recommendations according to the specified tone and format. Be conversational and friendly. Make sure to detect the language of the query and respond in the same language.
-        Use HTML formatting (<b>, <i>, <a>) for titles, highlights, and links. Output must be valid Telegram-compatible HTML.
+        Format the restaurant recommendations according to the instructions provided above. 
+        Make sure to respond in the same language as the user query.
         """
 
     @traceable(name="format_restaurant_results")

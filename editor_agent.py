@@ -52,104 +52,25 @@ class RestaurantEditorAgent:
         # Create the prompt template for analysis
         self.analysis_prompt = ChatPromptTemplate.from_messages([
             ("system", self.system_prompt),
-            ("human", self._get_analysis_prompt_template())
+            ("human", config.EDITOR_ANALYSIS_TEMPLATE)
         ])
 
         # Create the prompt template for identifying missing information
         self.missing_info_prompt = ChatPromptTemplate.from_messages([
             ("system", self.system_prompt),
-            ("human", self._get_missing_info_template())
+            ("human", config.EDITOR_MISSING_INFO_TEMPLATE)
         ])
 
-        # Create the formatting chain
+        # Create prompt template for compilation
+        self.compilation_prompt = ChatPromptTemplate.from_messages([
+            ("system", self.system_prompt),
+            ("human", config.EDITOR_COMPILATION_TEMPLATE)
+        ])
+
+        # Create the formatting chains
         self.analysis_chain = self.analysis_prompt | self.llm | StrOutputParser()
         self.missing_info_chain = self.missing_info_prompt | self.llm | StrOutputParser()
-
-    def _get_analysis_prompt_template(self) -> str:
-        """
-        Get the human prompt template for analyzing restaurant results.
-
-        Returns:
-            Human prompt template string
-        """
-        return """
-        USER QUERY: {query}
-        LOCATION: {location}
-        CUISINE: {cuisine}
-
-        RESTAURANT SEARCH RESULTS:
-        {restaurant_results}
-
-        Please analyze these restaurant search results and create comprehensive profiles for the most promising restaurants.
-        For each restaurant, compile all available information from potentially multiple sources into a single detailed profile.
-        Identify which restaurants have the strongest recommendations from reputable sources.
-
-        Return a JSON array of the best restaurant recommendations with these fields for each:
-        - name: Restaurant name
-        - address: Full address if available
-        - description: Detailed description (100+ words when possible) covering cuisine style, chef background, atmosphere
-        - price_range: Price indicator ($/$$/$$$)
-        - recommended_dishes: Array of 1-3 signature/recommended dishes
-        - sources: Array of sources that recommended this restaurant
-        - website: Restaurant website if available
-        """
-
-    def _get_missing_info_template(self) -> str:
-        """
-        Get the prompt template for identifying missing information.
-
-        Returns:
-            Human prompt template string
-        """
-        return """
-        Based on the following restaurant recommendations, identify what critical information is missing that would make these recommendations more valuable.
-        Create an array of follow-up search queries that would help find this missing information.
-
-        RESTAURANT RECOMMENDATIONS:
-        {analyzed_results}
-
-        For each restaurant with incomplete information, create a specific query to find:
-        1. Exact address (if missing)
-        2. Price range (if missing)
-        3. Signature dishes or menu highlights (if missing)
-        4. Website or reservation information (if missing)
-
-        Return a JSON array of follow-up queries, with each object having these fields:
-        - restaurant_name: Name of the restaurant
-        - location: Location context
-        - missing_fields: Array of what information is missing
-        - search_query: A specific query to find the missing information
-        """
-
-    def _get_compilation_template(self) -> str:
-        """
-        Get the prompt template for compiling final results.
-
-        Returns:
-            Human prompt template string
-        """
-        return """
-        Compile the original restaurant information with the additional details from follow-up searches to create 
-        complete, comprehensive restaurant profiles.
-
-        ORIGINAL RESTAURANT INFORMATION:
-        {analyzed_results}
-
-        ADDITIONAL DETAILS FROM FOLLOW-UP SEARCHES:
-        {enriched_data}
-
-        Create a final JSON array of restaurant recommendations with all available information merged.
-        For each restaurant, ensure you have the most complete:
-        - name
-        - street address
-        - description (enhanced with any new details)
-        - price_range
-        - recommended_dishes (array)
-        - opening_hours (if available)
-        - reservation_info (if available, if not, omit)
-        - website
-        - recommended by (NEVER mention Tripadvisor, Yelp, or Google)
-        """
+        self.compilation_chain = self.compilation_prompt | self.llm | StrOutputParser()
 
     @traceable(name="analyze_restaurant_results")
     def analyze(self, query: str, restaurant_results: List[Dict[str, Any]], 
@@ -241,20 +162,11 @@ class RestaurantEditorAgent:
         Returns:
             Compiled restaurant recommendations
         """
-        # Create the compilation prompt
-        compilation_prompt = ChatPromptTemplate.from_messages([
-            ("system", self.system_prompt),
-            ("human", self._get_compilation_template())
-        ])
-
-        # Create the compilation chain
-        compilation_chain = compilation_prompt | self.llm | StrOutputParser()
-
         # Convert enriched data to a string
         enriched_str = json.dumps(enriched_data, indent=2)
 
         # Invoke the compilation chain
-        compiled_results = compilation_chain.invoke({
+        compiled_results = self.compilation_chain.invoke({
             "analyzed_results": analyzed_results,
             "enriched_data": enriched_str
         })
@@ -297,13 +209,29 @@ if __name__ == "__main__":
     for query in missing_info:
         print(f"- {query.get('restaurant_name')}: {query.get('search_query')}")
 
-    # Mock enriched data
+    # Mock enriched data - updated to match the expected format
     mock_enriched = {
         "Sushi Nakazawa": {
-            "address": "23 Commerce St",
+            "address": "23 Commerce St, West Village, New York, NY 10014",
             "price_range": "$$$",
-            "signature_dishes": ["Fatty Tuna", "Sea Urchin", "Horsehair Crab"],
-            "opening_hours": "5:00 PM - 10:30 PM, Closed Mondays"
+            "recommended_dishes": ["Fatty Tuna (Otoro)", "Sea Urchin (Uni)", "Horsehair Crab"],
+            "opening_hours": "5:00 PM - 10:30 PM, Closed Mondays",
+            "reservation_info": "Reservations required at least 30 days in advance",
+            "website": "https://www.sushinakazawa.com",
+            "recommended_by": ["Michelin Guide", "Food & Wine Magazine", "New York Times"],
+            "chef": "Chef Daisuke Nakazawa, former apprentice of Jiro Ono",
+            "description": "An intimate omakase experience offering some of the finest sushi in New York. The pristine fish is sourced daily from around the world and prepared with meticulous attention to detail, temperature, and seasoning."
+        },
+        "Le Bernardin": {
+            "address": "155 W 51st St, Midtown, New York, NY 10019",
+            "price_range": "$$$$",
+            "recommended_dishes": ["Barely Cooked Scallop", "Lacquered Lobster Tail", "Poached Halibut"],
+            "opening_hours": "Monday-Friday: 12:00 PM - 2:30 PM, 5:00 PM - 10:30 PM; Closed weekends",
+            "reservation_info": "Reservations highly recommended, book 2-3 weeks in advance",
+            "website": "https://www.le-bernardin.com",
+            "recommended_by": ["Michelin Guide (3 Stars)", "James Beard Foundation", "La Liste"],
+            "chef": "Chef Eric Ripert",
+            "description": "A temple to seafood, Le Bernardin has maintained its three Michelin stars for its exquisite, minimalist approach to fish. The restaurant divides its menu into categories of 'Almost Raw', 'Barely Touched', and 'Lightly Cooked'."
         }
     }
 
