@@ -165,8 +165,7 @@ class EnhancedPerplexitySearchAgent:
                 extra_params = {
                     "search_domain_filter": self.excluded_sources[:10],
                     "max_tokens": 4000,
-                    "web_search_options": {"search_context_size": "high"},
-                    "response_format": {}  # Empty object per Perplexity API
+                    "web_search_options": {"search_context_size": "high"}
                 }
 
                 # Invoke the LangChain Perplexity model with the search query
@@ -469,8 +468,7 @@ class EnhancedPerplexitySearchAgent:
                 "max_tokens": 4000,
                 "search_domain_filter": self.excluded_sources[:10],
                 "return_images": False,
-                "return_related_questions": False,
-                "response_format": {}  # Empty object as per the latest Perplexity API documentation
+                "return_related_questions": False
             }
 
             # Make the API request

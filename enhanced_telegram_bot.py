@@ -90,9 +90,9 @@ class EnhancedRestaurantBot:
         }
 
         welcome_message = (
-            f"Hello {user.first_name}! I'm an AI restaurant expert and I can help you find a great spot to eat and drink.\n\n"
+            f"Hello {user.first_name}! \n\nI'm an AI restaurant expert and I can help you find a great spot to eat and drink.\n\n"
             f"I only use trusted sources like world-famous guides, local critics' publications and reputable foodies' blogs. No Tripadvisor, ever, promise!\n\n"
-            f"Simply ask me something like:\n"
+            f"<b>\"Simply ask me something like:\"</b>\n"
             f"• <i>\"Tell me where to find the best dim sum in Hong Kong 🥟\"</i>\n"
             f"• <i>\"Any ideas for romantic dinner in Paris? 🥂🦪\"</i>\n"
             f"• <i>\"Recommend some hidden cocktail bars in Manhattan 🍸\"</i>\n"
@@ -120,7 +120,7 @@ class EnhancedRestaurantBot:
             "• You can also send voice messages for your requests\n"
             "• You can ask follow-up questions about the results\n"
             "• You can request more details about a specific restaurant\n\n"
-            "I always search reputable sources like Michelin Guide, Condé Nast, and professional food critics - never crowd-sourced review sites!"
+            "I always search reputable sources like Michelin Guide, 50 Best, Timeout, and professional food critics - never crowd-sourced review sites!"
         )
         await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
 
