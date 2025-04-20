@@ -5,7 +5,7 @@ import logging
 import time
 import traceback
 from agents.langchain_orchestrator import LangChainOrchestrator
-import config
+import os
 from langchain_core.tracers.langchain import wait_for_all_tracers
 
 # Configure logging
@@ -16,7 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Initialize bot
-bot = telebot.TeleBot(config.TELEGRAM_BOT_TOKEN)
+bot = telebot.TeleBot(os.environ["TELEGRAM_BOT_TOKEN"])
 
 # Initialize orchestrator
 orchestrator = LangChainOrchestrator(config)
