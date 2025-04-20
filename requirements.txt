@@ -4,8 +4,8 @@ langchain-openai
 langchain-core
 openai>=1.0.0
 
-# Database
-pymongo
+psycopg2-binary>=2.9.5
+sqlalchemy>=2.0.0
 
 # Web scraping
 requests
