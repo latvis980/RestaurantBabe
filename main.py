@@ -3,7 +3,9 @@ import os
 import logging
 import time
 import traceback
-import os
+
+import config
+from pydantic import config as pydantic_config  # ✅ avoids conflict
 from agents.langchain_orchestrator import LangChainOrchestrator
 from langchain_core.tracers.langchain import wait_for_all_tracers
 
