@@ -29,7 +29,10 @@ class LangChainOrchestrator:
 
         # Create runnable lambdas for each step
         self.analyze_query = RunnableLambda(
-            lambda x: self.query_analyzer.analyze(x["query"]),
+            lambda x: {
+                **self.query_analyzer.analyze(x["query"]),
+                "query": x["query"]  # ✅ Keep the original query in the chain
+            },
             name="analyze_query"
         )
 
