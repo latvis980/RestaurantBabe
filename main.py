@@ -2,6 +2,7 @@
 import os
 import logging
 import time
+import traceback
 from agents.langchain_orchestrator import LangChainOrchestrator
 import config
 from langchain_core.tracers.langchain import wait_for_all_tracers
@@ -45,10 +46,22 @@ def main():
         end_time = time.time()
 
         logger.info(f"Query processed in {end_time - start_time:.2f} seconds")
-        logger.info(f"Result: {result}")
+
+        # Log a summary of the results instead of the full result
+        if result and isinstance(result, dict):
+            num_recommended = len(result.get("recommended", []))
+            num_hidden_gems = len(result.get("hidden_gems", []))
+            logger.info(f"Results: {num_recommended} recommendations and {num_hidden_gems} hidden gems")
+        else:
+            logger.warning(f"Unexpected result format: {type(result)}")
+    except Exception as e:
+        logger.error(f"Error processing query: {e}")
+        logger.error(traceback.format_exc())
     finally:
         # Make sure all traces are submitted before exiting (best practice from docs)
+        logger.info("Waiting for all tracers to complete...")
         wait_for_all_tracers()
+        logger.info("All tracers completed")
 
 if __name__ == "__main__":
     main()

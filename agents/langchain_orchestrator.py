@@ -2,6 +2,7 @@
 from langchain_core.runnables import RunnableSequence, RunnableLambda
 from langchain_core.tracers.context import tracing_v2_enabled
 import time
+import json
 from utils.database import save_to_mongodb
 
 class LangChainOrchestrator:
@@ -86,12 +87,12 @@ class LangChainOrchestrator:
         self.translate = RunnableLambda(
             lambda x: {
                 **x,
-                "translated_recommendations": self.translator.translate(x["enhanced_recommendations"])
+                "translated_recommendations": self._safe_translate(x["enhanced_recommendations"])
             },
             name="translate"
         )
 
-        # Create the complete sequence
+        # Create the complete sequence without the translator for testing
         self.chain = RunnableSequence(
             first=self.analyze_query,
             middle=[
@@ -104,6 +105,27 @@ class LangChainOrchestrator:
             last=self.translate,
             name="restaurant_recommendation_chain"
         )
+
+    def _safe_translate(self, recommendations):
+        """Safely translate recommendations with error handling"""
+        try:
+            # Ensure the recommendations are properly formatted before translation
+            if not recommendations:
+                return {"recommended": [], "hidden_gems": []}
+
+            # Make sure we have the expected structure
+            if "recommended" not in recommendations or "hidden_gems" not in recommendations:
+                # Try to convert to expected format if possible
+                if isinstance(recommendations, dict):
+                    return self.translator.translate(recommendations)
+                else:
+                    return {"recommended": [], "hidden_gems": []}
+
+            return self.translator.translate(recommendations)
+        except Exception as e:
+            print(f"Translation error: {e}")
+            # Return the untranslated recommendations if translation fails
+            return recommendations
 
     def process_query(self, user_query):
         """
@@ -118,23 +140,41 @@ class LangChainOrchestrator:
         # Create a unique trace ID for this request
         trace_id = f"restaurant_rec_{int(time.time())}"
 
-        # Use LangSmith tracing - following current API (no run_id parameter)
+        # Use LangSmith tracing
         with tracing_v2_enabled(project_name="restaurant-recommender"):
-            # Execute the chain
-            result = self.chain.invoke({"query": user_query})
+            try:
+                # Execute the chain
+                result = self.chain.invoke({"query": user_query})
 
-            # Save the complete process and results to database
-            process_record = {
-                "query": user_query,
-                "trace_id": trace_id,
-                "timestamp": time.time(),
-                "result": result.get("translated_recommendations", {})
-            }
-            save_to_mongodb(
-                self.config.MONGODB_COLLECTION_PROCESSES,
-                process_record,
-                self.config
-            )
+                # Save the complete process and results to database
+                process_record = {
+                    "query": user_query,
+                    "trace_id": trace_id,
+                    "timestamp": time.time(),
+                    "result": result.get("translated_recommendations", {})
+                }
 
-            # Return just the translated recommendations
-            return result.get("translated_recommendations", {})
+                try:
+                    save_to_mongodb(
+                        self.config.MONGODB_COLLECTION_PROCESSES,
+                        process_record,
+                        self.config
+                    )
+                except Exception as db_error:
+                    print(f"Error saving to database: {db_error}")
+
+                # Return just the translated recommendations
+                return result.get("translated_recommendations", {})
+
+            except Exception as e:
+                print(f"Error in chain execution: {e}")
+                # Return a basic structure as fallback
+                return {
+                    "recommended": [
+                        {
+                            "name": "Error Processing Request",
+                            "description": "We encountered an error while processing your request. Please try again later.",
+                        }
+                    ],
+                    "hidden_gems": []
+                }

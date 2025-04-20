@@ -3,9 +3,10 @@ import telebot
 from telebot import types
 import logging
 import time
+import traceback
 from agents.langchain_orchestrator import LangChainOrchestrator
 import config
-import json
+from langchain_core.tracers.langchain import wait_for_all_tracers
 
 # Configure logging
 logging.basicConfig(
@@ -36,31 +37,50 @@ def handle_message(message):
         bot.send_chat_action(message.chat.id, 'typing')
 
         # Acknowledge receipt of the message
-        bot.reply_to(message, "Я ищу для вас рестораны. Это может занять несколько минут...")
+        initial_reply = bot.reply_to(message, "Я ищу для вас рестораны. Это может занять несколько минут...")
 
         # Process the query
         logger.info(f"Processing query from user {message.from_user.id}: {user_query}")
         start_time = time.time()
 
-        # Call the orchestrator to process the query
-        result = orchestrator.process_query(user_query)
+        try:
+            # Call the orchestrator to process the query
+            result = orchestrator.process_query(user_query)
 
-        end_time = time.time()
-        logger.info(f"Query processed in {end_time - start_time:.2f} seconds")
+            end_time = time.time()
+            logger.info(f"Query processed in {end_time - start_time:.2f} seconds")
 
-        # Format the response for Telegram
-        response = format_telegram_response(result)
+            # Check if result is valid
+            if not result or not isinstance(result, dict):
+                raise ValueError(f"Invalid result format: {type(result)}")
 
-        # Send the response
-        bot.send_message(
-            message.chat.id, 
-            response,
-            parse_mode='HTML'
-        )
+            # Format the response for Telegram
+            response = format_telegram_response(result)
+
+            # Delete the "processing" message to avoid cluttering the chat
+            try:
+                bot.delete_message(message.chat.id, initial_reply.message_id)
+            except Exception as e:
+                logger.warning(f"Could not delete initial message: {e}")
+
+            # Send the response
+            bot.send_message(
+                message.chat.id, 
+                response,
+                parse_mode='HTML'
+            )
+
+        except Exception as process_error:
+            logger.error(f"Error processing query: {process_error}")
+            logger.error(traceback.format_exc())
+            bot.reply_to(message, "Извините, произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз.")
 
     except Exception as e:
-        logger.error(f"Error processing message: {e}", exc_info=True)
-        bot.reply_to(message, "Извините, произошла ошибка при обработке запроса. Пожалуйста, попробуйте еще раз.")
+        logger.error(f"Error handling message: {e}", exc_info=True)
+        bot.reply_to(message, "Извините, произошла ошибка. Пожалуйста, попробуйте еще раз.")
+    finally:
+        # Ensure all traces are submitted
+        wait_for_all_tracers()
 
 def format_telegram_response(result):
     """Format the result for Telegram HTML message"""
@@ -68,16 +88,28 @@ def format_telegram_response(result):
         response = "<b>🍽️ РЕКОМЕНДУЕМЫЕ РЕСТОРАНЫ:</b>\n\n"
 
         # Add recommended restaurants
-        for i, restaurant in enumerate(result.get("recommended", []), 1):
-            response += format_restaurant(restaurant, i)
+        recommended = result.get("recommended", [])
+        if recommended:
+            for i, restaurant in enumerate(recommended, 1):
+                response += format_restaurant(restaurant, i)
+        else:
+            response += "К сожалению, рекомендуемые рестораны не найдены.\n\n"
 
         # Add hidden gems
         response += "\n\n<b>💎 ДЛЯ СВОИХ:</b>\n\n"
-        for i, restaurant in enumerate(result.get("hidden_gems", []), 1):
-            response += format_restaurant(restaurant, i)
+        hidden_gems = result.get("hidden_gems", [])
+        if hidden_gems:
+            for i, restaurant in enumerate(hidden_gems, 1):
+                response += format_restaurant(restaurant, i)
+        else:
+            response += "К сожалению, скрытые жемчужины не найдены.\n\n"
 
         # Add footer
         response += "\n\n<i>Рекомендации составлены на основе анализа экспертных источников.</i>"
+
+        # Ensure response isn't too long for Telegram
+        if len(response) > 4000:
+            response = response[:3997] + "..."
 
         return response
     except Exception as e:
@@ -86,57 +118,70 @@ def format_telegram_response(result):
 
 def format_restaurant(restaurant, index):
     """Format a single restaurant for Telegram HTML message"""
-    response = f"<b>{index}. {restaurant.get('name', 'Ресторан')}</b>\n"
+    try:
+        response = f"<b>{index}. {restaurant.get('name', 'Ресторан')}</b>\n"
 
-    # Add address
-    if restaurant.get('address'):
-        response += f"📍 {restaurant.get('address')}\n"
+        # Add address
+        if restaurant.get('address'):
+            response += f"📍 {restaurant.get('address')}\n"
 
-    # Add description
-    if restaurant.get('description'):
-        response += f"{restaurant.get('description')}\n"
+        # Add description
+        if restaurant.get('description'):
+            response += f"{restaurant.get('description')}\n"
 
-    # Add price range
-    if restaurant.get('price_range'):
-        response += f"💰 {restaurant.get('price_range')}\n"
+        # Add price range
+        if restaurant.get('price_range'):
+            response += f"💰 {restaurant.get('price_range')}\n"
+        elif restaurant.get('price_indication'):
+            response += f"💰 {restaurant.get('price_indication')}\n"
 
-    # Add recommended dishes
-    if restaurant.get('recommended_dishes'):
-        dishes = restaurant.get('recommended_dishes')
-        if isinstance(dishes, list):
-            dishes_str = ", ".join(dishes)
-        else:
-            dishes_str = dishes
-        response += f"👨‍🍳 Рекомендуемые блюда: {dishes_str}\n"
+        # Add recommended dishes
+        if restaurant.get('recommended_dishes'):
+            dishes = restaurant.get('recommended_dishes')
+            if isinstance(dishes, list):
+                dishes_str = ", ".join(dishes)
+            else:
+                dishes_str = dishes
+            response += f"👨‍🍳 Рекомендуемые блюда: {dishes_str}\n"
 
-    # Add sources
-    if restaurant.get('sources'):
-        sources = restaurant.get('sources')
-        if isinstance(sources, list):
-            sources_str = ", ".join(sources)
-        else:
-            sources_str = sources
-        response += f"📝 Рекомендовано: {sources_str}\n"
+        # Add sources
+        if restaurant.get('sources'):
+            sources = restaurant.get('sources')
+            if isinstance(sources, list):
+                sources_str = ", ".join(sources)
+            else:
+                sources_str = sources
+            response += f"📝 Рекомендовано: {sources_str}\n"
 
-    # Add reservations if required
-    if restaurant.get('reservations_required'):
-        response += "⚠️ Рекомендуется бронирование\n"
+        # Add reservations if required
+        if restaurant.get('reservations_required'):
+            response += "⚠️ Рекомендуется бронирование\n"
 
-    # Add Instagram if available
-    if restaurant.get('instagram'):
-        response += f"📸 {restaurant.get('instagram')}\n"
+        # Add Instagram if available
+        if restaurant.get('instagram'):
+            response += f"📸 {restaurant.get('instagram')}\n"
 
-    # Add hours if available
-    if restaurant.get('hours'):
-        response += f"🕒 {restaurant.get('hours')}\n"
+        # Add hours if available
+        if restaurant.get('hours'):
+            response += f"🕒 {restaurant.get('hours')}\n"
 
-    response += "\n"
-    return response
+        response += "\n"
+        return response
+    except Exception as e:
+        logger.error(f"Error formatting restaurant info: {e}")
+        return f"<b>{index}. {restaurant.get('name', 'Ресторан')}</b>\n" + \
+               "Извините, дополнительная информация недоступна.\n\n"
 
 def main():
     """Main function to start the bot"""
     logger.info("Starting Telegram Bot")
-    bot.infinity_polling()
+    try:
+        bot.infinity_polling()
+    except Exception as e:
+        logger.error(f"Error in bot polling: {e}", exc_info=True)
+    finally:
+        # Make sure all traces are submitted before exiting
+        wait_for_all_tracers()
 
 if __name__ == '__main__':
     main()
