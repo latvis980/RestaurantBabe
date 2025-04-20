@@ -1,161 +1,117 @@
 # utils/database.py
-from sqlalchemy import create_engine, Column, String, Float, JSON, MetaData, Table
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-import json
-import os
 import logging
-import time
+import json
 import uuid
+from sqlalchemy import create_engine, MetaData, Table, Column, String, JSON, Float, select
+from sqlalchemy.exc import SQLAlchemyError
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Database connection string from Railway environment
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/postgres")
+# Database connection and tables
+meta = MetaData()
+engine = None
+tables = {}
 
-# SQLAlchemy setup
-engine = create_engine(DATABASE_URL)
-Base = declarative_base()
-metadata = MetaData()
-Session = sessionmaker(bind=engine)
+def initialize_db(config):
+    """Initialize database connection and tables"""
+    global engine, tables
 
-# Define tables dynamically based on collection names
-def get_table(table_name):
-    """Get or create a table with the given name"""
-    if table_name in metadata.tables:
-        return metadata.tables[table_name]
+    if engine is not None:
+        return  # Already initialized
 
-    # Create a new table
-    table = Table(
-        table_name,
-        metadata,
-        Column("id", String, primary_key=True),  # Renamed from _id to id
-        Column("data", JSON),
-        Column("timestamp", Float),
-        extend_existing=True
-    )
-    metadata.create_all(engine, tables=[table])
-    return table
-
-# Initialize database
-def init_db():
-    """Initialize the database tables"""
     try:
-        metadata.create_all(engine)
+        # Create database engine
+        engine = create_engine(config.DATABASE_URL)
+
+        # Define tables with _id as primary key (matching existing schema)
+        tables[config.DB_TABLE_SOURCES] = Table(
+            config.DB_TABLE_SOURCES, meta,
+            Column('_id', String, primary_key=True),
+            Column('data', JSON),
+            Column('timestamp', Float)
+        )
+
+        tables[config.DB_TABLE_SEARCHES] = Table(
+            config.DB_TABLE_SEARCHES, meta,
+            Column('_id', String, primary_key=True),
+            Column('data', JSON),
+            Column('timestamp', Float)
+        )
+
+        tables[config.DB_TABLE_PROCESSES] = Table(
+            config.DB_TABLE_PROCESSES, meta,
+            Column('_id', String, primary_key=True),
+            Column('data', JSON),
+            Column('timestamp', Float)
+        )
+
+        tables[config.DB_TABLE_RESTAURANTS] = Table(
+            config.DB_TABLE_RESTAURANTS, meta,
+            Column('_id', String, primary_key=True),
+            Column('data', JSON),
+            Column('timestamp', Float)
+        )
+
+        # Create tables if they don't exist
+        meta.create_all(engine)
         logger.info("Database tables initialized")
+
     except Exception as e:
         logger.error(f"Error initializing database: {e}")
+        raise
 
-# Call init_db to create tables
-init_db()
+def save_data(table_name, data_dict, config):
+    """Save data to the specified table"""
+    global engine, tables
 
-def save_data(table_name, data, config):
-    """Save data to PostgreSQL"""
+    if engine is None:
+        initialize_db(config)
+
     try:
-        # Create a session
-        session = Session()
+        # Generate a unique ID if not provided
+        doc_id = data_dict.get('id', str(uuid.uuid4()))
 
-        # Get the table
-        table = get_table(table_name)
-
-        # Ensure id exists
-        if "id" not in data:
-            data["id"] = str(uuid.uuid4())
-
-        # Check if document exists
-        exists = session.query(table).filter(table.c.id == data["id"]).first()
-
-        # Create new values
-        values = {
-            "id": data["id"],
-            "data": data,
-            "timestamp": time.time()
+        # Create record to insert
+        record = {
+            '_id': doc_id,  # Use _id instead of id
+            'data': data_dict,
+            'timestamp': data_dict.get('timestamp', 0)
         }
 
-        # Insert or update
-        if exists:
-            session.query(table).filter(table.c.id == data["id"]).update(values)
-        else:
-            session.execute(table.insert().values(**values))
+        # Insert into database
+        with engine.connect() as conn:
+            table = tables[table_name]
+            insert_stmt = table.insert().values(**record)
+            conn.execute(insert_stmt)
+            conn.commit()
 
-        # Commit changes
-        session.commit()
-        logger.info(f"Saved data to {table_name}")
-        return data["id"]
-    except Exception as e:
+        return doc_id
+
+    except SQLAlchemyError as e:
         logger.error(f"Error saving to database: {e}")
-        session.rollback()
+        # Continue execution even if database saving fails
         return None
-    finally:
-        session.close()
 
 def find_data(table_name, query, config):
-    """Find data in PostgreSQL by query"""
+    """Find data in the specified table"""
+    global engine, tables
+
+    if engine is None:
+        initialize_db(config)
+
     try:
-        # Create a session
-        session = Session()
+        table = tables[table_name]
 
-        # Get the table
-        table = get_table(table_name)
+        # Convert query to SQL
+        with engine.connect() as conn:
+            # Find matching records
+            stmt = select(table.c.data).where(table.c.data['location'].as_string() == query.get('location'))
+            result = conn.execute(stmt).fetchone()
 
-        # If id is in query, use it directly
-        if "id" in query:
-            result = session.query(table).filter(table.c.id == query["id"]).first()
             if result:
-                return result.data
+                return result[0]
             return None
 
-        # Otherwise, need to scan JSON data
-        results = session.query(table).all()
-        for row in results:
-            data = row.data
-            matches = all(key in data and data[key] == value for key, value in query.items())
-            if matches:
-                return data
-
+    except SQLAlchemyError as e:
+        logger.error(f"Error querying database: {e}")
         return None
-    except Exception as e:
-        logger.error(f"Error finding data: {e}")
-        return None
-    finally:
-        session.close()
-
-def find_all_data(table_name, query, config, limit=0):
-    """Find multiple data entries in PostgreSQL by query"""
-    try:
-        # Create a session
-        session = Session()
-
-        # Get the table
-        table = get_table(table_name)
-
-        # Get all results first
-        query_obj = session.query(table)
-
-        # Apply limit if needed
-        if limit > 0:
-            query_obj = query_obj.limit(limit)
-
-        results = query_obj.all()
-
-        # Filter based on query
-        filtered_results = []
-        for row in results:
-            data = row.data
-            matches = all(key in data and data[key] == value for key, value in query.items())
-            if matches:
-                filtered_results.append(data)
-
-        return filtered_results
-    except Exception as e:
-        logger.error(f"Error finding data entries: {e}")
-        return []
-    finally:
-        session.close()
-
-def get_db_connection(config):
-    """Returns SQLAlchemy engine for direct DB access if needed"""
-    logger.info("PostgreSQL connection successful")
-    return engine

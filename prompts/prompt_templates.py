@@ -9,7 +9,7 @@ Obligatory information for each restaurant:
 - Name (always bold)
 - Street address: street number and street name
 - Informative description 2-40 words
-- Price range (💎/💎💎/💎💎💎)
+- Price range
 - Recommended dishes (at least 2-3 signature items)
 - At least two sources of recommendation (e.g., "Recommended by Michelin Guide and Timeout Lisboa")
 - NEVER mention Tripadvisor, Yelp, or Google as sources

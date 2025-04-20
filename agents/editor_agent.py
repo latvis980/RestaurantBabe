@@ -25,6 +25,7 @@ class EditorAgent:
 
         self.config = config
 
+    # In the edit method of EditorAgent class in editor_agent.py
     def edit(self, recommendations, original_query):
         """
         Format and polish the restaurant recommendations
@@ -40,6 +41,16 @@ class EditorAgent:
             try:
                 # Generate follow-up search queries
                 follow_up_queries = self._generate_follow_up_queries(recommendations, original_query)
+
+                # Make sure recommendations has the required structure
+                if not recommendations or not isinstance(recommendations, dict):
+                    recommendations = {"recommended": [], "hidden_gems": []}
+
+                # Ensure required keys exist
+                if "recommended" not in recommendations:
+                    recommendations["recommended"] = []
+                if "hidden_gems" not in recommendations:
+                    recommendations["hidden_gems"] = []
 
                 # Invoke the formatting chain
                 response = self.chain.invoke({
