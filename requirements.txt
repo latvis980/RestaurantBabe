@@ -1,14 +1,21 @@
-langchain>=0.1.0
-langchain_openai>=0.0.5
-langchain_community>=0.0.11
-langchain_perplexity>=0.0.3
-openai>=1.12.0
-python-telegram-bot>=13.7
-langsmith>=0.0.77
-python-dotenv>=1.0.0
+# Core dependencies
+langchain
+langchain-openai
 langchain-core
-telegram
-httpx>=0.24.0
-requests>=2.31.0
-psutil
-pydub>=0.25.1
+openai>=1.0.0
+
+# Database
+pymongo
+
+# Web scraping
+requests
+beautifulsoup4
+
+# Tracing
+langsmith
+
+# Telegram bot
+pyTelegramBotAPI
+
+# Utils
+python-dotenv

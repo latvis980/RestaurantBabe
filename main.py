@@ -1,181 +1,54 @@
-"""
-Updated main application entry point for the Enhanced Restaurant Recommendation App.
-
-This module initializes all components and starts the Telegram bot.
-"""
+# main.py
 import os
-import argparse
 import logging
-import asyncio
-
+import time
+from agents.langchain_orchestrator import LangChainOrchestrator
 import config
-from openai_agent import RestaurantFormattingAgent
-from enhanced_orchestrator import EnhancedRestaurantRecommender
-from enhanced_telegram_bot import EnhancedRestaurantBot
-from editor_agent import RestaurantEditorAgent
+from langchain_core.tracers.langchain import wait_for_all_tracers
 
-from whisper_transcriber import WhisperTranscriber
-
-
-from dotenv import load_dotenv
-load_dotenv()
-
-
-# Set up logging
+# Configure logging
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-def parse_arguments():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Enhanced Restaurant Recommendation App")
+# Configure LangSmith tracing if API key is available
+if hasattr(config, 'LANGSMITH_API_KEY') and config.LANGSMITH_API_KEY:
+    os.environ["LANGSMITH_TRACING"] = "true"
+    os.environ["LANGSMITH_API_KEY"] = config.LANGSMITH_API_KEY
+    os.environ["LANGSMITH_PROJECT"] = "restaurant-recommender"
+    logger.info("LangSmith tracing enabled")
+else:
+    logger.warning("LangSmith API key not found - tracing disabled")
 
-    # Add arguments
-    parser.add_argument("--webhook", action="store_true", help="Run in webhook mode instead of polling")
-    parser.add_argument("--webhook-url", type=str, help="Webhook URL (required for webhook mode)")
-    parser.add_argument("--webhook-path", type=str, default="/webhook", help="Webhook path")
-    parser.add_argument("--port", type=int, default=8443, help="Port for webhook server")
-    parser.add_argument("--no-tracing", action="store_true", help="Disable LangSmith tracing")
-    parser.add_argument("--max-results", type=int, help="Maximum number of restaurant results to return")
-
-    return parser.parse_args()
-
-async def run_webhook_mode(args):
-    """Run the application in webhook mode."""
-    logger.info("Starting enhanced application in webhook mode")
-
-    # Override max results if specified in args
-    if args.max_results:
-        config.PERPLEXITY_MAX_RESULTS = args.max_results
-        logger.info(f"Maximum results overridden to: {args.max_results}")
-
-    # Initialize editor agent
-    editor_agent = RestaurantEditorAgent()
-
-    # Initialize formatting agent
-    formatting_agent = RestaurantFormattingAgent()
-
-    # Verify OpenAI API key for Whisper
-    if not config.OPENAI_API_KEY:
-        logger.error("OpenAI API key is required for voice transcription")
-        return
-
-    # Create enhanced recommender with tracing enabled/disabled according to args
-    recommender = EnhancedRestaurantRecommender(enable_tracing=not args.no_tracing)
-
-    # Create and run the Telegram bot
-    bot = EnhancedRestaurantBot(recommender=recommender)
-
-    webhook_url = args.webhook_url or config.TELEGRAM_WEBHOOK_URL
-    if not webhook_url:
-        logger.error("Webhook URL is required for webhook mode")
-        return
-
-    await bot.run_webhook(
-        webhook_url=webhook_url,
-        webhook_path=args.webhook_path,
-        port=args.port
-    )
-
-    # Run forever
-    await asyncio.Event().wait()
-
-def run_polling_mode(args):
-    """Run the application in polling mode."""
-    logger.info("Starting enhanced application in polling mode")
-
-    # Override max results if specified in args
-    if args.max_results:
-        config.PERPLEXITY_MAX_RESULTS = args.max_results
-        logger.info(f"Maximum results overridden to: {args.max_results}")
-
-    # Initialize editor agent
-    editor_agent = RestaurantEditorAgent()
-
-    # Initialize formatting agent
-    formatting_agent = RestaurantFormattingAgent()
-
-    # Verify OpenAI API key for Whisper
-    if not config.OPENAI_API_KEY:
-        logger.error("OpenAI API key is required for voice transcription")
-        return
-
-    # Create enhanced recommender with tracing enabled/disabled according to args
-    recommender = EnhancedRestaurantRecommender(enable_tracing=not args.no_tracing)
-
-    # Create and run the Telegram bot
-    bot = EnhancedRestaurantBot(recommender=recommender)
-    bot.run_polling()
-
-def check_for_existing_instance():
-    """Check if another instance is already running."""
-    import os
-    import psutil
-
-    current_pid = os.getpid()
-    current_process = psutil.Process(current_pid)
-
-    for process in psutil.process_iter(['pid', 'name', 'cmdline']):
-        if (process.info['pid'] != current_pid and 
-            'python' in process.info['name'] and 
-            any('main.py' in cmd for cmd in process.info['cmdline'] if cmd)):
-
-            print(f"Another instance is running (PID: {process.info['pid']}). Terminating it...")
-            try:
-                process.terminate()
-                print(f"Process {process.info['pid']} terminated.")
-            except:
-                print(f"Failed to terminate process {process.info['pid']}.")
+def setup_orchestrator():
+    """Initialize and return the orchestrator"""
+    logger.info("Initializing restaurant recommendation orchestrator")
+    return LangChainOrchestrator(config)
 
 def main():
-    """Main entry point for the application."""
-    check_for_existing_instance()  # Add this line
+    """Main entry point for the application"""
+    logger.info("Starting Restaurant Recommendation Service")
 
-    print("""
-    ╔═══════════════════════════════════════════════════════╗
-    ║  Enhanced Restaurant Recommendation App                ║
-    ║  Powered by Perplexity, OpenAI Editor, and LangChain  ║
-    ╚═══════════════════════════════════════════════════════╝
-    """)
+    # Initialize orchestrator
+    orchestrator = setup_orchestrator()
 
-    # Parse command line arguments
-    args = parse_arguments()
+    # The main application logic would typically integrate with the Telegram bot
+    # For testing purposes, we can process a sample query
+    test_query = "I want to find some amazing brunch places in Lisbon with unusual brunch dishes, something I haven't tried before."
+    logger.info(f"Processing test query: {test_query}")
 
-    # Disable tracing if requested
-    if args.no_tracing:
-        os.environ["LANGCHAIN_TRACING"] = "false"
-        os.environ["LANGSMITH_TRACING"] = "false"
-    
-    # Debug configuration
-    print(f"Current environment settings:")
-    print(f"PERPLEXITY_API_KEY set: {'Yes' if config.PERPLEXITY_API_KEY else 'No'}")
-    print(f"PERPLEXITY_MODEL: {config.PERPLEXITY_MODEL}")
-    print(f"PERPLEXITY_MAX_RESULTS: {config.PERPLEXITY_MAX_RESULTS}")
-    print(f"OPENAI_API_KEY set: {'Yes' if config.OPENAI_API_KEY else 'No'}")
-    print(f"OPENAI_MODEL: {config.OPENAI_MODEL}")
-
-    # Verify required API keys
     try:
-        # Ensure we have Perplexity and OpenAI keys
-        if not config.PERPLEXITY_API_KEY:
-            raise ValueError("PERPLEXITY_API_KEY is required")
-        if not config.OPENAI_API_KEY:
-            raise ValueError("OPENAI_API_KEY is required")
-        if not config.TELEGRAM_BOT_TOKEN:
-            raise ValueError("TELEGRAM_BOT_TOKEN is required")
+        start_time = time.time()
+        result = orchestrator.process_query(test_query)
+        end_time = time.time()
 
-        config.validate_configuration()
-    except ValueError as e:
-        logger.error(f"Configuration error: {e}")
-        exit(1)
-
-    # Run in webhook or polling mode
-    if args.webhook:
-        asyncio.run(run_webhook_mode(args))
-    else:
-        run_polling_mode(args)
+        logger.info(f"Query processed in {end_time - start_time:.2f} seconds")
+        logger.info(f"Result: {result}")
+    finally:
+        # Make sure all traces are submitted before exiting (best practice from docs)
+        wait_for_all_tracers()
 
 if __name__ == "__main__":
     main()

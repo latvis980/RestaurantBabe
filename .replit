@@ -3,7 +3,7 @@ modules = ["python-3.11"]
 
 [nix]
 channel = "stable-24_05"
-packages = ["bash", "ffmpeg-full"]
+packages = ["bash", "ffmpeg-full", "libxcrypt", "xcodebuild", "zlib"]
 
 [unitTest]
 language = "python3"
@@ -14,3 +14,7 @@ requiredFiles = [".replit", "replit.nix"]
 [deployment]
 run = ["python3", "main.py"]
 deploymentTarget = "cloudrun"
+
+
+[env]
+PYTHONPATH = "${REPL_HOME}"
