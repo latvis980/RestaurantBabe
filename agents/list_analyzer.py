@@ -81,6 +81,7 @@ class ListAnalyzer:
 
         self.config = config
 
+    # In the analyze method of ListAnalyzer class
     def analyze(self, search_results, user_preferences, keywords_for_analysis, primary_parameters=None, secondary_parameters=None):
         """
         Analyze search results to extract and rank restaurant recommendations
@@ -118,24 +119,52 @@ class ListAnalyzer:
             else:
                 secondary_params_str = secondary_parameters if secondary_parameters else ""
 
-            # Invoke the chain
-            response = self.chain.invoke({
-                "search_results": formatted_results,
-                "user_preferences": user_preferences,
-                "keywords_for_analysis": keywords_str,
-                "primary_parameters": primary_params_str,
-                "secondary_parameters": secondary_params_str
-            })
-
             try:
-                # Parse the JSON response
-                results = json.loads(response.content)
-                return results
-            except (json.JSONDecodeError, AttributeError) as e:
-                print(f"Error parsing ListAnalyzer response: {e}")
-                print(f"Response content: {response.content}")
+                # Invoke the chain
+                response = self.chain.invoke({
+                    "search_results": formatted_results,
+                    "user_preferences": user_preferences,
+                    "keywords_for_analysis": keywords_str,
+                    "primary_parameters": primary_params_str,
+                    "secondary_parameters": secondary_params_str
+                })
 
-                # Fallback: Return a basic structure
+                try:
+                    # Extract content, handling markdown formatting
+                    content = response.content
+
+                    # Handle markdown code blocks if present
+                    if "```json" in content:
+                        content = content.split("```json")[1].split("```")[0]
+                    elif "```" in content:
+                        parts = content.split("```")
+                        if len(parts) >= 3:  # Has opening and closing backticks
+                            content = parts[1]  # Extract content between backticks
+
+                    # Strip whitespace
+                    content = content.strip()
+
+                    # Parse the JSON response
+                    results = json.loads(content)
+
+                    # Ensure the required structure exists
+                    if "recommended" not in results:
+                        results["recommended"] = []
+                    if "hidden_gems" not in results:
+                        results["hidden_gems"] = []
+
+                    return results
+                except (json.JSONDecodeError, AttributeError) as e:
+                    print(f"Error parsing ListAnalyzer response: {e}")
+                    print(f"Response content: {response.content}")
+
+                    # Fallback: Return a basic structure
+                    return {
+                        "recommended": [],
+                        "hidden_gems": []
+                    }
+            except Exception as e:
+                print(f"Error in ListAnalyzer chain: {e}")
                 return {
                     "recommended": [],
                     "hidden_gems": []

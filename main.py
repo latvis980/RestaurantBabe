@@ -8,6 +8,7 @@ import config
 from pydantic import config as pydantic_config  # ✅ avoids conflict
 from agents.langchain_orchestrator import LangChainOrchestrator
 from langchain_core.tracers.langchain import wait_for_all_tracers
+from utils.database import initialize_db  # Add this import
 
 # Configure logging
 logging.basicConfig(
@@ -24,6 +25,9 @@ if hasattr(config, 'LANGSMITH_API_KEY') and config.LANGSMITH_API_KEY:
     logger.info("LangSmith tracing enabled")
 else:
     logger.warning("LangSmith API key not found - tracing disabled")
+
+# Initialize database
+initialize_db(config)  # Add this line
 
 def setup_orchestrator():
     """Initialize and return the orchestrator"""
