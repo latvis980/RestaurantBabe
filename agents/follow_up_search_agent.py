@@ -10,13 +10,14 @@ class FollowUpSearchAgent:
         self.search_agent = BraveSearchAgent(config)
         self.scraper = WebScraper(config)
 
-    def perform_follow_up_searches(self, formatted_recommendations, follow_up_queries):
+    def perform_follow_up_searches(self, formatted_recommendations, follow_up_queries, secondary_filter_parameters=None):
         """
         Perform follow-up searches for each restaurant to gather missing information
 
         Args:
             formatted_recommendations (dict): The formatted recommendations
             follow_up_queries (list): List of follow-up queries for each restaurant
+            secondary_filter_parameters (list, optional): Secondary parameters from query analysis for targeted searches
 
         Returns:
             dict: Enhanced recommendations with additional information
@@ -29,17 +30,17 @@ class FollowUpSearchAgent:
 
             # Process recommended restaurants
             for restaurant in formatted_recommendations.get("recommended", []):
-                enhanced_restaurant = self._enhance_restaurant(restaurant, follow_up_queries)
+                enhanced_restaurant = self._enhance_restaurant(restaurant, follow_up_queries, secondary_filter_parameters)
                 enhanced_recommendations["recommended"].append(enhanced_restaurant)
 
             # Process hidden gems
             for restaurant in formatted_recommendations.get("hidden_gems", []):
-                enhanced_restaurant = self._enhance_restaurant(restaurant, follow_up_queries)
+                enhanced_restaurant = self._enhance_restaurant(restaurant, follow_up_queries, secondary_filter_parameters)
                 enhanced_recommendations["hidden_gems"].append(enhanced_restaurant)
 
             return enhanced_recommendations
 
-    def _enhance_restaurant(self, restaurant, follow_up_queries):
+    def _enhance_restaurant(self, restaurant, follow_up_queries, secondary_filter_parameters=None):
         """Enhance a single restaurant with additional information from follow-up searches"""
         restaurant_name = restaurant.get("name", "")
         restaurant_location = restaurant.get("address", "").split(",")[0] if restaurant.get("address") else ""
@@ -65,6 +66,11 @@ class FollowUpSearchAgent:
             # Add specific queries for missing information
             for info in missing_info:
                 restaurant_queries.append(f"{restaurant_name} restaurant {restaurant_location} {info}")
+
+        # Add secondary filter parameters for targeted searches
+        if secondary_filter_parameters:
+            for param in secondary_filter_parameters:
+                restaurant_queries.append(f"{restaurant_name} restaurant {restaurant_location} {param}")
 
         # Check global guides specifically
         global_guide_info = self._check_global_guides(restaurant_name, restaurant_location)
@@ -92,7 +98,8 @@ class FollowUpSearchAgent:
         # Add the enhanced information to the restaurant
         enhanced_restaurant = restaurant.copy()
         enhanced_restaurant["additional_info"] = {
-            "follow_up_results": combined_results
+            "follow_up_results": combined_results,
+            "secondary_parameters_checked": secondary_filter_parameters if secondary_filter_parameters else []
         }
 
         return enhanced_restaurant

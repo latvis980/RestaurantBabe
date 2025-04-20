@@ -11,12 +11,63 @@ class QueryAnalyzer:
             temperature=0.2
         )
 
-        # Get the prompt from prompt_templates
-        from prompts.prompt_templates import QUERY_ANALYZER_PROMPT
+        # Create prompt template
+        self.system_prompt = """
+        You are a restaurant recommendation system that analyzes user queries about restaurants.
+        Your task is to extract key information and prepare search queries.
 
-        # Create prompt template - Fix the template to only expect 'query'
+        SEARCH STRATEGY:
+        1. First, identify PRIMARY search parameters that are likely to have existing curated lists online
+           (e.g., "romantic restaurants in Paris", "best brunch in Tokyo")
+        2. Then, identify SECONDARY parameters that will be used for filtering and detailed analysis later
+           (e.g., "gluten-free options", "has outdoor seating", "serves oysters")
+
+        GUIDELINES:
+        1. Extract the destination (city/country) from the query
+        2. Determine if the destination is English-speaking or not
+        3. For non-English speaking destinations, identify the local language
+        4. Create appropriate search queries in English and local language (for non-English destinations)
+           - Search queries should focus ONLY on primary parameters
+        5. Extract or create keywords for analysis based on user preferences
+           - Analysis keywords should include ALL parameters (primary and secondary)
+
+        EXCLUDE from recommendations:
+        - Tripadvisor
+        - Yelp
+        - Google Maps reviews
+
+        OUTPUT FORMAT:
+        Respond with a JSON object containing:
+        {{
+          "destination": "extracted city/country", 
+          "is_english_speaking": true/false,
+          "local_language": "language name (if not English-speaking)",
+          "primary_search_parameters": ["param1", "param2", ...],
+          "secondary_filter_parameters": ["param1", "param2", ...],
+          "english_search_query": "search query in English using only primary parameters",
+          "local_language_search_query": "search query in local language (if applicable) using only primary parameters",
+          "keywords_for_analysis": ["all keywords including primary and secondary"],
+          "user_preferences": "brief summary of what makes this request unique"
+        }}
+
+        EXAMPLES:
+        For "I want to find romantic restaurants in Paris with gluten-free options and oysters":
+        - Primary parameters: ["Paris", "romantic", "restaurants"]
+        - Secondary parameters: ["gluten-free", "oysters"]
+        - English search query: "best romantic restaurants in Paris"
+        - French search query: "meilleurs restaurants romantiques à Paris"
+        - Analysis keywords: ["Paris", "romantic", "restaurants", "gluten-free", "oysters"]
+
+        For "Looking for seafood restaurants with a terrace in Barcelona where they allow children":
+        - Primary parameters: ["Barcelona", "seafood", "restaurants"]
+        - Secondary parameters: ["outdoor seating", "kid-friendly"]
+        - English search query: "best seafood restaurants in Barcelona"
+        - Spanish search query: "mejores restaurantes de mariscos en Barcelona"
+        - Analysis keywords: ["Barcelona", "seafood", "restaurants", "outdoor seating", "kid-friendly"]
+        """
+
         self.prompt = ChatPromptTemplate.from_messages([
-            ("system", QUERY_ANALYZER_PROMPT),
+            ("system", self.system_prompt),
             ("human", "{query}")
         ])
 
@@ -42,7 +93,8 @@ class QueryAnalyzer:
                     # Try to find local sources in database
                     local_sources = find_in_mongodb(
                         self.config.MONGODB_COLLECTION_SOURCES,
-                        {"location": location}
+                        {"location": location},
+                        self.config
                     )
 
                     # If no local sources found, compile and save them
@@ -51,7 +103,8 @@ class QueryAnalyzer:
                         # Save to database for future use
                         save_to_mongodb(
                             self.config.MONGODB_COLLECTION_SOURCES,
-                            {"location": location, "sources": local_sources}
+                            {"location": location, "sources": local_sources},
+                            self.config
                         )
 
                     result["local_sources"] = local_sources
@@ -66,12 +119,30 @@ class QueryAnalyzer:
                 # Remove None or empty queries
                 search_queries = [q for q in search_queries if q]
 
+                # Ensure keywords_for_analysis is always a list
+                keywords = result.get("keywords_for_analysis", [])
+                if isinstance(keywords, str):
+                    # Split the string by commas if it's a string
+                    keywords = [k.strip() for k in keywords.split(",") if k.strip()]
+
+                # Get primary and secondary parameters
+                primary_params = result.get("primary_search_parameters", [])
+                secondary_params = result.get("secondary_filter_parameters", [])
+
+                # Ensure they're lists
+                if isinstance(primary_params, str):
+                    primary_params = [p.strip() for p in primary_params.split(",") if p.strip()]
+                if isinstance(secondary_params, str):
+                    secondary_params = [p.strip() for p in secondary_params.split(",") if p.strip()]
+
                 return {
                     "destination": location,
                     "is_english_speaking": is_english_speaking,
                     "local_language": result.get("local_language"),
                     "search_queries": search_queries,
-                    "keywords_for_analysis": result.get("keywords_for_analysis", []),
+                    "primary_search_parameters": primary_params,
+                    "secondary_filter_parameters": secondary_params,
+                    "keywords_for_analysis": keywords,
                     "local_sources": result.get("local_sources", []),
                     "user_preferences": result.get("user_preferences", "")
                 }
@@ -84,7 +155,9 @@ class QueryAnalyzer:
                     "destination": "Unknown",
                     "is_english_speaking": True,
                     "search_queries": [f"best restaurants {query}"],
-                    "keywords_for_analysis": [query.split()],
+                    "primary_search_parameters": ["restaurants"],
+                    "secondary_filter_parameters": [],
+                    "keywords_for_analysis": query.split(),
                     "local_sources": []
                 }
 

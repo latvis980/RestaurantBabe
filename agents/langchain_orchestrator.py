@@ -76,7 +76,8 @@ class LangChainOrchestrator:
                 **x,
                 "enhanced_recommendations": self.follow_up_search_agent.perform_follow_up_searches(
                     x["formatted_recommendations"].get("formatted_recommendations", {}),
-                    x["formatted_recommendations"].get("follow_up_queries", [])
+                    x["formatted_recommendations"].get("follow_up_queries", []),
+                    x.get("secondary_filter_parameters", [])  # Pass secondary parameters
                 )
             },
             name="follow_up_search"
