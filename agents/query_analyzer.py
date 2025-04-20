@@ -2,7 +2,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_core.tracers.context import tracing_v2_enabled
 import json
-from utils.database import save_to_mongodb, find_in_mongodb
+from utils.database import save_data, find_data
+
 
 class QueryAnalyzer:
     def __init__(self, config):
@@ -63,14 +64,29 @@ class QueryAnalyzer:
             response = self.chain.invoke({"query": query})
 
             try:
-                result = json.loads(response.content)
+                # Clean up response content to handle markdown formatting
+                content = response.content
+
+                # Handle markdown code blocks
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0]
+                elif "```" in content:
+                    parts = content.split("```")
+                    if len(parts) >= 3:  # Has opening and closing backticks
+                        content = parts[1]  # Extract content between backticks
+
+                # Strip whitespace
+                content = content.strip()
+
+                # Parse the JSON
+                result = json.loads(content)
 
                 location = result.get("destination")
                 is_english_speaking = result.get("is_english_speaking", True)
 
                 if location and not is_english_speaking:
                     local_sources = find_in_mongodb(
-                        self.config.MONGODB_COLLECTION_SOURCES,
+                        self.config.DB_TABLE_SOURCES,
                         {"location": location},
                         self.config
                     )
@@ -78,7 +94,7 @@ class QueryAnalyzer:
                     if not local_sources:
                         local_sources = self._compile_local_sources(location, result.get("local_language"))
                         save_to_mongodb(
-                            self.config.MONGODB_COLLECTION_SOURCES,
+                            self.config.DB_TABLE_SOURCES,
                             {"location": location, "sources": local_sources},
                             self.config
                         )

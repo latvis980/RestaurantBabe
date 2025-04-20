@@ -2,7 +2,8 @@ import requests
 from langchain_core.tracers.context import tracing_v2_enabled
 import json
 import time
-from utils.database import save_to_mongodb
+from utils.database import save_data
+
 
 class BraveSearchAgent:
     def __init__(self, config):
@@ -51,7 +52,7 @@ class BraveSearchAgent:
 
         # Save results to database for future reference
         if all_results:
-            save_to_mongodb(
+            save_data(
                 self.config.MONGODB_COLLECTION_SEARCHES,
                 {
                     "queries": queries,
