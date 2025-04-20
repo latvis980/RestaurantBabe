@@ -4,6 +4,7 @@ langchain-openai
 langchain-core
 openai>=1.0.0
 
+# Database
 psycopg2-binary>=2.9.5
 sqlalchemy>=2.0.0
 
@@ -11,11 +12,14 @@ sqlalchemy>=2.0.0
 requests
 beautifulsoup4
 
-# Tracing
+# Tracing & observability
 langsmith
 
 # Telegram bot
 pyTelegramBotAPI
 
-# Utils
+# Utilities & config
 python-dotenv
+
+# New: Schema validation for OpenAI output
+pydantic>=2.0
