@@ -3,7 +3,7 @@ from langchain_core.runnables import RunnableSequence, RunnableLambda
 from langchain_core.tracers.context import tracing_v2_enabled
 import time
 import json
-from utils.database import save_to_mongodb
+from utils.database import save_data
 
 class LangChainOrchestrator:
     def __init__(self, config):
@@ -158,8 +158,8 @@ class LangChainOrchestrator:
                 }
 
                 try:
-                    save_to_mongodb(
-                        self.config.MONGODB_COLLECTION_PROCESSES,
+                    save_data(
+                        self.config.DB_TABLE_PROCESSES,
                         process_record,
                         self.config
                     )

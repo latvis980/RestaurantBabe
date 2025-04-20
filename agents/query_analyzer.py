@@ -85,7 +85,7 @@ class QueryAnalyzer:
                 is_english_speaking = result.get("is_english_speaking", True)
 
                 if location and not is_english_speaking:
-                    local_sources = find_in_mongodb(
+                    local_sources = find_data(
                         self.config.DB_TABLE_SOURCES,
                         {"location": location},
                         self.config
@@ -93,7 +93,7 @@ class QueryAnalyzer:
 
                     if not local_sources:
                         local_sources = self._compile_local_sources(location, result.get("local_language"))
-                        save_to_mongodb(
+                        save_data(
                             self.config.DB_TABLE_SOURCES,
                             {"location": location, "sources": local_sources},
                             self.config

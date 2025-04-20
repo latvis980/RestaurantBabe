@@ -53,7 +53,7 @@ class BraveSearchAgent:
         # Save results to database for future reference
         if all_results:
             save_data(
-                self.config.MONGODB_COLLECTION_SEARCHES,
+                self.config.DB_TABLE_SEARCHES,
                 {
                     "queries": queries,
                     "timestamp": time.time(),

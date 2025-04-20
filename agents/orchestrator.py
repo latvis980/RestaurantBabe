@@ -2,7 +2,7 @@
 from langchain_core.tracers.context import tracing_v2_enabled
 from langchain_core.runnables import RunnableSequence, RunnableLambda
 import time
-from utils.database import save_to_mongodb
+from utils.database import save_data
 
 class RestaurantRecommendationOrchestrator:
     def __init__(self, config):
@@ -66,8 +66,8 @@ class RestaurantRecommendationOrchestrator:
                 "timestamp": time.time(),
                 "trace_id": trace_id
             }
-            save_to_mongodb(
-                self.config.MONGODB_COLLECTION_PROCESSES,
+            save_data(
+                self.config.DB_TABLE_PROCESSES,
                 process_record,
                 self.config
             )
