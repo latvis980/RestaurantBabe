@@ -6,6 +6,7 @@ import time
 import traceback
 from agents.langchain_orchestrator import LangChainOrchestrator
 import os
+import config
 from langchain_core.tracers.langchain import wait_for_all_tracers
 
 # Configure logging
