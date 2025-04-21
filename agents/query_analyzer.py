@@ -26,7 +26,7 @@ class QueryAnalyzer:
              Search query: "romantic restaurants in Paris"
 
            - User asks: "I need somewhere kid-friendly in Rome with pizza"
-             Search query: "family-friendly pizzerias in Rome"
+             Search query: "family-friendly restaurants in Rome"
 
            - User asks: "We want to try authentic local food in Tokyo"
              Search query: "traditional Japanese restaurants in Tokyo"
@@ -69,3 +69,225 @@ class QueryAnalyzer:
           "keywords_for_analysis": ["all keywords including primary and secondary"]
         }}
         """
+
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", self.system_prompt),
+            ("human", "{query}")
+        ])
+
+        self.chain = self.prompt | self.model
+        self.config = config
+
+    def analyze(self, query):
+        with tracing_v2_enabled(project_name="restaurant-recommender"):
+            response = self.chain.invoke({"query": query})
+
+            try:
+                # Clean up response content to handle markdown formatting
+                content = response.content
+
+                # Handle markdown code blocks
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0]
+                elif "```" in content:
+                    parts = content.split("```")
+                    if len(parts) >= 3:  # Has opening and closing backticks
+                        content = parts[1]  # Extract content between backticks
+
+                # Strip whitespace
+                content = content.strip()
+
+                # Parse the JSON
+                result = json.loads(content)
+
+                location = result.get("destination")
+                is_english_speaking = result.get("is_english_speaking", True)
+
+                if location and not is_english_speaking:
+                    # Create city-specific table name for sources
+                    city_table_name = f"sources_{location.lower().replace(' ', '_').replace('-', '_')}"
+
+                    # Ensure the city-specific table exists
+                    ensure_city_table(location, self.config, table_type="sources")
+
+                    # Try to find sources in the city-specific table first
+                    local_sources = find_data(
+                        city_table_name,
+                        {"city": location},
+                        self.config
+                    )
+
+                    if not local_sources:
+                        # Try the general sources table as fallback
+                        local_sources = find_data(
+                            self.config.DB_TABLE_SOURCES,
+                            {"location": location},
+                            self.config
+                        )
+
+                    if not local_sources:
+                        # If still not found, compile new sources
+                        local_sources = self._compile_local_sources(location, result.get("local_language"))
+
+                        # Save to city-specific table
+                        save_data(
+                            city_table_name,
+                            {"location": location, "sources": local_sources, "city": location},
+                            self.config
+                        )
+
+                        # Also save to general table for backward compatibility
+                        save_data(
+                            self.config.DB_TABLE_SOURCES,
+                            {"location": location, "sources": local_sources},
+                            self.config
+                        )
+
+                    result["local_sources"] = local_sources
+
+                # Format search queries
+                search_queries = [result.get("english_search_query")]
+                if result.get("local_language_search_query"):
+                    search_queries.append(result.get("local_language_search_query"))
+
+                # Add additional local language queries with specific search terms
+                if not is_english_speaking and result.get("local_language"):
+                    local_lang = result.get("local_language")
+                    local_search_terms = [
+                        "best restaurants",
+                        "where to eat",
+                        "recommended restaurants",
+                        "food guide",
+                        "top chefs",
+                        "hidden gems food"
+                    ]
+
+                    # Create translations
+                    translation_prompt = f"""
+                    Translate the following restaurant search terms from English to {local_lang}:
+                    {', '.join(local_search_terms)}
+
+                    Return only the translations as a comma-separated list.
+                    """
+
+                    try:
+                        translation_chain = ChatPromptTemplate.from_template(translation_prompt) | self.model
+                        translation_response = translation_chain.invoke({})
+
+                        if translation_response.content:
+                            translated_terms = [term.strip() for term in translation_response.content.split(',')]
+                            for term in translated_terms:
+                                if term and location:
+                                    search_queries.append(f"{term} {location}")
+                    except Exception as e:
+                        print(f"Error translating search terms: {e}")
+
+                # Clean up search queries
+                search_queries = [q for q in search_queries if q]
+
+                # Format keywords and parameters
+                keywords = result.get("keywords_for_analysis", [])
+                if isinstance(keywords, str):
+                    keywords = [k.strip() for k in keywords.split(",") if k.strip()]
+
+                primary_params = result.get("primary_search_parameters", [])
+                secondary_params = result.get("secondary_filter_parameters", [])
+
+                if isinstance(primary_params, str):
+                    primary_params = [p.strip() for p in primary_params.split(",") if p.strip()]
+                if isinstance(secondary_params, str):
+                    secondary_params = [p.strip() for p in secondary_params.split(",") if p.strip()]
+
+                return {
+                    "destination": location,
+                    "is_english_speaking": is_english_speaking,
+                    "local_language": result.get("local_language"),
+                    "search_queries": search_queries,
+                    "primary_search_parameters": primary_params,
+                    "secondary_filter_parameters": secondary_params,
+                    "keywords_for_analysis": keywords,
+                    "local_sources": result.get("local_sources", [])
+                }
+
+            except (json.JSONDecodeError, AttributeError) as e:
+                print(f"Error parsing response: {e}")
+                print(f"Response content: {response.content}")
+
+                # Simple fallback - use best restaurants + location if we can extract it
+                location = "Unknown"
+                for indicator in ["in ", "near ", "at "]:
+                    if indicator in query.lower():
+                        parts = query.lower().split(indicator)
+                        if len(parts) > 1:
+                            possible_location = parts[1].split()[0]
+                            if len(possible_location) > 2:
+                                location = possible_location
+                                break
+
+                # Create a basic search query
+                search_query = "best restaurants" + (f" in {location}" if location != "Unknown" else "")
+
+                # Try to at least determine if this is a non-English speaking destination
+                is_english_speaking = True
+                local_language = None
+
+                if location != "Unknown":
+                    # Attempt to identify if this is a non-English speaking location
+                    language_prompt = f"""
+                    Is {location} in a primarily English-speaking country? Answer with only 'yes' or 'no'.
+                    If 'no', what is the primary local language? Just provide the language name.
+                    """
+
+                    try:
+                        language_chain = ChatPromptTemplate.from_template(language_prompt) | self.model
+                        language_response = language_chain.invoke({})
+
+                        response_text = language_response.content.lower()
+
+                        if 'no' in response_text:
+                            is_english_speaking = False
+
+                            # Try to extract the language name
+                            if '\n' in response_text:
+                                language_line = response_text.split('\n')[1].strip()
+                                local_language = language_line
+                    except Exception as lang_error:
+                        print(f"Error determining language: {lang_error}")
+
+                return {
+                    "destination": location,
+                    "is_english_speaking": is_english_speaking,
+                    "local_language": local_language,
+                    "search_queries": [search_query],
+                    "primary_search_parameters": ["best restaurants", f"in {location}"] if location != "Unknown" else ["best restaurants"],
+                    "secondary_filter_parameters": [],
+                    "keywords_for_analysis": query.split(),
+                    "local_sources": []
+                }
+
+    def _compile_local_sources(self, location, language):
+        local_sources_prompt = f"""
+        Identify 5-7 reputable local sources for restaurant reviews and food recommendations in {location}.
+        Focus on local press, respected food experts, bloggers, and local food guides that publish in {language}.
+        Do NOT include international sites like TripAdvisor, Yelp, or Google. Only include sources that locals would trust.
+
+        Each source should be either:
+        1) A local newspaper/magazine with a dedicated food section
+        2) A respected local food blog with in-depth reviews
+        3) A local food award organization
+        4) A local guide/publication specifically focused on restaurants and dining
+        5) A notable local chef or food personality with authoritative recommendations
+
+        Return a JSON array with objects containing \"name\", \"url\" (if available), and \"type\" (one of the categories above).
+        """
+
+        local_sources_chain = ChatPromptTemplate.from_template(local_sources_prompt) | self.model
+        response = local_sources_chain.invoke({})
+
+        try:
+            # Clean up response content to handle markdown formatting
+            content = response.content
+
+            # Handle markdown code blocks
+            if "```json" in content:
+                content = content.split("```json")[1].split("
