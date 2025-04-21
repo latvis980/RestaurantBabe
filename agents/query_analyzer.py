@@ -290,4 +290,23 @@ class QueryAnalyzer:
 
             # Handle markdown code blocks
             if "```json" in content:
-                content = content.split("```json")[1].split("
+                content = content.split("```json")[1].split("```")[0]
+            elif "```" in content:
+                parts = content.split("```")
+                if len(parts) >= 3:  # Has opening and closing backticks
+                    content = parts[1]  # Extract content between backticks
+
+            # Strip whitespace
+            content = content.strip()
+
+            sources = json.loads(content)
+
+            # Add metadata to help with searches
+            for source in sources:
+                source["city"] = location
+                source["language"] = language
+
+            return sources
+        except (json.JSONDecodeError, AttributeError) as e:
+            print(f"Error parsing local sources: {e}")
+            return []
