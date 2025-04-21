@@ -145,42 +145,12 @@ class QueryAnalyzer:
 
                     result["local_sources"] = local_sources
 
-                # Format search queries
+                # Format search queries - SIMPLIFIED VERSION
                 search_queries = [result.get("english_search_query")]
-                if result.get("local_language_search_query"):
+
+                # Add only one local language query for non-English speaking locations
+                if not is_english_speaking and result.get("local_language_search_query"):
                     search_queries.append(result.get("local_language_search_query"))
-
-                # Add additional local language queries with specific search terms
-                if not is_english_speaking and result.get("local_language"):
-                    local_lang = result.get("local_language")
-                    local_search_terms = [
-                        "best restaurants",
-                        "where to eat",
-                        "recommended restaurants",
-                        "food guide",
-                        "top chefs",
-                        "hidden gems food"
-                    ]
-
-                    # Create translations
-                    translation_prompt = f"""
-                    Translate the following restaurant search terms from English to {local_lang}:
-                    {', '.join(local_search_terms)}
-
-                    Return only the translations as a comma-separated list.
-                    """
-
-                    try:
-                        translation_chain = ChatPromptTemplate.from_template(translation_prompt) | self.model
-                        translation_response = translation_chain.invoke({})
-
-                        if translation_response.content:
-                            translated_terms = [term.strip() for term in translation_response.content.split(',')]
-                            for term in translated_terms:
-                                if term and location:
-                                    search_queries.append(f"{term} {location}")
-                    except Exception as e:
-                        print(f"Error translating search terms: {e}")
 
                 # Clean up search queries
                 search_queries = [q for q in search_queries if q]
