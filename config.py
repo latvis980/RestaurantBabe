@@ -16,6 +16,7 @@ OPENAI_TEMPERATURE = 0.2
 
 # Database table names
 DB_TABLE_SOURCES = "local_sources"
+DB_TABLE_SOURCES = "sources"  # Table for source reputation
 DB_TABLE_RESTAURANTS = "restaurants"
 DB_TABLE_PROCESSES = "processes"
 DB_TABLE_SEARCHES = "searches"

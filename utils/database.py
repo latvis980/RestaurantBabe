@@ -92,26 +92,83 @@ def save_data(table_name, data_dict, config):
         # Continue execution even if database saving fails
         return None
 
-def find_data(table_name, query, config):
-    """Find data in the specified table"""
-    global engine, tables
+def update_data(table_name, filter_query, update_data, config):
+    """
+    Update data in a database table
 
+    Args:
+        table_name (str): Table name
+        filter_query (dict): Filter to identify the record to update
+        update_data (dict): Data to update
+        config: Configuration object with database settings
+    """
+    global engine, tables
     if engine is None:
         initialize_db(config)
 
     try:
         table = tables[table_name]
 
-        # Convert query to SQL
+        # We need to convert the filter_query to work with the JSON structure
+        # Since data is stored in the 'data' JSON column
         with engine.connect() as conn:
-            # Find matching records
-            stmt = select(table.c.data).where(table.c.data['location'].as_string() == query.get('location'))
+            # First, find the record to update
+            if 'domain' in filter_query:
+                stmt = select(table).where(table.c.data['domain'].as_string() == filter_query.get('domain'))
+            elif 'location' in filter_query:
+                stmt = select(table).where(table.c.data['location'].as_string() == filter_query.get('location'))
+            else:
+                # For other query types, this would need to be expanded
+                logger.error(f"Unsupported filter query: {filter_query}")
+                return False
+
             result = conn.execute(stmt).fetchone()
 
             if result:
+                # Record exists, update it
+                record_id = result[0]  # Get the _id
+
+                # Update the data
+                update_stmt = table.update().where(table.c._id == record_id).values(
+                    data=update_data,
+                    timestamp=update_data.get('evaluated_at', 0) or update_data.get('timestamp', 0)
+                )
+
+                conn.execute(update_stmt)
+                conn.commit()
+                return True
+            else:
+                # Record not found
+                logger.warning(f"No record found for update: {filter_query}")
+                return False
+
+    except SQLAlchemyError as e:
+        logger.error(f"Error updating database: {e}")
+        return False
+
+def find_data(table_name, query, config):
+    """Find data in the specified table"""
+    global engine, tables
+    if engine is None:
+        initialize_db(config)
+    try:
+        table = tables[table_name]
+        # Convert query to SQL
+        with engine.connect() as conn:
+            # Build the query based on the provided filter
+            if 'location' in query:
+                stmt = select(table.c.data).where(table.c.data['location'].as_string() == query.get('location'))
+            elif 'domain' in query:
+                stmt = select(table.c.data).where(table.c.data['domain'].as_string() == query.get('domain'))
+            else:
+                # For other query types, this would need to be expanded
+                logger.error(f"Unsupported query: {query}")
+                return None
+
+            result = conn.execute(stmt).fetchone()
+            if result:
                 return result[0]
             return None
-
     except SQLAlchemyError as e:
         logger.error(f"Error querying database: {e}")
         return None

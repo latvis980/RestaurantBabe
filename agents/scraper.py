@@ -4,6 +4,8 @@ import time
 from urllib.parse import urlparse
 import random
 from langchain_core.tracers.context import tracing_v2_enabled
+import asyncio
+
 
 class WebScraper:
     def __init__(self, config):
@@ -26,6 +28,21 @@ class WebScraper:
         Returns:
             list: Enriched search results with scraped content
         """
+        # Convert synchronous function call to async
+        return asyncio.run(self.filter_and_scrape_results(search_results, max_retries))
+
+    async def filter_and_scrape_results(self, search_results, max_retries=2):
+        """
+        Filter search results by source quality and scrape only reputable sources
+
+        Args:
+            search_results (list): List of search result dictionaries with URLs
+            max_retries (int): Maximum number of retries for failed requests
+
+        Returns:
+            list: Enriched search results from reputable sources with scraped content
+        """
+        from utils.source_validator import check_source_reputation, evaluate_source_quality
         enriched_results = []
 
         with tracing_v2_enabled(project_name="restaurant-recommender"):
@@ -34,39 +51,43 @@ class WebScraper:
                 if not url:
                     continue
 
-                # Skip non-HTML content
-                if self._should_skip_url(url):
-                    enriched_results.append(result)
-                    continue
+                # First check database for known reputation
+                is_reputable = check_source_reputation(url, self.config)
 
-                try:
-                    # Get the HTML content
-                    html_content = self._get_html(url, max_retries)
-                    if not html_content:
-                        enriched_results.append(result)
+                # If not in database, evaluate with AI
+                if is_reputable is None:
+                    is_reputable = await evaluate_source_quality(url, self.config)
+
+                # Only proceed with reputable sources
+                if is_reputable:
+                    # Skip non-HTML content
+                    if self._should_skip_url(url):
                         continue
 
-                    # Parse the HTML
-                    soup = BeautifulSoup(html_content, 'html.parser')
+                    try:
+                        # Get the HTML content
+                        html_content = self._get_html(url, max_retries)
+                        if not html_content:
+                            continue
 
-                    # Extract main content
-                    main_content = self._extract_main_content(soup)
+                        # Parse the HTML
+                        soup = BeautifulSoup(html_content, 'html.parser')
 
-                    # Extract restaurant information
-                    restaurant_info = self._extract_restaurant_info(soup, url)
+                        # Extract main content as clean text
+                        clean_text = self._extract_clean_text(soup)
 
-                    # Add the scraped content to the result
-                    result["scraped_content"] = main_content
-                    result["restaurant_info"] = restaurant_info
-                    enriched_results.append(result)
+                        # Add the scraped content to the result
+                        result["scraped_content"] = clean_text
+                        result["source_domain"] = urlparse(url).netloc
+                        result["is_reputable"] = True  # Mark as reputable for downstream processing
+                        enriched_results.append(result)
 
-                    # Be nice to servers
-                    time.sleep(random.uniform(1.0, 2.0))
-
-                except Exception as e:
-                    print(f"Error scraping {url}: {e}")
-                    # Add the original result without scraping
-                    enriched_results.append(result)
+                        # Be nice to servers
+                        await asyncio.sleep(random.uniform(1.0, 2.0))
+                    except Exception as e:
+                        print(f"Error scraping {url}: {e}")
+                else:
+                    print(f"Skipping non-reputable source: {url}")
 
         return enriched_results
 
@@ -102,88 +123,39 @@ class WebScraper:
 
         return None
 
-    def _extract_main_content(self, soup):
-        """Extract the main content from HTML"""
-        # Try to find main content containers
+    def _extract_clean_text(self, soup):
+        """Extract clean text content from HTML"""
+        # Remove script and style elements
+        for script in soup(["script", "style", "header", "footer", "nav", "aside"]):
+            script.extract()
+
+        # Get the main content if available
         main_tags = ['article', 'main', '.content', '#content', '.post', '.article']
+        main_content = None
 
         for tag in main_tags:
-            main_content = soup.select(tag)
-            if main_content:
-                # Join all text from these elements
-                return ' '.join([elem.get_text(strip=True, separator=' ') for elem in main_content])
-
-        # Fallback: get text from paragraphs
-        paragraphs = soup.find_all('p')
-        if paragraphs:
-            return ' '.join([p.get_text(strip=True) for p in paragraphs])
-
-        # Last resort: get all text
-        return soup.get_text(strip=True, separator=' ')
-
-    def _extract_restaurant_info(self, soup, url):
-        """Extract specific restaurant information from HTML"""
-        restaurant_info = {}
-
-        # Try to find restaurant name
-        name_elements = soup.select('h1')
-        if name_elements:
-            restaurant_info['name'] = name_elements[0].get_text(strip=True)
-
-        # Try to find address
-        address_patterns = [
-            'address',
-            'location',
-            '.address',
-            '[itemprop="address"]',
-            '.location-info'
-        ]
-
-        for pattern in address_patterns:
-            address_elements = soup.select(pattern)
-            if address_elements:
-                restaurant_info['address'] = address_elements[0].get_text(strip=True)
+            main_elements = soup.select(tag)
+            if main_elements:
+                main_content = ' '.join([elem.get_text(separator=' ', strip=True) for elem in main_elements])
                 break
 
-        # Try to find contact info (phones, etc.)
-        contact_patterns = [
-            '[itemprop="telephone"]',
-            '.phone',
-            '.tel'
-        ]
+        # If no main content found, try to get all paragraph text
+        if not main_content:
+            paragraphs = soup.find_all('p')
+            if paragraphs:
+                main_content = ' '.join([p.get_text(strip=True) for p in paragraphs])
 
-        for pattern in contact_patterns:
-            contact_elements = soup.select(pattern)
-            if contact_elements:
-                restaurant_info['contact'] = contact_elements[0].get_text(strip=True)
-                break
+        # If still no content, get all text from body
+        if not main_content:
+            body = soup.find('body')
+            if body:
+                main_content = body.get_text(separator=' ', strip=True)
+            else:
+                main_content = soup.get_text(separator=' ', strip=True)
 
-        # Try to extract Instagram handle
-        instagram_links = soup.select('a[href*="instagram.com"]')
-        if instagram_links:
-            instagram_url = instagram_links[0].get('href')
-            if instagram_url:
-                parts = instagram_url.split('instagram.com/')
-                if len(parts) > 1:
-                    handle = parts[1].split('?')[0].split('/')[0]
-                    restaurant_info['instagram'] = f"instagram.com/{handle}"
+        # Clean up the text
+        lines = (line.strip() for line in main_content.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        main_content = ' '.join(chunk for chunk in chunks if chunk)
 
-        # Try to find opening hours
-        hours_patterns = [
-            '[itemprop="openingHours"]',
-            '.hours',
-            '.opening-hours',
-            '.business-hours'
-        ]
-
-        for pattern in hours_patterns:
-            hours_elements = soup.select(pattern)
-            if hours_elements:
-                restaurant_info['hours'] = hours_elements[0].get_text(strip=True)
-                break
-
-        # Domain of the source
-        domain = urlparse(url).netloc
-        restaurant_info['source_domain'] = domain
-
-        return restaurant_info
+        return main_content

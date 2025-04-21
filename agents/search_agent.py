@@ -110,6 +110,7 @@ class BraveSearchAgent:
 
         return filtered_results
 
+    
     def follow_up_search(self, restaurant_name, location, additional_context=None):
         """
         Perform a follow-up search for a specific restaurant
