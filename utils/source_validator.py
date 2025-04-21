@@ -52,56 +52,75 @@ def check_source_reputation(url, config):
 
 async def ai_evaluate_source(content_sample, url, config):
     """Use AI to evaluate if a source is reputable"""
-    # Create a lightweight model instance (can use GPT-3.5 for cost efficiency)
+    # Create a lightweight model instance
     model = ChatOpenAI(
         model="gpt-4o",
         temperature=0.1
     )
 
-    # Create a prompt focused on source evaluation
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """
-        You are an expert at evaluating source credibility for restaurant information.
-        Your task is to determine if a website is a reputable source for restaurant recommendations.
+    # Create system and human messages directly
+    from langchain_core.messages import SystemMessage, HumanMessage
 
-        INDICATIONS OF REPUTABLE SOURCES:
-        - Professional food critics or publications
-        - Local newspapers or city magazines
-        - Chef interviews or industry publications
-        - Culinary awards or recognition organizations
-        - Respected food bloggers with established expertise
-        - International or local food guides (Michelin, Gault&Millau, etc.)
+    system_message = SystemMessage(content="""
+    You are an expert at evaluating source credibility for restaurant information.
+    Your task is to determine if a website is a reputable source for restaurant recommendations.
 
-        INDICATIONS OF NON-REPUTABLE SOURCES:
-        - Generic travel sites with crowdsourced reviews
-        - Sites that primarily aggregate other reviews
-        - SEO-optimized listicles with thin content
-        - Content farm sites with generic recommendations
-        - Sites with excessive advertisements
-        - Sites that lack author attribution or expertise
+    INDICATIONS OF REPUTABLE SOURCES:
+    - Professional food critics or publications
+    - Local newspapers or city magazines
+    - Chef interviews or industry publications
+    - Culinary awards or recognition organizations
+    - Respected food bloggers with established expertise
+    - International or local food guides (Michelin, Gault&Millau, etc.)
 
-        Respond ONLY with "yes" for reputable sources or "no" for non-reputable sources.
-        """),
-        ("human", f"""
-        URL: {url}
+    INDICATIONS OF NON-REPUTABLE SOURCES:
+    - Generic travel sites with crowdsourced reviews
+    - Sites that primarily aggregate other reviews
+    - SEO-optimized listicles with thin content
+    - Content farm sites with generic recommendations
+    - Sites with excessive advertisements
+    - Sites that lack author attribution or expertise
 
-        Content Preview:
-        {content_sample[:1500]}
+    Respond ONLY with "yes" for reputable sources or "no" for non-reputable sources.
+    """)
 
-        Is this a reputable source for restaurant recommendations? Answer only yes or no.
-        """)
-    ])
+    human_message = HumanMessage(content=f"""
+    URL: {url}
 
-    # Create a chain and then invoke it (this is what's missing)
-    chain = prompt | model
+    Content Preview:
+    {content_sample[:1500]}
 
-    # Get evaluation
-    response = await chain.ainvoke({})
+    Is this a reputable source for restaurant recommendations? Answer only yes or no.
+    """)
 
-    # Parse response (expecting just "yes" or "no")
-    is_reputable = response.content.strip().lower() == "yes"
+    # Create messages list
+    messages = [system_message, human_message]
 
-    return is_reputable
+    try:
+        # Invoke the model with messages
+        response = await model.ainvoke(messages)
+
+        # Check response type and extract the text
+        response_text = ""
+        if hasattr(response, 'content'):
+            response_text = response.content
+        elif isinstance(response, str):
+            response_text = response
+        elif isinstance(response, dict) and 'content' in response:
+            response_text = response['content']
+        else:
+            # If we can't identify the structure, convert to string
+            response_text = str(response)
+
+        # Determine if the source is reputable based on the response text
+        response_text = response_text.lower().strip()
+        is_reputable = "yes" in response_text and not "no" in response_text
+
+        return is_reputable
+
+    except Exception as e:
+        print(f"Error in AI evaluation: {e}")
+        return False
 
 async def evaluate_source_quality(url, config):
     """Full process to evaluate a source's quality"""
