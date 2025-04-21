@@ -134,10 +134,12 @@ class LangChainOrchestrator:
                 self.analyze_results,
                 self.edit,
                 self.follow_up_search,
+                # Comment out the translate step or remove it temporarily
+                # self.translate,
             ],
-            last=self.translate,
+            # If you removed translate from middle, adjust 'last' to be the last element in middle
+            last=self.follow_up_search,  # Changed from self.translate to self.follow_up_search
             name="restaurant_recommendation_chain"
-        )
 
     def _perform_local_search(self, location, search_queries, local_language=None):
         """Perform local source search if we're in a non-English speaking location"""
@@ -237,7 +239,7 @@ class LangChainOrchestrator:
                     print(f"Error saving to database: {db_error}")
 
                 # Return just the translated recommendations
-                return result.get("translated_recommendations", {})
+                return result.get("enhanced_recommendations", {})
 
             except Exception as e:
                 print(f"Error in chain execution: {e}")

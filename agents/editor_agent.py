@@ -25,7 +25,6 @@ class EditorAgent:
 
         self.config = config
 
-    # In the edit method of EditorAgent class in editor_agent.py
     def edit(self, recommendations, original_query):
         """
         Format and polish the restaurant recommendations
