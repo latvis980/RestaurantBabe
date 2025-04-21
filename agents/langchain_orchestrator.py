@@ -3,13 +3,14 @@ from langchain_core.runnables import RunnableSequence, RunnableLambda
 from langchain_core.tracers.context import tracing_v2_enabled
 import time
 import json
-from utils.database import save_data
+from utils.database import save_data, ensure_city_table
 
 class LangChainOrchestrator:
     def __init__(self, config):
         # Import agents
         from agents.query_analyzer import QueryAnalyzer
         from agents.search_agent import BraveSearchAgent
+        from agents.local_search_agent import LocalSourceSearchAgent
         from agents.scraper import WebScraper
         from agents.list_analyzer import ListAnalyzer
         from agents.editor_agent import EditorAgent
@@ -19,6 +20,7 @@ class LangChainOrchestrator:
         # Initialize agents
         self.query_analyzer = QueryAnalyzer(config)
         self.search_agent = BraveSearchAgent(config)
+        self.local_search_agent = LocalSourceSearchAgent(config)
         self.scraper = WebScraper(config)
         self.list_analyzer = ListAnalyzer(config)
         self.editor_agent = EditorAgent(config)
@@ -44,10 +46,35 @@ class LangChainOrchestrator:
             name="search"
         )
 
+        # Add a new step for local source search
+        self.local_search = RunnableLambda(
+            lambda x: {
+                **x,
+                "local_search_results": self._perform_local_search(
+                    x["destination"],
+                    x["search_queries"],
+                    x.get("local_language")
+                ) if not x.get("is_english_speaking", True) else []
+            },
+            name="local_search"
+        )
+
+        # Combine regular and local search results
+        self.combine_results = RunnableLambda(
+            lambda x: {
+                **x,
+                "combined_results": self._combine_search_results(
+                    x["search_results"],
+                    x.get("local_search_results", [])
+                )
+            },
+            name="combine_results"
+        )
+
         self.scrape = RunnableLambda(
             lambda x: {
                 **x,
-                "enriched_results": self.scraper.scrape_search_results(x["search_results"])
+                "enriched_results": self.scraper.scrape_search_results(x["combined_results"])
             },
             name="scrape"
         )
@@ -57,8 +84,9 @@ class LangChainOrchestrator:
                 **x,
                 "recommendations": self.list_analyzer.analyze(
                     x["enriched_results"],
-                    x.get("user_preferences", ""),
-                    x.get("keywords_for_analysis", [])
+                    x.get("keywords_for_analysis", []),
+                    x.get("primary_search_parameters", []),  # Pass primary parameters
+                    x.get("secondary_filter_parameters", [])  # Pass secondary parameters
                 )
             },
             name="analyze_results"
@@ -95,11 +123,13 @@ class LangChainOrchestrator:
             name="translate"
         )
 
-        # Create the complete sequence without the translator for testing
+        # Create the complete sequence including local search
         self.chain = RunnableSequence(
             first=self.analyze_query,
             middle=[
                 self.search,
+                self.local_search,
+                self.combine_results,
                 self.scrape,
                 self.analyze_results,
                 self.edit,
@@ -108,6 +138,41 @@ class LangChainOrchestrator:
             last=self.translate,
             name="restaurant_recommendation_chain"
         )
+
+    def _perform_local_search(self, location, search_queries, local_language=None):
+        """Perform local source search if we're in a non-English speaking location"""
+        try:
+            # Only perform local search if we have valid inputs
+            if not location or not search_queries:
+                return []
+
+            # Perform the local source search
+            local_results = self.local_search_agent.search_local_sources(
+                location,
+                search_queries,
+                local_language
+            )
+
+            return local_results
+        except Exception as e:
+            print(f"Error in local search: {e}")
+            return []
+
+    def _combine_search_results(self, standard_results, local_results):
+        """Combine standard search results with local source results"""
+        # Start with local results as they're more valuable
+        combined = local_results.copy() if local_results else []
+
+        # Add regular results that aren't duplicates
+        seen_urls = {result.get("url") for result in combined}
+
+        for result in standard_results:
+            url = result.get("url")
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                combined.append(result)
+
+        return combined
 
     def _safe_translate(self, recommendations):
         """Safely translate recommendations with error handling"""
@@ -148,6 +213,11 @@ class LangChainOrchestrator:
             try:
                 # Execute the chain
                 result = self.chain.invoke({"query": user_query})
+
+                # Log some performance metrics
+                print(f"Regular search returned {len(result.get('search_results', []))} results")
+                print(f"Local search returned {len(result.get('local_search_results', []))} results")
+                print(f"Combined search returned {len(result.get('combined_results', []))} results")
 
                 # Save the complete process and results to database
                 process_record = {

@@ -76,9 +76,17 @@ class WebScraper:
                         # Extract main content as clean text
                         clean_text = self._extract_clean_text(soup)
 
+                        # Get source information
+                        domain = urlparse(url).netloc
+                        title = result.get("title", "Unknown Title")
+
+                        # Add source information as prefix to content
+                        source_prefix = f"SOURCE: {domain}\nTITLE: {title}\nURL: {url}\n\nCONTENT:\n"
+                        content_with_source = source_prefix + clean_text
+
                         # Add the scraped content to the result
-                        result["scraped_content"] = clean_text
-                        result["source_domain"] = urlparse(url).netloc
+                        result["scraped_content"] = content_with_source
+                        result["source_domain"] = domain
                         result["is_reputable"] = True  # Mark as reputable for downstream processing
                         enriched_results.append(result)
 
