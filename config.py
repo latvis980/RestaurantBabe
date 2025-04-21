@@ -6,6 +6,8 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 LANGSMITH_API_KEY = os.environ.get("LANGSMITH_API_KEY")
+# Add Mistral API key
+MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
 
 # PostgreSQL settings (using variable in Railway)
 DATABASE_URL = os.environ.get("DATABASE_URL")
