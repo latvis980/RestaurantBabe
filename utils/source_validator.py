@@ -54,7 +54,7 @@ async def ai_evaluate_source(content_sample, url, config):
     """Use AI to evaluate if a source is reputable"""
     # Create a lightweight model instance (can use GPT-3.5 for cost efficiency)
     model = ChatOpenAI(
-        model="gpt-3.5-turbo",
+        model="gpt-4o",
         temperature=0.1
     )
 
@@ -92,8 +92,11 @@ async def ai_evaluate_source(content_sample, url, config):
         """)
     ])
 
+    # Create a chain and then invoke it (this is what's missing)
+    chain = prompt | model
+
     # Get evaluation
-    response = await model.ainvoke(prompt)
+    response = await chain.ainvoke({})
 
     # Parse response (expecting just "yes" or "no")
     is_reputable = response.content.strip().lower() == "yes"
