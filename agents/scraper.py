@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 import random
 from langchain_core.tracers.context import tracing_v2_enabled
 import asyncio
+from utils.async_utils import track_async_task, sync_to_async
 
 
 class WebScraper:
@@ -29,7 +30,7 @@ class WebScraper:
             list: Enriched search results with scraped content
         """
         # Convert synchronous function call to async
-        return asyncio.run(self.filter_and_scrape_results(search_results, max_retries))
+        return sync_to_async(self.filter_and_scrape_results)(search_results, max_retries)
 
     async def filter_and_scrape_results(self, search_results, max_retries=2):
         """
@@ -91,7 +92,7 @@ class WebScraper:
                         enriched_results.append(result)
 
                         # Be nice to servers
-                        await asyncio.sleep(random.uniform(1.0, 2.0))
+                        await track_async_task(asyncio.sleep(random.uniform(1.0, 2.0)))
                     except Exception as e:
                         print(f"Error scraping {url}: {e}")
                 else:

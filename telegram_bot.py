@@ -1,9 +1,9 @@
 # telegram_bot.py
 import telebot
-from telebot import types
 import logging
 import time
 import traceback
+import asyncio
 from agents.langchain_orchestrator import LangChainOrchestrator
 import os
 import config
@@ -26,17 +26,15 @@ orchestrator = LangChainOrchestrator(config)
 def send_welcome(message):
     """Handle start and help commands"""
     bot.reply_to(message, 
-                "Привет! Я помогу найти лучшие рестораны. Просто напишите, что вы ищете, например: 'Хочу найти потрясающие бранч-места в Лиссабоне с необычными блюдами'")
+                "Привет! Я ИИ-ассистент про прозвищу Restaurant Babe и я умею находить самые вкусные, самые модные, самые классные рестораны, кафе, пекарни, бары и кофейни по всему миру. Напишите, что вы ищете, например: \n\n'Модные места для бранча в Лиссабоне с необычными блюдами'\n\n Я наведу справки у своих знакомых ресторанных экспертов, пролистаю колонки гастрономических критиков — и выдам лучшие рекомендации. \n\n Это может занять пару минут, потому что ищу я очень внимательно и тщательно проверяю результаты. Но никаких случайных мест в моем списке не будет. \n\nНачнем? Напишите свой первый запрос!")
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     """Handle all other messages"""
     try:
         user_query = message.text
-
         # Send typing status
         bot.send_chat_action(message.chat.id, 'typing')
-
         # Acknowledge receipt of the message
         initial_reply = bot.reply_to(message, "Я ищу для вас рестораны. Это может занять несколько минут...")
 
@@ -55,8 +53,8 @@ def handle_message(message):
             if not result or not isinstance(result, dict):
                 raise ValueError(f"Invalid result format: {type(result)}")
 
-            # Format the response for Telegram
-            response = format_telegram_response(result)
+            # Format the response for Telegram (simplified)
+            response = format_simplified_response(result)
 
             # Delete the "processing" message to avoid cluttering the chat
             try:
@@ -83,30 +81,77 @@ def handle_message(message):
         # Ensure all traces are submitted
         wait_for_all_tracers()
 
-def format_telegram_response(result):
-    """Format the result for Telegram HTML message"""
+        # Also wait for our async tasks
+        from utils.async_utils import wait_for_pending_tasks
+        try:
+            asyncio.run(wait_for_pending_tasks())
+        except RuntimeError as e:
+            # Handle the case where event loop is already running
+            logger.warning(f"Could not run wait_for_pending_tasks: {e}")
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Schedule the cleanup for later
+                    asyncio.create_task(wait_for_pending_tasks())
+                else:
+                    # Use the existing loop
+                    loop.run_until_complete(wait_for_pending_tasks())
+            except Exception as e2:
+                logger.warning(f"Alternative task cleanup also failed: {e2}")
+
+def format_simplified_response(result):
+    """
+    Simplified formatting for Telegram response
+    Assumes the translator agent has already formatted the content properly
+    """
     try:
+        # Basic structure check
+        if "recommended" not in result and "hidden_gems" not in result:
+            logger.warning("Result doesn't contain expected structure")
+            return "Извините, не удалось найти рестораны по вашему запросу."
+
+        # Very basic HTML formatting
         response = "<b>🍽️ РЕКОМЕНДУЕМЫЕ РЕСТОРАНЫ:</b>\n\n"
 
-        # Add recommended restaurants
+        # Simply join the recommended restaurants section
         recommended = result.get("recommended", [])
         if recommended:
             for i, restaurant in enumerate(recommended, 1):
-                response += format_restaurant(restaurant, i)
+                name = restaurant.get("name", "Ресторан")
+                response += f"<b>{i}. {name}</b>\n"
+
+                # Add basic info if available
+                if "address" in restaurant:
+                    response += f"📍 {restaurant['address']}\n"
+                if "description" in restaurant:
+                    response += f"{restaurant['description']}\n"
+
+                # Add a separator
+                response += "\n"
         else:
             response += "К сожалению, рекомендуемые рестораны не найдены.\n\n"
 
-        # Add hidden gems
-        response += "\n\n<b>💎 ДЛЯ СВОИХ:</b>\n\n"
+        # Add hidden gems section
+        response += "\n<b>💎 ДЛЯ СВОИХ:</b>\n\n"
         hidden_gems = result.get("hidden_gems", [])
         if hidden_gems:
             for i, restaurant in enumerate(hidden_gems, 1):
-                response += format_restaurant(restaurant, i)
+                name = restaurant.get("name", "Ресторан")
+                response += f"<b>{i}. {name}</b>\n"
+
+                # Add basic info if available
+                if "address" in restaurant:
+                    response += f"📍 {restaurant['address']}\n"
+                if "description" in restaurant:
+                    response += f"{restaurant['description']}\n"
+
+                # Add a separator
+                response += "\n"
         else:
             response += "К сожалению, скрытые жемчужины не найдены.\n\n"
 
         # Add footer
-        response += "\n\n<i>Рекомендации составлены на основе анализа экспертных источников.</i>"
+        response += "\n<i>Рекомендации составлены на основе анализа экспертных источников.</i>"
 
         # Ensure response isn't too long for Telegram
         if len(response) > 4000:
@@ -117,65 +162,29 @@ def format_telegram_response(result):
         logger.error(f"Error formatting Telegram response: {e}", exc_info=True)
         return "Извините, произошла ошибка при форматировании ответа."
 
-def format_restaurant(restaurant, index):
-    """Format a single restaurant for Telegram HTML message"""
+def shutdown():
+    """Clean shutdown function for asyncio resources"""
+    logger.info("Shutting down and cleaning up resources...")
+    from utils.async_utils import wait_for_pending_tasks
     try:
-        response = f"<b>{index}. {restaurant.get('name', 'Ресторан')}</b>\n"
-
-        # Add address
-        if restaurant.get('address'):
-            response += f"📍 {restaurant.get('address')}\n"
-
-        # Add description
-        if restaurant.get('description'):
-            response += f"{restaurant.get('description')}\n"
-
-        # Add price range
-        if restaurant.get('price_range'):
-            response += f"💰 {restaurant.get('price_range')}\n"
-        elif restaurant.get('price_indication'):
-            response += f"💰 {restaurant.get('price_indication')}\n"
-
-        # Add recommended dishes
-        if restaurant.get('recommended_dishes'):
-            dishes = restaurant.get('recommended_dishes')
-            if isinstance(dishes, list):
-                dishes_str = ", ".join(dishes)
-            else:
-                dishes_str = dishes
-            response += f"👨‍🍳 Рекомендуемые блюда: {dishes_str}\n"
-
-        # Add sources
-        if restaurant.get('sources'):
-            sources = restaurant.get('sources')
-            if isinstance(sources, list):
-                sources_str = ", ".join(sources)
-            else:
-                sources_str = sources
-            response += f"📝 Рекомендовано: {sources_str}\n"
-
-        # Add reservations if required
-        if restaurant.get('reservations_required'):
-            response += "⚠️ Рекомендуется бронирование\n"
-
-        # Add Instagram if available
-        if restaurant.get('instagram'):
-            response += f"📸 {restaurant.get('instagram')}\n"
-
-        # Add hours if available
-        if restaurant.get('hours'):
-            response += f"🕒 {restaurant.get('hours')}\n"
-
-        response += "\n"
-        return response
-    except Exception as e:
-        logger.error(f"Error formatting restaurant info: {e}")
-        return f"<b>{index}. {restaurant.get('name', 'Ресторан')}</b>\n" + \
-               "Извините, дополнительная информация недоступна.\n\n"
+        asyncio.run(wait_for_pending_tasks())
+    except RuntimeError as e:
+        logger.warning(f"Could not run wait_for_pending_tasks during shutdown: {e}")
+        try:
+            loop = asyncio.get_event_loop()
+            if not loop.is_closed():
+                loop.run_until_complete(wait_for_pending_tasks())
+        except Exception as e2:
+            logger.warning(f"Alternative shutdown cleanup also failed: {e2}")
 
 def main():
     """Main function to start the bot"""
     logger.info("Starting Telegram Bot")
+
+    # Register the shutdown function
+    import atexit
+    atexit.register(shutdown)
+
     try:
         bot.infinity_polling()
     except Exception as e:
@@ -183,6 +192,8 @@ def main():
     finally:
         # Make sure all traces are submitted before exiting
         wait_for_all_tracers()
+        # Final cleanup attempt
+        shutdown()
 
 if __name__ == '__main__':
     main()

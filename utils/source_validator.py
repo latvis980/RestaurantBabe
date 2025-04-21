@@ -6,6 +6,7 @@ import time
 from utils.database import find_data, save_data, update_data
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+from utils.async_utils import sync_to_async, track_async_task
 
 async def fetch_quick_preview(url):
     """Fetch a small preview of the page content for analysis"""
@@ -71,6 +72,7 @@ async def ai_evaluate_source(content_sample, url, config):
     - Chef interviews or industry publications
     - Culinary awards or recognition organizations
     - Respected food bloggers with established expertise
+    - Trendy blogs or websites with a strong food focus
     - International or local food guides (Michelin, Gault&Millau, etc.)
 
     INDICATIONS OF NON-REPUTABLE SOURCES:
@@ -79,7 +81,6 @@ async def ai_evaluate_source(content_sample, url, config):
     - SEO-optimized listicles with thin content
     - Content farm sites with generic recommendations
     - Sites with excessive advertisements
-    - Sites that lack author attribution or expertise
 
     Respond ONLY with "yes" for reputable sources or "no" for non-reputable sources.
     """)
@@ -122,20 +123,14 @@ async def ai_evaluate_source(content_sample, url, config):
         print(f"Error in AI evaluation: {e}")
         return False
 
+@sync_to_async
 async def evaluate_source_quality(url, config):
     """Full process to evaluate a source's quality"""
-    # Quick fetch of just headers and metadata
     content_sample = await fetch_quick_preview(url)
-
     if not content_sample:
         return False
-
-    # Use OpenAI to evaluate the source
     is_reputable = await ai_evaluate_source(content_sample, url, config)
-
-    # Store result in database for future reference
     store_source_evaluation(url, is_reputable, config)
-
     return is_reputable
 
 def store_source_evaluation(url, is_reputable, config):
