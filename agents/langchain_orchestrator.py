@@ -140,6 +140,7 @@ class LangChainOrchestrator:
             # If you removed translate from middle, adjust 'last' to be the last element in middle
             last=self.follow_up_search,  # Changed from self.translate to self.follow_up_search
             name="restaurant_recommendation_chain"
+        )
 
     def _perform_local_search(self, location, search_queries, local_language=None):
         """Perform local source search if we're in a non-English speaking location"""
