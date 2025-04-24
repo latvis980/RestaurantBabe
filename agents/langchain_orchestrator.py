@@ -92,44 +92,52 @@ class LangChainOrchestrator:
             name="analyze_results"
         )
 
+        # Use a function instead of a lambda for clarity
+        def editor_step(x):
+            print(f"Editor step received recommendations structure: {list(x.get('recommendations', {}).keys())}")
+            return {
+                **x,
+                "formatted_recommendations": self._safe_edit(
+                    x.get("recommendations", {}),
+                    x["query"]
+                )
+            }
+
         # Improved editor step with debug logging
         self.edit = RunnableLambda(
-            lambda x: {
-                print(f"Editor step received recommendations structure: {list(x.get('recommendations', {}).keys())}");
-                return {
-                    **x,
-                    "formatted_recommendations": self._safe_edit(
-                        x.get("recommendations", {}),
-                        x["query"]
-                    )
-                }
-            },
+            editor_step,
             name="edit"
         )
 
+        # Use a function instead of a lambda for clarity
+        def follow_up_step(x):
+            print(f"Follow-up search received formatted_recommendations structure: {list(x.get('formatted_recommendations', {}).keys())}")
+            recs = x.get("formatted_recommendations", {})
+            formatted_recs = recs.get("formatted_recommendations", recs)
+            return {
+                **x,
+                "enhanced_recommendations": self._safe_follow_up_search(
+                    formatted_recs,
+                    recs.get("follow_up_queries", [])
+                )
+            }
+
         # Improved follow-up search step
         self.follow_up_search = RunnableLambda(
-            lambda x: {
-                print(f"Follow-up search received formatted_recommendations structure: {list(x.get('formatted_recommendations', {}).keys())}");
-                recs = x.get("formatted_recommendations", {});
-                formatted_recs = recs.get("formatted_recommendations", recs);
-                return {
-                    **x,
-                    "enhanced_recommendations": self._safe_follow_up_search(
-                        formatted_recs,
-                        recs.get("follow_up_queries", [])
-                    )
-                }
-            },
+            follow_up_step,
             name="follow_up_search"
         )
 
-        # Extract HTML without translation (for testing)
-        self.extract_html = RunnableLambda(
-            lambda x: {
+        # Use a function instead of a lambda for clarity
+        def extract_html_step(x):
+            return {
                 **x,
                 "telegram_formatted_text": self._extract_html_output(x["enhanced_recommendations"])
-            },
+            }
+
+        # Extract HTML without translation (for testing)
+        self.extract_html = RunnableLambda(
+            extract_html_step,
             name="extract_html"
         )
 
