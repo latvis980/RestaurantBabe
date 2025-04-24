@@ -95,7 +95,7 @@ class LangChainOrchestrator:
         # Improved editor step with debug logging
         self.edit = RunnableLambda(
             lambda x: {
-                print(f"Editor step received recommendations structure: {list(x.get('recommendations', {}).keys())}")
+                print(f"Editor step received recommendations structure: {list(x.get('recommendations', {}).keys())}");
                 return {
                     **x,
                     "formatted_recommendations": self._safe_edit(
@@ -110,9 +110,9 @@ class LangChainOrchestrator:
         # Improved follow-up search step
         self.follow_up_search = RunnableLambda(
             lambda x: {
-                print(f"Follow-up search received formatted_recommendations structure: {list(x.get('formatted_recommendations', {}).keys())}")
-                recs = x.get("formatted_recommendations", {})
-                formatted_recs = recs.get("formatted_recommendations", recs)
+                print(f"Follow-up search received formatted_recommendations structure: {list(x.get('formatted_recommendations', {}).keys())}");
+                recs = x.get("formatted_recommendations", {});
+                formatted_recs = recs.get("formatted_recommendations", recs);
                 return {
                     **x,
                     "enhanced_recommendations": self._safe_follow_up_search(
