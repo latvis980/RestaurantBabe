@@ -8,6 +8,7 @@ from agents.langchain_orchestrator import LangChainOrchestrator
 import os
 import config
 from langchain_core.tracers.langchain import wait_for_all_tracers
+from utils.debug_utils import dump_chain_state
 
 # Configure logging
 logging.basicConfig(
@@ -30,9 +31,12 @@ def send_welcome(message):
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
-    """Handle all other messages - pure passthrough with no formatting"""
+    """Handle all other messages"""
     try:
         user_query = message.text
+        # Log the query
+        dump_chain_state("telegram_new_query", {"query": user_query, "user_id": message.from_user.id})
+
         # Send typing status
         bot.send_chat_action(message.chat.id, 'typing')
         # Acknowledge receipt of the message
@@ -49,45 +53,48 @@ def handle_message(message):
             end_time = time.time()
             logger.info(f"Query processed in {end_time - start_time:.2f} seconds")
 
+            # Check if result is valid
+            if not result or not isinstance(result, dict):
+                dump_chain_state("telegram_invalid_result", {"result_type": type(result).__name__})
+                raise ValueError(f"Invalid result format: {type(result)}")
+
+            # Get the AI-generated formatted text
+            response = result.get("telegram_text", "Извините, не удалось найти рестораны по вашему запросу.")
+
             # Delete the "processing" message to avoid cluttering the chat
             try:
                 bot.delete_message(message.chat.id, initial_reply.message_id)
             except Exception as e:
                 logger.warning(f"Could not delete initial message: {e}")
 
-            # Get the pre-formatted HTML text
-            if isinstance(result, dict) and "telegram_text" in result:
-                formatted_text = result["telegram_text"]
-            elif isinstance(result, str):
-                formatted_text = result
-            else:
-                # We shouldn't get here if orchestrator is working properly
-                formatted_text = "Sorry, couldn't format restaurant recommendations properly."
-
-            # Ensure the message isn't too long for Telegram
-            if len(formatted_text) > 4000:
-                formatted_text = formatted_text[:3997] + "..."
-
             # Send the response
             bot.send_message(
                 message.chat.id, 
-                formatted_text,
+                response,
                 parse_mode='HTML'
             )
+
+            # Log success
+            dump_chain_state("telegram_response_sent", {
+                "response_length": len(response),
+                "processing_time": end_time - start_time
+            })
 
         except Exception as process_error:
             logger.error(f"Error processing query: {process_error}")
             logger.error(traceback.format_exc())
+            dump_chain_state("telegram_process_error", {"error": str(process_error)}, error=process_error)
             bot.reply_to(message, "Извините, произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз.")
 
     except Exception as e:
         logger.error(f"Error handling message: {e}", exc_info=True)
+        dump_chain_state("telegram_handler_error", {"error": str(e)}, error=e)
         bot.reply_to(message, "Извините, произошла ошибка. Пожалуйста, попробуйте еще раз.")
     finally:
         # Ensure all traces are submitted
         wait_for_all_tracers()
 
-        # Also wait for our async tasks
+        # Also wait for our async tasks - add this line
         from utils.async_utils import wait_for_pending_tasks
         try:
             # Get the event loop or create a new one
@@ -129,6 +136,7 @@ def main():
     atexit.register(shutdown)
 
     try:
+        logger.info("Starting bot polling...")
         bot.infinity_polling()
     except Exception as e:
         logger.error(f"Error in bot polling: {e}", exc_info=True)

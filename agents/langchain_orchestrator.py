@@ -4,6 +4,7 @@ from langchain_core.tracers.context import tracing_v2_enabled
 import time
 import json
 from utils.database import save_data, ensure_city_table
+from utils.debug_utils import dump_chain_state, log_function_call
 
 class LangChainOrchestrator:
     def __init__(self, config):
@@ -79,63 +80,188 @@ class LangChainOrchestrator:
             name="scrape"
         )
 
-        self.analyze_results = RunnableLambda(
-            lambda x: {
-                **x,
-                "recommendations": self.list_analyzer.analyze(
+        # Modify analyze_results to dump state
+        def analyze_results_with_debug(x):
+            try:
+                # Debug log before analysis
+                dump_chain_state("pre_analyze_results", {
+                    "enriched_results_count": len(x.get("enriched_results", [])),
+                    "keywords": x.get("keywords_for_analysis", []),
+                    "primary_params": x.get("primary_search_parameters", []),
+                    "secondary_params": x.get("secondary_filter_parameters", [])
+                })
+
+                # Execute list analyzer
+                recommendations = self.list_analyzer.analyze(
                     x["enriched_results"],
                     x.get("keywords_for_analysis", []),
                     x.get("primary_search_parameters", []),
                     x.get("secondary_filter_parameters", [])
                 )
-            },
+
+                # Debug log after analysis
+                dump_chain_state("post_analyze_results", {
+                    "recommendations_keys": list(recommendations.keys() if recommendations else {}),
+                    "recommendations": recommendations
+                })
+
+                # Explicitly standardize the structure
+                if isinstance(recommendations, dict):
+                    # Check if we have the old format (recommended/hidden_gems)
+                    if "recommended" in recommendations:
+                        # Convert to new format if needed
+                        standardized = {
+                            "recommended": recommendations.get("recommended", []),
+                            "hidden_gems": recommendations.get("hidden_gems", [])
+                        }
+                    else:
+                        # Already in the right format or needs to be initialized
+                        standardized = recommendations
+                else:
+                    # Initialize empty structure
+                    standardized = {
+                        "recommended": [],
+                        "hidden_gems": []
+                    }
+
+                # Return the result
+                return {**x, "recommendations": standardized}
+            except Exception as e:
+                print(f"Error in analyze_results: {e}")
+                # Log the error and return a fallback
+                dump_chain_state("analyze_results_error", x, error=e)
+                return {
+                    **x,
+                    "recommendations": {
+                        "recommended": [],
+                        "hidden_gems": []
+                    }
+                }
+
+        self.analyze_results = RunnableLambda(
+            analyze_results_with_debug,
             name="analyze_results"
         )
 
-        # Use a function instead of a lambda for clarity
-        def editor_step(x):
-            print(f"Editor step received recommendations structure: {list(x.get('recommendations', {}).keys())}")
-            return {
-                **x,
-                "formatted_recommendations": self._safe_edit(
-                    x.get("recommendations", {}),
-                    x["query"]
-                )
-            }
-
         # Improved editor step with debug logging
+        def editor_step(x):
+            try:
+                # Debug before edit
+                dump_chain_state("pre_edit", {
+                    "recommendations_keys": list(x.get("recommendations", {}).keys()),
+                    "query": x.get("query", "")
+                })
+
+                # Get recommendations
+                recommendations = x.get("recommendations", {})
+
+                # Execute editor
+                formatted_results = self.editor_agent.edit(recommendations, x["query"])
+
+                # Debug after edit
+                dump_chain_state("post_edit", {
+                    "formatted_results_keys": list(formatted_results.keys() if formatted_results else {}),
+                    "formatted_results": formatted_results
+                })
+
+                # Ensure proper structure is returned
+                return {**x, "formatted_recommendations": formatted_results}
+            except Exception as e:
+                print(f"Error in editor step: {e}")
+                # Log the error and return a fallback
+                dump_chain_state("editor_error", x, error=e)
+                return {
+                    **x,
+                    "formatted_recommendations": {
+                        "formatted_recommendations": x.get("recommendations", {})
+                    }
+                }
+
         self.edit = RunnableLambda(
             editor_step,
             name="edit"
         )
 
-        # Use a function instead of a lambda for clarity
-        def follow_up_step(x):
-            print(f"Follow-up search received formatted_recommendations structure: {list(x.get('formatted_recommendations', {}).keys())}")
-            recs = x.get("formatted_recommendations", {})
-            formatted_recs = recs.get("formatted_recommendations", recs)
-            return {
-                **x,
-                "enhanced_recommendations": self._safe_follow_up_search(
-                    formatted_recs,
-                    recs.get("follow_up_queries", [])
-                )
-            }
-
         # Improved follow-up search step
+        def follow_up_step(x):
+            try:
+                # Debug before follow_up
+                dump_chain_state("pre_follow_up", {
+                    "formatted_recommendations_keys": list(x.get("formatted_recommendations", {}).keys())
+                })
+
+                # Get formatted recommendations
+                formatted_recs = x.get("formatted_recommendations", {})
+
+                # Extract the actual recommendations
+                if "formatted_recommendations" in formatted_recs:
+                    actual_recs = formatted_recs.get("formatted_recommendations", {})
+                else:
+                    actual_recs = formatted_recs
+
+                # Get follow up queries
+                follow_up_queries = formatted_recs.get("follow_up_queries", [])
+
+                # Execute follow up search
+                enhanced_recommendations = self.follow_up_search_agent.perform_follow_up_searches(
+                    actual_recs,
+                    follow_up_queries
+                )
+
+                # Debug after follow_up
+                dump_chain_state("post_follow_up", {
+                    "enhanced_recommendations_keys": list(enhanced_recommendations.keys() if enhanced_recommendations else {}),
+                    "enhanced_recommendations": enhanced_recommendations
+                })
+
+                # Return result
+                return {**x, "enhanced_recommendations": enhanced_recommendations}
+            except Exception as e:
+                print(f"Error in follow-up step: {e}")
+                # Log the error and return a fallback
+                dump_chain_state("follow_up_error", x, error=e)
+                return {
+                    **x,
+                    "enhanced_recommendations": x.get("formatted_recommendations", {}).get("formatted_recommendations", {})
+                }
+
         self.follow_up_search = RunnableLambda(
             follow_up_step,
             name="follow_up_search"
         )
 
-        # Use a function instead of a lambda for clarity
+        # Improved HTML extraction
         def extract_html_step(x):
-            return {
-                **x,
-                "telegram_formatted_text": self._extract_html_output(x["enhanced_recommendations"])
-            }
+            try:
+                # Debug before html extraction
+                dump_chain_state("pre_extract_html", {
+                    "enhanced_recommendations_keys": list(x.get("enhanced_recommendations", {}).keys())
+                })
 
-        # Extract HTML without translation (for testing)
+                # Get the recommendations
+                enhanced_recommendations = x.get("enhanced_recommendations", {})
+
+                # Create HTML output
+                telegram_text = self._create_detailed_html(enhanced_recommendations)
+
+                # Debug after html extraction
+                dump_chain_state("post_extract_html", {
+                    "telegram_text_length": len(telegram_text) if telegram_text else 0,
+                    "telegram_text_preview": telegram_text[:200] if telegram_text else None
+                })
+
+                # Return result
+                return {**x, "telegram_formatted_text": telegram_text}
+            except Exception as e:
+                print(f"Error in extract_html: {e}")
+                # Log the error and return a fallback
+                dump_chain_state("extract_html_error", x, error=e)
+                return {
+                    **x, 
+                    "telegram_formatted_text": "<b>Извините, не удалось найти рестораны по вашему запросу.</b>"
+                }
+
+        # Extract HTML with debugging
         self.extract_html = RunnableLambda(
             extract_html_step,
             name="extract_html"
@@ -154,189 +280,9 @@ class LangChainOrchestrator:
                 self.follow_up_search,
                 self.extract_html,  # Extract HTML without translating
             ],
-            last=self.extract_html,  # Extract HTML is the last step
+            last=RunnableLambda(lambda x: x),  # Pass through everything
             name="restaurant_recommendation_chain"
         )
-
-    def _safe_edit(self, recommendations, query):
-        """Safely apply the editor agent with proper error handling"""
-        try:
-            print(f"Starting editor agent with: {list(recommendations.keys() if isinstance(recommendations, dict) else [])}")
-
-            # Handle structure conversion if needed
-            if isinstance(recommendations, dict) and "recommended" in recommendations:
-                # Convert old "recommended" to new "main_list"
-                recommendations["main_list"] = recommendations.pop("recommended")
-                print("Converted 'recommended' to 'main_list'")
-
-            return self.editor_agent.edit(recommendations, query)
-        except Exception as e:
-            print(f"Error in edit step: {e}")
-            # Return a basic structure as fallback
-            if isinstance(recommendations, dict):
-                if "recommended" in recommendations:
-                    # Convert old format to new format
-                    return {
-                        "formatted_recommendations": {
-                            "main_list": recommendations.get("recommended", []),
-                            "hidden_gems": recommendations.get("hidden_gems", [])
-                        },
-                        "follow_up_queries": []
-                    }
-                elif "main_list" in recommendations:
-                    return {
-                        "formatted_recommendations": recommendations,
-                        "follow_up_queries": []
-                    }
-
-            # Ultimate fallback
-            return {
-                "formatted_recommendations": {
-                    "main_list": [],
-                    "hidden_gems": []
-                },
-                "follow_up_queries": []
-            }
-
-    def _safe_follow_up_search(self, formatted_recommendations, follow_up_queries):
-        """Safely apply follow-up search with proper error handling"""
-        try:
-            print(f"Starting follow-up search with: {list(formatted_recommendations.keys() if isinstance(formatted_recommendations, dict) else [])}")
-
-            # Handle structure conversion if needed
-            if isinstance(formatted_recommendations, dict) and "recommended" in formatted_recommendations:
-                # Convert old "recommended" to new "main_list"
-                formatted_recommendations["main_list"] = formatted_recommendations.pop("recommended")
-                print("Converted 'recommended' to 'main_list' in follow-up search")
-
-            return self.follow_up_search_agent.perform_follow_up_searches(
-                formatted_recommendations, 
-                follow_up_queries, 
-                []  # No secondary parameters for simplicity
-            )
-        except Exception as e:
-            print(f"Error in follow-up search: {e}")
-
-            # Return the input as fallback
-            if isinstance(formatted_recommendations, dict):
-                # Make sure we're using the new structure
-                if "recommended" in formatted_recommendations:
-                    return {
-                        "main_list": formatted_recommendations.get("recommended", []),
-                        "hidden_gems": formatted_recommendations.get("hidden_gems", [])
-                    }
-                else:
-                    return formatted_recommendations
-
-            # Ultimate fallback
-            return {
-                "main_list": [],
-                "hidden_gems": []
-            }
-
-    def _extract_html_output(self, recommendations):
-        """Extract HTML output from recommendations without translation"""
-        try:
-            print(f"Extracting HTML from: {list(recommendations.keys() if isinstance(recommendations, dict) else [])}")
-
-            # If html_formatted is directly in recommendations, use it
-            if isinstance(recommendations, dict) and "html_formatted" in recommendations:
-                return recommendations["html_formatted"]
-
-            # Check if formatted_recommendations has html_formatted
-            if isinstance(recommendations, dict) and "formatted_recommendations" in recommendations:
-                if "html_formatted" in recommendations["formatted_recommendations"]:
-                    return recommendations["formatted_recommendations"]["html_formatted"]
-
-            # Otherwise create basic HTML output
-            return self._create_basic_html(recommendations)
-        except Exception as e:
-            print(f"Error extracting HTML: {e}")
-            return self._create_basic_html(recommendations)
-
-    def _create_basic_html(self, recommendations):
-        """Create basic HTML output if none is available"""
-        try:
-            html_output = "<b>🍽️ RECOMMENDED RESTAURANTS:</b>\n\n"
-
-            # Get restaurant lists from appropriate keys
-            main_list = []
-            hidden_gems = []
-
-            if isinstance(recommendations, dict):
-                if "main_list" in recommendations:
-                    main_list = recommendations["main_list"]
-                elif "recommended" in recommendations:
-                    main_list = recommendations["recommended"]
-
-                if "hidden_gems" in recommendations:
-                    hidden_gems = recommendations["hidden_gems"]
-
-            # Format main list
-            if main_list:
-                for i, restaurant in enumerate(main_list, 1):
-                    name = restaurant.get("name", "Restaurant")
-                    html_output += f"<b>{i}. {name}</b>\n"
-
-                    if "address" in restaurant:
-                        html_output += f"📍 {restaurant['address']}\n"
-
-                    if "description" in restaurant:
-                        html_output += f"{restaurant['description']}\n"
-
-                    sources = None
-                    if "recommended_by" in restaurant:
-                        sources = restaurant["recommended_by"]
-                    elif "sources" in restaurant:
-                        sources = restaurant["sources"]
-
-                    if sources:
-                        if isinstance(sources, list):
-                            sources_text = ", ".join(sources[:3])
-                            html_output += f"<i>✅ Recommended by: {sources_text}</i>\n"
-                        else:
-                            html_output += f"<i>✅ Recommended by: {sources}</i>\n"
-
-                    html_output += "\n"
-            else:
-                html_output += "Sorry, no recommended restaurants found.\n\n"
-
-            # Format hidden gems
-            if hidden_gems:
-                html_output += "<b>💎 HIDDEN GEMS:</b>\n\n"
-
-                for i, restaurant in enumerate(hidden_gems, 1):
-                    name = restaurant.get("name", "Restaurant")
-                    html_output += f"<b>{i}. {name}</b>\n"
-
-                    if "address" in restaurant:
-                        html_output += f"📍 {restaurant['address']}\n"
-
-                    if "description" in restaurant:
-                        html_output += f"{restaurant['description']}\n"
-
-                    sources = None
-                    if "recommended_by" in restaurant:
-                        sources = restaurant["recommended_by"]
-                    elif "sources" in restaurant:
-                        sources = restaurant["sources"]
-
-                    if sources:
-                        if isinstance(sources, list):
-                            sources_text = ", ".join(sources[:3])
-                            html_output += f"<i>✅ Recommended by: {sources_text}</i>\n"
-                        else:
-                            html_output += f"<i>✅ Recommended by: {sources}</i>\n"
-
-                    html_output += "\n"
-
-            # Add footer
-            html_output += "<i>Recommendations based on analysis of expert sources.</i>"
-
-            return html_output
-        except Exception as e:
-            print(f"Error creating basic HTML: {e}")
-            return "<b>Sorry, couldn't format restaurant recommendations properly.</b>"
 
     def _perform_local_search(self, location, search_queries, local_language=None):
         """Perform local source search if we're in a non-English speaking location"""
@@ -373,6 +319,134 @@ class LangChainOrchestrator:
 
         return combined
 
+    @log_function_call
+    def _create_detailed_html(self, recommendations):
+        """Create detailed HTML output for telegram"""
+        try:
+            html_output = "<b>🍽️ РЕКОМЕНДУЕМЫЕ РЕСТОРАНЫ:</b>\n\n"
+
+            # Get restaurant lists from appropriate keys
+            recommended = []
+            hidden_gems = []
+
+            if isinstance(recommendations, dict):
+                # Check for direct recommended/hidden_gems
+                if "recommended" in recommendations:
+                    recommended = recommendations["recommended"]
+                elif "main_list" in recommendations:
+                    recommended = recommendations["main_list"]
+
+                # Check for direct hidden_gems
+                if "hidden_gems" in recommendations:
+                    hidden_gems = recommendations["hidden_gems"]
+
+                # Check for nested structure (from editor agent)
+                if "formatted_recommendations" in recommendations:
+                    formatted_rec = recommendations["formatted_recommendations"]
+                    if isinstance(formatted_rec, dict):
+                        if "recommended" in formatted_rec:
+                            recommended = formatted_rec["recommended"]
+                        elif "main_list" in formatted_rec:
+                            recommended = formatted_rec["main_list"]
+
+                        if "hidden_gems" in formatted_rec:
+                            hidden_gems = formatted_rec["hidden_gems"]
+
+            # Format main list
+            if main_list:
+                for i, restaurant in enumerate(main_list, 1):
+                    name = restaurant.get("name", "Ресторан")
+                    html_output += f"<b>{i}. {name}</b>\n"
+
+                    if "address" in restaurant:
+                        html_output += f"📍 {restaurant['address']}\n"
+
+                    if "description" in restaurant:
+                        html_output += f"{restaurant['description']}\n"
+
+                    # Check multiple possible source field names
+                    sources = None
+                    for field in ["recommended_by", "sources", "source"]:
+                        if field in restaurant:
+                            sources = restaurant[field]
+                            break
+
+                    if sources:
+                        if isinstance(sources, list):
+                            sources_text = ", ".join(sources[:3])
+                            html_output += f"<i>✅ Рекомендовано: {sources_text}</i>\n"
+                        else:
+                            html_output += f"<i>✅ Рекомендовано: {sources}</i>\n"
+
+                    # Add recommended dishes if available
+                    dishes = restaurant.get("recommended_dishes", [])
+                    if dishes and isinstance(dishes, list) and len(dishes) > 0:
+                        dishes_text = ", ".join(dishes[:3])
+                        html_output += f"🍽 <i>Фирменные блюда: {dishes_text}</i>\n"
+
+                    # Add price range if available
+                    price = restaurant.get("price_range", "")
+                    if price:
+                        html_output += f"💰 {price}\n"
+
+                    html_output += "\n"
+            else:
+                html_output += "К сожалению, рекомендуемые рестораны не найдены.\n\n"
+
+            # Format hidden gems
+            if hidden_gems:
+                html_output += "<b>💎 ДЛЯ СВОИХ:</b>\n\n"
+
+                for i, restaurant in enumerate(hidden_gems, 1):
+                    name = restaurant.get("name", "Ресторан")
+                    html_output += f"<b>{i}. {name}</b>\n"
+
+                    if "address" in restaurant:
+                        html_output += f"📍 {restaurant['address']}\n"
+
+                    if "description" in restaurant:
+                        html_output += f"{restaurant['description']}\n"
+
+                    # Check multiple possible source field names
+                    sources = None
+                    for field in ["recommended_by", "sources", "source"]:
+                        if field in restaurant:
+                            sources = restaurant[field]
+                            break
+
+                    if sources:
+                        if isinstance(sources, list):
+                            sources_text = ", ".join(sources[:3])
+                            html_output += f"<i>✅ Рекомендовано: {sources_text}</i>\n"
+                        else:
+                            html_output += f"<i>✅ Рекомендовано: {sources}</i>\n"
+
+                    # Add recommended dishes if available
+                    dishes = restaurant.get("recommended_dishes", [])
+                    if dishes and isinstance(dishes, list) and len(dishes) > 0:
+                        dishes_text = ", ".join(dishes[:3])
+                        html_output += f"🍽 <i>Фирменные блюда: {dishes_text}</i>\n"
+
+                    # Add price range if available
+                    price = restaurant.get("price_range", "")
+                    if price:
+                        html_output += f"💰 {price}\n"
+
+                    html_output += "\n"
+
+            # Add footer
+            html_output += "<i>Рекомендации составлены на основе анализа экспертных источников.</i>"
+
+            # Ensure response isn't too long for Telegram
+            if len(html_output) > 4000:
+                html_output = html_output[:3997] + "..."
+
+            return html_output
+        except Exception as e:
+            print(f"Error creating HTML output: {e}")
+            return "<b>Извините, не удалось форматировать рекомендации ресторанов.</b>"
+
+    @log_function_call  
     def process_query(self, user_query):
         """
         Process a user query using the LangChain sequence
@@ -381,7 +455,7 @@ class LangChainOrchestrator:
             user_query (str): The user's query about restaurant recommendations
 
         Returns:
-            str: The final formatted text for Telegram in English
+            dict: The formatted recommendations for Telegram
         """
         # Create a unique trace ID for this request
         trace_id = f"restaurant_rec_{int(time.time())}"
@@ -392,17 +466,18 @@ class LangChainOrchestrator:
                 # Execute the chain
                 result = self.chain.invoke({"query": user_query})
 
-                # Log performance metrics
-                print(f"Regular search returned {len(result.get('search_results', []))} results")
-                print(f"Local search returned {len(result.get('local_search_results', []))} results")
-                print(f"Combined search returned {len(result.get('combined_results', []))} results")
+                # Log completion and dump final state
+                dump_chain_state("process_query_complete", {
+                    "result_keys": list(result.keys()),
+                    "has_recommendations": "enhanced_recommendations" in result,
+                    "has_telegram_text": "telegram_formatted_text" in result
+                })
 
                 # Save process results to database
                 process_record = {
                     "query": user_query,
                     "trace_id": trace_id,
-                    "timestamp": time.time(),
-                    "result": result.get("enhanced_recommendations", {})
+                    "timestamp": time.time()
                 }
 
                 try:
@@ -414,40 +489,69 @@ class LangChainOrchestrator:
                 except Exception as db_error:
                     print(f"Error saving to database: {db_error}")
 
-                # Return the formatted text for Telegram (in English for now)
-                telegram_text = result.get("telegram_formatted_text", "Sorry, couldn't find restaurant recommendations.")
+                # Get the telegram text
+                telegram_text = result.get("telegram_formatted_text", 
+                                         "<b>Извините, не удалось найти рестораны по вашему запросу.</b>")
 
-                # For backwards compatibility with telegram_bot.py
-                # We need to also return the structured data
+                # Get the enhanced recommendations
                 enhanced_recommendations = result.get("enhanced_recommendations", {})
 
-                # Telegram bot expects a dict with recommended and hidden_gems
-                if isinstance(enhanced_recommendations, dict):
-                    if "main_list" in enhanced_recommendations:
-                        final_result = {
-                            "recommended": enhanced_recommendations["main_list"],
-                            "hidden_gems": enhanced_recommendations.get("hidden_gems", []),
-                            "telegram_text": telegram_text  # Add the formatted text
-                        }
-                        return final_result
+                # Check for different formats and standardize
+                main_list = []
+                hidden_gems = []
 
-                # Fallback if the structure is unexpected
-                return {
-                    "recommended": [],
-                    "hidden_gems": [],
+                if isinstance(enhanced_recommendations, dict):
+                    # Direct access - prioritize main_list
+                    if "main_list" in enhanced_recommendations:
+                        main_list = enhanced_recommendations["main_list"]
+                    # For backward compatibility
+                    elif "recommended" in enhanced_recommendations:
+                        main_list = enhanced_recommendations["recommended"]
+
+                    if "hidden_gems" in enhanced_recommendations:
+                        hidden_gems = enhanced_recommendations["hidden_gems"]
+
+                    # Check nested structure
+                    if "formatted_recommendations" in enhanced_recommendations:
+                        formatted_rec = enhanced_recommendations["formatted_recommendations"]
+                        if isinstance(formatted_rec, dict):
+                            if "main_list" in formatted_rec:
+                                main_list = formatted_rec["main_list"]
+                            elif "recommended" in formatted_rec:
+                                main_list = formatted_rec["recommended"]
+
+                            if "hidden_gems" in formatted_rec:
+                                hidden_gems = formatted_rec["hidden_gems"]
+
+                # Build final result dictionary with consistent naming using main_list
+                final_result = {
+                    "main_list": main_list,
+                    "hidden_gems": hidden_gems,
                     "telegram_text": telegram_text
                 }
 
+                # Debug log the final result
+                dump_chain_state("final_result", {
+                    "recommended_count": len(recommended),
+                    "hidden_gems_count": len(hidden_gems),
+                    "telegram_text_length": len(telegram_text)
+                })
+
+                return final_result
+
             except Exception as e:
                 print(f"Error in chain execution: {e}")
+                # Log the error
+                dump_chain_state("process_query_error", {"query": user_query}, error=e)
+
                 # Return a basic error message
                 return {
-                    "recommended": [
+                    "main_list": [
                         {
-                            "name": "Error Processing Request",
-                            "description": "We encountered an error while processing your request. Please try again later."
+                            "name": "Ошибка обработки запроса",
+                            "description": "Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз позже."
                         }
                     ],
                     "hidden_gems": [],
-                    "telegram_text": "<b>Sorry, an error occurred while processing your request.</b>"
+                    "telegram_text": "<b>Извините, произошла ошибка при обработке вашего запроса.</b>"
                 }

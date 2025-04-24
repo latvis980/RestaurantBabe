@@ -1,4 +1,3 @@
-
 # Editor prompt for formatting recommendations
 EDITOR_PROMPT = """
 You are a professional editor for a food publication specializing in restaurant recommendations. 
@@ -22,7 +21,7 @@ Optional information (include when available):
 - Special atmosphere details
 
 FORMATTING INSTRUCTIONS:
-1. Organize into two sections: "Recommended Restaurants" and "Hidden Gems"
+1. Organize into two sections: "Main List" and "Hidden Gems"
 2. For each restaurant, create a structured listing with all required information
 3. Make restaurant names bold
 4. Use consistent formatting across all listings
@@ -39,7 +38,7 @@ TONE GUIDELINES:
 
 OUTPUT FORMAT:
 Provide a structured JSON object with:
-- "formatted_recommendations": Object with "recommended" and "hidden_gems" arrays
+- "formatted_recommendations": Object with "main_list" and "hidden_gems" arrays
 - Each restaurant in the arrays should have all the required fields:
   - "name": Restaurant name
   - "address": Complete street address
@@ -54,4 +53,3 @@ Provide a structured JSON object with:
   - "atmosphere": Atmosphere details (if available)
   - "missing_info": Array of missing information fields
 """
-

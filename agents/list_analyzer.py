@@ -5,6 +5,7 @@ from langchain_mistralai import ChatMistralAI
 import json
 import time
 from utils.database import save_data
+from utils.debug_utils import dump_chain_state, log_function_call
 
 class ListAnalyzer:
     def __init__(self, config):
@@ -12,10 +13,10 @@ class ListAnalyzer:
         self.model = ChatMistralAI(
             model="mistral-large-latest",
             temperature=0.2,
-            mistral_api_key=config.MISTRAL_API_KEY  # You'll need to add this to your config
+            mistral_api_key=config.MISTRAL_API_KEY
         )
 
-        # Create updated system prompt
+        # Create updated system prompt - modified to ensure we get restaurant results
         self.system_prompt = """
         You are a restaurant recommendation expert analyzing search results to identify the best restaurants.
 
@@ -38,22 +39,24 @@ class ListAnalyzer:
         4. IGNORE results from Tripadvisor, Yelp
         5. Pay special attention to restaurants featured in food guides, local publications, or by respected critics
         6. When analyzing content, check if restaurants meet the secondary filter parameters
+        7. IMPORTANT: If you can't find perfect matches, still provide at least 3-5 restaurants that are the closest matches
 
         OUTPUT REQUIREMENTS:
-        - Identify at least 10 restaurants (up to 15 for broad searches like "traditional restaurants")
-        - Do not separate into "recommended" and "hidden gems" categories
+        - ALWAYS identify at least 5 restaurants (even with limited information)
+        - Do not separate into "recommended" and "hidden gems" categories just yet
+        - If search results are limited, create entries based on the available information
         - For EACH restaurant, extract:
           1. Name (exact as mentioned in sources)
-          2. Street address (as complete as possible)
+          2. Street address (as complete as possible, or "Address unavailable" if not found)
           3. Raw description (40-60 words) including key details, dishes, interior, chef, and atmosphere
           4. ALL sources where mentioned (just the source name, NOT the URL, e.g., "Le Foodling" not "lefooding.com")
 
         OUTPUT FORMAT:
         Provide a structured JSON object with one array: "restaurants"
         Each restaurant object should include:
-        - name
-        - address
-        - description (40-60 words summary)
+        - name (required, never empty)
+        - address (required, use "Address unavailable" if not found)
+        - description (required, 40-60 words summary, use available information to create one if needed)
         - sources (array of source names where it was mentioned)
         - location (city name from the search)
         """
@@ -69,6 +72,7 @@ class ListAnalyzer:
 
         self.config = config
 
+    @log_function_call
     def analyze(self, search_results, keywords_for_analysis, primary_parameters=None, secondary_parameters=None):
         """
         Analyze search results to extract and rank restaurant recommendations
@@ -83,6 +87,14 @@ class ListAnalyzer:
             dict: Structured recommendations with restaurants
         """
         with tracing_v2_enabled(project_name="restaurant-recommender"):
+            # Debug logging
+            dump_chain_state("analyze_start", {
+                "search_results_count": len(search_results),
+                "keywords": keywords_for_analysis,
+                "primary_parameters": primary_parameters,
+                "secondary_parameters": secondary_parameters
+            })
+
             # Extract location/city from the analysis
             city = self._extract_city(primary_parameters)
 
@@ -118,7 +130,21 @@ class ListAnalyzer:
 
             try:
                 # Parse the JSON response
-                results = json.loads(response.content)
+                content = response.content
+
+                # Handle different response formats
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0].strip()
+                elif "```" in content:
+                    content = content.split("```")[1].split("```")[0].strip()
+
+                # Debug log the raw response
+                dump_chain_state("analyze_raw_response", {
+                    "raw_response": content[:1000]  # Limit to 1000 chars
+                })
+
+                # Parse the JSON
+                results = json.loads(content)
 
                 # Add the city to each restaurant
                 for restaurant in results.get("restaurants", []):
@@ -127,21 +153,61 @@ class ListAnalyzer:
                 # Save restaurant data to database
                 self._save_restaurants_to_db(results.get("restaurants", []), city)
 
-                # Format for compatibility with the updated structure
-                # Now using "main_list" and "hidden_gems" instead of "recommended"
+                # Handle the case when we get an empty result
+                if not results.get("restaurants"):
+                    dump_chain_state("analyze_no_results", {
+                        "warning": "No restaurants found in response"
+                    })
+                    # Create a fallback result with a placeholder restaurant
+                    results["restaurants"] = [{
+                        "name": "Поиск не дал результатов",
+                        "address": "Адрес недоступен",
+                        "description": "К сожалению, мы не смогли найти рестораны, соответствующие вашему запросу. Пожалуйста, попробуйте изменить параметры поиска.",
+                        "sources": ["Системное сообщение"],
+                        "city": city
+                    }]
+
+                # Format for compatibility with the rest of the system
+                # Use main_list instead of recommended to avoid confusion
+                main_list = results.get("restaurants", [])[:5]  # Top 5 as main list
+                hidden_gems = results.get("restaurants", [])[5:]   # Rest as hidden gems
+
+                # Ensure main_list has at least one restaurant if there are any results
+                if not main_list and hidden_gems:
+                    main_list = [hidden_gems.pop(0)]
+
                 compatible_results = {
-                    "main_list": results.get("restaurants", [])[:5],  # Top 5 as main list
-                    "hidden_gems": results.get("restaurants", [])[5:]   # Rest as hidden gems
+                    "main_list": main_list,
+                    "hidden_gems": hidden_gems
                 }
 
+                # Debug log the final structured results
+                dump_chain_state("analyze_final_results", {
+                    "recommended_count": len(compatible_results["recommended"]),
+                    "hidden_gems_count": len(compatible_results["hidden_gems"])
+                })
+
                 return compatible_results
+
             except (json.JSONDecodeError, AttributeError) as e:
                 print(f"Error parsing ListAnalyzer response: {e}")
                 print(f"Response content: {response.content}")
 
-                # Fallback: Return a basic structure
+                # Debug log the error
+                dump_chain_state("analyze_json_error", {
+                    "error": str(e),
+                    "response_preview": response.content[:500] if hasattr(response, 'content') else "No content"
+                })
+
+                # Fallback: Return a basic structure with an error message restaurant
                 return {
-                    "main_list": [],
+                    "main_list": [{
+                        "name": "Ошибка обработки результатов",
+                        "address": "Адрес недоступен",
+                        "description": "Произошла ошибка при обработке результатов поиска. Пожалуйста, попробуйте позже или измените параметры поиска.",
+                        "sources": ["Системное сообщение"],
+                        "city": city
+                    }],
                     "hidden_gems": []
                 }
 
