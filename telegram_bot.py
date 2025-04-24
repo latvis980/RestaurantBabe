@@ -77,27 +77,28 @@ def handle_message(message):
     except Exception as e:
         logger.error(f"Error handling message: {e}", exc_info=True)
         bot.reply_to(message, "Извините, произошла ошибка. Пожалуйста, попробуйте еще раз.")
+    # telegram_bot.py (only the handle_message function's finally block)
     finally:
         # Ensure all traces are submitted
         wait_for_all_tracers()
 
-        # Also wait for our async tasks
+        # Also wait for our async tasks - add this line
         from utils.async_utils import wait_for_pending_tasks
         try:
-            asyncio.run(wait_for_pending_tasks())
-        except RuntimeError as e:
-            # Handle the case where event loop is already running
-            logger.warning(f"Could not run wait_for_pending_tasks: {e}")
+            # Get the event loop or create a new one
             try:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 if loop.is_running():
-                    # Schedule the cleanup for later
+                    # We're in a running loop, so create a task that will run later
                     asyncio.create_task(wait_for_pending_tasks())
                 else:
-                    # Use the existing loop
+                    # We have a loop but it's not running
                     loop.run_until_complete(wait_for_pending_tasks())
-            except Exception as e2:
-                logger.warning(f"Alternative task cleanup also failed: {e2}")
+            except RuntimeError:
+                # No running loop, create a new one
+                asyncio.run(wait_for_pending_tasks())
+        except Exception as e2:
+            logger.warning(f"Task cleanup failed: {e2}")
 
 def format_simplified_response(result):
     """

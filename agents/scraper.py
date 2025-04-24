@@ -18,6 +18,7 @@ class WebScraper:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
         ]
 
+    # agents/scraper.py (modification only to scrape_search_results method)
     def scrape_search_results(self, search_results, max_retries=2):
         """
         Scrape content from search results
@@ -29,8 +30,27 @@ class WebScraper:
         Returns:
             list: Enriched search results with scraped content
         """
-        # Convert synchronous function call to async
-        return sync_to_async(self.filter_and_scrape_results)(search_results, max_retries)
+        # Use sync_to_async to safely handle the async function
+        future_or_result = sync_to_async(self.filter_and_scrape_results)(search_results, max_retries)
+
+        # If we got a future (we're already in an event loop), we need to use asyncio.ensure_future
+        if hasattr(future_or_result, 'add_done_callback'):
+            # We're likely in a running event loop and got a future
+            try:
+                # Try to get the current loop and wait for the future
+                loop = asyncio.get_running_loop()
+                if loop.is_running():
+                    # We can't wait directly for the future in a running loop
+                    # So we'll create a simple empty result and track the task
+                    track_async_task(future_or_result)
+                    print("Warning: Returning potentially incomplete results due to async execution")
+                    return search_results  # Return the original results as fallback
+            except RuntimeError:
+                # No running loop, this should not happen but handle it anyway
+                return asyncio.run(future_or_result)
+
+        # If we got a direct result (not a future), just return it
+        return future_or_result
 
     async def filter_and_scrape_results(self, search_results, max_retries=2):
         """
