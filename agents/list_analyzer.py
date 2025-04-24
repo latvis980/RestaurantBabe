@@ -127,10 +127,10 @@ class ListAnalyzer:
                 # Save restaurant data to database
                 self._save_restaurants_to_db(results.get("restaurants", []), city)
 
-                # Format for backwards compatibility with existing code
-                # This creates the structure that the editor_agent and other components expect
+                # Format for compatibility with the updated structure
+                # Now using "main_list" and "hidden_gems" instead of "recommended"
                 compatible_results = {
-                    "recommended": results.get("restaurants", [])[:5],  # Top 5 as recommended
+                    "main_list": results.get("restaurants", [])[:5],  # Top 5 as main list
                     "hidden_gems": results.get("restaurants", [])[5:]   # Rest as hidden gems
                 }
 
@@ -141,7 +141,7 @@ class ListAnalyzer:
 
                 # Fallback: Return a basic structure
                 return {
-                    "recommended": [],
+                    "main_list": [],
                     "hidden_gems": []
                 }
 
