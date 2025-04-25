@@ -72,33 +72,49 @@ class FollowUpSearchAgent:
             for param in secondary_filter_parameters:
                 restaurant_queries.append(f"{restaurant_name} restaurant {restaurant_location} {param}")
 
-        # Check global guides specifically
-        global_guide_info = self._check_global_guides(restaurant_name, restaurant_location)
-
-        # Perform searches and gather information
+        # Execute searches one at a time to avoid overwhelming resources
         all_search_results = []
-        for query in restaurant_queries:
+        for query in restaurant_queries[:3]:  # Limit to first 3 queries for performance
             try:
-                # Limit to 3 results per query to avoid excessive scraping
+                # Limit to 2 results per query to avoid excessive scraping
                 results = self.search_agent._execute_search(query)
-                filtered_results = self.search_agent._filter_results(results)[:3]
+                filtered_results = self.search_agent._filter_results(results)[:2]
 
-                # Scrape the results
-                scraped_results = self.scraper.scrape_search_results(filtered_results)
-                all_search_results.extend(scraped_results)
+                # Scrape the results synchronously
+                try:
+                    scraped_results = self.scraper.scrape_search_results(filtered_results)
+                    all_search_results.extend(scraped_results)
+                except Exception as scrape_error:
+                    print(f"Error scraping results for {restaurant_name}: {scrape_error}")
 
                 # Be nice to servers
                 time.sleep(1)
             except Exception as e:
                 print(f"Error in follow-up search for {restaurant_name} with query '{query}': {e}")
 
-        # Combine all results
-        combined_results = all_search_results + global_guide_info
+        # Check global guides specifically - limit to fewer guides
+        selected_guides = ["guide.michelin.com", "theworlds50best.com"]
+        global_guide_info = []
+        for guide in selected_guides:
+            try:
+                query = f"site:{guide} {restaurant_name} {restaurant_location}"
+                guide_results = self.search_agent._execute_search(query)
+                filtered_guide_results = self.search_agent._filter_results(guide_results)[:1]
+
+                # Add guide information
+                for result in filtered_guide_results:
+                    result["guide"] = guide
+                    global_guide_info.append(result)
+
+                # Respect rate limits
+                time.sleep(1)
+            except Exception as e:
+                print(f"Error checking guide {guide}: {e}")
 
         # Add the enhanced information to the restaurant
         enhanced_restaurant = restaurant.copy()
         enhanced_restaurant["additional_info"] = {
-            "follow_up_results": combined_results,
+            "follow_up_results": all_search_results + global_guide_info,
             "secondary_parameters_checked": secondary_filter_parameters if secondary_filter_parameters else []
         }
 

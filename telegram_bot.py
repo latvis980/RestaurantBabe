@@ -94,23 +94,8 @@ def handle_message(message):
         # Ensure all traces are submitted
         wait_for_all_tracers()
 
-        # Also wait for our async tasks
-        from utils.async_utils import wait_for_pending_tasks
-        try:
-            # Get the event loop or create a new one
-            try:
-                loop = asyncio.get_running_loop()
-                if loop.is_running():
-                    # We're in a running loop, so create a task that will run later
-                    asyncio.create_task(wait_for_pending_tasks())
-                else:
-                    # We have a loop but it's not running
-                    loop.run_until_complete(wait_for_pending_tasks())
-            except RuntimeError:
-                # No running loop, create a new one
-                asyncio.run(wait_for_pending_tasks())
-        except Exception as e2:
-            logger.warning(f"Task cleanup failed: {e2}")
+        # Do not try to wait for pending tasks here - it often causes event loop errors
+        # Instead, let them complete naturally and rely on the app's shutdown hooks
 
 def shutdown():
     """Clean shutdown function for asyncio resources"""

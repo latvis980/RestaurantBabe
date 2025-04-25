@@ -1,6 +1,9 @@
 # utils/async_utils.py
 import asyncio
 from functools import wraps
+import logging
+
+logger = logging.getLogger(__name__)
 
 # For storing pending tasks
 _PENDING_TASKS = set()
@@ -23,21 +26,28 @@ def sync_to_async(func):
     def wrapper(*args, **kwargs):
         try:
             loop = asyncio.get_running_loop()
-            # If we're already in an event loop, we need to avoid nested run_until_complete calls
+            # If we're already in an event loop, create a new task
             if loop.is_running():
-                # Create a future in the current loop
                 fut = asyncio.ensure_future(func(*args, **kwargs), loop=loop)
-                # We can't await here, so we'll return the future
+                # Return the future, don't wait for it to complete here
                 return fut
             else:
                 # Use the existing loop
                 return loop.run_until_complete(func(*args, **kwargs))
         except RuntimeError:
             # No running event loop, create a new one
-            return asyncio.run(func(*args, **kwargs))
+            try:
+                return asyncio.run(func(*args, **kwargs))
+            except Exception as e:
+                logger.error(f"Error running async function: {e}")
+                # Fall back to synchronous execution if needed
+                return None
     return wrapper
 
 async def wait_for_pending_tasks():
     """Wait for all tracked tasks to complete"""
     if _PENDING_TASKS:
-        await asyncio.gather(*_PENDING_TASKS, return_exceptions=True)
+        try:
+            await asyncio.gather(*_PENDING_TASKS, return_exceptions=True)
+        except Exception as e:
+            logger.error(f"Error waiting for pending tasks: {e}")

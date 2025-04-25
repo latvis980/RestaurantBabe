@@ -30,27 +30,31 @@ class WebScraper:
         Returns:
             list: Enriched search results with scraped content
         """
-        # Use sync_to_async to safely handle the async function
-        future_or_result = sync_to_async(self.filter_and_scrape_results)(search_results, max_retries)
+        # Create a new event loop if none exists
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running event loop
+            return asyncio.run(self.filter_and_scrape_results(search_results, max_retries))
 
-        # If we got a future (we're already in an event loop), we need to use asyncio.ensure_future
-        if hasattr(future_or_result, 'add_done_callback'):
-            # We're likely in a running event loop and got a future
-            try:
-                # Try to get the current loop and wait for the future
-                loop = asyncio.get_running_loop()
-                if loop.is_running():
-                    # We can't wait directly for the future in a running loop
-                    # So we'll create a simple empty result and track the task
-                    track_async_task(future_or_result)
-                    print("Warning: Returning potentially incomplete results due to async execution")
-                    return search_results  # Return the original results as fallback
-            except RuntimeError:
-                # No running loop, this should not happen but handle it anyway
-                return asyncio.run(future_or_result)
+        # If we have a running loop
+        if loop.is_running():
+            # We're in a running event loop, schedule the task but don't wait for it
+            enriched_results = []
+            # Create a shallow copy to work with immediately
+            for result in search_results:
+                enriched_results.append(result.copy())
 
-        # If we got a direct result (not a future), just return it
-        return future_or_result
+            # Schedule the actual scraping to happen asynchronously
+            task = loop.create_task(self.filter_and_scrape_results(search_results, max_retries))
+            _PENDING_TASKS.add(task)
+            task.add_done_callback(lambda t: _PENDING_TASKS.discard(t))
+
+            print("Warning: Returning potentially incomplete results due to async execution")
+            return enriched_results
+        else:
+            # We have a loop but it's not running
+            return loop.run_until_complete(self.filter_and_scrape_results(search_results, max_retries))
 
     async def filter_and_scrape_results(self, search_results, max_retries=2):
         """
