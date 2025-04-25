@@ -12,58 +12,37 @@ class FollowUpSearchAgent:
 
     def perform_follow_up_searches(self, formatted_recommendations, follow_up_queries, secondary_filter_parameters=None):
         """
-        Perform follow-up searches for each restaurant to gather additional information
+        Perform follow-up searches for each restaurant to gather missing information
 
         Args:
             formatted_recommendations (dict): The formatted recommendations
             follow_up_queries (list): List of follow-up queries for each restaurant
-            secondary_filter_parameters (list, optional): Secondary parameters for targeted searches
+            secondary_filter_parameters (list, optional): Secondary parameters from query analysis for targeted searches
 
         Returns:
             dict: Enhanced recommendations with additional information
         """
         with tracing_v2_enabled(project_name="restaurant-recommender"):
-            # Debug the structure of the input
-            print(f"Follow-up search received structure: {list(formatted_recommendations.keys() if isinstance(formatted_recommendations, dict) else [])}")
-
-            # Ensure we have the correct structure
-            if not formatted_recommendations:
-                formatted_recommendations = {"main_list": [], "hidden_gems": []}
-
-            if not isinstance(formatted_recommendations, dict):
-                formatted_recommendations = {"main_list": [], "hidden_gems": []}
-
-            # Handle both old "recommended" and new "main_list" structures
-            if "main_list" not in formatted_recommendations and "recommended" in formatted_recommendations:
-                formatted_recommendations["main_list"] = formatted_recommendations["recommended"]
-                del formatted_recommendations["recommended"]
-            elif "main_list" not in formatted_recommendations:
-                formatted_recommendations["main_list"] = []
-
-            if "hidden_gems" not in formatted_recommendations:
-                formatted_recommendations["hidden_gems"] = []
-
             enhanced_recommendations = {
                 "main_list": [],
                 "hidden_gems": []
             }
 
-            # Process main list restaurants
+            # Process main_list restaurants
             for restaurant in formatted_recommendations.get("main_list", []):
-                enhanced_restaurant = self._enhance_restaurant(restaurant, follow_up_queries)
+                enhanced_restaurant = self._enhance_restaurant(restaurant, follow_up_queries, secondary_filter_parameters)
                 enhanced_recommendations["main_list"].append(enhanced_restaurant)
 
             # Process hidden gems
             for restaurant in formatted_recommendations.get("hidden_gems", []):
-                enhanced_restaurant = self._enhance_restaurant(restaurant, follow_up_queries)
+                enhanced_restaurant = self._enhance_restaurant(restaurant, follow_up_queries, secondary_filter_parameters)
                 enhanced_recommendations["hidden_gems"].append(enhanced_restaurant)
 
             return enhanced_recommendations
 
-    def _enhance_restaurant(self, restaurant, follow_up_queries):
+    def _enhance_restaurant(self, restaurant, follow_up_queries, secondary_filter_parameters=None):
         """Enhance a single restaurant with additional information from follow-up searches"""
         restaurant_name = restaurant.get("name", "")
-        restaurant_city = restaurant.get("city", "")
         restaurant_location = restaurant.get("address", "").split(",")[0] if restaurant.get("address") else ""
 
         # Find queries for this restaurant
@@ -74,48 +53,38 @@ class FollowUpSearchAgent:
                 break
 
         if not restaurant_queries:
-            # No specific queries found, use default with source queries
-            # Include city if available
-            city_part = f" {restaurant_city}" if restaurant_city else ""
-
+            # No specific queries found, use default
             restaurant_queries = [
-                f"{restaurant_name} restaurant{city_part} hours",
-                f"{restaurant_name} restaurant{city_part} menu",
-                f"{restaurant_name} restaurant{city_part} reviews",
-                # Add source-specific queries
-                f"{restaurant_name} restaurant{city_part} michelin guide",
-                f"{restaurant_name} restaurant{city_part} food critic",
-                f"{restaurant_name} restaurant{city_part} culinary award"
+                f"{restaurant_name} restaurant {restaurant_location} hours prices",
+                f"{restaurant_name} restaurant {restaurant_location} menu dishes",
+                f"{restaurant_name} restaurant {restaurant_location} chef reservations"
             ]
 
-        # Perform searches and gather information (use up to 3 queries including at least 1 source query)
+        # Check for missing information
+        missing_info = restaurant.get("missing_info", [])
+        if missing_info:
+            # Add specific queries for missing information
+            for info in missing_info:
+                restaurant_queries.append(f"{restaurant_name} restaurant {restaurant_location} {info}")
+
+        # Add secondary filter parameters for targeted searches
+        if secondary_filter_parameters:
+            for param in secondary_filter_parameters:
+                restaurant_queries.append(f"{restaurant_name} restaurant {restaurant_location} {param}")
+
+        # Check global guides specifically
+        global_guide_info = self._check_global_guides(restaurant_name, restaurant_location)
+
+        # Perform searches and gather information
         all_search_results = []
-        source_results = []
-
-        # Find source-related queries
-        source_queries = [q for q in restaurant_queries if any(term in q.lower() for term in 
-                         ["guide", "critic", "blog", "award", "chef", "magazine", "publication", "michelin", "50best", "word of mouth"])]
-
-        # Make sure at least one source query is included
-        search_queries = restaurant_queries[:2]  # Get first 2 regular queries
-        if source_queries:
-            search_queries.append(source_queries[0])  # Add 1 source query
-
-        # Execute the selected queries
-        for query in search_queries[:3]:  # Limit to 3 queries max
+        for query in restaurant_queries:
             try:
-                # Limit to 2 results per query to avoid excessive scraping
+                # Limit to 3 results per query to avoid excessive scraping
                 results = self.search_agent._execute_search(query)
-                filtered_results = self.search_agent._filter_results(results)[:2]
+                filtered_results = self.search_agent._filter_results(results)[:3]
 
                 # Scrape the results
                 scraped_results = self.scraper.scrape_search_results(filtered_results)
-
-                # If this is a source query, add to source results
-                if any(term in query.lower() for term in 
-                      ["guide", "critic", "blog", "award", "chef", "magazine", "publication", "michelin", "50best", "word of mouth"]):
-                    source_results.extend(scraped_results)
-
                 all_search_results.extend(scraped_results)
 
                 # Be nice to servers
@@ -123,57 +92,15 @@ class FollowUpSearchAgent:
             except Exception as e:
                 print(f"Error in follow-up search for {restaurant_name} with query '{query}': {e}")
 
-        # Also check global guides specifically
-        global_guide_results = self._check_global_guides(restaurant_name, restaurant_city or restaurant_location)
-        source_results.extend(global_guide_results)
-        all_search_results.extend(global_guide_results)
+        # Combine all results
+        combined_results = all_search_results + global_guide_info
 
-        # Add any additional info we found
+        # Add the enhanced information to the restaurant
         enhanced_restaurant = restaurant.copy()
-        if all_search_results:
-            # Extract any additional details we might find
-            additional_details = self._extract_additional_details(all_search_results)
-
-            # Update the restaurant with additional information if found
-            if "description" in additional_details and len(additional_details["description"]) > len(restaurant.get("description", "")):
-                enhanced_restaurant["description"] = additional_details["description"]
-
-            # Extract sources and update recommended_by field
-            extracted_sources = self._extract_sources(source_results)
-            if extracted_sources:
-                # If we already have recommended_by, append new sources
-                if "recommended_by" in enhanced_restaurant and enhanced_restaurant["recommended_by"]:
-                    existing_sources = enhanced_restaurant["recommended_by"]
-                    if isinstance(existing_sources, list):
-                        # Add new sources, avoid duplicates
-                        for source in extracted_sources:
-                            if source not in existing_sources:
-                                existing_sources.append(source)
-                        enhanced_restaurant["recommended_by"] = existing_sources
-                    else:
-                        enhanced_restaurant["recommended_by"] = extracted_sources
-                else:
-                    enhanced_restaurant["recommended_by"] = extracted_sources
-
-            # Store the full follow-up results
-            enhanced_restaurant["additional_info"] = all_search_results
-
-            # Update HTML formatting if needed
-            if "html_formatted" in enhanced_restaurant:
-                # We'll leave the existing formatting, but future improvements could update it with new info
-                pass
-            else:
-                # Generate basic HTML formatting
-                enhanced_restaurant["html_formatted"] = self._generate_basic_html(enhanced_restaurant)
-
-        # Ensure we always have a recommended_by field
-        if "recommended_by" not in enhanced_restaurant or not enhanced_restaurant["recommended_by"]:
-            # Convert sources array to recommended_by if it exists
-            if "sources" in enhanced_restaurant and enhanced_restaurant["sources"]:
-                enhanced_restaurant["recommended_by"] = enhanced_restaurant["sources"]
-            else:
-                # Default fallback sources
-                enhanced_restaurant["recommended_by"] = ["Local Food Guide", "Culinary Expert"]
+        enhanced_restaurant["additional_info"] = {
+            "follow_up_results": combined_results,
+            "secondary_parameters_checked": secondary_filter_parameters if secondary_filter_parameters else []
+        }
 
         return enhanced_restaurant
 
@@ -212,7 +139,7 @@ class FollowUpSearchAgent:
                 # Special case handling for common domains
                 if "michelin" in domain:
                     source_name = "Michelin Guide"
-                elif "foodand" in domain:
+                elif "foodandwine" in domain:
                     source_name = "Food & Wine"
                 elif "eater" in domain:
                     source_name = "Eater"
@@ -269,10 +196,7 @@ class FollowUpSearchAgent:
 
         for guide in global_guides:
             try:
-                # Include location in search if available
-                location_part = f" {location}" if location else ""
-                query = f"site:{guide} {restaurant_name}{location_part}"
-
+                query = f"site:{guide} {restaurant_name} {location}"
                 guide_results = self.search_agent._execute_search(query)
                 filtered_guide_results = self.search_agent._filter_results(guide_results)
 

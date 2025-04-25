@@ -109,9 +109,9 @@ class LangChainOrchestrator:
                 if isinstance(recommendations, dict):
                     # Check if we have the old format (recommended/hidden_gems)
                     if "recommended" in recommendations:
-                        # Convert to new format if needed
+                        # Convert to new format
                         standardized = {
-                            "recommended": recommendations.get("recommended", []),
+                            "main_list": recommendations.get("recommended", []),
                             "hidden_gems": recommendations.get("hidden_gems", [])
                         }
                     else:
@@ -120,7 +120,7 @@ class LangChainOrchestrator:
                 else:
                     # Initialize empty structure
                     standardized = {
-                        "recommended": [],
+                        "main_list": [],
                         "hidden_gems": []
                     }
 
@@ -133,7 +133,7 @@ class LangChainOrchestrator:
                 return {
                     **x,
                     "recommendations": {
-                        "recommended": [],
+                        "main_list": [],
                         "hidden_gems": []
                     }
                 }
@@ -326,15 +326,15 @@ class LangChainOrchestrator:
             html_output = "<b>🍽️ РЕКОМЕНДУЕМЫЕ РЕСТОРАНЫ:</b>\n\n"
 
             # Get restaurant lists from appropriate keys
-            recommended = []
+            main_list = []
             hidden_gems = []
 
             if isinstance(recommendations, dict):
-                # Check for direct recommended/hidden_gems
-                if "recommended" in recommendations:
-                    recommended = recommendations["recommended"]
-                elif "main_list" in recommendations:
-                    recommended = recommendations["main_list"]
+                # Check for direct main_list/recommended (for backward compatibility)
+                if "main_list" in recommendations:
+                    main_list = recommendations["main_list"]
+                elif "recommended" in recommendations:
+                    main_list = recommendations["recommended"]
 
                 # Check for direct hidden_gems
                 if "hidden_gems" in recommendations:
@@ -344,10 +344,10 @@ class LangChainOrchestrator:
                 if "formatted_recommendations" in recommendations:
                     formatted_rec = recommendations["formatted_recommendations"]
                     if isinstance(formatted_rec, dict):
-                        if "recommended" in formatted_rec:
-                            recommended = formatted_rec["recommended"]
-                        elif "main_list" in formatted_rec:
-                            recommended = formatted_rec["main_list"]
+                        if "main_list" in formatted_rec:
+                            main_list = formatted_rec["main_list"]
+                        elif "recommended" in formatted_rec:
+                            main_list = formatted_rec["recommended"]
 
                         if "hidden_gems" in formatted_rec:
                             hidden_gems = formatted_rec["hidden_gems"]
@@ -501,10 +501,10 @@ class LangChainOrchestrator:
                 hidden_gems = []
 
                 if isinstance(enhanced_recommendations, dict):
-                    # Direct access - prioritize main_list
+                    # Direct access to main_list
                     if "main_list" in enhanced_recommendations:
                         main_list = enhanced_recommendations["main_list"]
-                    # For backward compatibility
+                    # For backward compatibility with old format
                     elif "recommended" in enhanced_recommendations:
                         main_list = enhanced_recommendations["recommended"]
 
@@ -532,7 +532,7 @@ class LangChainOrchestrator:
 
                 # Debug log the final result
                 dump_chain_state("final_result", {
-                    "recommended_count": len(recommended),
+                    "main_list_count": len(main_list),
                     "hidden_gems_count": len(hidden_gems),
                     "telegram_text_length": len(telegram_text)
                 })

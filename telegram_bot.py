@@ -94,7 +94,7 @@ def handle_message(message):
         # Ensure all traces are submitted
         wait_for_all_tracers()
 
-        # Also wait for our async tasks - add this line
+        # Also wait for our async tasks
         from utils.async_utils import wait_for_pending_tasks
         try:
             # Get the event loop or create a new one

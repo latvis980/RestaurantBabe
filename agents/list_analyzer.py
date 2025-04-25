@@ -43,7 +43,7 @@ class ListAnalyzer:
 
         OUTPUT REQUIREMENTS:
         - ALWAYS identify at least 5 restaurants (even with limited information)
-        - Do not separate into "recommended" and "hidden gems" categories just yet
+        - Do not separate restaurants into different categories, just provide one main list
         - If search results are limited, create entries based on the available information
         - For EACH restaurant, extract:
           1. Name (exact as mentioned in sources)
@@ -52,7 +52,7 @@ class ListAnalyzer:
           4. ALL sources where mentioned (just the source name, NOT the URL, e.g., "Le Foodling" not "lefooding.com")
 
         OUTPUT FORMAT:
-        Provide a structured JSON object with one array: "restaurants"
+        Provide a structured JSON object with one array: "main_list"
         Each restaurant object should include:
         - name (required, never empty)
         - address (required, use "Address unavailable" if not found)
@@ -146,20 +146,28 @@ class ListAnalyzer:
                 # Parse the JSON
                 results = json.loads(content)
 
+                # If the output still has "restaurants" key, convert it to "main_list"
+                if "restaurants" in results and "main_list" not in results:
+                    results["main_list"] = results.pop("restaurants")
+
+                # Ensure we have a main_list key
+                if "main_list" not in results:
+                    results["main_list"] = []
+
                 # Add the city to each restaurant
-                for restaurant in results.get("restaurants", []):
+                for restaurant in results.get("main_list", []):
                     restaurant["city"] = city
 
                 # Save restaurant data to database
-                self._save_restaurants_to_db(results.get("restaurants", []), city)
+                self._save_restaurants_to_db(results.get("main_list", []), city)
 
                 # Handle the case when we get an empty result
-                if not results.get("restaurants"):
+                if not results.get("main_list"):
                     dump_chain_state("analyze_no_results", {
                         "warning": "No restaurants found in response"
                     })
                     # Create a fallback result with a placeholder restaurant
-                    results["restaurants"] = [{
+                    results["main_list"] = [{
                         "name": "Поиск не дал результатов",
                         "address": "Адрес недоступен",
                         "description": "К сожалению, мы не смогли найти рестораны, соответствующие вашему запросу. Пожалуйста, попробуйте изменить параметры поиска.",
@@ -167,27 +175,12 @@ class ListAnalyzer:
                         "city": city
                     }]
 
-                # Format for compatibility with the rest of the system
-                # Use main_list instead of recommended to avoid confusion
-                main_list = results.get("restaurants", [])[:5]  # Top 5 as main list
-                hidden_gems = results.get("restaurants", [])[5:]   # Rest as hidden gems
-
-                # Ensure main_list has at least one restaurant if there are any results
-                if not main_list and hidden_gems:
-                    main_list = [hidden_gems.pop(0)]
-
-                compatible_results = {
-                    "main_list": main_list,
-                    "hidden_gems": hidden_gems
-                }
-
                 # Debug log the final structured results
                 dump_chain_state("analyze_final_results", {
-                    "recommended_count": len(compatible_results["recommended"]),
-                    "hidden_gems_count": len(compatible_results["hidden_gems"])
+                    "main_list_count": len(results["main_list"])
                 })
 
-                return compatible_results
+                return results
 
             except (json.JSONDecodeError, AttributeError) as e:
                 print(f"Error parsing ListAnalyzer response: {e}")
@@ -207,8 +200,7 @@ class ListAnalyzer:
                         "description": "Произошла ошибка при обработке результатов поиска. Пожалуйста, попробуйте позже или измените параметры поиска.",
                         "sources": ["Системное сообщение"],
                         "city": city
-                    }],
-                    "hidden_gems": []
+                    }]
                 }
 
     def _extract_city(self, primary_parameters):

@@ -20,8 +20,13 @@ Optional information (include when available):
 - Opening hours
 - Special atmosphere details
 
+HIDDEN GEMS SELECTION:
+- Select 1-2 lesser-known but interesting places from the main list to feature as "hidden gems"
+- Look for restaurants with unique concepts, local significance, or interesting specialties
+- Move these selected restaurants to the hidden_gems list and remove them from the main list
+
 FORMATTING INSTRUCTIONS:
-1. Organize into two sections: "Main List" and "Hidden Gems"
+1. Organize into two sections: "Recommended Restaurants" (from main_list) and "Hidden Gems" (selected by you)
 2. For each restaurant, create a structured listing with all required information
 3. Make restaurant names bold
 4. Use consistent formatting across all listings

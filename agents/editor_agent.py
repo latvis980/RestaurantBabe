@@ -11,14 +11,71 @@ class EditorAgent:
             temperature=0.3
         )
 
-        # Get the prompt from prompt_templates
-        from prompts.prompt_templates import EDITOR_PROMPT
-        self.prompt_template = EDITOR_PROMPT
+        # Editor prompt - updated to generate hidden_gems from main_list
+        self.system_prompt = """
+        You are a professional editor for a food publication specializing in restaurant recommendations. 
+        Your task is to format and polish restaurant recommendations according to strict formatting guidelines.
+
+        INFORMATION REQUIREMENTS:
+        Obligatory information for each restaurant:
+        - Name (always bold)
+        - Street address: street number and street name
+        - Informative description 2-40 words
+        - Price range
+        - Recommended dishes (at least 2-3 signature items)
+        - At least two sources of recommendation (e.g., "Recommended by Michelin Guide and Timeout Lisboa")
+        - NEVER mention Tripadvisor, Yelp, or Google as sources
+
+        Optional information (include when available):
+        - If reservations are highly recommended, clearly state this
+        - Instagram handle in format "instagram.com/username"
+        - Chef name or background
+        - Opening hours
+        - Special atmosphere details
+
+        HIDDEN GEMS SELECTION:
+        - Select 1-2 lesser-known but interesting places from the main list to feature as "hidden gems"
+        - Look for restaurants with unique concepts, local significance, or interesting specialties
+        - Move these selected restaurants to the hidden_gems list and remove them from the main list
+
+        FORMATTING INSTRUCTIONS:
+        1. Organize into two sections: "Recommended Restaurants" (from main_list) and "Hidden Gems" (selected by you)
+        2. For each restaurant, create a structured listing with all required information
+        3. Make restaurant names bold
+        4. Use consistent formatting across all listings
+        5. Ensure descriptions are concise but informative
+        6. Verify all information is complete according to requirements
+        7. If any required information is missing, note what follow-up information is needed
+
+        TONE GUIDELINES:
+        - Professional but engaging
+        - Highlight what makes each restaurant special
+        - Focus on culinary experience and atmosphere
+        - Be specific about menu recommendations
+        - Avoid generic praise or marketing language
+
+        OUTPUT FORMAT:
+        Provide a structured JSON object with:
+        - "formatted_recommendations": Object with "main_list" and "hidden_gems" arrays
+        - Each restaurant in the arrays should have all the required fields:
+          - "name": Restaurant name
+          - "address": Complete street address
+          - "description": Concise description
+          - "price_range": Number of 🟡 symbols (1-3)
+          - "recommended_dishes": Array of dishes
+          - "sources": Array of recommendation sources
+          - "reservations_required": Boolean (if known)
+          - "instagram": Instagram handle (if available)
+          - "chef": Chef information (if available)
+          - "hours": Opening hours (if available)
+          - "atmosphere": Atmosphere details (if available)
+          - "missing_info": Array of missing information fields
+        """
 
         # Create prompt template
         self.prompt = ChatPromptTemplate.from_messages([
-            ("system", self.prompt_template),
-            ("human", "Here are the restaurant recommendations to format:\n\n{recommendations}")
+            ("system", self.system_prompt),
+            ("human", "Here are the restaurant recommendations to format:\n\n{recommendations}\n\nOriginal query: {original_query}")
         ])
 
         # Create chain
@@ -51,17 +108,16 @@ class EditorAgent:
 
                 # Make sure recommendations has the required structure
                 if not recommendations or not isinstance(recommendations, dict):
-                    recommendations = {"main_list": [], "hidden_gems": []}
+                    recommendations = {"main_list": []}
 
-                # Ensure required keys exist - check for both main_list and recommended (for backward compatibility)
-                if "main_list" not in recommendations and "recommended" not in recommendations:
-                    recommendations["main_list"] = []
-                elif "recommended" in recommendations and "main_list" not in recommendations:
-                    # Convert old format to new format
-                    recommendations["main_list"] = recommendations.pop("recommended")
-
-                if "hidden_gems" not in recommendations:
-                    recommendations["hidden_gems"] = []
+                # Ensure main_list exists - handle legacy format if necessary
+                if "main_list" not in recommendations:
+                    if "recommended" in recommendations:
+                        # Convert old format to new format
+                        recommendations["main_list"] = recommendations.pop("recommended")
+                    else:
+                        # Initialize empty main_list
+                        recommendations["main_list"] = []
 
                 # Invoke the formatting chain
                 response = self.chain.invoke({
@@ -87,12 +143,21 @@ class EditorAgent:
                     # Parse the JSON
                     formatted_results = json.loads(content)
 
-                    # Convert old format to new format if needed
+                    # Ensure we have the correct structure
                     if "formatted_recommendations" in formatted_results:
-                        recommendations_obj = formatted_results["formatted_recommendations"]
-                        if isinstance(recommendations_obj, dict):
-                            if "recommended" in recommendations_obj and "main_list" not in recommendations_obj:
-                                recommendations_obj["main_list"] = recommendations_obj.pop("recommended")
+                        formatted_rec = formatted_results["formatted_recommendations"]
+                        # Convert any "recommended" to "main_list" if present
+                        if isinstance(formatted_rec, dict):
+                            if "recommended" in formatted_rec and "main_list" not in formatted_rec:
+                                formatted_rec["main_list"] = formatted_rec.pop("recommended")
+                    else:
+                        # If no formatted_recommendations key, wrap the result
+                        formatted_results = {
+                            "formatted_recommendations": formatted_results
+                        }
+                        # Check if we need to convert recommendations to main_list in the wrapped result
+                        if "recommended" in formatted_results["formatted_recommendations"] and "main_list" not in formatted_results["formatted_recommendations"]:
+                            formatted_results["formatted_recommendations"]["main_list"] = formatted_results["formatted_recommendations"].pop("recommended")
 
                     # Add the follow-up queries
                     formatted_results["follow_up_queries"] = follow_up_queries
@@ -117,7 +182,10 @@ class EditorAgent:
 
                     # Return the original recommendations if parsing fails
                     return {
-                        "formatted_recommendations": recommendations,
+                        "formatted_recommendations": {
+                            "main_list": recommendations.get("main_list", []),
+                            "hidden_gems": []
+                        },
                         "follow_up_queries": follow_up_queries
                     }
             except Exception as e:
@@ -130,7 +198,10 @@ class EditorAgent:
                 }, error=e)
 
                 return {
-                    "formatted_recommendations": recommendations,
+                    "formatted_recommendations": {
+                        "main_list": recommendations.get("main_list", []) if isinstance(recommendations, dict) else [],
+                        "hidden_gems": []
+                    },
                     "follow_up_queries": []
                 }
 
@@ -192,7 +263,7 @@ class EditorAgent:
         """Generate basic follow-up queries if the main generation fails"""
         basic_queries = []
 
-        # Process main_list restaurants (check both new and old formats)
+        # Get restaurants from main_list
         main_list = []
         if isinstance(recommendations, dict):
             if "main_list" in recommendations:
@@ -209,20 +280,6 @@ class EditorAgent:
                         f"{name} restaurant address hours",
                         f"{name} restaurant menu specialties",
                         f"{name} restaurant michelin guide"
-                    ]
-                })
-
-        # Process hidden gems
-        hidden_gems = recommendations.get("hidden_gems", []) if isinstance(recommendations, dict) else []
-        for restaurant in hidden_gems:
-            name = restaurant.get("name", "")
-            if name:
-                basic_queries.append({
-                    "restaurant_name": name,
-                    "queries": [
-                        f"{name} restaurant address hours",
-                        f"{name} restaurant menu specialties",
-                        f"{name} restaurant reviews"
                     ]
                 })
 
