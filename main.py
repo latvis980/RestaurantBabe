@@ -4,11 +4,14 @@ import logging
 import time
 import traceback
 
+os.makedirs("debug_logs", exist_ok=True)
+
 import config
 from pydantic import config as pydantic_config  # ✅ avoids conflict
 from agents.langchain_orchestrator import LangChainOrchestrator
 from langchain_core.tracers.langchain import wait_for_all_tracers
-from utils.database import initialize_db  # Add this import
+from utils.database import initialize_db  
+
 
 # Configure logging
 logging.basicConfig(

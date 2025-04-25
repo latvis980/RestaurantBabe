@@ -1,4 +1,4 @@
-# telegram_bot.py
+# telegram_bot.py — do not use this file for formatting the answers, we rely on AI to format the restaurant lists
 import telebot
 import logging
 import time
