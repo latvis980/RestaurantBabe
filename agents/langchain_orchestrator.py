@@ -199,19 +199,22 @@ class LangChainOrchestrator:
                 else:
                     actual_recs = formatted_recs
 
-                # Get follow up queries
+                # Get follow up queries focusing on mandatory fields
                 follow_up_queries = formatted_recs.get("follow_up_queries", [])
+
+                # Get secondary filter parameters from original query analysis
+                secondary_params = x.get("secondary_filter_parameters", [])
 
                 # Execute follow up search
                 enhanced_recommendations = self.follow_up_search_agent.perform_follow_up_searches(
                     actual_recs,
-                    follow_up_queries
+                    follow_up_queries,
+                    secondary_params
                 )
 
                 # Debug after follow_up
                 dump_chain_state("post_follow_up", {
-                    "enhanced_recommendations_keys": list(enhanced_recommendations.keys() if enhanced_recommendations else {}),
-                    "enhanced_recommendations": enhanced_recommendations
+                    "enhanced_recommendations_keys": list(enhanced_recommendations.keys() if enhanced_recommendations else {})
                 })
 
                 # Return result

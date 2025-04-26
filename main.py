@@ -11,6 +11,8 @@ from pydantic import config as pydantic_config  # ✅ avoids conflict
 from agents.langchain_orchestrator import LangChainOrchestrator
 from langchain_core.tracers.langchain import wait_for_all_tracers
 from utils.database import initialize_db  
+from utils.source_validator import preload_source_reputations
+preload_source_reputations(config)
 
 
 # Configure logging

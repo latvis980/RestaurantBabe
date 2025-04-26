@@ -56,6 +56,8 @@ class WebScraper:
             # We have a loop but it's not running
             return loop.run_until_complete(self.filter_and_scrape_results(search_results, max_retries))
 
+    # Modified filter_and_scrape_results method for WebScraper
+
     async def filter_and_scrape_results(self, search_results, max_retries=2):
         """
         Filter search results by source quality and scrape only reputable sources
@@ -71,25 +73,40 @@ class WebScraper:
         enriched_results = []
 
         with tracing_v2_enabled(project_name="restaurant-recommender"):
-            for result in search_results:
+            # First batch process all URLs to check reputation
+            # This allows us to filter out non-reputable sources before scraping
+            reputation_checks = []
+
+            for i, result in enumerate(search_results):
                 url = result.get("url")
                 if not url:
                     continue
 
-                # First check database for known reputation
-                is_reputable = check_source_reputation(url, self.config)
+                # Skip non-HTML content immediately
+                if self._should_skip_url(url):
+                    continue
 
-                # If not in database, evaluate with AI
-                if is_reputable is None:
-                    is_reputable = await evaluate_source_quality(url, self.config)
+                # Check global reputation status
+                reputation_status = check_source_reputation(url, self.config)
 
-                # Only proceed with reputable sources
-                if is_reputable:
-                    # Skip non-HTML content
-                    if self._should_skip_url(url):
-                        continue
+                # Store the result and URL for processing
+                reputation_checks.append((i, url, reputation_status))
 
+            # Log how many results we're processing
+            print(f"Processing {len(reputation_checks)} search results")
+
+            # Process URLs with known reputations first
+            for i, url, is_reputable in reputation_checks:
+                # If we already know it's not reputable, skip it
+                if is_reputable is False:
+                    print(f"Skipping known non-reputable source: {url}")
+                    continue
+
+                # If we know it's reputable, process it
+                if is_reputable is True:
+                    print(f"Processing known reputable source: {url}")
                     try:
+                        result = search_results[i]
                         # Get the HTML content
                         html_content = self._get_html(url, max_retries)
                         if not html_content:
@@ -119,8 +136,57 @@ class WebScraper:
                         await track_async_task(asyncio.sleep(random.uniform(1.0, 2.0)))
                     except Exception as e:
                         print(f"Error scraping {url}: {e}")
-                else:
-                    print(f"Skipping non-reputable source: {url}")
+
+            # Now process URLs with unknown reputations
+            unknown_reputation_count = sum(1 for _, _, status in reputation_checks if status is None)
+            if unknown_reputation_count > 0:
+                print(f"Checking reputation for {unknown_reputation_count} sources with unknown reputation")
+
+            for i, url, is_reputable in reputation_checks:
+                # Only process URLs with unknown reputation
+                if is_reputable is not None:
+                    continue
+
+                # We need to evaluate reputation
+                try:
+                    is_reputable = await evaluate_source_quality(url, self.config)
+
+                    # If reputable, process it
+                    if is_reputable:
+                        print(f"New reputable source found: {url}")
+                        result = search_results[i]
+
+                        # Get the HTML content
+                        html_content = self._get_html(url, max_retries)
+                        if not html_content:
+                            continue
+
+                        # Parse the HTML
+                        soup = BeautifulSoup(html_content, 'html.parser')
+
+                        # Extract main content as clean text
+                        clean_text = self._extract_clean_text(soup)
+
+                        # Get source information
+                        domain = urlparse(url).netloc
+                        title = result.get("title", "Unknown Title")
+
+                        # Add source information as prefix to content
+                        source_prefix = f"SOURCE: {domain}\nTITLE: {title}\nURL: {url}\n\nCONTENT:\n"
+                        content_with_source = source_prefix + clean_text
+
+                        # Add the scraped content to the result
+                        result["scraped_content"] = content_with_source
+                        result["source_domain"] = domain
+                        result["is_reputable"] = True  # Mark as reputable for downstream processing
+                        enriched_results.append(result)
+
+                        # Be nice to servers
+                        await track_async_task(asyncio.sleep(random.uniform(1.0, 2.0)))
+                    else:
+                        print(f"Skipping non-reputable source: {url}")
+                except Exception as e:
+                    print(f"Error evaluating/scraping {url}: {e}")
 
         return enriched_results
 

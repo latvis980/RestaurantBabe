@@ -1,8 +1,10 @@
 # agents/follow_up_search_agent.py
 from langchain_core.tracers.context import tracing_v2_enabled
+from langchain_core.tracers import ConsoleCallbackHandler
 from agents.search_agent import BraveSearchAgent
 from agents.scraper import WebScraper
 import time
+from utils.debug_utils import dump_chain_state
 
 class FollowUpSearchAgent:
     def __init__(self, config):
@@ -23,6 +25,14 @@ class FollowUpSearchAgent:
             dict: Enhanced recommendations with additional information
         """
         with tracing_v2_enabled(project_name="restaurant-recommender"):
+            # Debug log the start of follow-up searches
+            dump_chain_state("follow_up_search_start", {
+                "restaurant_count": len(formatted_recommendations.get("main_list", [])) + 
+                                    len(formatted_recommendations.get("hidden_gems", [])),
+                "follow_up_queries_count": len(follow_up_queries),
+                "secondary_parameters": secondary_filter_parameters
+            })
+
             enhanced_recommendations = {
                 "main_list": [],
                 "hidden_gems": []
@@ -38,7 +48,15 @@ class FollowUpSearchAgent:
                 enhanced_restaurant = self._enhance_restaurant(restaurant, follow_up_queries, secondary_filter_parameters)
                 enhanced_recommendations["hidden_gems"].append(enhanced_restaurant)
 
+            # Debug log completion of follow-up searches
+            dump_chain_state("follow_up_search_complete", {
+                "enhanced_main_list_count": len(enhanced_recommendations["main_list"]),
+                "enhanced_hidden_gems_count": len(enhanced_recommendations["hidden_gems"])
+            })
+
             return enhanced_recommendations
+
+    # Modified _enhance_restaurant method for FollowUpSearchAgent
 
     def _enhance_restaurant(self, restaurant, follow_up_queries, secondary_filter_parameters=None):
         """Enhance a single restaurant with additional information from follow-up searches"""
@@ -53,14 +71,38 @@ class FollowUpSearchAgent:
                 break
 
         if not restaurant_queries:
-            # No specific queries found, use default
-            restaurant_queries = [
-                f"{restaurant_name} restaurant {restaurant_location} hours prices",
-                f"{restaurant_name} restaurant {restaurant_location} menu dishes",
-                f"{restaurant_name} restaurant {restaurant_location} chef reservations"
-            ]
+            # No specific queries found, use default for mandatory fields only
+            default_queries = []
 
-        # Check for missing information
+            # Check what mandatory information is missing
+            address = restaurant.get("address", "")
+            price_range = restaurant.get("price_range", "")
+            recommended_dishes = restaurant.get("recommended_dishes", [])
+            sources = restaurant.get("sources", [])
+
+            # Only create queries for missing mandatory information
+            if not address or address == "Address unavailable":
+                default_queries.append(f"{restaurant_name} restaurant {restaurant_location} address location")
+
+            if not price_range:
+                default_queries.append(f"{restaurant_name} restaurant {restaurant_location} price range cost")
+
+            if not recommended_dishes or len(recommended_dishes) < 2:
+                default_queries.append(f"{restaurant_name} restaurant {restaurant_location} signature dishes menu specialties")
+
+            if not sources or len(sources) < 2:
+                default_queries.append(f"{restaurant_name} restaurant {restaurant_location} reviews recommended by")
+
+            # Always check global guides
+            default_queries.append(f"{restaurant_name} restaurant {restaurant_location} michelin guide awards")
+
+            # Use these default queries (limited to 3)
+            restaurant_queries = default_queries[:3]
+
+            # Log that we're using default queries
+            print(f"Using default queries for {restaurant_name}: {restaurant_queries}")
+
+        # Check for missing information explicitly marked
         missing_info = restaurant.get("missing_info", [])
         if missing_info:
             # Add specific queries for missing information
@@ -72,49 +114,33 @@ class FollowUpSearchAgent:
             for param in secondary_filter_parameters:
                 restaurant_queries.append(f"{restaurant_name} restaurant {restaurant_location} {param}")
 
-        # Execute searches one at a time to avoid overwhelming resources
-        all_search_results = []
-        for query in restaurant_queries[:3]:  # Limit to first 3 queries for performance
-            try:
-                # Limit to 2 results per query to avoid excessive scraping
-                results = self.search_agent._execute_search(query)
-                filtered_results = self.search_agent._filter_results(results)[:2]
+        # Check global guides specifically
+        global_guide_info = self._check_global_guides(restaurant_name, restaurant_location)
 
-                # Scrape the results synchronously
-                try:
-                    scraped_results = self.scraper.scrape_search_results(filtered_results)
-                    all_search_results.extend(scraped_results)
-                except Exception as scrape_error:
-                    print(f"Error scraping results for {restaurant_name}: {scrape_error}")
+        # Perform searches and gather information
+        all_search_results = []
+        for query in restaurant_queries:
+            try:
+                # Limit to 3 results per query to avoid excessive scraping
+                results = self.search_agent._execute_search(query)
+                filtered_results = self.search_agent._filter_results(results)[:3]
+
+                # Scrape the results
+                scraped_results = self.scraper.scrape_search_results(filtered_results)
+                all_search_results.extend(scraped_results)
 
                 # Be nice to servers
                 time.sleep(1)
             except Exception as e:
                 print(f"Error in follow-up search for {restaurant_name} with query '{query}': {e}")
 
-        # Check global guides specifically - limit to fewer guides
-        selected_guides = ["guide.michelin.com", "theworlds50best.com"]
-        global_guide_info = []
-        for guide in selected_guides:
-            try:
-                query = f"site:{guide} {restaurant_name} {restaurant_location}"
-                guide_results = self.search_agent._execute_search(query)
-                filtered_guide_results = self.search_agent._filter_results(guide_results)[:1]
-
-                # Add guide information
-                for result in filtered_guide_results:
-                    result["guide"] = guide
-                    global_guide_info.append(result)
-
-                # Respect rate limits
-                time.sleep(1)
-            except Exception as e:
-                print(f"Error checking guide {guide}: {e}")
+        # Combine all results
+        combined_results = all_search_results + global_guide_info
 
         # Add the enhanced information to the restaurant
         enhanced_restaurant = restaurant.copy()
         enhanced_restaurant["additional_info"] = {
-            "follow_up_results": all_search_results + global_guide_info,
+            "follow_up_results": combined_results,
             "secondary_parameters_checked": secondary_filter_parameters if secondary_filter_parameters else []
         }
 
@@ -133,6 +159,39 @@ class FollowUpSearchAgent:
         # Very basic extraction of possibly better description (first 300-400 chars)
         if combined_content and len(combined_content) > 400:
             additional_details["description"] = combined_content[:400].rstrip() + "..."
+
+        # Try to extract opening hours if mentioned
+        if "hours" not in additional_details and ("opening hours" in combined_content.lower() or 
+                                                 "open from" in combined_content.lower()):
+            # This is a simplified extraction - in a real app, you'd use more sophisticated NLP
+            low_content = combined_content.lower()
+            hour_indicators = ["opening hours", "open from", "open:", "hours:", "we are open"]
+
+            for indicator in hour_indicators:
+                if indicator in low_content:
+                    # Get text after the indicator
+                    pos = low_content.find(indicator) + len(indicator)
+                    hours_text = combined_content[pos:pos+100]  # Get about 100 chars after
+
+                    # Try to find a sentence boundary to end
+                    sentence_end = hours_text.find('.')
+                    if sentence_end > 0:
+                        hours_text = hours_text[:sentence_end+1]
+
+                    additional_details["hours"] = hours_text.strip()
+                    break
+
+        # Try to extract price information
+        price_indicators = ["price", "cost", "menu is", "dishes from", "dishes cost", "€", "$", "£"]
+        if "price_range" not in additional_details:
+            for indicator in price_indicators:
+                if indicator in combined_content.lower():
+                    pos = combined_content.lower().find(indicator)
+                    price_text = combined_content[max(0, pos-20):pos+80]  # Get text around the indicator
+
+                    # Simplify for now - in a real app, you'd use regex patterns
+                    additional_details["price_info"] = price_text.strip()
+                    break
 
         return additional_details
 
@@ -212,9 +271,22 @@ class FollowUpSearchAgent:
 
         for guide in global_guides:
             try:
+                # Log each guide check explicitly
+                dump_chain_state("checking_global_guide", {
+                    "restaurant_name": restaurant_name,
+                    "guide": guide
+                })
+
                 query = f"site:{guide} {restaurant_name} {location}"
                 guide_results = self.search_agent._execute_search(query)
                 filtered_guide_results = self.search_agent._filter_results(guide_results)
+
+                # Log guide search results
+                dump_chain_state("global_guide_results", {
+                    "restaurant_name": restaurant_name,
+                    "guide": guide,
+                    "results_count": len(filtered_guide_results)
+                })
 
                 # Add guide information
                 for result in filtered_guide_results:
@@ -224,31 +296,13 @@ class FollowUpSearchAgent:
                 # Respect rate limits
                 time.sleep(1)
             except Exception as e:
-                print(f"Error checking guide {guide}: {e}")
+                error_msg = f"Error checking guide {guide}: {e}"
+                print(error_msg)
+                # Log the error
+                dump_chain_state("global_guide_error", {
+                    "restaurant_name": restaurant_name,
+                    "guide": guide,
+                    "error": str(e)
+                }, error=e)
 
         return results
-
-    def _generate_basic_html(self, restaurant):
-        """Generate basic HTML formatted string for a restaurant"""
-        try:
-            name = restaurant.get("name", "Restaurant")
-            html = f"<b>{name}</b>\n"
-
-            if "address" in restaurant:
-                html += f"📍 {restaurant['address']}\n"
-
-            if "description" in restaurant:
-                html += f"{restaurant['description']}\n"
-
-            if "recommended_by" in restaurant and restaurant["recommended_by"]:
-                sources = restaurant["recommended_by"]
-                if isinstance(sources, list):
-                    sources_text = ", ".join(sources[:3])
-                    html += f"<i>✅ Recommended by: {sources_text}</i>"
-                else:
-                    html += f"<i>✅ Recommended by: {sources}</i>"
-
-            return html
-        except Exception as e:
-            print(f"Error generating basic HTML: {e}")
-            return f"<b>{restaurant.get('name', 'Restaurant')}</b>"

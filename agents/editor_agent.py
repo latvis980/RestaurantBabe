@@ -33,43 +33,35 @@ class EditorAgent:
         - Opening hours
         - Special atmosphere details
 
-        HIDDEN GEMS SELECTION:
-        - Select 1-2 lesser-known but interesting places from the main list to feature as "hidden gems"
-        - Look for restaurants with unique concepts, local significance, or interesting specialties
-        - Move these selected restaurants to the hidden_gems list and remove them from the main list
+        MISSING INFORMATION HANDLING:
+        - For each restaurant, explicitly add a "missing_info" array listing any MANDATORY information that is missing
+        - Example: ["address", "price_range", "recommended_dishes"]
+        - This will be used to generate targeted follow-up searches
 
         FORMATTING INSTRUCTIONS:
-        1. Organize into two sections: "Recommended Restaurants" (from main_list) and "Hidden Gems" (selected by you)
+        1. Organize into two sections: "Recommended Restaurants" and "Hidden Gems"
         2. For each restaurant, create a structured listing with all required information
         3. Make restaurant names bold
-        4. Use consistent formatting across all listings
+        4. Use consistent formatting across all listings, do not use emojis
         5. Ensure descriptions are concise but informative
         6. Verify all information is complete according to requirements
-        7. If any required information is missing, note what follow-up information is needed
-
-        TONE GUIDELINES:
-        - Professional but engaging
-        - Highlight what makes each restaurant special
-        - Focus on culinary experience and atmosphere
-        - Be specific about menu recommendations
-        - Avoid generic praise or marketing language
+        7. If any required information is missing, include it in the missing_info array
 
         OUTPUT FORMAT:
         Provide a structured JSON object with:
         - "formatted_recommendations": Object with "main_list" and "hidden_gems" arrays
         - Each restaurant in the arrays should have all the required fields:
           - "name": Restaurant name
-          - "address": Complete street address
+          - "address": Complete street address (or "Address unavailable" if missing)
           - "description": Concise description
-          - "price_range": Number of 🟡 symbols (1-3)
+          - "price_range": Number of € symbols (1-3)
           - "recommended_dishes": Array of dishes
           - "sources": Array of recommendation sources
+          - "missing_info": Array listing any mandatory fields that are missing
           - "reservations_required": Boolean (if known)
-          - "instagram": Instagram handle (if available)
-          - "chef": Chef information (if available)
+          - "instagram": Instagram handle (if available) in format "instagram.com/username"
           - "hours": Opening hours (if available)
           - "atmosphere": Atmosphere details (if available)
-          - "missing_info": Array of missing information fields
         """
 
         # Create prompt template
@@ -205,28 +197,41 @@ class EditorAgent:
                     "follow_up_queries": []
                 }
 
+    # Improved follow-up query generator for EditorAgent
+
     def _generate_follow_up_queries(self, recommendations, original_query):
-        """Generate follow-up search queries for each restaurant"""
+        """Generate follow-up search queries for each restaurant, focusing on mandatory information"""
         follow_up_queries = []
 
         try:
-            # Create a prompt for generating follow-up queries
+            # Create a prompt for generating follow-up queries focused on mandatory information
             follow_up_prompt = ChatPromptTemplate.from_messages([
                 ("system", """
                 You are an expert at creating targeted search queries for restaurants.
-                For each restaurant, create search queries to find:
-                1. Missing information (address, hours, price range, etc.)
-                2. Specific information about menu items mentioned in the original query
-                3. Mentions in global restaurant guides
+
+                For each restaurant, create search queries ONLY to find missing MANDATORY information:
+                1. Address (if missing)
+                2. Price range (if missing)
+                3. Recommended dishes (if missing)
+                4. Sources of recommendation (if missing)
+
+                Do NOT create queries for optional information like:
+                - Chef name
+                - Instagram handle
+                - Exact opening hours
+                - Atmosphere details
+
+                If a restaurant already has all mandatory information, only create one query to check for mentions in reputable guides.
 
                 Return a JSON array of objects with "restaurant_name" and "queries" (array of strings).
+                Limit to max 3 queries per restaurant to avoid excessive searching.
                 """),
                 ("human", f"""
                 Original user query: {original_query}
 
                 Restaurant recommendations: {json.dumps(recommendations, ensure_ascii=False)}
 
-                Create follow-up search queries for each restaurant.
+                Create focused follow-up search queries for each restaurant, prioritizing only missing MANDATORY information.
                 """)
             ])
 
@@ -260,7 +265,7 @@ class EditorAgent:
             return self._generate_basic_queries(recommendations)
 
     def _generate_basic_queries(self, recommendations):
-        """Generate basic follow-up queries if the main generation fails"""
+        """Generate basic follow-up queries focused on mandatory information if the main generation fails"""
         basic_queries = []
 
         # Get restaurants from main_list
@@ -274,13 +279,35 @@ class EditorAgent:
         for restaurant in main_list:
             name = restaurant.get("name", "")
             if name:
+                # Check what mandatory information is missing
+                address = restaurant.get("address", "")
+                price_range = restaurant.get("price_range", "")
+                recommended_dishes = restaurant.get("recommended_dishes", [])
+                sources = restaurant.get("sources", [])
+
+                queries = []
+
+                # Only create queries for missing mandatory information
+                if not address or address == "Address unavailable":
+                    queries.append(f"{name} restaurant address location")
+
+                if not price_range:
+                    queries.append(f"{name} restaurant price range cost")
+
+                if not recommended_dishes or len(recommended_dishes) < 2:
+                    queries.append(f"{name} restaurant signature dishes menu specialties")
+
+                if not sources or len(sources) < 2:
+                    queries.append(f"{name} restaurant reviews guide recommended by")
+
+                # If no missing information or we have room for another query, add a guide check
+                if not queries or len(queries) < 3:
+                    queries.append(f"{name} restaurant michelin guide world's 50 best")
+
+                # Limit to 3 queries maximum
                 basic_queries.append({
                     "restaurant_name": name,
-                    "queries": [
-                        f"{name} restaurant address hours",
-                        f"{name} restaurant menu specialties",
-                        f"{name} restaurant michelin guide"
-                    ]
+                    "queries": queries[:3]
                 })
 
         return basic_queries
