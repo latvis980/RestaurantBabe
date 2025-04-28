@@ -17,13 +17,17 @@ class EditorAgent:
         Your task is to format and polish restaurant recommendations according to strict formatting guidelines.
 
         INFORMATION REQUIREMENTS:
+        # Update part of the editor prompt
+    
         Obligatory information for each restaurant:
         - Name (always bold)
         - Street address: street number and street name
-        - Informative description 10-40 words
+        - Informative description 2-40 words
         - Price range
         - Recommended dishes (at least 2-3 signature items)
-        - IMPORTANT: At least TWO sources of recommendation (e.g., "Recommended by Michelin Guide and Timeout Lisboa")
+        - At least two sources of recommendation (e.g., "Recommended by Michelin Guide and Timeout Lisboa")
+          * Present all available sources, but at minimum show two if available
+          * If fewer than two sources are available, explicitly mark this in "missing_info"
         - NEVER mention Tripadvisor, Yelp, or Google as sources
 
         Optional information (include when available):

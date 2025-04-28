@@ -116,7 +116,7 @@ class WebScraper:
                         soup = BeautifulSoup(html_content, 'html.parser')
 
                         # Extract main content as clean text
-                        clean_text = self._extract_clean_text(soup)
+                        clean_text, source_name = self._extract_clean_text(soup, url)
 
                         # Get source information
                         domain = urlparse(url).netloc
@@ -129,6 +129,7 @@ class WebScraper:
                         # Add the scraped content to the result
                         result["scraped_content"] = content_with_source
                         result["source_domain"] = domain
+                        result["source_name"] = source_name  # Add the formatted source name
                         result["is_reputable"] = True  # Mark as reputable for downstream processing
                         enriched_results.append(result)
 
@@ -222,8 +223,8 @@ class WebScraper:
 
         return None
 
-    def _extract_clean_text(self, soup):
-        """Extract clean text content from HTML"""
+    def _extract_clean_text(self, soup, url):
+        """Extract clean text content from HTML and track source name"""
         # Remove script and style elements
         for script in soup(["script", "style", "header", "footer", "nav", "aside"]):
             script.extract()
@@ -257,4 +258,56 @@ class WebScraper:
         chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
         main_content = ' '.join(chunk for chunk in chunks if chunk)
 
-        return main_content
+        # Extract source name from the URL
+        domain = urlparse(url).netloc
+        source_name = self._format_source_name(domain)
+
+        return main_content, source_name
+
+    def _format_source_name(self, domain):
+        """Format domain into a proper source name"""
+        # Remove www. and get the main domain part
+        clean_domain = domain.replace("www.", "").split(".")[0]
+
+        # Format properly for display
+        source_name = " ".join(word.capitalize() for word in clean_domain.split("-"))
+        source_name = " ".join(word.capitalize() for word in source_name.split("_"))
+
+        # Special case handling for common domains
+        domain_map = {
+            "michelin": "Michelin Guide",
+            "foodandwine": "Food & Wine",
+            "eater": "Eater",
+            "zagat": "Zagat",
+            "infatuation": "The Infatuation",
+            "50best": "World's 50 Best",
+            "worlds50best": "World's 50 Best", 
+            "worldofmouth": "World of Mouth",
+            "nytimes": "New York Times",
+            "washingtonpost": "Washington Post",
+            "timeout": "Time Out",
+            "bonappetit": "Bon Appétit",
+            "saveur": "Saveur",
+            "foodrepublic": "Food Republic",
+            "epicurious": "Epicurious",
+            "seriouseats": "Serious Eats",
+            "Forbes": "Forbes",
+            "thrillist": "Thrillist",
+            "gq": "GQ",
+            "vogue": "Vogue",
+            "esquire": "Esquire",
+            "telegraph": "The Telegraph",
+            "guardian": "The Guardian",
+            "independent": "The Independent",
+            "finedininglovers": "Fine Dining Lovers",
+            "oadguides": "OAD Guides",
+            "laliste": "La Liste",
+            "culinarybackstreets": "Culinary Backstreets",
+            "cntraveler": "Condé Nast Traveler"
+        }
+
+        for key, value in domain_map.items():
+            if key.lower() in domain.lower():
+                return value
+
+        return source_name

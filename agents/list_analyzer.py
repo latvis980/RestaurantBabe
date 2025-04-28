@@ -50,6 +50,9 @@ class ListAnalyzer:
           2. Street address (as complete as possible, or "Address unavailable" if not found)
           3. Raw description (40-60 words) including key details, dishes, interior, chef, and atmosphere
           4. ALL sources where mentioned (just the source name, NOT the URL, e.g., "Le Foodling" not "lefooding.com")
+          5. Pay special attention to restaurants featured in food guides, local publications, or by respected critics
+          6. For each restaurant, collect ALL source names found in the search results (look for "Source Name:" in each result)
+          7. When analyzing content, check if restaurants meet the secondary filter parameters
 
         OUTPUT FORMAT:
         Provide a structured JSON object with one array: "main_list"
@@ -224,6 +227,8 @@ class ListAnalyzer:
             result_str += f"Title: {result.get('title', 'Unknown')}\n"
             result_str += f"URL: {result.get('url', 'Unknown')}\n"
             result_str += f"Source: {result.get('source_domain', 'Unknown')}\n"
+            if result.get('source_name'):
+                result_str += f"Source Name: {result.get('source_name')}\n"
 
             # Add description
             description = result.get('description', '')

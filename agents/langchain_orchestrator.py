@@ -376,7 +376,9 @@ class LangChainOrchestrator:
 
                     if sources:
                         if isinstance(sources, list):
-                            sources_text = ", ".join(sources[:3])
+                            # Sort and limit to first 3 sources for display
+                            unique_sources = list(set(sources))
+                            sources_text = ", ".join(unique_sources[:3])
                             html_output += f"<i>✅ Рекомендовано: {sources_text}</i>\n"
                         else:
                             html_output += f"<i>✅ Рекомендовано: {sources}</i>\n"

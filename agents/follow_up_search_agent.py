@@ -90,14 +90,15 @@ class FollowUpSearchAgent:
             if not recommended_dishes or len(recommended_dishes) < 2:
                 default_queries.append(f"{restaurant_name} restaurant {restaurant_location} signature dishes menu specialties")
 
+            # Check if we have enough sources
             if not sources or len(sources) < 2:
-                default_queries.append(f"{restaurant_name} restaurant {restaurant_location} reviews recommended by")
+                default_queries.append(f"{restaurant_name} restaurant {restaurant_location} reviews recommended by critic guide")
 
             # Always check global guides
             default_queries.append(f"{restaurant_name} restaurant {restaurant_location} michelin guide awards")
 
-            # Use these default queries (limited to 3)
-            restaurant_queries = default_queries[:3]
+            # Use these default queries (limited to 4)
+            restaurant_queries = default_queries[:4]
 
             # Log that we're using default queries
             print(f"Using default queries for {restaurant_name}: {restaurant_queries}")
@@ -117,6 +118,9 @@ class FollowUpSearchAgent:
         # Check global guides specifically
         global_guide_info = self._check_global_guides(restaurant_name, restaurant_location)
 
+        # Extract sources from global guides
+        global_guide_sources = self._extract_sources(global_guide_info)
+
         # Perform searches and gather information
         all_search_results = []
         for query in restaurant_queries:
@@ -134,17 +138,51 @@ class FollowUpSearchAgent:
             except Exception as e:
                 print(f"Error in follow-up search for {restaurant_name} with query '{query}': {e}")
 
-        # Combine all results
-        combined_results = all_search_results + global_guide_info
+        # Extract additional sources from search results
+        additional_sources = self._extract_sources(all_search_results)
+
+        # Get existing sources from the restaurant
+        existing_sources = restaurant.get("sources", [])
+        if isinstance(existing_sources, str):
+            # Convert string to list if necessary
+            existing_sources = [existing_sources]
+
+        # Combine and deduplicate all sources
+        combined_sources = list(set(existing_sources + global_guide_sources + additional_sources))
+
+        # Remove banned sources
+        banned_sources = ["Tripadvisor", "Yelp", "Google"]
+        cleaned_sources = [source for source in combined_sources if source not in banned_sources]
+
+        # Extract additional details
+        additional_details = self._extract_additional_details(all_search_results)
 
         # Add the enhanced information to the restaurant
         enhanced_restaurant = restaurant.copy()
+
+        # Update sources
+        enhanced_restaurant["sources"] = cleaned_sources
+
+        # Update other fields if found in additional details
+        if "description" in additional_details and len(additional_details["description"]) > len(restaurant.get("description", "")):
+            enhanced_restaurant["description"] = additional_details["description"]
+
+        if "hours" in additional_details and "hours" not in enhanced_restaurant:
+            enhanced_restaurant["hours"] = additional_details["hours"]
+
+        if "price_info" in additional_details and not enhanced_restaurant.get("price_range"):
+            enhanced_restaurant["price_range"] = additional_details["price_info"]
+
+        # Store additional information
         enhanced_restaurant["additional_info"] = {
-            "follow_up_results": combined_results,
+            "follow_up_results": all_search_results + global_guide_info,
+            "global_guide_results": global_guide_info,
             "secondary_parameters_checked": secondary_filter_parameters if secondary_filter_parameters else []
         }
 
         return enhanced_restaurant
+
+    
 
     def _extract_additional_details(self, search_results):
         """Try to extract additional details from search results"""
@@ -155,6 +193,8 @@ class FollowUpSearchAgent:
         for result in search_results:
             if "scraped_content" in result:
                 combined_content += result["scraped_content"] + "\n\n"
+
+        combined_sources = list(set(sources + global_guide_sources + self._extract_sources(all_search_results)))
 
         # Very basic extraction of possibly better description (first 300-400 chars)
         if combined_content and len(combined_content) > 400:
@@ -200,7 +240,14 @@ class FollowUpSearchAgent:
         sources = []
 
         for result in source_results:
-            # Extract source from domain
+            # Check if there's already a source_name field (from scraper)
+            if "source_name" in result and result["source_name"]:
+                source_name = result["source_name"]
+                if source_name not in sources:
+                    sources.append(source_name)
+                continue
+
+            # Extract source from domain if no source_name
             domain = result.get("source_domain", "")
 
             if domain:
@@ -218,14 +265,24 @@ class FollowUpSearchAgent:
                     source_name = "Food & Wine"
                 elif "eater" in domain:
                     source_name = "Eater"
-                elif "zagat" in domain:
-                    source_name = "Zagat"
                 elif "infatuation" in domain:
                     source_name = "The Infatuation"
                 elif "50best" in domain or "worlds50best" in domain:
                     source_name = "World's 50 Best"
                 elif "wordofmouth" in domain or "worldofmouth" in domain:
                     source_name = "World of Mouth"
+                elif "nytimes" in domain:
+                    source_name = "New York Times"
+                elif "timeout" in domain:
+                    source_name = "Time Out"
+                elif "forbes" in domain:
+                    source_name = "Forbes"
+                elif "telegraph" in domain:
+                    source_name = "The Telegraph"
+                elif "guardian" in domain:
+                    source_name = "The Guardian"
+                elif "cntraveler" in domain:
+                    source_name = "Condé Nast Traveler"
 
                 # Add to sources if not already there and not banned
                 if (source_name not in sources and
@@ -248,6 +305,12 @@ class FollowUpSearchAgent:
                         guide_name = "Michelin Guide"
                     elif "worldofmouth" in guide or "wordofmouth" in guide:
                         guide_name = "World of Mouth"
+                    elif "oadguides" in guide:
+                        guide_name = "OAD Guides"
+                    elif "laliste" in guide:
+                        guide_name = "La Liste"
+                    elif "culinarybackstreets" in guide:
+                        guide_name = "Culinary Backstreets"
 
                     # Add to sources if not already there and not banned
                     if (guide_name not in sources and 
