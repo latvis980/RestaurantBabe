@@ -36,4 +36,4 @@ diskcache>=5.6.0          # lightweight on-disk / TTL cache
 lxml>=4.9.0               # parser required by readability-lxml
 cssselect>=1.2.0          # tiny helper readability-lxml expects
 
-pip install tiktoken>=0.5.2
+tiktoken>=0.5.2
