@@ -23,6 +23,8 @@ DB_TABLE_SOURCES = "sources"  # Table for source reputation
 DB_TABLE_RESTAURANTS = "restaurants"
 DB_TABLE_PROCESSES = "processes"
 DB_TABLE_SEARCHES = "searches"
+DB_TABLE_USER_PREFS = "user_prefs"  # Add this line for user preferences
+
 
 # Search settings
 EXCLUDED_RESTAURANT_SOURCES = ["tripadvisor.com", "yelp.com", "google.com/maps"]

@@ -1,4 +1,11 @@
 # telegram_bot.py — enhanced conversational interface with preference collection and confirmation updates
+"""
+Key additions compared with the previous version:
+• Detects possible *new* standing preferences mid‑conversation (e.g. “а вегетарианское?”)
+• Confirms with the user before saving (“Сохранить ‘вегетарианское’ как постоянное?”)
+• Saves/updates those preferences in the new `user_prefs` table only after explicit consent.
+"""
+
 import telebot
 import logging
 import time
@@ -19,7 +26,7 @@ from openai import OpenAI
 # -------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -27,24 +34,22 @@ BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-# DB initialisation
 initialize_db(config)
-
 USER_PREFS_TABLE = tables.get(config.DB_TABLE_USER_PREFS)
 USER_SEARCHES_TABLE = tables.get(config.DB_TABLE_SEARCHES)
 
-# in‑memory user context
-user_state: Dict[int, Dict[str, Any]] = {}  # {stage, last_query, prefs{raw}, pref_candidate}
+# in‑memory conversation context
+user_state: Dict[int, Dict[str, Any]] = {}
 
 bot = telebot.TeleBot(BOT_TOKEN)
 orchestrator = LangChainOrchestrator(config)
 
 # -------------------------------------------------
-# HELPER UTILITIES
+# HELPER FUNCTIONS
 # -------------------------------------------------
 
 def classify_intent(message: str, history: str = "") -> str:
-    """Return one of {search, follow_up, chat}."""
+    """Classify into search / follow_up / chat."""
     prompt = (
         "You are an intent classifier for a restaurant search assistant.\n"
         "Intents: search, follow_up, chat.\n\n"
@@ -52,68 +57,76 @@ def classify_intent(message: str, history: str = "") -> str:
     )
     try:
         rsp = openai_client.chat.completions.create(
-            model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}],
-            max_tokens=1, temperature=0
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1,
+            temperature=0,
         )
         intent = rsp.choices[0].message.content.strip().lower()
         return intent if intent in {"search", "follow_up", "chat"} else "search"
     except Exception as e:
-        logger.warning(f"Intent classification failed: {e}")
+        logger.warning("Intent classification failed – defaulting to 'search': %s", e)
         return "search"
 
+
 def detect_new_preference(text: str, existing_raw: str) -> Optional[str]:
-    """Return a new preference phrase to propose storing, or None."""
+    """If message contains a new standing preference, return keyword, else None."""
     prompt = (
         "Existing preferences: " + (existing_raw or "<none>") + "\n"
         "User message: " + text + "\n\n"
-        "If the user expresses a NEW standing food preference (e.g. vegetarian, gluten‑free, moderate price) "
-        "that is not obviously already in existing preferences, output that preference phrase (max 4 words). "
-        "If none, output 'none'."
+        "If the user expresses a NEW *standing* food preference (e.g. vegetarian, gluten‑free, moderate price) that "
+        "is not already in existing preferences, output that single short phrase (max 4 words). If no new preference "
+        "is detected, output 'none'."
     )
     try:
         rsp = openai_client.chat.completions.create(
-            model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}],
-            max_tokens=4, temperature=0
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=4,
+            temperature=0,
         )
         candidate = rsp.choices[0].message.content.strip().lower()
         if candidate == "none" or not candidate:
             return None
-        # quick dedup check
         return candidate if candidate not in existing_raw.lower() else None
     except Exception as e:
-        logger.debug(f"Preference detection failed: {e}")
+        logger.debug("Preference detection failed: %s", e)
         return None
 
+
 def store_preferences(user_id: int, raw_text: str):
+    """Insert or update the user's standing preferences in DB and memory."""
     if USER_PREFS_TABLE is None:
         return
     with engine.begin() as conn:
         conn.execute(
-            insert(USER_PREFS_TABLE).values(
-                _id=str(user_id),
-                data={"prefs_text": raw_text},
-                timestamp=time.time()
-            ).on_conflict_do_update(
+            insert(USER_PREFS_TABLE)
+            .values(_id=str(user_id), data={"prefs_text": raw_text}, timestamp=time.time())
+            .on_conflict_do_update(
                 index_elements=[USER_PREFS_TABLE.c._id],
-                set_={"data": {"prefs_text": raw_text}, "timestamp": time.time()}
+                set_={"data": {"prefs_text": raw_text}, "timestamp": time.time()},
             )
         )
     user_state.setdefault(user_id, {}).setdefault("prefs", {})["raw"] = raw_text
 
+
 def ask_for_preferences(message):
     bot.reply_to(
         message,
-        "Чтобы подобрать рестораны точнее, расскажите об атмосфере, ценовом диапазоне, кухнях, "
-        "или ограничениях (например, вегетарианское, без глютена), которые вы предпочитаете.")
+        "Чтобы я могла точнее посоветовать вам рестораны, расскажите, какие рестораны в каком стиле вы любите и есть ли у вас какие-либо ограничения. Например, вы предпочитаете вегетарианские рестораны или всегда ходите только в рестораны, где нет туристов?",
+    )
+
 
 def ask_to_store_pref(message, cand: str):
     bot.reply_to(
         message,
-        f"Хотите, чтобы я запомнил ваш предпочтение '{cand}' как постоянное? Напишите 'да' или 'нет'.")
+        f"Хотите, чтобы я запомнил предпочтение ‘{cand}’ как постоянное? Напишите ‘да’ или ‘нет’.",
+    )
 
-def merge_with_last_query(user_id: int, new_msg: str) -> str:
+
+def merge_with_last_query(user_id: int, follow_up: str) -> str:
     prev = user_state.get(user_id, {}).get("last_query", "")
-    return f"{prev}\nFollow‑up: {new_msg}"
+    return f"{prev}\nFollow‑up: {follow_up}"
 
 # -------------------------------------------------
 # BOT HANDLERS
@@ -125,8 +138,10 @@ def send_welcome(message):
     user_state[uid] = {"stage": "awaiting_first_query"}
     bot.reply_to(
         message,
-        "Привет! Я помогу найти классные рестораны. Опишите, что вы ищете — например, "
-        "'современная португальская кухня в Лиссабоне'.")
+        "Привет! Я помогу найти классные рестораны. Опишите, что ищете — «современная португальская кухня в Лиссабоне», "
+        "«уютное кафе до 20€», и т.д.",
+    )
+
 
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
@@ -135,46 +150,46 @@ def handle_message(message):
     state = user_state.setdefault(uid, {"stage": "awaiting_first_query"})
 
     try:
-        # 0) Waiting for yes/no about storing preference
+        # 0) Yes/No about saving new preference
         if state.get("stage") == "awaiting_pref_confirm":
             if text.lower() in {"да", "yes", "y"}:
                 cand = state.pop("pref_candidate", "")
                 existing = state.get("prefs", {}).get("raw", "")
                 new_raw = (existing + ", " + cand).strip(", ") if existing else cand
                 store_preferences(uid, new_raw)
-                bot.reply_to(message, "Готово! Предпочтение сохранено.")
+                bot.reply_to(message, "Готово — предпочтение сохранено.")
             else:
-                bot.reply_to(message, "Хорошо, не буду сохранять это предпочтение.")
+                bot.reply_to(message, "Хорошо, не сохраняю.")
             state["stage"] = "ready"
             return
 
-        # 1) Waiting for initial preferences
+        # 1) Still waiting for initial preferences (first time)
         if state.get("stage") == "awaiting_prefs":
             store_preferences(uid, text)
             pending_query = state.pop("pending_query", "")
             state["stage"] = "ready"
-            full_q = f"{pending_query}\nUser preferences: {text}"
-            process_and_respond(full_q, message)
+            full_query = f"{pending_query}\nUser preferences: {text}"
+            process_and_respond(full_query, message)
             return
 
-        # 2) First query ever
+        # 2) First ever query
         if state.get("stage") == "awaiting_first_query":
             state["pending_query"] = text
             state["stage"] = "awaiting_prefs"
             ask_for_preferences(message)
             return
 
-        # 3) Established user – detect potential new preference
+        # 3) Existing user — maybe a new standing preference?
         existing_raw = state.get("prefs", {}).get("raw", "")
         cand_pref = detect_new_preference(text, existing_raw)
         if cand_pref:
             state["pref_candidate"] = cand_pref
-            state["stage"] = "awaiting_pref_confirm"  # ask after we send results
+            state["stage"] = "awaiting_pref_confirm"  # we’ll ask after results
 
-        # classify intent
+        # Intent classification
         intent = classify_intent(text, state.get("last_query", ""))
         if intent == "chat":
-            bot.reply_to(message, "Понимаю! Чем могу помочь? Расскажите, что ищете.")
+            bot.reply_to(message, "Понимаю! Чем могу помочь?")
             if state.get("stage") == "awaiting_pref_confirm":
                 ask_to_store_pref(message, state["pref_candidate"])
             return
@@ -187,22 +202,87 @@ def handle_message(message):
 
         if state.get("stage") == "awaiting_pref_confirm":
             ask_to_store_pref(message, state["pref_candidate"])
+
     except Exception as e:
-        logger.error(f"handle_message error: {e}")
+        logger.error("handle_message error: %s", e)
         logger.error(traceback.format_exc())
         bot.reply_to(message, "Извините, произошла ошибка. Попробуйте ещё раз.")
 
+
+# -------------------------------------------------
+# CORE SEARCH AND RESPONSE
 # -------------------------------------------------
 
 def process_and_respond(query: str, message):
     uid = message.from_user.id
     bot.send_chat_action(message.chat.id, "typing")
     interim = bot.reply_to(message, "Ищу подходящие варианты…")
-    start = time.time()
+    start_ts = time.time()
+
     try:
         result = orchestrator.process_query(query)
         user_state[uid]["last_query"] = query
+
+        # Persist search
         if USER_SEARCHES_TABLE is not None and isinstance(result, dict):
             with engine.begin() as conn:
-                conn.execute(insert(USER_SEARCHES_TABLE).values(
-                    _id=str(uid) + "-" + str(int
+                conn.execute(
+                    insert(USER_SEARCHES_TABLE).values(
+                        _id=str(uid) + "-" + str(int(time.time() * 1000)),
+                        data={"query": query, "result": result},
+                        timestamp=time.time(),
+                    )
+                )
+
+        resp_text = (
+            result.get("telegram_text", "Извините, ничего не найдено.")
+            if isinstance(result, dict)
+            else str(result)
+        )
+
+        # Clean up placeholder
+        try:
+            bot.delete_message(message.chat.id, interim.message_id)
+        except Exception:
+            pass
+
+        bot.send_message(message.chat.id, resp_text, parse_mode="HTML")
+        dump_chain_state("telegram_response_sent", {"processing_time": time.time() - start_ts})
+
+    except Exception as e:
+        logger.error("process_and_respond error: %s", e)
+        try:
+            bot.delete_message(message.chat.id, interim.message_id)
+        except Exception:
+            pass
+        bot.reply_to(message, "Извините, поиск не удался. Попробуйте чуть позже.")
+
+
+# -------------------------------------------------
+# CLEAN SHUTDOWN
+# -------------------------------------------------
+
+def shutdown():
+    logger.info("Shutting down…")
+    from utils.async_utils import wait_for_pending_tasks
+
+    try:
+        asyncio.run(wait_for_pending_tasks())
+    except RuntimeError:
+        pass
+
+
+# -------------------------------------------------
+# MAIN ENTRY POINT
+# -------------------------------------------------
+
+def main():
+    import atexit
+
+    atexit.register(shutdown)
+    logger.info("Telegram bot is running with preference‑confirmation features…")
+    bot.infinity_polling()
+
+
+if __name__ == "__main__":
+    main()
