@@ -2,10 +2,10 @@ from __future__ import annotations
 
 """Follow‑up search agent
 
-This version adds a thin Google Maps integration that is executed **before** we run the
+This version adds a thin Google Maps integration that is executed **before** we run the
 traditional Web follow‑up search. The Maps look‑up supplies:
 
-* `formatted_address` – turned into a clickable `<a>` element that opens Google Maps
+* `formatted_address` – turned into a clickable `<a>` element that opens Google Maps
   directly on the place.
 * `opening_hours` – concatenated into a single string.
 * `rating` – used as a **hard filter**. Places that score below ``MIN_ACCEPTABLE_RATING``
@@ -42,7 +42,7 @@ from utils.debug_utils import dump_chain_state
 
 MIN_ACCEPTABLE_RATING = 4.5           # rating threshold – <  ► rejected
 MAX_RESULTS_PER_QUERY = 3             # courtesy cap for scraping
-MAPS_FIELDS = [                       # fields we request from Place Details
+MAPS_FIELDS = [                       # fields we request from Place Details
     "url",
     "formatted_address",
     "rating",
@@ -53,20 +53,21 @@ MAPS_FIELDS = [                       # fields we request from Place Details
 class FollowUpSearchAgent:
     """Adds missing data to restaurant candidates.
 
-    The constructor requires a ``config`` dictionary that MUST contain a
-    ``GOOGLE_MAPS_API_KEY`` entry.
+    The constructor requires a ``config`` object that MUST contain a
+    ``GOOGLE_MAPS_API_KEY`` attribute.
     """
 
     # ---------------------------------------------------------------------
     # Construction helpers
     # ---------------------------------------------------------------------
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Any):
         self.config = config
         self.search_agent = BraveSearchAgent(config)
         self.scraper = WebScraper(config)
 
-        api_key = config.get("GOOGLE_MAPS_API_KEY")
+        # Modified: Access as attribute, not with get()
+        api_key = config.GOOGLE_MAPS_API_KEY if hasattr(config, 'GOOGLE_MAPS_API_KEY') else None
         if not api_key:
             raise ValueError("GOOGLE_MAPS_API_KEY missing in config – please supply it.")
         self.gmaps = googlemaps.Client(key=api_key)
@@ -83,7 +84,7 @@ class FollowUpSearchAgent:
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Enrich every restaurant in *formatted_recommendations*.
 
-        Restaurants that do not meet the minimum Google rating are silently
+        Restaurants that do not meet the minimum Google rating are silently
         excluded from the output.
         """
 
@@ -132,11 +133,11 @@ class FollowUpSearchAgent:
             return enhanced_recommendations
 
     # ------------------------------------------------------------------
-    # Google Maps integration helpers
+    # Google Maps integration helpers
     # ------------------------------------------------------------------
 
     def _get_google_maps_info(self, name: str, location: str) -> Optional[Dict[str, Any]]:
-        """Look up the place on Google Maps and return basic metadata.
+        """Look up the place on Google Maps and return basic metadata.
 
         We run a *Text Search* first because it does a decent job at matching
         ambiguous names.  The first candidate is fed into *Place Details*
@@ -202,7 +203,7 @@ class FollowUpSearchAgent:
         )
 
         # ------------------------------------------------------------------
-        # 1️⃣  Google Maps pass – decides early rejection / base metadata
+        # 1️⃣  Google Maps pass – decides early rejection / base metadata
         # ------------------------------------------------------------------
         maps_info = self._get_google_maps_info(restaurant_name, restaurant_location)
         if maps_info and maps_info.get("rating") is not None:
@@ -359,7 +360,7 @@ class FollowUpSearchAgent:
         additional: Dict[str, str] = {}
         combined_content = "\n\n".join(r.get("scraped_content", "") for r in search_results if r.get("scraped_content"))
 
-        # Simple heuristic – first 400 chars make a decent description
+        # Simple heuristic – first 400 chars make a decent description
         if combined_content and len(combined_content) > 400:
             additional["description"] = combined_content[:400].rstrip() + "…"
 
