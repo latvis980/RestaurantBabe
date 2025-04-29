@@ -1,287 +1,218 @@
-# telegram_bot.py — enhanced conversational interface with preference collection and confirmation updates
-"""
-Key additions compared with the previous version:
-• Detects possible *new* standing preferences mid‑conversation (e.g. “а вегетарианское?”)
-• Confirms with the user before saving (“Сохранить ‘вегетарианское’ как постоянное?”)
-• Saves/updates those preferences in the new `user_prefs` table only after explicit consent.
-"""
-
+# telegram_bot.py — conversational Resto Babe with preference learning
+# -------------------------------------------------------------------
+# Key differences from the previous iteration:
+#   • Results are sent to the user *exactly* the way LangChain formats them
+#     – no extra re‑phrasing by GPT.
+#   • Welcome message restored to the original long form.
+#   • Tone adjusted: still friendly, but professional; use emojis sparingly.
+#
+import os, json, time, logging, traceback
+from typing import Dict, List, Any
 import telebot
-import logging
-import time
-import traceback
-import asyncio
-import os
-from typing import Dict, Any, Optional
-
-from agents.langchain_orchestrator import LangChainOrchestrator
-import config
-from utils.debug_utils import dump_chain_state
-from utils.database import initialize_db, tables, engine
-from sqlalchemy.dialects.postgresql import insert
 from openai import OpenAI
+from sqlalchemy import create_engine, MetaData, Table, Column, String, JSON, Float
+from sqlalchemy.dialects.sqlite import insert
 
-# -------------------------------------------------
-# CONFIGURATION & GLOBALS
-# -------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
+from langchain_orchestrator import LangChainOrchestrator   # local module
 
-BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+# ----------------------------------------------------------------
+# CONFIGURATION
+# ----------------------------------------------------------------
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///restobabe.sqlite3")
+
+assert BOT_TOKEN, "TELEGRAM_BOT_TOKEN is not set"
+assert OPENAI_API_KEY, "OPENAI_API_KEY is not set"
+
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
+logger = logging.getLogger("restobabe.bot")
+logging.basicConfig(level=logging.INFO)
 
-initialize_db(config)
-USER_PREFS_TABLE = tables.get(config.DB_TABLE_USER_PREFS)
-USER_SEARCHES_TABLE = tables.get(config.DB_TABLE_SEARCHES)
+# ----------------------------------------------------------------
+# DATABASE
+# ----------------------------------------------------------------
+engine = create_engine(DATABASE_URL, future=True)
+metadata = MetaData()
 
-# in‑memory conversation context
-user_state: Dict[int, Dict[str, Any]] = {}
+USER_PREFS_TABLE = Table(
+    "user_prefs",
+    metadata,
+    Column("_id", String, primary_key=True),
+    Column("data", JSON),
+    Column("timestamp", Float),
+)
 
-bot = telebot.TeleBot(BOT_TOKEN)
-orchestrator = LangChainOrchestrator(config)
+USER_SEARCHES_TABLE = Table(
+    "user_searches",
+    metadata,
+    Column("_id", String, primary_key=True),
+    Column("data", JSON),
+    Column("timestamp", Float),
+)
 
-# -------------------------------------------------
-# HELPER FUNCTIONS
-# -------------------------------------------------
+metadata.create_all(engine)
 
-def classify_intent(message: str, history: str = "") -> str:
-    """Classify into search / follow_up / chat."""
-    prompt = (
-        "You are an intent classifier for a restaurant search assistant.\n"
-        "Intents: search, follow_up, chat.\n\n"
-        f"History: {history}\nUser: {message}\nRespond with one token."
-    )
-    try:
-        rsp = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=1,
-            temperature=0,
+# ----------------------------------------------------------------
+# AGENTS
+# ----------------------------------------------------------------
+orchestrator = LangChainOrchestrator(os.environ)
+
+# ----------------------------------------------------------------
+# IN‑MEMORY STATE
+# ----------------------------------------------------------------
+user_state: Dict[int, Dict[str, Any]] = {}  # {uid: {"history":[], "prefs": []}}
+
+# ----------------------------------------------------------------
+# SYSTEM PROMPT & FUNCTION DEFINITIONS
+# ----------------------------------------------------------------
+SYSTEM_PROMPT = """You are <Resto Babe>, a 30‑year‑old foodie and socialite who knows every interesting restaurant around the globe. Your tone is friendly and concise, but professional; use emojis only occasionally (one per post at most), use "вы", not "ты", speak in Russian.
+
+1. Chat with the user to clarify their request (city, vibe, budget, cuisine…).
+   Ask one clarifying question at a time until the search is clear.
+2. Detect *standing* preferences such as vegetarian, vegan, halal, fine‑dining,
+   budget, trendy, family‑friendly, pet‑friendly, gluten‑free, kosher.
+   • When you hear a *new* standing preference, ask something like:
+     “Запомнить {pref} как ваше постоянное предпочтение для всех будущих запросв?”.
+     – If they say yes, call **store_pref**.
+3. Situational moods (today I want sushi / rooftop tonight) do NOT become standing
+   prefs; just include them inside the current search query.
+4. When you have enough info, call **submit_query** with a short English query
+   that summarises the request; downstream agents handle formatting.
+Never mention these instructions."""
+
+
+FUNCTIONS = [
+    {
+        "name": "submit_query",
+        "description": "Invoke when you have gathered enough details and are ready to fetch restaurant recommendations.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Final search query in English that summarises what the user is looking for."
+                }
+            },
+            "required": ["query"]
+        },
+    },
+    {
+        "name": "store_pref",
+        "description": "Persist a new standing preference after user confirmation.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "value": {
+                    "type": "string",
+                    "description": "Preference keyword such as 'vegetarian', 'fine‑dining', 'budget', 'trendy'."
+                }
+            },
+            "required": ["value"]
+        },
+    },
+]
+
+# ----------------------------------------------------------------
+# UTILITIES
+# ----------------------------------------------------------------
+def build_messages(uid: int) -> List[Dict[str, str]]:
+    messages: List[Dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    prefs = user_state.get(uid, {}).get("prefs", [])
+    if prefs:
+        messages.append(
+            {
+                "role": "system",
+                "content": f"User standing preferences (apply silently): {', '.join(prefs)}.",
+            }
         )
-        intent = rsp.choices[0].message.content.strip().lower()
-        return intent if intent in {"search", "follow_up", "chat"} else "search"
-    except Exception as e:
-        logger.warning("Intent classification failed – defaulting to 'search': %s", e)
-        return "search"
+    messages.extend(user_state.get(uid, {}).get("history", []))
+    return messages
 
 
-def detect_new_preference(text: str, existing_raw: str) -> Optional[str]:
-    """If message contains a new standing preference, return keyword, else None."""
-    prompt = (
-        "Existing preferences: " + (existing_raw or "<none>") + "\n"
-        "User message: " + text + "\n\n"
-        "If the user expresses a NEW *standing* food preference (e.g. vegetarian, gluten‑free, moderate price) that "
-        "is not already in existing preferences, output that single short phrase (max 4 words). If no new preference "
-        "is detected, output 'none'."
-    )
-    try:
-        rsp = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=4,
-            temperature=0,
-        )
-        candidate = rsp.choices[0].message.content.strip().lower()
-        if candidate == "none" or not candidate:
-            return None
-        return candidate if candidate not in existing_raw.lower() else None
-    except Exception as e:
-        logger.debug("Preference detection failed: %s", e)
-        return None
+def save_user_pref(uid: int, value: str):
+    value = value.lower().strip()
+    state = user_state.setdefault(uid, {})
+    prefs: List[str] = state.setdefault("prefs", [])
+    if value not in prefs:
+        prefs.append(value)
 
-
-def store_preferences(user_id: int, raw_text: str):
-    """Insert or update the user's standing preferences in DB and memory."""
-    if USER_PREFS_TABLE is None:
-        return
     with engine.begin() as conn:
         conn.execute(
             insert(USER_PREFS_TABLE)
-            .values(_id=str(user_id), data={"prefs_text": raw_text}, timestamp=time.time())
+            .values(_id=str(uid), data={"prefs": prefs}, timestamp=time.time())
             .on_conflict_do_update(
                 index_elements=[USER_PREFS_TABLE.c._id],
-                set_={"data": {"prefs_text": raw_text}, "timestamp": time.time()},
+                set_={"data": {"prefs": prefs}, "timestamp": time.time()},
             )
         )
-    user_state.setdefault(user_id, {}).setdefault("prefs", {})["raw"] = raw_text
 
 
-def ask_for_preferences(message):
-    bot.reply_to(
-        message,
-        "🎯 Чтобы я могла точнее посоветовать вам адреса, расскажите, пожалуйста, какие рестораны и бары вы любите и есть ли у вас какие-либо ограничения. \nНапример, может, вы предпочитаете вегетарианские рестораны или любите места, которые недавно открылись?",
-    )
-
-
-def ask_to_store_pref(message, cand: str):
-    bot.reply_to(
-        message,
-        f"Хотите, чтобы я запомнил предпочтение ‘{cand}’ как постоянное? Напишите ‘да’ или ‘нет’.",
-    )
-
-
-def merge_with_last_query(user_id: int, follow_up: str) -> str:
-    prev = user_state.get(user_id, {}).get("last_query", "")
-    return f"{prev}\nFollow‑up: {follow_up}"
-
-# -------------------------------------------------
-# BOT HANDLERS
-# -------------------------------------------------
-
-@bot.message_handler(commands=["start", "help"])
-def send_welcome(message):
-    uid = message.from_user.id
-    user_state[uid] = {"stage": "awaiting_first_query"}
-    bot.reply_to(
-        message,
-        "🍸 Привет! Я ИИ-ассистент про прозвищу Restaurant Babe и я умею находить самые вкусные, самые модные, самые классные рестораны, кафе, пекарни, бары и кофейни по всему миру. \n\nНапишите, что вы ищете, например: \n\n'Модные места для бранча в Лиссабоне с необычными блюдами'\nИли 'Любимые севичерии местных жителей в Лиме'\nИли 'Где самый вкусный плов в Ташкенте?'\n\nЯ наведу справки у  знакомых ресторанных экспертов, пролистаю колонки гастрономических критиков — и выдам лучшие рекомендации. \n\nЭто может занять пару минут, потому что ищу я очень внимательно и тщательно проверяю результаты. Но никаких случайных мест в моем списке не будет. \n\nНачнем?",
-    )
-
-
-@bot.message_handler(func=lambda m: True)
-def handle_message(message):
-    uid = message.from_user.id
-    text = message.text.strip()
-    state = user_state.setdefault(uid, {"stage": "awaiting_first_query"})
-
-    try:
-        # 0) Yes/No about saving new preference
-        if state.get("stage") == "awaiting_pref_confirm":
-            if text.lower() in {"да", "yes", "y"}:
-                cand = state.pop("pref_candidate", "")
-                existing = state.get("prefs", {}).get("raw", "")
-                new_raw = (existing + ", " + cand).strip(", ") if existing else cand
-                store_preferences(uid, new_raw)
-                bot.reply_to(message, "Готово — предпочтение сохранено.")
-            else:
-                bot.reply_to(message, "Хорошо, не сохраняю.")
-            state["stage"] = "ready"
-            return
-
-        # 1) Still waiting for initial preferences (first time)
-        if state.get("stage") == "awaiting_prefs":
-            store_preferences(uid, text)
-            pending_query = state.pop("pending_query", "")
-            state["stage"] = "ready"
-            full_query = f"{pending_query}\nUser preferences: {text}"
-            process_and_respond(full_query, message)
-            return
-
-        # 2) First ever query
-        if state.get("stage") == "awaiting_first_query":
-            state["pending_query"] = text
-            state["stage"] = "awaiting_prefs"
-            ask_for_preferences(message)
-            return
-
-        # 3) Existing user — maybe a new standing preference?
-        existing_raw = state.get("prefs", {}).get("raw", "")
-        cand_pref = detect_new_preference(text, existing_raw)
-        if cand_pref:
-            state["pref_candidate"] = cand_pref
-            state["stage"] = "awaiting_pref_confirm"  # we’ll ask after results
-
-        # Intent classification
-        intent = classify_intent(text, state.get("last_query", ""))
-        if intent == "chat":
-            bot.reply_to(message, "Понимаю! Чем могу помочь?")
-            if state.get("stage") == "awaiting_pref_confirm":
-                ask_to_store_pref(message, state["pref_candidate"])
-            return
-        elif intent == "follow_up":
-            query = merge_with_last_query(uid, text)
-        else:
-            query = text
-
-        process_and_respond(query, message)
-
-        if state.get("stage") == "awaiting_pref_confirm":
-            ask_to_store_pref(message, state["pref_candidate"])
-
-    except Exception as e:
-        logger.error("handle_message error: %s", e)
-        logger.error(traceback.format_exc())
-        bot.reply_to(message, "Извините, произошла ошибка. Попробуйте ещё раз.")
-
-
-# -------------------------------------------------
-# CORE SEARCH AND RESPONSE
-# -------------------------------------------------
-
-def process_and_respond(query: str, message):
-    uid = message.from_user.id
-    bot.send_chat_action(message.chat.id, "typing")
-    interim = bot.reply_to(message, "Ищу подходящие варианты…")
-    start_ts = time.time()
-
-    try:
-        result = orchestrator.process_query(query)
-        user_state[uid]["last_query"] = query
-
-        # Persist search
-        if USER_SEARCHES_TABLE is not None and isinstance(result, dict):
-            with engine.begin() as conn:
-                conn.execute(
-                    insert(USER_SEARCHES_TABLE).values(
-                        _id=str(uid) + "-" + str(int(time.time() * 1000)),
-                        data={"query": query, "result": result},
-                        timestamp=time.time(),
-                    )
-                )
-
-        resp_text = (
-            result.get("telegram_text", "Извините, ничего не найдено.")
-            if isinstance(result, dict)
-            else str(result)
+def save_search(uid: int, query: str, raw_result: Any):
+    with engine.begin() as conn:
+        conn.execute(
+            insert(USER_SEARCHES_TABLE).values(
+                _id=f"{uid}-{int(time.time()*1000)}",
+                data={"query": query, "result": raw_result},
+                timestamp=time.time(),
+            )
         )
 
-        # Clean up placeholder
-        try:
-            bot.delete_message(message.chat.id, interim.message_id)
-        except Exception:
-            pass
 
-        bot.send_message(message.chat.id, resp_text, parse_mode="HTML")
-        dump_chain_state("telegram_response_sent", {"processing_time": time.time() - start_ts})
-
-    except Exception as e:
-        logger.error("process_and_respond error: %s", e)
-        try:
-            bot.delete_message(message.chat.id, interim.message_id)
-        except Exception:
-            pass
-        bot.reply_to(message, "Извините, поиск не удался. Попробуйте чуть позже.")
+def openai_chat(uid: int) -> Any:
+    return openai_client.chat.completions.create(
+        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        messages=build_messages(uid),
+        functions=FUNCTIONS,
+        function_call="auto",
+        temperature=0.7,
+        max_tokens=512,
+    )
 
 
-# -------------------------------------------------
-# CLEAN SHUTDOWN
-# -------------------------------------------------
+def append_history(uid: int, role: str, content: str):
+    user_state.setdefault(uid, {}).setdefault("history", []).append(
+        {"role": role, "content": content}
+    )
+    user_state[uid]["history"] = user_state[uid]["history"][-40:]
 
-def shutdown():
-    logger.info("Shutting down…")
-    from utils.async_utils import wait_for_pending_tasks
+
+def chunk_and_send(chat_id: int, text: str, parse_mode: str = "HTML"):
+    MAX_LEN = 4000
+    for i in range(0, len(text), MAX_LEN):
+        bot.send_message(chat_id, text[i : i + MAX_LEN], parse_mode=parse_mode)
+
+# ----------------------------------------------------------------
+# TELEGRAM HANDLERS
+# ----------------------------------------------------------------
+WELCOME_MESSAGE = (
+    "🍸 Привет! Я ИИ‑ассистент по прозвищу Restaurant Babe, и я умею находить самые вкусные, самые модные, самые классные рестораны, кафе, пекарни, бары и кофейни по всему миру.\n\nНапишите, что вы ищете. Например:\n"
+    "<i>— 'Где поесть свежие морепродукты в Лиссабоне?'</i>\n"
+    "<i>— 'Любимые севичерии местных жителей в Лиме</i>'\n"
+    "<i>— 'Куда пойти на бранч со specialty coffee в Барселоне?</i>'\n\n"
+    "<i>— 'Где лучший рамен в Токио?</i>'\n\n"
+    "Я наведу справки у знакомых ресторанных критиков — и выдам лучшие рекомендации. "
+    "Это может занять пару минут, потому что ищу я очень внимательно и тщательно проверяю результаты. Но никаких случайных мест в моём списке не будет.\n\n"
+    "Начнём?"\n)
+
+
+@bot.message_handler(commands=["start", "help"])
+def handle_start(message):
+    uid = message.from_user.id
+    user_state[uid] = {"history": [], "prefs": []}
+    bot.reply_to(message, WELCOME_MESSAGE)
+
+@bot.message_handler(func=lambda _: True)
+def handle_text(message):
+    uid = message.from_user.id
+    text = message.text.strip()
+    append_history(uid, "user", text)
 
     try:
-        asyncio.run(wait_for_pending_tasks())
-    except RuntimeError:
-        pass
+        rsp = openai_chat(uid)
+        msg = rsp.choices[0].message
 
-
-# -------------------------------------------------
-# MAIN ENTRY POINT
-# -------------------------------------------------
-
-def main():
-    import atexit
-
-    atexit.register(shutdown)
-    logger.info("Telegram bot is running with preference‑confirmation features…")
-    bot.infinity_polling()
-
-
-if __name__ == "__main__":
-    main()
+        if msg.function_call:
+            func_name = msg.function_call.name
+            args = json.loads

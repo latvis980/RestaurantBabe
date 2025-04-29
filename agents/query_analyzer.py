@@ -3,6 +3,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_core.tracers.context import tracing_v2_enabled
 import json
+import re  # ← NEW
 from utils.database import save_data, find_data, ensure_city_table
 
 
@@ -78,7 +79,18 @@ class QueryAnalyzer:
         self.chain = self.prompt | self.model
         self.config = config
 
-    def analyze(self, query):
+    # ──────────────────────────────────────────────────────────────────────
+    # 1) CHANGE SIGNATURE so we can receive prefs from the Telegram layer
+    # ──────────────────────────────────────────────────────────────────────
+    def analyze(self, query: str, standing_prefs: list[str] | None = None):
+        """
+        standing_prefs : list[str] | None
+            Long-term user preferences (e.g. ["vegetarian", "budget"]).
+            They'll be merged into `secondary_filter_parameters` unless the
+            current query explicitly negates them.
+        """
+        standing_prefs = standing_prefs or []
+        original_query_lower = query.lower()
         with tracing_v2_enabled(project_name="restaurant-recommender"):
             response = self.chain.invoke({"query": query})
 
@@ -168,6 +180,30 @@ class QueryAnalyzer:
                 if isinstance(secondary_params, str):
                     secondary_params = [p.strip() for p in secondary_params.split(",") if p.strip()]
 
+                # ───────────────────────────────────────────────────────────────
+                # 2)  **INSERT THIS BLOCK just before the `return { ... }`**
+                # ───────────────────────────────────────────────────────────────
+                NEGATION_PATTERNS = [
+                    r"\bnot\s+(?:necessarily\s+)?{p}\b",
+                    r"\bбез\s+{p}\b",                     # Russian "без"
+                    r"\bnon-{p}\b",
+                    r"\bexcept\s+{p}\b",
+                    r"\bsteakhouse\b.*\bfriend\b",        # sample override
+                ]
+                for pref in standing_prefs:
+                    skip = False
+                    for pat in NEGATION_PATTERNS:
+                        if re.search(pat.format(p=re.escape(pref)), original_query_lower):
+                            skip = True
+                            break
+                    if skip:
+                        continue
+                    # add pref only if it isn't already captured
+                    if pref not in secondary_params and pref not in primary_params:
+                        secondary_params.append(pref)
+                # ───────────────────────────────────────────────────────────────
+                # 3)  keep existing return clause
+                # ───────────────────────────────────────────────────────────────
                 return {
                     "destination": location,
                     "is_english_speaking": is_english_speaking,
@@ -176,7 +212,7 @@ class QueryAnalyzer:
                     "primary_search_parameters": primary_params,
                     "secondary_filter_parameters": secondary_params,
                     "keywords_for_analysis": keywords,
-                    "local_sources": result.get("local_sources", [])
+                    "local_sources": result.get("local_sources", []),
                 }
 
             except (json.JSONDecodeError, AttributeError) as e:
@@ -224,13 +260,35 @@ class QueryAnalyzer:
                     except Exception as lang_error:
                         print(f"Error determining language: {lang_error}")
 
+                # Apply standing preferences to the fallback result as well
+                primary_params = ["best restaurants", f"in {location}"] if location != "Unknown" else ["best restaurants"]
+                secondary_params = []
+
+                # Process standing preferences for fallback scenario
+                for pref in standing_prefs:
+                    skip = False
+                    for pat in [
+                        r"\bnot\s+(?:necessarily\s+)?{p}\b",
+                        r"\bбез\s+{p}\b",
+                        r"\bnon-{p}\b",
+                        r"\bexcept\s+{p}\b",
+                        r"\bsteakhouse\b.*\bfriend\b",
+                    ]:
+                        if re.search(pat.format(p=re.escape(pref)), original_query_lower):
+                            skip = True
+                            break
+                    if skip:
+                        continue
+                    if pref not in secondary_params and pref not in primary_params:
+                        secondary_params.append(pref)
+
                 return {
                     "destination": location,
                     "is_english_speaking": is_english_speaking,
                     "local_language": local_language,
                     "search_queries": [search_query],
-                    "primary_search_parameters": ["best restaurants", f"in {location}"] if location != "Unknown" else ["best restaurants"],
-                    "secondary_filter_parameters": [],
+                    "primary_search_parameters": primary_params,
+                    "secondary_filter_parameters": secondary_params,
                     "keywords_for_analysis": query.split(),
                     "local_sources": []
                 }
