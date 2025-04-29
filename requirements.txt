@@ -38,3 +38,5 @@ lxml>=4.9.3,<5.0.0
 readability-lxml>=0.8.1
 
 tiktoken>=0.5.2
+googlemaps>=4.10.0
+
