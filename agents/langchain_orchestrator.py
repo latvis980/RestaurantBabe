@@ -324,132 +324,51 @@ class LangChainOrchestrator:
 
     @log_function_call
     def _create_detailed_html(self, recommendations):
-        """Create detailed HTML output for telegram"""
+        """Create elegant, emoji-light HTML output for Telegram."""
         try:
-            html_output = "<b>🍽️ РЕКОМЕНДУЕМЫЕ РЕСТОРАНЫ:</b>\n\n"
+            # ――― Headings ―――
+            html = "<b>Recommended Restaurants</b>\n\n"
 
-            # Get restaurant lists from appropriate keys
-            main_list = []
-            hidden_gems = []
+            main_list   = recommendations.get("main_list", []) or recommendations.get("recommended", [])
+            hidden_gems = recommendations.get("hidden_gems", [])
 
-            if isinstance(recommendations, dict):
-                # Check for direct main_list/recommended (for backward compatibility)
-                if "main_list" in recommendations:
-                    main_list = recommendations["main_list"]
-                elif "recommended" in recommendations:
-                    main_list = recommendations["recommended"]
+            def block(restaurants, title=None):
+                nonlocal html
+                if title:
+                    html += f"<b>{title}</b>\n\n"
+                for i, r in enumerate(restaurants, 1):
+                    name = r.get("name", "Restaurant")
+                    addr = r.get("address", "Address unavailable")
+                    desc = r.get("description", "")
+                    price = r.get("price_range", "")
+                    dishes = ", ".join(r.get("recommended_dishes", [])[:3])
+                    sources = ", ".join(sorted(set(r.get("sources", [])))[:3])
 
-                # Check for direct hidden_gems
-                if "hidden_gems" in recommendations:
-                    hidden_gems = recommendations["hidden_gems"]
+                    html += (
+                        f"<b>{i}. {name}</b>\n"
+                        f"📍 {addr}\n"              # keep the single map pin for scannability
+                        f"{desc}\n"
+                    )
 
-                # Check for nested structure (from editor agent)
-                if "formatted_recommendations" in recommendations:
-                    formatted_rec = recommendations["formatted_recommendations"]
-                    if isinstance(formatted_rec, dict):
-                        if "main_list" in formatted_rec:
-                            main_list = formatted_rec["main_list"]
-                        elif "recommended" in formatted_rec:
-                            main_list = formatted_rec["recommended"]
-
-                        if "hidden_gems" in formatted_rec:
-                            hidden_gems = formatted_rec["hidden_gems"]
-
-            # Format main list
-            if main_list:
-                for i, restaurant in enumerate(main_list, 1):
-                    name = restaurant.get("name", "Ресторан")
-                    html_output += f"<b>{i}. {name}</b>\n"
-
-                    if "address" in restaurant:
-                        html_output += f"📍 {restaurant['address']}\n"
-
-                    if "description" in restaurant:
-                        html_output += f"{restaurant['description']}\n"
-
-                    # Check multiple possible source field names
-                    sources = None
-                    for field in ["recommended_by", "sources", "source"]:
-                        if field in restaurant:
-                            sources = restaurant[field]
-                            break
-
+                    if dishes:
+                        html += f"<i>Signature dishes:</i> {dishes}\n"
                     if sources:
-                        if isinstance(sources, list):
-                            # Sort and limit to first 3 sources for display
-                            unique_sources = list(set(sources))
-                            sources_text = ", ".join(unique_sources[:3])
-                            html_output += f"<i>✅ Рекомендовано: {sources_text}</i>\n"
-                        else:
-                            html_output += f"<i>✅ Рекомендовано: {sources}</i>\n"
-
-                    # Add recommended dishes if available
-                    dishes = restaurant.get("recommended_dishes", [])
-                    if dishes and isinstance(dishes, list) and len(dishes) > 0:
-                        dishes_text = ", ".join(dishes[:3])
-                        html_output += f"🍽 <i>Фирменные блюда: {dishes_text}</i>\n"
-
-                    # Add price range if available
-                    price = restaurant.get("price_range", "")
+                        html += f"<i>Recommended by:</i> {sources}\n"
                     if price:
-                        html_output += f"💰 {price}\n"
+                        html += f"<i>Price range:</i> {price}\n"
+                    html += "\n"
 
-                    html_output += "\n"
-            else:
-                html_output += "К сожалению, рекомендуемые рестораны не найдены.\n\n"
-
-            # Format hidden gems
+            block(main_list)
             if hidden_gems:
-                html_output += "<b>💎 ДЛЯ СВОИХ:</b>\n\n"
+                block(hidden_gems, title="Hidden Gems")
 
-                for i, restaurant in enumerate(hidden_gems, 1):
-                    name = restaurant.get("name", "Ресторан")
-                    html_output += f"<b>{i}. {name}</b>\n"
+            html += "<i>Recommendations compiled from reputable critic and guide sources.</i>"
+            return html[:3997] + "…" if len(html) > 4000 else html
 
-                    if "address" in restaurant:
-                        html_output += f"📍 {restaurant['address']}\n"
-
-                    if "description" in restaurant:
-                        html_output += f"{restaurant['description']}\n"
-
-                    # Check multiple possible source field names
-                    sources = None
-                    for field in ["recommended_by", "sources", "source"]:
-                        if field in restaurant:
-                            sources = restaurant[field]
-                            break
-
-                    if sources:
-                        if isinstance(sources, list):
-                            sources_text = ", ".join(sources[:3])
-                            html_output += f"<i>✅ Рекомендовано: {sources_text}</i>\n"
-                        else:
-                            html_output += f"<i>✅ Рекомендовано: {sources}</i>\n"
-
-                    # Add recommended dishes if available
-                    dishes = restaurant.get("recommended_dishes", [])
-                    if dishes and isinstance(dishes, list) and len(dishes) > 0:
-                        dishes_text = ", ".join(dishes[:3])
-                        html_output += f"🍽 <i>Фирменные блюда: {dishes_text}</i>\n"
-
-                    # Add price range if available
-                    price = restaurant.get("price_range", "")
-                    if price:
-                        html_output += f"💰 {price}\n"
-
-                    html_output += "\n"
-
-            # Add footer
-            html_output += "<i>Рекомендации составлены на основе анализа экспертных источников.</i>"
-
-            # Ensure response isn't too long for Telegram
-            if len(html_output) > 4000:
-                html_output = html_output[:3997] + "..."
-
-            return html_output
         except Exception as e:
-            print(f"Error creating HTML output: {e}")
-            return "<b>Извините, не удалось форматировать рекомендации ресторанов.</b>"
+            print("HTML format error:", e)
+            return "<b>Sorry, we couldn't format the restaurant list.</b>"
+
 
     @log_function_call  
     def process_query(self, user_query):
