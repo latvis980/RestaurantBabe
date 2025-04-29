@@ -396,20 +396,23 @@ class LangChainOrchestrator:
             print("HTML format error:", e)
             return "<b>Sorry, we couldn't format the restaurant list.</b>"
 
-
     @log_function_call  
-    def process_query(self, user_query):
+    def process_query(self, user_query, standing_prefs=None):
         """
         Process a user query using the LangChain sequence
 
         Args:
             user_query (str): The user's query about restaurant recommendations
+            standing_prefs (list, optional): List of user's standing preferences
 
         Returns:
             dict: The formatted recommendations for Telegram
         """
         # Extract user preferences if included in the query
-        clean_query, user_preferences = self._extract_user_preferences(user_query)
+        clean_query, explicit_prefs = self._extract_user_preferences(user_query)
+
+        # Combine explicit preferences from query with standing preferences
+        user_preferences = list(set(explicit_prefs + (standing_prefs or [])))
 
         # Create a unique trace ID for this request
         trace_id = f"restaurant_rec_{int(time.time())}"
