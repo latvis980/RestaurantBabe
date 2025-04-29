@@ -1,22 +1,22 @@
-# list_analyzer.py (token‑aware refactor – **prompt unchanged**)
-"""
-Eliminates blind 2 000‑character clipping and guards against context overflow by
-measuring *tokens* instead of characters.  Uses `tiktoken` so we know exactly
-how many tokens we’re feeding to Mistral‑Large (32 K limit).
-
-Key changes
------------
-1. **Token budget** – configurable `max_prompt_tokens` (default 12 000).  We cut
-   individual `scraped_content` fields only when the full prompt would exceed
-   that budget.
-2. **Per‑result summarisation optional** – if a single article is huge we first
-   grab the lead 200 tokens, then append an ellipsis.  (You can plug in a
-   LangChain summariser later; the interface stub is ready.)
-3. **No changes to the system/human prompt strings** – requested by user.
-4. Adds dependency: `tiktoken>=0.5.2` (≈ 90 KB wheel).
-"""
-
 from __future__ import annotations
+
+"""Token‑aware ListAnalyzer – now adds *price_range*, *recommended_dishes* and
+splits out *hidden_gems* (places with few mentions but rave reviews from a
+credible source).
+
+* Hidden‑gem heuristic (simple): restaurant appears in **≤ 2** total sources but
+  at least **one** of those sources is tagged as reputable (guide / major
+  publication / critic) **and** the article tone contains superlatives such as
+  “best”, “brilliant”, “exceptional”, etc.  (We rely on the LLM to detect this
+  in the prompt.)
+
+* Main prompt section changed accordingly; output format now contains
+  `main_list` **and** `hidden_gems` arrays, and each restaurant additionally
+  carries `price_range` ("€", "€€", or "€€€") and `recommended_dishes` (≤ 3
+  dishes).
+
+Rest of the code – token budgeting, saving to DB – remains mostly intact.
+"""
 
 import json
 import time
@@ -46,12 +46,20 @@ class ListAnalyzer:
             temperature=0.8,
             mistral_api_key=config.MISTRAL_API_KEY,
         )
-        # PROMPTS remain **unchanged**
+
+        # ------------------------------------------------------------------
+        # PROMPT
+        # ------------------------------------------------------------------
         self.system_prompt: str = """
-        You are a restaurant recommendation expert analyzing search results to identify the best restaurants.
+        You are a restaurant recommendation expert analysing search‑results to
+        identify the best restaurants **and promising hidden gems**.
 
         TASK:
-        Analyze the search results and identify promising restaurants that match the search parameters.
+        From the supplied search snippets produce two lists:
+        1. **main_list** – establishments widely endorsed by multiple reputable
+           sources.
+        2. **hidden_gems** – places mentioned in ≤ 2 sources *but* featuring an
+           enthusiastic review from a knowledgeable critic or respected medium.
 
         PRIMARY SEARCH PARAMETERS:
         {primary_parameters}
@@ -63,35 +71,31 @@ class ListAnalyzer:
         {keywords_for_analysis}
 
         GUIDELINES:
-        1. Analyze the tone and content of reviews to identify genuinely recommended restaurants
-        2. Cross-reference the descriptions against the keywords and search parameters
-        3. Look for restaurants mentioned in multiple reputable sources
-        4. IGNORE results from Tripadvisor, Yelp
-        5. Pay special attention to restaurants featured in food guides, local publications, or by respected critics
-        6. When analyzing content, check if restaurants meet the secondary filter parameters
-        7. IMPORTANT: If you can't find perfect matches, still provide at least 3-5 restaurants that are the closest matches
-
-        OUTPUT REQUIREMENTS:
-        - ALWAYS identify at least 5 restaurants (even with limited information)
-        - Do not separate restaurants into different categories, just provide one main list
-        - If search results are limited, create entries based on the available information
-        - For EACH restaurant, extract:
-          1. Name (exact as mentioned in sources)
-          2. Street address (as complete as possible, or "Address unavailable" if not found)
-          3. Raw description (40-60 words) including key details, dishes, interior, chef, and atmosphere
-          4. ALL sources where mentioned (just the source name, NOT the URL, e.g., "Le Foodling" not "lefooding.com")
-          5. Pay special attention to restaurants featured in food guides, local publications, or by respected critics
-          6. For each restaurant, collect ALL source names found in the search results (look for "Source Name:" in each result)
-          7. When analyzing content, check if restaurants meet the secondary filter parameters
+        1. Determine sentiment & credibility of each article.
+        2. Count how many distinct sources mention the place.
+        3. Treat Michelin Guide, World’s 50 Best, The Guardian, Eater, New York
+           Times, Condé Nast Traveler, World of Mouth, OAD, La Liste, national
+           broadsheets and well‑known local food magazines as *credible*.
+        4. **Ignore Tripadvisor, Yelp and Google user reviews.**
+        5. When extracting data, also look for:
+           • Typical price indicator (cheap € to expensive €€€).
+           • 2‑3 signature dishes (look for phrases like “don’t miss…”, “must‑try…”, etc.).
+        6. Mark a restaurant as hidden gem if it appears in ≤ 2 sources *and* at
+           least one of those uses strong positive language ("outstanding",
+           "brilliant", "game‑changing", etc.).
+        7. If overall matches are scarce, still return at least 5 across both
+           lists.
 
         OUTPUT FORMAT:
-        Provide a structured JSON object with one array: "main_list"
-        Each restaurant object should include:
-        - name (required, never empty)
-        - address (required, use "Address unavailable" if not found)
-        - description (required, 40-60 words summary, use available information to create one if needed)
-        - sources (array of source names where it was mentioned)
-        - location (city name from the search)
+        Return JSON with two arrays `main_list` and `hidden_gems`.
+        Each restaurant object must include:
+          • `name` – never empty
+          • `address` – full street or "Address unavailable"
+          • `description` – 40‑60 words
+          • `price_range` – "€", "€€" or "€€€"; guess if absent
+          • `recommended_dishes` – array up to 3 items (empty if unknown)
+          • `sources` – array of *names* (not URLs) where it was mentioned
+          • `location` – city extracted from the query parameters
         """
 
         self.prompt = ChatPromptTemplate.from_messages(
@@ -99,7 +103,7 @@ class ListAnalyzer:
                 ("system", self.system_prompt),
                 (
                     "human",
-                    "Please analyze these search results and extract restaurant recommendations:\n\n{search_results}",
+                    "Please analyse these search results and extract restaurant recommendations:\n\n{search_results}",
                 ),
             ]
         )
@@ -135,9 +139,15 @@ class ListAnalyzer:
 
             city = self._extract_city(primary_parameters)
             formatted_results = self._format_search_results(search_results)
-            kw_str = ", ".join(keywords_for_analysis) if isinstance(keywords_for_analysis, list) else (keywords_for_analysis or "")
-            primary_str = ", ".join(primary_parameters) if isinstance(primary_parameters, list) else (primary_parameters or "")
-            secondary_str = ", ".join(secondary_parameters) if isinstance(secondary_parameters, list) else (secondary_parameters or "")
+            kw_str = ", ".join(keywords_for_analysis) if isinstance(keywords_for_analysis, list) else (
+                keywords_for_analysis or ""
+            )
+            primary_str = ", ".join(primary_parameters) if isinstance(primary_parameters, list) else (
+                primary_parameters or ""
+            )
+            secondary_str = (
+                ", ".join(secondary_parameters) if isinstance(secondary_parameters, list) else (secondary_parameters or "")
+            )
 
             response = self.chain.invoke(
                 {
@@ -151,17 +161,15 @@ class ListAnalyzer:
 
     # ------------------------------------------------------------------
     # Internal helpers --------------------------------------------------
-    # Token helpers
     def _tokens(self, txt: str) -> int:
         return len(self._enc.encode(txt))
 
-    # Format search results with a token‑budget cap
     def _format_search_results(self, search_results: List[Dict[str, Any]]) -> str:
         lines: List[str] = []
         used_tokens = 0
         for idx, res in enumerate(search_results):
-            base = [
-                f"RESULT {idx+1}:",
+            base: List[str] = [
+                f"RESULT {idx + 1}:",
                 f"Title: {res.get('title', 'Unknown')}",
                 f"URL: {res.get('url', 'Unknown')}",
                 f"Source: {res.get('source_domain', 'Unknown')}",
@@ -173,15 +181,15 @@ class ListAnalyzer:
 
             content = res.get("scraped_content", "")
             if content:
-                # Hard limit if single article blows the budget
                 allowed = self.max_prompt_tokens - used_tokens - self._tokens("\n".join(base))
                 if allowed <= 0:
-                    break  # budget exhausted
+                    break
                 content_tokens = self._tokens(content)
                 if content_tokens > allowed:
-                    # keep head N tokens
-                    head_txt = self._enc.decode(self._enc.encode(content)[: self._per_article_head_tokens])
-                    base.append(f"Content: {head_txt} … (truncated) ")
+                    head_txt = self._enc.decode(
+                        self._enc.encode(content)[: self._per_article_head_tokens]
+                    )
+                    base.append(f"Content: {head_txt} … (truncated)")
                     used_tokens += self._tokens("\n".join(base))
                 else:
                     base.append(f"Content: {content}")
@@ -201,30 +209,54 @@ class ListAnalyzer:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
                 content = content.split("```")[1].split("```")[0].strip()
+
             dump_chain_state("analyze_raw_response", {"raw_response": content[:1000]})
             results = json.loads(content)
+
+            # Normalise keys
             if "restaurants" in results and "main_list" not in results:
                 results["main_list"] = results.pop("restaurants")
+
             results.setdefault("main_list", [])
-            for r in results["main_list"]:
+            results.setdefault("hidden_gems", [])
+
+            for r in results["main_list"] + results["hidden_gems"]:
+                r.setdefault("price_range", "€€")
+                r.setdefault("recommended_dishes", [])
                 r["city"] = city
-            self._save_restaurants_to_db(results["main_list"], city)
-            if not results["main_list"]:
+
+            # Persist
+            self._save_restaurants_to_db(results["main_list"] + results["hidden_gems"], city)
+
+            # Graceful fallback if everything empty
+            if not (results["main_list"] or results["hidden_gems"]):
                 results["main_list"] = [
                     {
                         "name": "Поиск не дал результатов",
                         "address": "Адрес недоступен",
                         "description": "К сожалению, мы не смогли найти рестораны, соответствующие вашему запросу.",
                         "sources": ["Системное сообщение"],
+                        "price_range": "€€",
+                        "recommended_dishes": [],
                         "city": city,
                     }
                 ]
-            dump_chain_state("analyze_final_results", {"main_list_count": len(results["main_list"])})
+
+            dump_chain_state(
+                "analyze_final_results",
+                {
+                    "main_list_count": len(results["main_list"]),
+                    "hidden_gems_count": len(results["hidden_gems"]),
+                },
+            )
             return results
-        except (json.JSONDecodeError, AttributeError) as e:
+        except (json.JSONDecodeError, AttributeError) as exc:
             dump_chain_state(
                 "analyze_json_error",
-                {"error": str(e), "response_preview": getattr(response, "content", "")[:500]},
+                {
+                    "error": str(exc),
+                    "response_preview": getattr(response, "content", "")[:500],
+                },
             )
             return {
                 "main_list": [
@@ -233,9 +265,12 @@ class ListAnalyzer:
                         "address": "Адрес недоступен",
                         "description": "Произошла ошибка при обработке результатов поиска.",
                         "sources": ["Системное сообщение"],
+                        "price_range": "€€",
+                        "recommended_dishes": [],
                         "city": city,
                     }
-                ]
+                ],
+                "hidden_gems": [],
             }
 
     # ------------------------------------------------------------------
@@ -246,14 +281,13 @@ class ListAnalyzer:
                     return p.lower().split("in ")[1].strip()
         return "unknown_location"
 
-    # ------------------------------------------------------------------
     def _save_restaurants_to_db(self, restaurants: List[Dict[str, Any]], city: str):
         try:
-            table_name = f"restaurants_{city.lower().replace(' ', '_')}"
+            table = f"restaurants_{city.lower().replace(' ', '_') }"
             for r in restaurants:
                 r["timestamp"] = time.time()
                 r["id"] = f"{r['name']}_{r['address']}".lower().replace(" ", "_")
-                save_data(table_name, r, self.config)
-            print(f"Saved {len(restaurants)} restaurants to table {table_name}")
-        except Exception as e:
-            print(f"Error saving restaurants to database: {e}")
+                save_data(table, r, self.config)
+            print(f"Saved {len(restaurants)} restaurants to table {table}")
+        except Exception as exc:
+            print(f"Error saving restaurants to database: {exc}")

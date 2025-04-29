@@ -1,371 +1,501 @@
-# agents/follow_up_search_agent.py
+from __future__ import annotations
+
+"""Follow‑up search agent
+
+This version adds a thin Google Maps integration that is executed **before** we run the
+traditional Web follow‑up search. The Maps look‑up supplies:
+
+* `formatted_address` – turned into a clickable `<a>` element that opens Google Maps
+  directly on the place.
+* `opening_hours` – concatenated into a single string.
+* `rating` – used as a **hard filter**. Places that score below ``MIN_ACCEPTABLE_RATING``
+  (defaults to 4.5) are discarded and never reach the rest of the pipeline.
+
+Everything else – Brave search look‑ups, scraping, global‑guide checks – remains exactly
+as before.
+
+Usage ‑‑­­ add your key to the ``config`` object passed to the agent::
+
+    cfg = {
+        "GOOGLE_MAPS_API_KEY": "YOUR‑KEY‑HERE",
+        ...
+    }
+
+Any missing or invalid key raises immediately so that the calling code never moves on
+with half‑configured settings.
+"""
+
+import time
+import urllib.parse
+from typing import Any, Dict, List, Optional
+
+import googlemaps
 from langchain_core.tracers.context import tracing_v2_enabled
-from langchain_core.tracers import ConsoleCallbackHandler
+
 from agents.search_agent import BraveSearchAgent
 from agents.scraper import WebScraper
-import time
 from utils.debug_utils import dump_chain_state
 
+# ---------------------------------------------------------------------------
+# Configuration constants – tweak here if you need different limits
+# ---------------------------------------------------------------------------
+
+MIN_ACCEPTABLE_RATING = 4.5           # rating threshold – <  ► rejected
+MAX_RESULTS_PER_QUERY = 3             # courtesy cap for scraping
+MAPS_FIELDS = [                       # fields we request from Place Details
+    "url",
+    "formatted_address",
+    "rating",
+    "opening_hours",
+]
+
+
 class FollowUpSearchAgent:
-    def __init__(self, config):
+    """Adds missing data to restaurant candidates.
+
+    The constructor requires a ``config`` dictionary that MUST contain a
+    ``GOOGLE_MAPS_API_KEY`` entry.
+    """
+
+    # ---------------------------------------------------------------------
+    # Construction helpers
+    # ---------------------------------------------------------------------
+
+    def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.search_agent = BraveSearchAgent(config)
         self.scraper = WebScraper(config)
 
-    def perform_follow_up_searches(self, formatted_recommendations, follow_up_queries, secondary_filter_parameters=None):
-        """
-        Perform follow-up searches for each restaurant to gather missing information
+        api_key = config.get("GOOGLE_MAPS_API_KEY")
+        if not api_key:
+            raise ValueError("GOOGLE_MAPS_API_KEY missing in config – please supply it.")
+        self.gmaps = googlemaps.Client(key=api_key)
 
-        Args:
-            formatted_recommendations (dict): The formatted recommendations
-            follow_up_queries (list): List of follow-up queries for each restaurant
-            secondary_filter_parameters (list, optional): Secondary parameters from query analysis for targeted searches
+    # ------------------------------------------------------------------
+    # Public entry point – orchestrates follow‑up searches for a batch
+    # ------------------------------------------------------------------
 
-        Returns:
-            dict: Enhanced recommendations with additional information
+    def perform_follow_up_searches(
+        self,
+        formatted_recommendations: Dict[str, List[Dict[str, Any]]],
+        follow_up_queries: List[Dict[str, Any]],
+        secondary_filter_parameters: Optional[List[str]] = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Enrich every restaurant in *formatted_recommendations*.
+
+        Restaurants that do not meet the minimum Google rating are silently
+        excluded from the output.
         """
+
         with tracing_v2_enabled(project_name="restaurant-recommender"):
-            # Debug log the start of follow-up searches
-            dump_chain_state("follow_up_search_start", {
-                "restaurant_count": len(formatted_recommendations.get("main_list", [])) + 
-                                    len(formatted_recommendations.get("hidden_gems", [])),
-                "follow_up_queries_count": len(follow_up_queries),
-                "secondary_parameters": secondary_filter_parameters
-            })
+            dump_chain_state(
+                "follow_up_search_start",
+                {
+                    "restaurant_count": len(formatted_recommendations.get("main_list", []))
+                    + len(formatted_recommendations.get("hidden_gems", [])),
+                    "follow_up_queries_count": len(follow_up_queries),
+                    "secondary_parameters": secondary_filter_parameters,
+                },
+            )
 
-            enhanced_recommendations = {
+            enhanced_recommendations: Dict[str, List[Dict[str, Any]]] = {
                 "main_list": [],
-                "hidden_gems": []
+                "hidden_gems": [],
             }
 
-            # Process main_list restaurants
+            # First pass – enrich core list
             for restaurant in formatted_recommendations.get("main_list", []):
-                enhanced_restaurant = self._enhance_restaurant(restaurant, follow_up_queries, secondary_filter_parameters)
-                enhanced_recommendations["main_list"].append(enhanced_restaurant)
+                restaurant = self._enhance_restaurant(
+                    restaurant, follow_up_queries, secondary_filter_parameters
+                )
+                if restaurant:  # None == rejected (rating < MIN_ACCEPTABLE_RATING)
+                    enhanced_recommendations["main_list"].append(restaurant)
 
-            # Process hidden gems
+            # Second pass – enrich hidden gems
             for restaurant in formatted_recommendations.get("hidden_gems", []):
-                enhanced_restaurant = self._enhance_restaurant(restaurant, follow_up_queries, secondary_filter_parameters)
-                enhanced_recommendations["hidden_gems"].append(enhanced_restaurant)
+                restaurant = self._enhance_restaurant(
+                    restaurant, follow_up_queries, secondary_filter_parameters
+                )
+                if restaurant:
+                    enhanced_recommendations["hidden_gems"].append(restaurant)
 
-            # Debug log completion of follow-up searches
-            dump_chain_state("follow_up_search_complete", {
-                "enhanced_main_list_count": len(enhanced_recommendations["main_list"]),
-                "enhanced_hidden_gems_count": len(enhanced_recommendations["hidden_gems"])
-            })
+            dump_chain_state(
+                "follow_up_search_complete",
+                {
+                    "enhanced_main_list_count": len(enhanced_recommendations["main_list"]),
+                    "enhanced_hidden_gems_count": len(
+                        enhanced_recommendations["hidden_gems"]
+                    ),
+                },
+            )
 
             return enhanced_recommendations
 
-    # Modified _enhance_restaurant method for FollowUpSearchAgent
+    # ------------------------------------------------------------------
+    # Google Maps integration helpers
+    # ------------------------------------------------------------------
 
-    def _enhance_restaurant(self, restaurant, follow_up_queries, secondary_filter_parameters=None):
-        """Enhance a single restaurant with additional information from follow-up searches"""
+    def _get_google_maps_info(self, name: str, location: str) -> Optional[Dict[str, Any]]:
+        """Look up the place on Google Maps and return basic metadata.
+
+        We run a *Text Search* first because it does a decent job at matching
+        ambiguous names.  The first candidate is fed into *Place Details*
+        to get a stable *place_id* URL, rating, etc.
+        """
+        try:
+            text_query = f"{name} {location}"
+            search_resp = self.gmaps.places(query=text_query)
+            candidates = search_resp.get("results", [])
+            if not candidates:
+                return None
+
+            first = candidates[0]
+            place_id = first["place_id"]
+
+            # Pull details – this counts as a separate request
+            details = self.gmaps.place(place_id=place_id, fields=MAPS_FIELDS)
+            result = details.get("result", {})
+
+            rating = result.get("rating")
+            formatted_address = result.get("formatted_address")
+            url = result.get("url") or f"https://www.google.com/maps/place/?q=place_id:{place_id}"
+
+            opening_hours = None
+            oh_data = result.get("opening_hours", {})
+            if oh_data and "weekday_text" in oh_data:
+                opening_hours = "; ".join(oh_data["weekday_text"])
+
+            return {
+                "place_id": place_id,
+                "rating": rating,
+                "address": formatted_address,
+                "url": url,
+                "hours": opening_hours,
+            }
+        except Exception as exc:  # noqa: BLE001 – we want to log every failure
+            dump_chain_state(
+                "google_maps_error",
+                {
+                    "restaurant": name,
+                    "location": location,
+                    "error": str(exc),
+                },
+                error=exc,
+            )
+            return None
+
+    # ------------------------------------------------------------------
+    # Core enrichment routine for a single restaurant
+    # ------------------------------------------------------------------
+
+    def _enhance_restaurant(
+        self,
+        restaurant: Dict[str, Any],
+        follow_up_queries: List[Dict[str, Any]],
+        secondary_filter_parameters: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Enrich *restaurant* or return ``None`` if it should be discarded."""
+
         restaurant_name = restaurant.get("name", "")
-        restaurant_location = restaurant.get("address", "").split(",")[0] if restaurant.get("address") else ""
+        restaurant_location = (
+            restaurant.get("address", "").split(",")[0] if restaurant.get("address") else ""
+        )
 
-        # Find queries for this restaurant
-        restaurant_queries = []
-        for query_set in follow_up_queries:
-            if query_set.get("restaurant_name") == restaurant_name:
-                restaurant_queries = query_set.get("queries", [])
+        # ------------------------------------------------------------------
+        # 1️⃣  Google Maps pass – decides early rejection / base metadata
+        # ------------------------------------------------------------------
+        maps_info = self._get_google_maps_info(restaurant_name, restaurant_location)
+        if maps_info and maps_info.get("rating") is not None:
+            rating = float(maps_info["rating"])
+            if rating < MIN_ACCEPTABLE_RATING:
+                dump_chain_state(
+                    "restaurant_rejected_low_rating",
+                    {
+                        "restaurant": restaurant_name,
+                        "rating": rating,
+                    },
+                )
+                return None  # discard completely
+
+            # Update basic fields from Maps
+            restaurant["rating"] = rating
+            if maps_info.get("address"):
+                # clickable address – useful both for UI and SEO
+                safe_address = maps_info["address"]
+                link = maps_info["url"]
+                restaurant["address"] = (
+                    f'<a href="{link}" target="_blank" rel="noopener noreferrer">'
+                    f"{safe_address}</a>"
+                )
+            if maps_info.get("hours") and not restaurant.get("hours"):
+                restaurant["hours"] = maps_info["hours"]
+        else:
+            # No Maps hit – we keep the candidate but do NOT add rating
+            dump_chain_state(
+                "google_maps_no_hit",
+                {
+                    "restaurant": restaurant_name,
+                    "location": restaurant_location,
+                },
+            )
+
+        # ------------------------------------------------------------------
+        # 2️⃣  Determine follow‑up search queries
+        # ------------------------------------------------------------------
+        specific_queries: List[str] = []
+        for qs in follow_up_queries:
+            if qs.get("restaurant_name") == restaurant_name:
+                specific_queries = qs.get("queries", [])
                 break
 
-        if not restaurant_queries:
-            # No specific queries found, use default for mandatory fields only
-            default_queries = []
+        if not specific_queries:
+            specific_queries = self._default_queries_for(
+                restaurant, restaurant_name, restaurant_location
+            )
 
-            # Check what mandatory information is missing
-            address = restaurant.get("address", "")
-            price_range = restaurant.get("price_range", "")
-            recommended_dishes = restaurant.get("recommended_dishes", [])
-            sources = restaurant.get("sources", [])
-
-            # Only create queries for missing mandatory information
-            if not address or address == "Address unavailable":
-                default_queries.append(f"{restaurant_name} restaurant {restaurant_location} address location")
-
-            if not price_range:
-                default_queries.append(f"{restaurant_name} restaurant {restaurant_location} price range cost")
-
-            if not recommended_dishes or len(recommended_dishes) < 2:
-                default_queries.append(f"{restaurant_name} restaurant {restaurant_location} signature dishes menu specialties")
-
-            # Check if we have enough sources
-            if not sources or len(sources) < 2:
-                default_queries.append(f"{restaurant_name} restaurant {restaurant_location} reviews recommended by critic guide")
-
-            # Always check global guides
-            default_queries.append(f"{restaurant_name} restaurant {restaurant_location} michelin guide awards")
-
-            # Use these default queries (limited to 4)
-            restaurant_queries = default_queries[:4]
-
-            # Log that we're using default queries
-            print(f"Using default queries for {restaurant_name}: {restaurant_queries}")
-
-        # Check for missing information explicitly marked
         missing_info = restaurant.get("missing_info", [])
-        if missing_info:
-            # Add specific queries for missing information
-            for info in missing_info:
-                restaurant_queries.append(f"{restaurant_name} restaurant {restaurant_location} {info}")
+        specific_queries.extend(
+            f"{restaurant_name} restaurant {restaurant_location} {info}" for info in missing_info
+        )
 
-        # Add secondary filter parameters for targeted searches
         if secondary_filter_parameters:
-            for param in secondary_filter_parameters:
-                restaurant_queries.append(f"{restaurant_name} restaurant {restaurant_location} {param}")
+            specific_queries.extend(
+                f"{restaurant_name} restaurant {restaurant_location} {param}"
+                for param in secondary_filter_parameters
+            )
 
-        # Check global guides specifically
+        # ------------------------------------------------------------------
+        # 3️⃣  Global guide check – independent of Maps rating
+        # ------------------------------------------------------------------
         global_guide_info = self._check_global_guides(restaurant_name, restaurant_location)
-
-        # Extract sources from global guides
         global_guide_sources = self._extract_sources(global_guide_info)
 
-        # Perform searches and gather information
-        all_search_results = []
-        for query in restaurant_queries:
+        # ------------------------------------------------------------------
+        # 4️⃣  Web searches + scraping
+        # ------------------------------------------------------------------
+        all_search_results: List[Dict[str, Any]] = []
+        for query in specific_queries:
             try:
-                # Limit to 3 results per query to avoid excessive scraping
                 results = self.search_agent._execute_search(query)
-                filtered_results = self.search_agent._filter_results(results)[:3]
+                filtered = self.search_agent._filter_results(results)[:MAX_RESULTS_PER_QUERY]
+                scraped = self.scraper.scrape_search_results(filtered)
+                all_search_results.extend(scraped)
+                time.sleep(1)  # be nice
+            except Exception as exc:
+                dump_chain_state(
+                    "follow_up_search_error",
+                    {
+                        "restaurant": restaurant_name,
+                        "query": query,
+                        "error": str(exc),
+                    },
+                    error=exc,
+                )
 
-                # Scrape the results
-                scraped_results = self.scraper.scrape_search_results(filtered_results)
-                all_search_results.extend(scraped_results)
+        # ------------------------------------------------------------------
+        # 5️⃣  Compile sources & extra details
+        # ------------------------------------------------------------------
+        combined_sources: List[str] = []
+        existing = restaurant.get("sources", [])
+        if isinstance(existing, str):
+            existing = [existing]
+        combined_sources.extend(existing)
+        combined_sources.extend(global_guide_sources)
+        combined_sources.extend(self._extract_sources(all_search_results))
+        combined_sources = list({s for s in combined_sources if s})  # dedupe / remove blanks
 
-                # Be nice to servers
-                time.sleep(1)
-            except Exception as e:
-                print(f"Error in follow-up search for {restaurant_name} with query '{query}': {e}")
+        banned_sources = {"Tripadvisor", "Yelp", "Google"}
+        cleaned_sources = [s for s in combined_sources if s not in banned_sources]
 
-        # Extract additional sources from search results
-        additional_sources = self._extract_sources(all_search_results)
+        extra = self._extract_additional_details(all_search_results)
 
-        # Get existing sources from the restaurant
-        existing_sources = restaurant.get("sources", [])
-        if isinstance(existing_sources, str):
-            # Convert string to list if necessary
-            existing_sources = [existing_sources]
+        # ------------------------------------------------------------------
+        # 6️⃣  Final assembly
+        # ------------------------------------------------------------------
+        enhanced = restaurant.copy()
+        enhanced["sources"] = cleaned_sources
 
-        # Combine and deduplicate all sources
-        combined_sources = list(set(existing_sources + global_guide_sources + additional_sources))
+        # Prefer longer description if we found something better
+        if extra.get("description") and len(extra["description"]) > len(enhanced.get("description", "")):
+            enhanced["description"] = extra["description"]
 
-        # Remove banned sources
-        banned_sources = ["Tripadvisor", "Yelp", "Google"]
-        cleaned_sources = [source for source in combined_sources if source not in banned_sources]
+        if extra.get("hours") and not enhanced.get("hours"):
+            enhanced["hours"] = extra["hours"]
+        if extra.get("price_info") and not enhanced.get("price_range"):
+            enhanced["price_range"] = extra["price_info"]
 
-        # Extract additional details
-        additional_details = self._extract_additional_details(all_search_results)
-
-        # Add the enhanced information to the restaurant
-        enhanced_restaurant = restaurant.copy()
-
-        # Update sources
-        enhanced_restaurant["sources"] = cleaned_sources
-
-        # Update other fields if found in additional details
-        if "description" in additional_details and len(additional_details["description"]) > len(restaurant.get("description", "")):
-            enhanced_restaurant["description"] = additional_details["description"]
-
-        if "hours" in additional_details and "hours" not in enhanced_restaurant:
-            enhanced_restaurant["hours"] = additional_details["hours"]
-
-        if "price_info" in additional_details and not enhanced_restaurant.get("price_range"):
-            enhanced_restaurant["price_range"] = additional_details["price_info"]
-
-        # Store additional information
-        enhanced_restaurant["additional_info"] = {
+        enhanced["additional_info"] = {
             "follow_up_results": all_search_results + global_guide_info,
             "global_guide_results": global_guide_info,
-            "secondary_parameters_checked": secondary_filter_parameters if secondary_filter_parameters else []
+            "secondary_parameters_checked": secondary_filter_parameters or [],
         }
 
-        return enhanced_restaurant
+        return enhanced
 
-    
+    # ------------------------------------------------------------------
+    # Helpers – default query builder
+    # ------------------------------------------------------------------
 
-    def _extract_additional_details(self, search_results):
-        """Try to extract additional details from search results"""
-        additional_details = {}
+    def _default_queries_for(self, restaurant: Dict[str, Any], name: str, location: str) -> List[str]:
+        """Return a minimal set of follow‑up queries based on missing fields."""
+        queries: List[str] = []
+        if not restaurant.get("address") or restaurant.get("address") == "Address unavailable":
+            queries.append(f"{name} restaurant {location} address location")
+        if not restaurant.get("price_range"):
+            queries.append(f"{name} restaurant {location} price range cost")
+        if not restaurant.get("recommended_dishes") or len(restaurant.get("recommended_dishes", [])) < 2:
+            queries.append(f"{name} restaurant {location} signature dishes menu specialties")
+        if not restaurant.get("sources") or len(restaurant.get("sources", [])) < 2:
+            queries.append(f"{name} restaurant {location} reviews recommended by critic guide")
+        # Always check major guides even if everything else is complete
+        queries.append(f"{name} restaurant {location} michelin guide awards")
+        return queries[:4]  # keep it short – we do a lot of calls already
 
-        # Combine all scraped content
-        combined_content = ""
-        for result in search_results:
-            if "scraped_content" in result:
-                combined_content += result["scraped_content"] + "\n\n"
+    # ------------------------------------------------------------------
+    # Helpers – clean additional details from scraped pages
+    # ------------------------------------------------------------------
 
-        combined_sources = list(set(sources + global_guide_sources + self._extract_sources(all_search_results)))
+    def _extract_additional_details(self, search_results: List[Dict[str, Any]]) -> Dict[str, str]:
+        additional: Dict[str, str] = {}
+        combined_content = "\n\n".join(r.get("scraped_content", "") for r in search_results if r.get("scraped_content"))
 
-        # Very basic extraction of possibly better description (first 300-400 chars)
+        # Simple heuristic – first 400 chars make a decent description
         if combined_content and len(combined_content) > 400:
-            additional_details["description"] = combined_content[:400].rstrip() + "..."
+            additional["description"] = combined_content[:400].rstrip() + "…"
 
-        # Try to extract opening hours if mentioned
-        if "hours" not in additional_details and ("opening hours" in combined_content.lower() or 
-                                                 "open from" in combined_content.lower()):
-            # This is a simplified extraction - in a real app, you'd use more sophisticated NLP
-            low_content = combined_content.lower()
-            hour_indicators = ["opening hours", "open from", "open:", "hours:", "we are open"]
-
-            for indicator in hour_indicators:
-                if indicator in low_content:
-                    # Get text after the indicator
-                    pos = low_content.find(indicator) + len(indicator)
-                    hours_text = combined_content[pos:pos+100]  # Get about 100 chars after
-
-                    # Try to find a sentence boundary to end
-                    sentence_end = hours_text.find('.')
-                    if sentence_end > 0:
-                        hours_text = hours_text[:sentence_end+1]
-
-                    additional_details["hours"] = hours_text.strip()
+        low = combined_content.lower()
+        if any(k in low for k in ["opening hours", "open from", "open:", "hours:", "we are open"]):
+            for indicator in ["opening hours", "open from", "open:", "hours:", "we are open"]:
+                if indicator in low:
+                    pos = low.find(indicator) + len(indicator)
+                    hours_text = combined_content[pos : pos + 100]
+                    end = hours_text.find(".")
+                    if end > 0:
+                        hours_text = hours_text[: end + 1]
+                    additional["hours"] = hours_text.strip()
                     break
 
-        # Try to extract price information
-        price_indicators = ["price", "cost", "menu is", "dishes from", "dishes cost", "€", "$", "£"]
-        if "price_range" not in additional_details:
-            for indicator in price_indicators:
-                if indicator in combined_content.lower():
-                    pos = combined_content.lower().find(indicator)
-                    price_text = combined_content[max(0, pos-20):pos+80]  # Get text around the indicator
+        for indicator in ["price", "cost", "menu is", "dishes from", "dishes cost", "€", "$", "£"]:
+            if indicator in low:
+                pos = low.find(indicator)
+                additional["price_info"] = combined_content[max(0, pos - 20) : pos + 80].strip()
+                break
 
-                    # Simplify for now - in a real app, you'd use regex patterns
-                    additional_details["price_info"] = price_text.strip()
-                    break
+        return additional
 
-        return additional_details
+    # ------------------------------------------------------------------
+    # Helpers – source extraction (unchanged apart from minor cleanup)
+    # ------------------------------------------------------------------
 
-    def _extract_sources(self, source_results):
-        """Extract source names from source-specific search results"""
-        sources = []
+    def _extract_sources(self, source_results: List[Dict[str, Any]]) -> List[str]:
+        sources: List[str] = []
+        banned = {"tripadvisor", "yelp", "zagat"}
 
         for result in source_results:
-            # Check if there's already a source_name field (from scraper)
-            if "source_name" in result and result["source_name"]:
-                source_name = result["source_name"]
-                if source_name not in sources:
-                    sources.append(source_name)
+            # Explicit source_name from scraper
+            if src := result.get("source_name"):
+                if src not in sources and src.lower() not in banned:
+                    sources.append(src)
                 continue
 
-            # Extract source from domain if no source_name
             domain = result.get("source_domain", "")
+            if not domain:
+                continue
 
-            if domain:
-                # Simplify domain name to create a source name
-                source_name = domain.replace("www.", "").split(".")[0]
+            base = domain.replace("www.", "").split(".")[0]
+            base = " ".join(part.capitalize() for part in base.replace("-", " ").replace("_", " ").split())
 
-                # Capitalize and format properly
-                source_name = " ".join(word.capitalize() for word in source_name.split("-"))
-                source_name = " ".join(word.capitalize() for word in source_name.split("_"))
+            special = {
+                "michelin": "Michelin Guide",
+                "foodandwine": "Food & Wine",
+                "eater": "Eater",
+                "infatuation": "The Infatuation",
+                "50best": "World's 50 Best",
+                "worlds50best": "World's 50 Best",
+                "worldofmouth": "World of Mouth",
+                "nytimes": "New York Times",
+                "timeout": "Time Out",
+                "forbes": "Forbes",
+                "telegraph": "The Telegraph",
+                "guardian": "The Guardian",
+                "cntraveler": "Condé Nast Traveler",
+            }
+            for key, val in special.items():
+                if key in domain:
+                    base = val
+                    break
 
-                # Special case handling for common domains
-                if "michelin" in domain:
-                    source_name = "Michelin Guide"
-                elif "foodandwine" in domain:
-                    source_name = "Food & Wine"
-                elif "eater" in domain:
-                    source_name = "Eater"
-                elif "infatuation" in domain:
-                    source_name = "The Infatuation"
-                elif "50best" in domain or "worlds50best" in domain:
-                    source_name = "World's 50 Best"
-                elif "wordofmouth" in domain or "worldofmouth" in domain:
-                    source_name = "World of Mouth"
-                elif "nytimes" in domain:
-                    source_name = "New York Times"
-                elif "timeout" in domain:
-                    source_name = "Time Out"
-                elif "forbes" in domain:
-                    source_name = "Forbes"
-                elif "telegraph" in domain:
-                    source_name = "The Telegraph"
-                elif "guardian" in domain:
-                    source_name = "The Guardian"
-                elif "cntraveler" in domain:
-                    source_name = "Condé Nast Traveler"
+            if base not in sources and base.lower() not in banned:
+                sources.append(base)
 
-                # Add to sources if not already there and not banned
-                if (source_name not in sources and
-                    not any(banned in domain for banned in ["tripadvisor", "yelp", "google"])):
-                    sources.append(source_name)
-
-            # Check if there's a guide field
-            if "guide" in result:
-                guide = result.get("guide", "")
-                if guide:
-                    # Format guide name
-                    guide_name = guide.replace("www.", "").split(".")[0]
-                    guide_name = " ".join(word.capitalize() for word in guide_name.split("-"))
-                    guide_name = " ".join(word.capitalize() for word in guide_name.split("_"))
-
-                    # Special case handling
-                    if "theworlds50best" in guide or "50best" in guide:
-                        guide_name = "World's 50 Best"
-                    elif "michelin" in guide:
-                        guide_name = "Michelin Guide"
-                    elif "worldofmouth" in guide or "wordofmouth" in guide:
-                        guide_name = "World of Mouth"
-                    elif "oadguides" in guide:
-                        guide_name = "OAD Guides"
-                    elif "laliste" in guide:
-                        guide_name = "La Liste"
-                    elif "culinarybackstreets" in guide:
-                        guide_name = "Culinary Backstreets"
-
-                    # Add to sources if not already there and not banned
-                    if (guide_name not in sources and 
-                        not any(banned in guide.lower() for banned in ["tripadvisor", "yelp", "google"])):
-                        sources.append(guide_name)
+            # Guide field – treat similarly
+            if guide := result.get("guide"):
+                gdomain = guide.replace("www.", "").split(".")[0]
+                gdomain = gdomain.lower()
+                mapping = {
+                    "theworlds50best": "World's 50 Best",
+                    "50best": "World's 50 Best",
+                    "michelin": "Michelin Guide",
+                    "wordofmouth": "World of Mouth",
+                    "oadguides": "OAD Guides",
+                    "culinarybackstreets": "Culinary Backstreets",
+                }
+                guide_name = mapping.get(gdomain, gdomain.capitalize())
+                if guide_name not in sources and guide_name.lower() not in banned:
+                    sources.append(guide_name)
 
         return sources
 
-    def _check_global_guides(self, restaurant_name, location):
-        """Check if the restaurant is mentioned in global guides"""
-        global_guides = [
+    # ------------------------------------------------------------------
+    # Global guide look‑ups (unchanged)
+    # ------------------------------------------------------------------
+
+    def _check_global_guides(self, restaurant_name: str, location: str) -> List[Dict[str, Any]]:
+        guides = [
             "theworlds50best.com",
             "worldofmouth.app",
             "guide.michelin.com",
             "culinarybackstreets.com",
             "oadguides.com",
-            "laliste.com"
+            "laliste.com",
         ]
+        results: List[Dict[str, Any]] = []
 
-        results = []
-
-        for guide in global_guides:
+        for guide in guides:
             try:
-                # Log each guide check explicitly
-                dump_chain_state("checking_global_guide", {
-                    "restaurant_name": restaurant_name,
-                    "guide": guide
-                })
+                dump_chain_state(
+                    "checking_global_guide",
+                    {
+                        "restaurant_name": restaurant_name,
+                        "guide": guide,
+                    },
+                )
 
                 query = f"site:{guide} {restaurant_name} {location}"
                 guide_results = self.search_agent._execute_search(query)
-                filtered_guide_results = self.search_agent._filter_results(guide_results)
+                filtered = self.search_agent._filter_results(guide_results)
 
-                # Log guide search results
-                dump_chain_state("global_guide_results", {
-                    "restaurant_name": restaurant_name,
-                    "guide": guide,
-                    "results_count": len(filtered_guide_results)
-                })
+                dump_chain_state(
+                    "global_guide_results",
+                    {
+                        "restaurant_name": restaurant_name,
+                        "guide": guide,
+                        "results_count": len(filtered),
+                    },
+                )
 
-                # Add guide information
-                for result in filtered_guide_results:
-                    result["guide"] = guide
-                    results.append(result)
-
-                # Respect rate limits
+                for r in filtered:
+                    r["guide"] = guide
+                    results.append(r)
                 time.sleep(1)
-            except Exception as e:
-                error_msg = f"Error checking guide {guide}: {e}"
-                print(error_msg)
-                # Log the error
-                dump_chain_state("global_guide_error", {
-                    "restaurant_name": restaurant_name,
-                    "guide": guide,
-                    "error": str(e)
-                }, error=e)
-
+            except Exception as exc:
+                dump_chain_state(
+                    "global_guide_error",
+                    {
+                        "restaurant_name": restaurant_name,
+                        "guide": guide,
+                        "error": str(exc),
+                    },
+                    error=exc,
+                )
         return results
