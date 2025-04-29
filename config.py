@@ -9,7 +9,6 @@ LANGSMITH_API_KEY = os.environ.get("LANGSMITH_API_KEY")
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
 
-
 # PostgreSQL settings (using variable in Railway)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -18,13 +17,11 @@ OPENAI_MODEL = "gpt-4o"
 OPENAI_TEMPERATURE = 0.2
 
 # Database table names
-DB_TABLE_SOURCES = "local_sources"
 DB_TABLE_SOURCES = "sources"  # Table for source reputation
 DB_TABLE_RESTAURANTS = "restaurants"
 DB_TABLE_PROCESSES = "processes"
 DB_TABLE_SEARCHES = "searches"
-DB_TABLE_USER_PREFS = "user_prefs"  # Add this line for user preferences
-
+DB_TABLE_USER_PREFS = "user_prefs"  # Added this line for user preferences
 
 # Search settings
 EXCLUDED_RESTAURANT_SOURCES = ["tripadvisor.com", "yelp.com", "google.com/maps"]

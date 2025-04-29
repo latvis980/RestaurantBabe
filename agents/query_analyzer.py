@@ -3,7 +3,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_core.tracers.context import tracing_v2_enabled
 import json
-import re  # ← NEW
+import re
 from utils.database import save_data, find_data, ensure_city_table
 
 
@@ -79,18 +79,20 @@ class QueryAnalyzer:
         self.chain = self.prompt | self.model
         self.config = config
 
-    # ──────────────────────────────────────────────────────────────────────
-    # 1) CHANGE SIGNATURE so we can receive prefs from the Telegram layer
-    # ──────────────────────────────────────────────────────────────────────
-    def analyze(self, query: str, standing_prefs: list[str] | None = None):
+    def analyze(self, query, standing_prefs=None):
         """
-        standing_prefs : list[str] | None
-            Long-term user preferences (e.g. ["vegetarian", "budget"]).
-            They'll be merged into `secondary_filter_parameters` unless the
-            current query explicitly negates them.
+        Analyze the user's query and extract relevant search parameters
+
+        Args:
+            query (str): The user's query about restaurant recommendations
+            standing_prefs (list, optional): List of user's standing preferences
+
+        Returns:
+            dict: Extracted search parameters
         """
         standing_prefs = standing_prefs or []
         original_query_lower = query.lower()
+
         with tracing_v2_enabled(project_name="restaurant-recommender"):
             response = self.chain.invoke({"query": query})
 
@@ -157,7 +159,7 @@ class QueryAnalyzer:
 
                     result["local_sources"] = local_sources
 
-                # Format search queries - SIMPLIFIED VERSION
+                # Format search queries
                 search_queries = [result.get("english_search_query")]
 
                 # Add only one local language query for non-English speaking locations
@@ -180,16 +182,14 @@ class QueryAnalyzer:
                 if isinstance(secondary_params, str):
                     secondary_params = [p.strip() for p in secondary_params.split(",") if p.strip()]
 
-                # ───────────────────────────────────────────────────────────────
-                # 2)  **INSERT THIS BLOCK just before the `return { ... }`**
-                # ───────────────────────────────────────────────────────────────
+                # Handle standing preferences
                 NEGATION_PATTERNS = [
                     r"\bnot\s+(?:necessarily\s+)?{p}\b",
-                    r"\bбез\s+{p}\b",                     # Russian "без"
+                    r"\bбез\s+{p}\b",                    
                     r"\bnon-{p}\b",
                     r"\bexcept\s+{p}\b",
-                    r"\bsteakhouse\b.*\bfriend\b",        # sample override
                 ]
+
                 for pref in standing_prefs:
                     skip = False
                     for pat in NEGATION_PATTERNS:
@@ -201,9 +201,7 @@ class QueryAnalyzer:
                     # add pref only if it isn't already captured
                     if pref not in secondary_params and pref not in primary_params:
                         secondary_params.append(pref)
-                # ───────────────────────────────────────────────────────────────
-                # 3)  keep existing return clause
-                # ───────────────────────────────────────────────────────────────
+
                 return {
                     "destination": location,
                     "is_english_speaking": is_english_speaking,
@@ -260,20 +258,14 @@ class QueryAnalyzer:
                     except Exception as lang_error:
                         print(f"Error determining language: {lang_error}")
 
-                # Apply standing preferences to the fallback result as well
+                # Add standing preferences to secondary parameters
                 primary_params = ["best restaurants", f"in {location}"] if location != "Unknown" else ["best restaurants"]
                 secondary_params = []
 
-                # Process standing preferences for fallback scenario
+                # Process standing preferences
                 for pref in standing_prefs:
                     skip = False
-                    for pat in [
-                        r"\bnot\s+(?:necessarily\s+)?{p}\b",
-                        r"\bбез\s+{p}\b",
-                        r"\bnon-{p}\b",
-                        r"\bexcept\s+{p}\b",
-                        r"\bsteakhouse\b.*\bfriend\b",
-                    ]:
+                    for pat in NEGATION_PATTERNS:
                         if re.search(pat.format(p=re.escape(pref)), original_query_lower):
                             skip = True
                             break
@@ -294,6 +286,16 @@ class QueryAnalyzer:
                 }
 
     def _compile_local_sources(self, location, language):
+        """
+        Compile a list of reputable local sources for restaurant recommendations
+
+        Args:
+            location (str): City or location name
+            language (str): Local language
+
+        Returns:
+            list: List of local sources
+        """
         local_sources_prompt = f"""
         Identify 5-7 reputable local sources for restaurant reviews and food recommendations in {location}.
         Focus on local press, respected food experts, bloggers, and local food guides that publish in {language}.

@@ -143,6 +143,33 @@ class LangChainOrchestrator:
             name="analyze_results"
         )
 
+        def _extract_user_preferences(self, query):
+            """
+            Extract user preferences from query if they're provided
+
+            Args:
+                query (str): User query which might contain preferences
+
+            Returns:
+                tuple: (cleaned_query, preference_list)
+            """
+            # Check if preferences are included in the query
+            preference_marker = "User preferences:"
+
+            if preference_marker in query:
+                # Split the query to extract preferences
+                parts = query.split(preference_marker)
+                clean_query = parts[0].strip()
+
+                # Get preferences as a list
+                if len(parts) > 1:
+                    preferences_text = parts[1].strip()
+                    preferences = [p.strip() for p in preferences_text.split(',') if p.strip()]
+                    return clean_query, preferences
+
+            # No preferences found
+            return query, []
+
         # Improved editor step with debug logging
         def editor_step(x):
             try:
@@ -381,14 +408,48 @@ class LangChainOrchestrator:
         Returns:
             dict: The formatted recommendations for Telegram
         """
+        # Extract user preferences if included in the query
+        clean_query, user_preferences = self._extract_user_preferences(user_query)
+
         # Create a unique trace ID for this request
         trace_id = f"restaurant_rec_{int(time.time())}"
 
         # Use LangSmith tracing
         with tracing_v2_enabled(project_name="restaurant-recommender"):
             try:
-                # Execute the chain
-                result = self.chain.invoke({"query": user_query})
+                # Create initial input with preferences
+                input_data = {"query": clean_query, "user_preferences": user_preferences}
+
+                # Modify the analyze_query lambda to handle preferences
+                # This is a new definition that should replace the existing one
+                self.analyze_query = RunnableLambda(
+                    lambda x: {
+                        **self.query_analyzer.analyze(x["query"], x.get("user_preferences", [])),
+                        "query": x["query"],  # Keep the original query in the chain
+                        "user_preferences": x.get("user_preferences", [])  # Keep preferences
+                    },
+                    name="analyze_query"
+                )
+
+                # Re-create the chain with the updated analyze_query
+                self.chain = RunnableSequence(
+                    first=self.analyze_query,
+                    middle=[
+                        self.search,
+                        self.local_search,
+                        self.combine_results,
+                        self.scrape,
+                        self.analyze_results,
+                        self.edit,
+                        self.follow_up_search,
+                        self.extract_html,
+                    ],
+                    last=RunnableLambda(lambda x: x),
+                    name="restaurant_recommendation_chain"
+                )
+
+                # Execute the chain with our input data
+                result = self.chain.invoke(input_data)
 
                 # Log completion and dump final state
                 dump_chain_state("process_query_complete", {
@@ -415,7 +476,7 @@ class LangChainOrchestrator:
 
                 # Get the telegram text
                 telegram_text = result.get("telegram_formatted_text", 
-                                         "<b>Извините, не удалось найти рестораны по вашему запросу.</b>")
+                                          "<b>Извините, не удалось найти рестораны по вашему запросу.</b>")
 
                 # Get the enhanced recommendations
                 enhanced_recommendations = result.get("enhanced_recommendations", {})
@@ -462,20 +523,3 @@ class LangChainOrchestrator:
                 })
 
                 return final_result
-
-            except Exception as e:
-                print(f"Error in chain execution: {e}")
-                # Log the error
-                dump_chain_state("process_query_error", {"query": user_query}, error=e)
-
-                # Return a basic error message
-                return {
-                    "main_list": [
-                        {
-                            "name": "Ошибка обработки запроса",
-                            "description": "Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз позже."
-                        }
-                    ],
-                    "hidden_gems": [],
-                    "telegram_text": "<b>Извините, произошла ошибка при обработке вашего запроса.</b>"
-                }
