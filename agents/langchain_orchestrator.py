@@ -143,33 +143,6 @@ class LangChainOrchestrator:
             name="analyze_results"
         )
 
-        def _extract_user_preferences(self, query):
-            """
-            Extract user preferences from query if they're provided
-
-            Args:
-                query (str): User query which might contain preferences
-
-            Returns:
-                tuple: (cleaned_query, preference_list)
-            """
-            # Check if preferences are included in the query
-            preference_marker = "User preferences:"
-
-            if preference_marker in query:
-                # Split the query to extract preferences
-                parts = query.split(preference_marker)
-                clean_query = parts[0].strip()
-
-                # Get preferences as a list
-                if len(parts) > 1:
-                    preferences_text = parts[1].strip()
-                    preferences = [p.strip() for p in preferences_text.split(',') if p.strip()]
-                    return clean_query, preferences
-
-            # No preferences found
-            return query, []
-
         # Improved editor step with debug logging
         def editor_step(x):
             try:
@@ -313,6 +286,33 @@ class LangChainOrchestrator:
             last=RunnableLambda(lambda x: x),  # Pass through everything
             name="restaurant_recommendation_chain"
         )
+
+    def _extract_user_preferences(self, query):
+        """
+        Extract user preferences from query if they're provided
+
+        Args:
+            query (str): User query which might contain preferences
+
+        Returns:
+            tuple: (cleaned_query, preference_list)
+        """
+        # Check if preferences are included in the query
+        preference_marker = "User preferences:"
+
+        if preference_marker in query:
+            # Split the query to extract preferences
+            parts = query.split(preference_marker)
+            clean_query = parts[0].strip()
+
+            # Get preferences as a list
+            if len(parts) > 1:
+                preferences_text = parts[1].strip()
+                preferences = [p.strip() for p in preferences_text.split(',') if p.strip()]
+                return clean_query, preferences
+
+        # No preferences found
+        return query, []
 
     def _perform_local_search(self, location, search_queries, local_language=None):
         """Perform local source search if we're in a non-English speaking location"""
@@ -476,7 +476,7 @@ class LangChainOrchestrator:
 
                 # Get the telegram text
                 telegram_text = result.get("telegram_formatted_text", 
-                                          "<b>Извините, не удалось найти рестораны по вашему запросу.</b>")
+                                         "<b>Извините, не удалось найти рестораны по вашему запросу.</b>")
 
                 # Get the enhanced recommendations
                 enhanced_recommendations = result.get("enhanced_recommendations", {})
@@ -523,3 +523,20 @@ class LangChainOrchestrator:
                 })
 
                 return final_result
+
+            except Exception as e:
+                print(f"Error in chain execution: {e}")
+                # Log the error
+                dump_chain_state("process_query_error", {"query": user_query}, error=e)
+
+                # Return a basic error message
+                return {
+                    "main_list": [
+                        {
+                            "name": "Ошибка обработки запроса",
+                            "description": "Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз позже."
+                        }
+                    ],
+                    "hidden_gems": [],
+                    "telegram_text": "<b>Извините, произошла ошибка при обработке вашего запроса.</b>"
+                }
