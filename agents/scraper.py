@@ -191,23 +191,49 @@ class WebScraper:
     # ------------------------------------------------------------------
     # Content cleaning ---------------------------------------------------
     def _extract_clean_text(self, html: str, url: str) -> tuple[str, str]:
-        """Readability first; fallback to simple paragraph join."""
+        """Return cleaned article text and a prettified source name.
+
+        Strategy
+        --------
+        1. Try python-readability (`Document`) to isolate the main HTML.
+        2. If the result is < 500 chars or any error occurs, fall back to simply
+           concatenating all <p> tags (or the whole page text as a last resort).
+        3. Convert the domain to a human-friendly source name with
+           `_format_source_name`.
+        4. If a title was captured, prepend it to the text separated by a blank
+           line.
+        """
         try:
+            # ── readability first ───────────────────────────────────────────
             doc = Document(html)
-            summary_html = doc.summary()  # main content HTML
-            title = doc.short_title()
-            text = BeautifulSoup(summary_html, "html.parser").get_text(" ", strip=True)
-            if len(text) < 500:  # too short – fallback
-                raise ValueError("Readability too short")
+            summary_html = doc.summary()            # main article HTML
+            title = doc.short_title()               # may be None
+            text = BeautifulSoup(
+                summary_html, "html.parser"
+            ).get_text(" ", strip=True)
+
+            # fallback if content still too short
+            if len(text) < 500:
+                raise ValueError("Readability result too short")
+
         except Exception:
+            # ── naive extraction fallback ──────────────────────────────────
             soup = BeautifulSoup(html, "html.parser")
-            paragraphs = " ".join(p.get_text(" ", strip=True) for p in soup.find_all("p"))
+            paragraphs = " ".join(
+                p.get_text(" ", strip=True) for p in soup.find_all("p")
+            )
             text = paragraphs if paragraphs else soup.get_text(" ", strip=True)
             title = None
+
+        # ── prettify the domain to a source name ────────────────────────────
         source_name = self._format_source_name(urlparse(url).netloc)
+
+        # ── prepend title if we have one ────────────────────────────────────
         if title:
             text = f"{title}\n\n{text}"
+
         return text, source_name
+
 
     # ------------------------------------------------------------------
     # Utility methods ----------------------------------------------------

@@ -203,7 +203,9 @@ class ListAnalyzer:
 
     # ------------------------------------------------------------------
     def _postprocess_response(self, response, city: str) -> Dict[str, Any]:
+        """Parse the LLM output, normalise keys, add safe defaults and persist."""
         try:
+            # ── 1. strip markdown fences ─────────────────────────────────────────
             content = response.content
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
@@ -211,36 +213,39 @@ class ListAnalyzer:
                 content = content.split("```")[1].split("```")[0].strip()
 
             dump_chain_state("analyze_raw_response", {"raw_response": content[:1000]})
-            results = json.loads(content)
+            results: Dict[str, Any] = json.loads(content)
 
-            # Normalise keys
+            # ── 2. normalise keys ────────────────────────────────────────────────
             if "restaurants" in results and "main_list" not in results:
                 results["main_list"] = results.pop("restaurants")
 
             results.setdefault("main_list", [])
             results.setdefault("hidden_gems", [])
 
-            for r in results["main_list"] + results["hidden_gems"]:
-                r.setdefault("price_range", "€€")
-                r.setdefault("recommended_dishes", [])
-                r["city"] = city
+            # ── 3. add mandatory defaults to every record ────────────────────────
+            for rec in results["main_list"] + results["hidden_gems"]:
+                rec.setdefault("price_range", "€€")
+                rec.setdefault("recommended_dishes", [])
+                rec.setdefault("missing_info", [])
+                rec["city"] = city
 
-            # Persist
-            self._save_restaurants_to_db(results["main_list"] + results["hidden_gems"], city)
+            # ── 4. write to DB ───────────────────────────────────────────────────
+            self._save_restaurants_to_db(
+                results["main_list"] + results["hidden_gems"], city
+            )
 
-            # Graceful fallback if everything empty
+            # ── 5. graceful fallback if everything is empty ──────────────────────
             if not (results["main_list"] or results["hidden_gems"]):
-                results["main_list"] = [
-                    {
-                        "name": "Поиск не дал результатов",
-                        "address": "Адрес недоступен",
-                        "description": "К сожалению, мы не смогли найти рестораны, соответствующие вашему запросу.",
-                        "sources": ["Системное сообщение"],
-                        "price_range": "€€",
-                        "recommended_dishes": [],
-                        "city": city,
-                    }
-                ]
+                results["main_list"] = [{
+                    "name": "Поиск не дал результатов",
+                    "address": "Адрес недоступен",
+                    "description": "К сожалению, мы не смогли найти рестораны, соответствующие вашему запросу.",
+                    "sources": ["Системное сообщение"],
+                    "price_range": "€€",
+                    "recommended_dishes": [],
+                    "missing_info": [],
+                    "city": city,
+                }]
 
             dump_chain_state(
                 "analyze_final_results",
@@ -250,6 +255,8 @@ class ListAnalyzer:
                 },
             )
             return results
+
+        # ── 6. JSON / attribute errors ──────────────────────────────────────────
         except (json.JSONDecodeError, AttributeError) as exc:
             dump_chain_state(
                 "analyze_json_error",
@@ -259,19 +266,19 @@ class ListAnalyzer:
                 },
             )
             return {
-                "main_list": [
-                    {
-                        "name": "Ошибка обработки результатов",
-                        "address": "Адрес недоступен",
-                        "description": "Произошла ошибка при обработке результатов поиска.",
-                        "sources": ["Системное сообщение"],
-                        "price_range": "€€",
-                        "recommended_dishes": [],
-                        "city": city,
-                    }
-                ],
+                "main_list": [{
+                    "name": "Ошибка обработки результатов",
+                    "address": "Адрес недоступен",
+                    "description": "Произошла ошибка при обработке результатов поиска.",
+                    "sources": ["Системное сообщение"],
+                    "price_range": "€€",
+                    "recommended_dishes": [],
+                    "missing_info": [],
+                    "city": city,
+                }],
                 "hidden_gems": [],
             }
+
 
     # ------------------------------------------------------------------
     def _extract_city(self, primary_parameters):

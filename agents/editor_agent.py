@@ -37,10 +37,12 @@ class EditorAgent:
         - Opening hours
         - Special atmosphere details
 
-        MISSING INFORMATION HANDLING:
-        - For each restaurant, explicitly add a "missing_info" array listing any MANDATORY information that is missing
-        - Example: ["address", "price_range", "recommended_dishes"]
-        - This will be used to generate targeted follow-up searches
+       MISSING INFORMATION HANDLING:
+       - For each restaurant, explicitly add a "missing_info" array listing any MANDATORY information that is missing
+       - Example: ["address", "price_range", "recommended_dishes"]
+       - This will be used to generate targeted follow-up searches
+
+       **If any mandatory info is missing, KEEP the restaurant in "main_list" and just list the missing fields in "missing_info". Never move or delete the entry.**
 
         FORMATTING INSTRUCTIONS:
         1. Organize into two sections: "Recommended Restaurants" and "Hidden Gems"
@@ -80,126 +82,138 @@ class EditorAgent:
         self.config = config
 
     @log_function_call
-    def edit(self, recommendations, original_query):
+    def edit(self, recommendations: dict, original_query: str) -> dict:
         """
-        Format and polish the restaurant recommendations
+        Format and polish the restaurant recommendations.
 
-        Args:
-            recommendations (dict): The restaurant recommendations from the list analyzer
-            original_query (str): The original user query
+        Args
+        ----
+        recommendations : dict   – raw result from ListAnalyzer
+        original_query  : str    – user’s initial query
 
-        Returns:
-            dict: The formatted recommendations with all required information
+        Returns
+        -------
+        dict with keys:
+            formatted_recommendations : { main_list, hidden_gems }
+            follow_up_queries         : list
         """
         with tracing_v2_enabled(project_name="restaurant-recommender"):
             try:
-                # Debug log initial input
-                dump_chain_state("editor_input", {
-                    "recommendations_keys": list(recommendations.keys() if isinstance(recommendations, dict) else []),
-                    "original_query": original_query
-                })
+                # ── 1. debug input ──────────────────────────────────────────
+                dump_chain_state(
+                    "editor_input",
+                    {
+                        "recommendations_keys": list(recommendations.keys())
+                        if isinstance(recommendations, dict)
+                        else [],
+                        "original_query": original_query,
+                    },
+                )
 
-                # Generate follow-up search queries
-                follow_up_queries = self._generate_follow_up_queries(recommendations, original_query)
+                # ── 2. follow-up query skeletons ──────────────────────────
+                follow_up_queries = self._generate_follow_up_queries(
+                    recommendations, original_query
+                )
 
-                # Make sure recommendations has the required structure
+                # ── 3. guarantee structure presence ───────────────────────
                 if not recommendations or not isinstance(recommendations, dict):
                     recommendations = {"main_list": []}
 
-                # Ensure main_list exists - handle legacy format if necessary
                 if "main_list" not in recommendations:
-                    if "recommended" in recommendations:
-                        # Convert old format to new format
+                    if "recommended" in recommendations:                   # legacy
                         recommendations["main_list"] = recommendations.pop("recommended")
                     else:
-                        # Initialize empty main_list
                         recommendations["main_list"] = []
 
-                # Invoke the formatting chain
-                response = self.chain.invoke({
-                    "recommendations": json.dumps(recommendations, ensure_ascii=False, indent=2),
-                    "original_query": original_query
-                })
-
-                try:
-                    # Parse the JSON response
-                    content = response.content
-
-                    # Handle different response formats
-                    if "```json" in content:
-                        content = content.split("```json")[1].split("```")[0].strip()
-                    elif "```" in content:
-                        content = content.split("```")[1].split("```")[0].strip()
-
-                    # Debug log the raw response
-                    dump_chain_state("editor_raw_response", {
-                        "raw_response": content[:1000]  # Limit to 1000 chars
-                    })
-
-                    # Parse the JSON
-                    formatted_results = json.loads(content)
-
-                    # Ensure we have the correct structure
-                    if "formatted_recommendations" in formatted_results:
-                        formatted_rec = formatted_results["formatted_recommendations"]
-                        # Convert any "recommended" to "main_list" if present
-                        if isinstance(formatted_rec, dict):
-                            if "recommended" in formatted_rec and "main_list" not in formatted_rec:
-                                formatted_rec["main_list"] = formatted_rec.pop("recommended")
-                    else:
-                        # If no formatted_recommendations key, wrap the result
-                        formatted_results = {
-                            "formatted_recommendations": formatted_results
-                        }
-                        # Check if we need to convert recommendations to main_list in the wrapped result
-                        if "recommended" in formatted_results["formatted_recommendations"] and "main_list" not in formatted_results["formatted_recommendations"]:
-                            formatted_results["formatted_recommendations"]["main_list"] = formatted_results["formatted_recommendations"].pop("recommended")
-
-                    # Add the follow-up queries
-                    formatted_results["follow_up_queries"] = follow_up_queries
-
-                    # Debug log the final structured results
-                    dump_chain_state("editor_final_results", {
-                        "formatted_results_keys": list(formatted_results.keys()),
-                        "follow_up_queries_count": len(follow_up_queries)
-                    })
-
-                    return formatted_results
-
-                except (json.JSONDecodeError, AttributeError) as e:
-                    print(f"Error parsing editor response: {e}")
-                    print(f"Response content: {response.content}")
-
-                    # Debug log the error
-                    dump_chain_state("editor_json_error", {
-                        "error": str(e),
-                        "response_preview": response.content[:500] if hasattr(response, 'content') else "No content"
-                    })
-
-                    # Return the original recommendations if parsing fails
-                    return {
-                        "formatted_recommendations": {
-                            "main_list": recommendations.get("main_list", []),
-                            "hidden_gems": []
-                        },
-                        "follow_up_queries": follow_up_queries
+                # ── 4. call the LLM formatter ─────────────────────────────
+                response = self.chain.invoke(
+                    {
+                        "recommendations": json.dumps(
+                            recommendations, ensure_ascii=False, indent=2
+                        ),
+                        "original_query": original_query,
                     }
-            except Exception as e:
-                print(f"Error in editor agent: {e}")
+                )
 
-                # Debug log the error
-                dump_chain_state("editor_general_error", {
-                    "error": str(e),
-                    "recommendations_preview": str(recommendations)[:500] if recommendations else "No recommendations"
-                }, error=e)
+                # ── 5. clean markdown fences & parse JSON ─────────────────
+                content = response.content
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0].strip()
+                elif "```" in content:
+                    content = content.split("```")[1].split("```")[0].strip()
 
+                dump_chain_state("editor_raw_response", {"raw": content[:1000]})
+                formatted_results = json.loads(content)
+
+                # ── 6. normalise keys (recommended ➜ main_list) ──────────
+                if "formatted_recommendations" in formatted_results:
+                    formatted_rec = formatted_results["formatted_recommendations"]
+                    if isinstance(formatted_rec, dict) and "recommended" in formatted_rec:
+                        formatted_rec.setdefault("main_list", formatted_rec.pop("recommended"))
+                else:
+                    formatted_results = {
+                        "formatted_recommendations": formatted_results
+                    }
+                    fr = formatted_results["formatted_recommendations"]
+                    if isinstance(fr, dict) and "recommended" in fr:
+                        fr.setdefault("main_list", fr.pop("recommended"))
+
+                # ── 7. SAFETY NET – never lose the main list ─────────────
+                formatted_rec = formatted_results.get("formatted_recommendations", {})
+                if (
+                    isinstance(formatted_rec, dict)
+                    and not formatted_rec.get("main_list")            # empty after LLM
+                    and recommendations.get("main_list")              # we had entries
+                ):
+                    formatted_rec["main_list"] = recommendations["main_list"]
+                    formatted_results["formatted_recommendations"] = formatted_rec
+
+                # ── 8. attach follow-up queries & finish ────────────────
+                formatted_results["follow_up_queries"] = follow_up_queries
+
+                dump_chain_state(
+                    "editor_final_results",
+                    {
+                        "formatted_keys": list(formatted_results.keys()),
+                        "follow_up_queries": len(follow_up_queries),
+                    },
+                )
+                return formatted_results
+
+            # ── 9. JSON or attr error inside try-block ───────────────────
+            except (json.JSONDecodeError, AttributeError) as exc:
+                dump_chain_state(
+                    "editor_json_error",
+                    {"error": str(exc), "response_preview": str(response.content)[:500]},
+                )
                 return {
                     "formatted_recommendations": {
-                        "main_list": recommendations.get("main_list", []) if isinstance(recommendations, dict) else [],
-                        "hidden_gems": []
+                        "main_list": recommendations.get("main_list", []),
+                        "hidden_gems": [],
                     },
-                    "follow_up_queries": []
+                    "follow_up_queries": follow_up_queries if "follow_up_queries" in locals() else [],
                 }
+
+            # ── 10. any other exception ───────────────────────────────────
+            except Exception as exc:
+                dump_chain_state(
+                    "editor_general_error",
+                    {
+                        "error": str(exc),
+                        "recommendations_preview": str(recommendations)[:500],
+                    },
+                    error=exc,
+                )
+                return {
+                    "formatted_recommendations": {
+                        "main_list": recommendations.get("main_list", [])
+                        if isinstance(recommendations, dict)
+                        else [],
+                        "hidden_gems": [],
+                    },
+                    "follow_up_queries": [],
+                }
+
 
     # Improved follow-up query generator for EditorAgent
 
