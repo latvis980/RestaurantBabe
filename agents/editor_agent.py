@@ -239,39 +239,41 @@ class EditorAgent:
             follow_up_prompt = ChatPromptTemplate.from_messages([
                 ("system",
                  """
-    You are an expert at crafting targeted web search queries for restaurants.
+            You are an expert at crafting targeted web-search queries for restaurants.
 
-    For each restaurant, create queries **only** to retrieve missing MANDATORY info:
-    1. Address
-    2. Price range
-    3. Recommended dishes
-    4. Reputable sources (Michelin, Time Out, etc.)
+            For each restaurant, create queries **only** to retrieve missing **MANDATORY** info:
+            1. Address
+            2. Price range
+            3. Recommended dishes
+            4. Reputable sources (Michelin, Time Out, etc.)
 
-    Do NOT create queries for optional data (chef, Instagram, hours, atmosphere).
+            Do **NOT** create queries for optional data (chef, Instagram, hours, atmosphere).
 
-    If a restaurant already has all mandatory info, return just one query
-    to check for mentions in respected guides.
+            If a restaurant already has all mandatory info, return just **one** query
+            to check for mentions in respected guides.
 
-    Output a JSON array of objects:
-    [
-      {
-        "restaurant_name": "...",
-        "queries": ["...", "...", "..."]   # max 3
-      },
-      …
-    ]
-    """),
+            Return a JSON array, e.g.:
+            [
+              {{
+                "restaurant_name": "Example Bistro",
+                "queries": ["example bistro address", "example bistro price range"]
+              }},
+              …
+            ]
+            (Max 3 queries per restaurant.)
+            """),
                 ("human",
                  """
-    Original user query:
-    {original_query}
+            Original user query:
+            {original_query}
 
-    Restaurant recommendations (JSON):
-    {recommendations}
+            Restaurant recommendations (JSON):
+            {recommendations}
 
-    Create the follow-up search queries as specified above.
-    """)
+            Create the follow-up search queries as specified above.
+            """)
             ])
+
 
             follow_up_chain = follow_up_prompt | self.model
 
