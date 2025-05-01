@@ -366,28 +366,25 @@ class LangChainOrchestrator:
                 if title:
                     html += f"<b>{title}</b>\n\n"
                 for i, r in enumerate(restaurants, 1):
-                    # Sanitize all text values
-                    name = str(r.get("name", "Restaurant")).replace('<', '&lt;').replace('>', '&gt;')
-                    addr = str(r.get("address", "Address unavailable")).replace('<', '&lt;').replace('>', '&gt;')
-                    desc = str(r.get("description", "")).replace('<', '&lt;').replace('>', '&gt;')
-                    price = str(r.get("price_range", "")).replace('<', '&lt;').replace('>', '&gt;')
+                    name = r.get("name", "Restaurant")
+                    addr = r.get("address", "Address unavailable")
+                    desc = r.get("description", "")
+                    price = r.get("price_range", "")
+                    dishes = ", ".join(r.get("recommended_dishes", [])[:3])
+                    sources = ", ".join(sorted(set(r.get("sources", [])))[:3])
 
-                    # Handle dishes and sources safely
-                    dishes_list = r.get("recommended_dishes", [])
-                    if isinstance(dishes_list, list):
-                        dishes = ", ".join(str(d).replace('<', '&lt;').replace('>', '&gt;') for d in dishes_list[:3])
-                    else:
-                        dishes = ""
-
-                    sources_list = r.get("sources", [])
-                    if isinstance(sources_list, list):
-                        sources = ", ".join(str(s).replace('<', '&lt;').replace('>', '&gt;') for s in sorted(set(sources_list))[:3])
-                    else:
-                        sources = ""
+                    # Check if address is a Google Maps link and format it properly for Telegram
+                    if addr and ("<a href=" in addr):
+                        # Extract just the URL and text parts
+                        import re
+                        link_match = re.search(r'<a href="([^"]+)"[^>]*>([^<]+)</a>', addr)
+                        if link_match:
+                            map_url, address_text = link_match.groups()
+                            addr = f'<a href="{map_url}">{address_text}</a>'
 
                     html += (
                         f"<b>{i}. {name}</b>\n"
-                        f"📍 {addr}\n"              # keep the single map pin for scannability
+                        f"📍 {addr}\n"              # now properly formatted for Telegram
                         f"{desc}\n"
                     )
 
@@ -404,15 +401,6 @@ class LangChainOrchestrator:
                 block(hidden_gems, title="Hidden Gems")
 
             html += "<i>Recommendations compiled from reputable critic and guide sources.</i>"
-
-            # Clean any special characters that might cause issues
-            html = html.replace('\u2014', '-')  # em dash
-            html = html.replace('\u2013', '-')  # en dash
-            html = html.replace('\u2019', "'")  # right single quotation mark
-            html = html.replace('\u2018', "'")  # left single quotation mark
-            html = html.replace('\u201C', '"')  # left double quotation mark
-            html = html.replace('\u201D', '"')  # right double quotation mark
-
             return html[:3997] + "…" if len(html) > 4000 else html
 
         except Exception as e:
