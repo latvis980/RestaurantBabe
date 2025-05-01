@@ -38,6 +38,8 @@ from langchain_core.tracers.context import tracing_v2_enabled
 from readability import Document
 from urllib.parse import urlparse
 
+import brotli                      # only used inside the br-branch
+
 # --- utils --------------------------------------------------------------
 
 _PENDING_TASKS: set[asyncio.Task] = set()
@@ -163,30 +165,55 @@ class WebScraper:
 
     # ------------------------------------------------------------------
     # Fetch helpers -----------------------------------------------------
-    async def _fetch_html(self, url: str, max_retries: int) -> Optional[str]:
-        """Return HTML from cache or network."""
-        cached = self._html_cache.get(url)
-        if cached:
+    async def _fetch_html(self, url: str, max_retries: int = 3) -> str | None:
+        """
+        Download, *fully* decompress, and pre-clean HTML.
+        Returns Unicode HTML or None on hard failure.
+        """
+        if cached := self._html_cache.get(url):
             return cached
 
-        headers = DEFAULT_HEADERS | {"User-Agent": random.choice(self.user_agents)}
-        attempt = 0
-        while attempt <= max_retries:
+        for attempt in range(1, max_retries + 1):
             try:
-                async with self._sem:  # honour concurrency limit
-                    r = await self._client.get(url, headers=headers)
-                if r.status_code == 200 and r.headers.get("content-type", "").startswith(
-                    "text/html"
-                ):
-                    html = r.text
-                    self._html_cache.set(url, html, expire=self._html_ttl)
-                    return html
-            except httpx.HTTPError as e:
-                print(f"Attempt {attempt+1}/{max_retries+1} failed for {url}: {e}")
-            attempt += 1
-            if attempt <= max_retries:
-                await asyncio.sleep(random.uniform(1.0, 3.0))
+                async with self._client.get(url, headers=self.DEFAULT_HEADERS, timeout=20) as r:
+                    if r.status_code != 200:
+                        raise httpx.HTTPStatusError(f"HTTP {r.status_code}", request=r.request, response=r)
+
+                    # ---- 1. make sure the bytes are Unicode ----
+                    encoding = r.headers.get("content-encoding")
+                    if encoding == "br":
+                        # httpx hands us raw bytes when brotli isn’t auto-handled
+                        html_bytes = brotli.decompress(await r.aread())
+                        html = html_bytes.decode("utf-8", "replace")
+                    elif encoding in ("gzip", "deflate", None, ""):
+                        html = await r.text()
+                    else:
+                        # rare encodings – grab raw and hope chardet gets it right
+                        html = (await r.aread()).decode("utf-8", "replace")
+
+                    # ---- 2. run Readability to strip boilerplate ----
+                    main_doc = Document(html)
+                    cleaned_html = main_doc.summary() or html   # fallback if Readability fails
+
+                    # ---- 3. (optional) quick tag sanitise via BS ----
+                    soup = BeautifulSoup(cleaned_html, "lxml")
+                    # kill script / style tags that sometimes survive Readability
+                    for bad in soup(["script", "style", "noscript"]):
+                        bad.decompose()
+
+                    final_html = str(soup)
+
+                    # ---- 4. cache & go ----
+                    self._html_cache.set(url, final_html, expire=self._html_ttl)
+                    return final_html
+
+            except Exception as e:
+                self.logger.warning("Fetch %s failed (try %d/%d): %s", url, attempt, max_retries, e)
+                await asyncio.sleep(1.5 * attempt)  # simple back-off
+
+        self.logger.error("Giving up on %s after %d attempts", url, max_retries)
         return None
+
 
     # ------------------------------------------------------------------
     # Content cleaning ---------------------------------------------------
