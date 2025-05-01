@@ -227,12 +227,81 @@ def save_search(uid: int, query: str, result: Any):
     except Exception as e:
         logger.error(f"Error saving search: {e}")
 
+def sanitize_html_for_telegram(text):
+    """Clean HTML text to ensure it's safe for Telegram API"""
+    import re
+    from html import escape
+
+    # Replace any non-ASCII characters with their HTML entity or remove them
+    text = text.encode('ascii', 'xmlcharrefreplace').decode('ascii')
+
+    # Make sure all HTML tags are properly formed
+    # Only allow a limited set of HTML tags that Telegram supports
+    allowed_tags = ['b', 'i', 'u', 's', 'a', 'code', 'pre']
+
+    # Remove any HTML tags that aren't in the allowed list
+    for tag in re.findall(r'</?(\w+)[^>]*>', text):
+        if tag not in allowed_tags and tag + '>' not in allowed_tags:
+            text = re.sub(r'</?{}[^>]*>'.format(tag), '', text)
+
+    # Ensure all angle brackets not used in allowed tags are escaped
+    lines = []
+    in_tag = False
+    for line in text.split('\n'):
+        new_line = ""
+        i = 0
+        while i < len(line):
+            if line[i:i+1] == '<' and not in_tag:
+                # Check if this is the start of an allowed tag
+                is_allowed = False
+                for tag in allowed_tags:
+                    if line[i:].startswith('<' + tag) or line[i:].startswith('</' + tag):
+                        is_allowed = True
+                        break
+
+                if is_allowed:
+                    in_tag = True
+                    new_line += '<'
+                else:
+                    new_line += '&lt;'
+            elif line[i:i+1] == '>' and in_tag:
+                in_tag = False
+                new_line += '>'
+            elif line[i:i+1] == '>' and not in_tag:
+                new_line += '&gt;'
+            else:
+                new_line += line[i]
+            i += 1
+
+        lines.append(new_line)
+
+    text = '\n'.join(lines)
+
+    # Replace any remaining problematic characters
+    text = text.replace('�', '')
+
+    return text
 
 def chunk_and_send(chat_id: int, text: str):
     """Split long messages and send them in chunks"""
     MAX = 4000
-    for i in range(0, len(text), MAX):
-        bot.send_message(chat_id, text[i:i+MAX], parse_mode="HTML")
+
+    # First sanitize the text
+    clean_text = sanitize_html_for_telegram(text)
+
+    for i in range(0, len(clean_text), MAX):
+        chunk = clean_text[i:i+MAX]
+        try:
+            bot.send_message(chat_id, chunk, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Error sending message: {e}")
+            # Fallback: Try sending without HTML parsing
+            try:
+                bot.send_message(chat_id, chunk, parse_mode=None)
+            except Exception as e2:
+                logger.error(f"Error sending plain message: {e2}")
+                # Last resort: Send a generic error message
+                bot.send_message(chat_id, "Sorry, I encountered an error while formatting the message. Please try again.")
 
 
 def load_user_data(uid: int):
