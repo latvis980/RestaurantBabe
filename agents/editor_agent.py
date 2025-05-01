@@ -230,69 +230,74 @@ class EditorAgent:
     # Improved follow-up query generator for EditorAgent
 
     def _generate_follow_up_queries(self, recommendations, original_query):
-        """Generate follow-up search queries for each restaurant, focusing on mandatory information"""
-        follow_up_queries = []
-
+        """Generate follow-up search queries for each restaurant, focusing on mandatory information."""
         try:
-            # Create a prompt for generating follow-up queries focused on mandatory information
+            # 1. Turn recommendations into a JSON string once.
+            rec_json = json.dumps(recommendations, ensure_ascii=False, indent=2)
+
+            # 2. Prompt template *with* placeholders, no raw braces.
             follow_up_prompt = ChatPromptTemplate.from_messages([
-                ("system", """
-                You are an expert at creating targeted search queries for restaurants.
+                ("system",
+                 """
+    You are an expert at crafting targeted web search queries for restaurants.
 
-                For each restaurant, create search queries ONLY to find missing MANDATORY information:
-                1. Address (if missing)
-                2. Price range (if missing)
-                3. Recommended dishes (if missing)
-                4. Sources of recommendation (if missing)
+    For each restaurant, create queries **only** to retrieve missing MANDATORY info:
+    1. Address
+    2. Price range
+    3. Recommended dishes
+    4. Reputable sources (Michelin, Time Out, etc.)
 
-                Do NOT create queries for optional information like:
-                - Chef name
-                - Instagram handle
-                - Exact opening hours
-                - Atmosphere details
+    Do NOT create queries for optional data (chef, Instagram, hours, atmosphere).
 
-                If a restaurant already has all mandatory information, only create one query to check for mentions in reputable guides.
+    If a restaurant already has all mandatory info, return just one query
+    to check for mentions in respected guides.
 
-                Return a JSON array of objects with "restaurant_name" and "queries" (array of strings).
-                Limit to max 3 queries per restaurant to avoid excessive searching.
-                """),
-                ("human", f"""
-                Original user query: {original_query}
+    Output a JSON array of objects:
+    [
+      {
+        "restaurant_name": "...",
+        "queries": ["...", "...", "..."]   # max 3
+      },
+      …
+    ]
+    """),
+                ("human",
+                 """
+    Original user query:
+    {original_query}
 
-                Restaurant recommendations: {json.dumps(recommendations, ensure_ascii=False)}
+    Restaurant recommendations (JSON):
+    {recommendations}
 
-                Create focused follow-up search queries for each restaurant, prioritizing only missing MANDATORY information.
-                """)
+    Create the follow-up search queries as specified above.
+    """)
             ])
 
-            # Create a follow-up chain
             follow_up_chain = follow_up_prompt | self.model
 
-            # Invoke the chain
-            response = follow_up_chain.invoke({})
+            # 3. Supply the variables the template expects.
+            response = follow_up_chain.invoke({
+                "original_query": original_query,
+                "recommendations": rec_json
+            })
 
-            try:
-                # Parse the JSON response
-                content = response.content
+            # 4. Strip any markdown fences, then parse.
+            content = response.content
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
 
-                # Handle different response formats
-                if "```json" in content:
-                    content = content.split("```json")[1].split("```")[0].strip()
-                elif "```" in content:
-                    content = content.split("```")[1].split("```")[0].strip()
+            return json.loads(content)
 
-                # Parse the JSON
-                queries = json.loads(content)
-                return queries
-            except (json.JSONDecodeError, AttributeError) as e:
-                print(f"Error parsing follow-up queries: {e}")
-
-                # Generate basic queries if parsing fails
-                return self._generate_basic_queries(recommendations)
-
-        except Exception as e:
-            print(f"Error generating follow-up queries: {e}")
+        except (json.JSONDecodeError, AttributeError) as exc:
+            print(f"Error parsing follow-up queries: {exc}")
             return self._generate_basic_queries(recommendations)
+
+        except Exception as exc:
+            print(f"Error generating follow-up queries: {exc}")
+            return self._generate_basic_queries(recommendations)
+
 
     def _generate_basic_queries(self, recommendations):
         """Generate basic follow-up queries focused on mandatory information if the main generation fails"""
