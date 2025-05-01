@@ -88,15 +88,17 @@ class LangChainOrchestrator:
                     "enriched_results_count": len(x.get("enriched_results", [])),
                     "keywords": x.get("keywords_for_analysis", []),
                     "primary_params": x.get("primary_search_parameters", []),
-                    "secondary_params": x.get("secondary_filter_parameters", [])
+                    "secondary_params": x.get("secondary_filter_parameters", []),
+                    "destination": x.get("destination", "Unknown")  # Log the destination
                 })
 
-                # Execute list analyzer
+                # Execute list analyzer with the destination
                 recommendations = self.list_analyzer.analyze(
                     x["enriched_results"],
                     x.get("keywords_for_analysis", []),
                     x.get("primary_search_parameters", []),
-                    x.get("secondary_filter_parameters", [])
+                    x.get("secondary_filter_parameters", []),
+                    destination=x.get("destination")  # Pass the destination!
                 )
 
                 # Debug log after analysis

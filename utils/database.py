@@ -97,7 +97,7 @@ def ensure_city_table(city, config, table_type="restaurants"):
 
 
 def save_data(table_name, data_dict, config):
-    """Save data to the specified table."""
+    """Save data to the specified table with upsert behavior for duplicates."""
     global engine, tables
     if engine is None:
         initialize_db(config)
@@ -117,8 +117,24 @@ def save_data(table_name, data_dict, config):
             'data': data_dict,
             'timestamp': data_dict.get('timestamp', time.time())
         }
+
+        # Use an upsert operation instead of plain insert
         with engine.begin() as conn:
-            conn.execute(tables[table_name].insert().values(**record))
+            # Check if record exists
+            stmt = select(tables[table_name]).where(tables[table_name].c._id == doc_id)
+            existing = conn.execute(stmt).fetchone()
+
+            if existing:
+                # Update existing record
+                update_stmt = tables[table_name].update().where(tables[table_name].c._id == doc_id).values(
+                    data=data_dict,
+                    timestamp=record['timestamp']
+                )
+                conn.execute(update_stmt)
+            else:
+                # Insert new record
+                conn.execute(tables[table_name].insert().values(**record))
+
         return doc_id
     except SQLAlchemyError as e:
         logger.error(f"Error saving to database: {e}")

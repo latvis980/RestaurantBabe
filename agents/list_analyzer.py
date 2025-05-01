@@ -125,6 +125,7 @@ class ListAnalyzer:
         keywords_for_analysis: List[str] | str,
         primary_parameters: Optional[List[str] | str] = None,
         secondary_parameters: Optional[List[str] | str] = None,
+        destination: Optional[str] = None,
     ) -> Dict[str, Any]:
         with tracing_v2_enabled(project_name="restaurant-recommender"):
             dump_chain_state(
@@ -134,10 +135,12 @@ class ListAnalyzer:
                     "keywords": keywords_for_analysis,
                     "primary_parameters": primary_parameters,
                     "secondary_parameters": secondary_parameters,
+                    "destination": destination,  # Log the destination
                 },
             )
 
-            city = self._extract_city(primary_parameters)
+            # Extract city, providing the destination as fallback
+            city = self._extract_city(primary_parameters, destination)
             formatted_results = self._format_search_results(search_results)
             kw_str = ", ".join(keywords_for_analysis) if isinstance(keywords_for_analysis, list) else (
                 keywords_for_analysis or ""
@@ -281,11 +284,21 @@ class ListAnalyzer:
 
 
     # ------------------------------------------------------------------
-    def _extract_city(self, primary_parameters):
+    def _extract_city(self, primary_parameters, destination=None):
+        # First try to use the destination if provided directly
+        if destination and destination != "Unknown":
+            return destination
+
+        # Then check primary parameters
         if isinstance(primary_parameters, list):
             for p in primary_parameters:
                 if "in " in p.lower():
                     return p.lower().split("in ")[1].strip()
+                elif "at " in p.lower():
+                    return p.lower().split("at ")[1].strip()
+                elif "near " in p.lower():
+                    return p.lower().split("near ")[1].strip()
+
         return "unknown_location"
 
     def _save_restaurants_to_db(self, restaurants: List[Dict[str, Any]], city: str):

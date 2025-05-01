@@ -285,6 +285,7 @@ class QueryAnalyzer:
                     "local_sources": []
                 }
 
+    
     def _compile_local_sources(self, location, language):
         """
         Compile a list of reputable local sources for restaurant recommendations
