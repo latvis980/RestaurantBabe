@@ -55,11 +55,26 @@ class ListAnalyzer:
         identify the best restaurants **and promising hidden gems**.
 
         TASK:
-        From the supplied search snippets produce two lists:
+        1. From the supplied texts extract names of restaurants and merge descriptions of each restaurant from different sources into one description with as many details as possible.
+        2. Produce two lists:
         1. **main_list** – establishments widely endorsed by multiple reputable
            sources.
         2. **hidden_gems** – places mentioned in ≤ 2 sources *but* featuring an
            enthusiastic review from a knowledgeable critic or respected medium.
+
+        GUIDELINES:
+        1. Analyze the tone and content of reviews to identify genuinely recommended restaurants
+        2. Cross-reference the descriptions against the keywords and search parameters
+        3. Look for restaurants mentioned in multiple reputable sources
+        4. IGNORE results from Tripadvisor, Yelp
+        5. Pay special attention to restaurants featured in food guides, local publications, or by respected critics
+        6. When analyzing content, check if restaurants meet the secondary filter parameters
+        7. ALWAYS identify at least 7 restaurants
+        8. IMPORTANT: If you can't find perfect matches, still provide at least 3-5 restaurants that are the closest matches
+        9. Mark a restaurant as hidden gem if it appears in ≤ 2 sources *and* at
+           least one of those uses strong positive language ("outstanding",
+           "brilliant", "game‑changing", etc.).
+        
 
         PRIMARY SEARCH PARAMETERS:
         {primary_parameters}
@@ -70,31 +85,16 @@ class ListAnalyzer:
         KEYWORDS FOR ANALYSIS:
         {keywords_for_analysis}
 
-        GUIDELINES:
-        1. Determine sentiment & credibility of each article.
-        2. Count how many distinct sources mention the place.
-        3. Treat Michelin Guide, World’s 50 Best, The Guardian, Eater, New York
-           Times, Condé Nast Traveler, World of Mouth, OAD, La Liste, national
-           broadsheets and well‑known local food magazines as *credible*.
-        4. **Ignore Tripadvisor, Yelp and Google user reviews.**
-        5. When extracting data, also look for:
-           • Typical price indicator (cheap € to expensive €€€).
-           • 2‑3 signature dishes (look for phrases like “don’t miss…”, “must‑try…”, etc.).
-        6. Mark a restaurant as hidden gem if it appears in ≤ 2 sources *and* at
-           least one of those uses strong positive language ("outstanding",
-           "brilliant", "game‑changing", etc.).
-        7. If overall matches are scarce, still return at least 5 across both
-           lists.
-
+    
         OUTPUT FORMAT:
         Return JSON with two arrays `main_list` and `hidden_gems`.
         Each restaurant object must include:
           • `name` – never empty
-          • `address` – full street or "Address unavailable"
-          • `description` – 40‑60 words
-          • `price_range` – "€", "€€" or "€€€"; guess if absent
+          • `address` – full street address or "Address unavailable"
+          • `description` – 40‑60 words about the restaurant
+          • `price_range` – "€", "€€" or "€€€"; guess if absent based on description
           • `recommended_dishes` – array up to 3 items (empty if unknown)
-          • `sources` – array of *names* (not URLs) where it was mentioned
+          • `sources` – array of *names* (not URLs) of blogs, guides or media where it was mentioned
           • `location` – city extracted from the query parameters
         """
 
