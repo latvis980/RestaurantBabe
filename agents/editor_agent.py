@@ -93,6 +93,32 @@ class EditorAgent:
 
         self.config = config
 
+    
+    def _slim_recommendations(self, recs: dict) -> dict:
+        """
+        Return a lightweight copy of `recs` that keeps only the fields
+        the formatter LLM needs.  Optional, verbose, or already-missing
+        values are removed to save tokens.
+        """
+        KEEP = {
+            "name",
+            "address",
+            "description",
+            "price_range",
+            "recommended_dishes",
+            "sources",
+            "missing_info",
+        }
+
+        def slim_one(rest: dict) -> dict:
+            return {k: v for k, v in rest.items() if k in KEEP and v}
+
+        out = {"main_list": [slim_one(r) for r in recs.get("main_list", [])]}
+        if "hidden_gems" in recs:
+            out["hidden_gems"] = [slim_one(r) for r in recs["hidden_gems"]]
+        return out
+
+    
     @log_function_call
     def edit(self, recommendations: dict, original_query: str) -> dict:
         """
@@ -141,7 +167,9 @@ class EditorAgent:
                 response = self.chain.invoke(
                     {
                         "recommendations": json.dumps(
-                            recommendations, ensure_ascii=False, indent=2
+                            self._slim_recommendations(recommendations),   #  ← token-friendly!
+                            ensure_ascii=False,
+                            separators=(",", ":")  # no pretty-print indent -> even fewer tokens
                         ),
                         "original_query": original_query,
                     }
@@ -170,15 +198,33 @@ class EditorAgent:
                     if isinstance(fr, dict) and "recommended" in fr:
                         fr.setdefault("main_list", fr.pop("recommended"))
 
-                # ── 7. SAFETY NET – never lose the main list ─────────────
+                # ── 7. SAFETY NET – never lose restaurants (main_list & hidden_gems) ─────
                 formatted_rec = formatted_results.get("formatted_recommendations", {})
-                if (
-                    isinstance(formatted_rec, dict)
-                    and not formatted_rec.get("main_list")            # empty after LLM
-                    and recommendations.get("main_list")              # we had entries
-                ):
-                    formatted_rec["main_list"] = recommendations["main_list"]
+
+                orig_main   = recommendations.get("main_list",   [])
+                orig_hidden = recommendations.get("hidden_gems", [])
+
+                def _merge_list(orig: list, fmt: list) -> list:
+                    """
+                    • If the formatter returned nothing, fall back to the original list.
+                    • If the formatter returned fewer items, append the missing ones.
+                    """
+                    if not fmt and orig:
+                        return orig
+
+                    if len(fmt) < len(orig):
+                        fmt_names = { (r.get("name") or "").lower() for r in fmt }
+                        missing   = [r for r in orig
+                                     if (r.get("name") or "").lower() not in fmt_names]
+                        fmt.extend(missing)
+
+                    return fmt
+
+                if isinstance(formatted_rec, dict):
+                    formatted_rec["main_list"]   = _merge_list(orig_main,   formatted_rec.get("main_list",   []))
+                    formatted_rec["hidden_gems"] = _merge_list(orig_hidden, formatted_rec.get("hidden_gems", []))
                     formatted_results["formatted_recommendations"] = formatted_rec
+
 
                 # ── 8. attach follow-up queries & finish ────────────────
                 formatted_results["follow_up_queries"] = follow_up_queries
