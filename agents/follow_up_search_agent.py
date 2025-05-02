@@ -40,7 +40,7 @@ from utils.debug_utils import dump_chain_state
 # Configuration constants – tweak here if you need different limits
 # ---------------------------------------------------------------------------
 
-MIN_ACCEPTABLE_RATING = 4.5           # rating threshold – <  ► rejected
+MIN_ACCEPTABLE_RATING = 4.0           # rating threshold – <  ► rejected
 MAX_RESULTS_PER_QUERY = 3             # courtesy cap for scraping
 MAPS_FIELDS = [                       # fields we request from Place Details
     "url",
