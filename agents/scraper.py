@@ -4,6 +4,7 @@ import asyncio
 import random
 import time
 import logging
+import brotli  # Added missing import
 from typing import List, Dict, Any, Optional
 
 import httpx
@@ -14,39 +15,33 @@ from readability import Document
 from urllib.parse import urlparse
 from utils.source_validator import check_source_reputation, evaluate_source_quality
 
-# Fix the missing logger
-logger = logging.getLogger(__name__)
-
+# Global set for tracking pending tasks
 _PENDING_TASKS: set[asyncio.Task] = set()
 
-@property
-def DEFAULT_HEADERS(self):
-    return {
-        "User-Agent": random.choice(self.user_agents),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Cache-Control": "max-age=0",
-    }
+# Define logger at module level
+logger = logging.getLogger(__name__)
 
-
-# -----------------------------------------------------------------------
 class WebScraper:
     def __init__(
         self,
         config: Dict[str, Any],
         *,
         concurrency: int = 5,
-        html_ttl: int = 60 * 60 * 24 * 30,  # 30 days
+        html_ttl: int = 60 * 60 * 24 * 30,  # 30 days
         cache_dir: str = ".web_cache",
     ) -> None:
         """
-        Initialise the scraper.  The AsyncClient is *not* created here so that
-        it is always bound to the event‑loop that actually runs the scraping.
+        Initialize the scraper. The AsyncClient is *not* created here so that
+        it is always bound to the event-loop that actually runs the scraping.
+
+        Args:
+            config: Configuration dictionary
+            concurrency: Maximum number of concurrent requests
+            html_ttl: Time-to-live for cached HTML (in seconds)
+            cache_dir: Directory to store cached HTML
         """
         self.config = config
+        self.logger = logging.getLogger(__name__)
 
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -65,6 +60,18 @@ class WebScraper:
         self._html_cache = Cache(cache_dir)
         self._html_ttl = html_ttl
 
+    @property
+    def DEFAULT_HEADERS(self):
+        """Default HTTP headers for requests"""
+        return {
+            "User-Agent": random.choice(self.user_agents),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Cache-Control": "max-age=0",
+        }
 
     # ------------------------------------------------------------------
     # Public orchestrator ------------------------------------------------
@@ -77,37 +84,53 @@ class WebScraper:
         1. Discard search hits from untrusted sources.
         2. Fetch HTML for each remaining page concurrently.
         3. Attach quality / reputation metadata and return the enriched list.
-        """
 
-        # Create a client bound to THIS event‑loop and close it before we exit.
+        Args:
+            search_results: List of search result dictionaries
+            max_retries: Maximum number of retry attempts for failed requests
+
+        Returns:
+            List of enriched search results with HTML content and quality scores
+        """
+        # Create a client bound to THIS event-loop and close it before we exit.
         async with httpx.AsyncClient(http2=True, timeout=httpx.Timeout(10.0)) as client:
             self._client = client  # used by _fetch_html()
 
-            # ── Step 1: filter by reputation ────────────────────────────────
+            # ── Step 1: filter by reputation ────────────────────────────────
             vetted: List[Dict[str, Any]] = []
             for result in search_results:
                 url = result.get("url") or result.get("href")
-                if not url or not check_source_reputation(url):
+                if not url or not check_source_reputation(url, self.config):  # Fixed: Added self.config
                     continue
                 vetted.append(result)
 
-            # ── Step 2 + 3: scrape & enrich in parallel ────────────────────
+            # ── Step 2 + 3: scrape & enrich in parallel ────────────────────
             async def _enrich(item: Dict[str, Any]) -> Dict[str, Any]:
                 html = await self._fetch_html(
                     item["url"],
                     max_retries=max_retries,
                 )
                 item["html"] = html or ""
-                item["quality_score"] = evaluate_source_quality(
-                    item["url"], html or ""
-                )
+                item["scraped_content"] = self._extract_clean_text(html or "", item["url"])[0] if html else ""
+
+                # Try to get quality score using the function signature
+                try:
+                    item["quality_score"] = evaluate_source_quality(item["url"], html or "")
+                except TypeError:
+                    # If first attempt fails, try with config
+                    try:
+                        item["quality_score"] = evaluate_source_quality(item["url"], html or "", self.config)
+                    except Exception as e:
+                        self.logger.warning(f"Failed to evaluate quality for {item['url']}: {e}")
+                        item["quality_score"] = 0.5  # Default score if evaluation fails
+
                 return item
 
             # _fetch_html already respects self._sem, so plain gather is fine
             tasks = [_enrich(r) for r in vetted]
             enriched_results = await asyncio.gather(*tasks)
 
-        # Client is closed here; nothing will try to touch a dead event‑loop.
+        # Client is closed here; nothing will try to touch a dead event-loop.
         self._client = None
         return enriched_results
 
@@ -115,6 +138,17 @@ class WebScraper:
     def scrape_search_results(
         self, search_results: List[Dict[str, Any]], max_retries: int = 2
     ) -> List[Dict[str, Any]]:
+        """
+        Scrape and enrich search results, handling async execution.
+        This method provides a synchronous interface to the async scraping process.
+
+        Args:
+            search_results: List of search result dictionaries
+            max_retries: Maximum number of retry attempts for failed requests
+
+        Returns:
+            List of enriched search results
+        """
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -127,7 +161,7 @@ class WebScraper:
             t = loop.create_task(self.filter_and_scrape_results(search_results, max_retries))
             _PENDING_TASKS.add(t)
             t.add_done_callback(_PENDING_TASKS.discard)
-            print("Warning: Returning before async scraping completes.")
+            self.logger.warning("Returning before async scraping completes.")
             return copy
         # Loop exists but not running – rare
         return loop.run_until_complete(
@@ -140,43 +174,51 @@ class WebScraper:
         """
         Download, *fully* decompress, and pre-clean HTML.
         Returns Unicode HTML or None on hard failure.
+
+        Args:
+            url: URL to fetch
+            max_retries: Maximum number of retry attempts
+
+        Returns:
+            HTML content as string, or None if fetching fails
         """
         if cached := self._html_cache.get(url):
             return cached
 
         for attempt in range(1, max_retries + 1):
             try:
-                async with self._client.get(url, headers=self.DEFAULT_HEADERS, timeout=20) as r:
-                    if r.status_code != 200:
-                        raise httpx.HTTPStatusError(f"HTTP {r.status_code}", request=r.request, response=r)
+                async with self._sem:  # Respect concurrency limits
+                    async with self._client.get(url, headers=self.DEFAULT_HEADERS, timeout=20) as r:
+                        if r.status_code != 200:
+                            raise httpx.HTTPStatusError(f"HTTP {r.status_code}", request=r.request, response=r)
 
-                    # ---- 1. make sure the bytes are Unicode ----
-                    encoding = r.headers.get("content-encoding")
-                    if encoding == "br":
-                        # httpx hands us raw bytes when brotli isn’t auto-handled
-                        html_bytes = brotli.decompress(await r.aread())
-                        html = html_bytes.decode("utf-8", "replace")
-                    elif encoding in ("gzip", "deflate", None, ""):
-                        html = await r.text()
-                    else:
-                        # rare encodings – grab raw and hope chardet gets it right
-                        html = (await r.aread()).decode("utf-8", "replace")
+                        # ---- 1. make sure the bytes are Unicode ----
+                        encoding = r.headers.get("content-encoding")
+                        if encoding == "br":
+                            # httpx hands us raw bytes when brotli isn't auto-handled
+                            html_bytes = brotli.decompress(await r.aread())
+                            html = html_bytes.decode("utf-8", "replace")
+                        elif encoding in ("gzip", "deflate", None, ""):
+                            html = await r.text()
+                        else:
+                            # rare encodings – grab raw and hope chardet gets it right
+                            html = (await r.aread()).decode("utf-8", "replace")
 
-                    # ---- 2. run Readability to strip boilerplate ----
-                    main_doc = Document(html)
-                    cleaned_html = main_doc.summary() or html   # fallback if Readability fails
+                        # ---- 2. run Readability to strip boilerplate ----
+                        main_doc = Document(html)
+                        cleaned_html = main_doc.summary() or html   # fallback if Readability fails
 
-                    # ---- 3. (optional) quick tag sanitise via BS ----
-                    soup = BeautifulSoup(cleaned_html, "lxml")
-                    # kill script / style tags that sometimes survive Readability
-                    for bad in soup(["script", "style", "noscript"]):
-                        bad.decompose()
+                        # ---- 3. (optional) quick tag sanitise via BS ----
+                        soup = BeautifulSoup(cleaned_html, "lxml")
+                        # kill script / style tags that sometimes survive Readability
+                        for bad in soup(["script", "style", "noscript"]):
+                            bad.decompose()
 
-                    final_html = str(soup)
+                        final_html = str(soup)
 
-                    # ---- 4. cache & go ----
-                    self._html_cache.set(url, final_html, expire=self._html_ttl)
-                    return final_html
+                        # ---- 4. cache & go ----
+                        self._html_cache.set(url, final_html, expire=self._html_ttl)
+                        return final_html
 
             except Exception as e:
                 self.logger.warning("Fetch %s failed (try %d/%d): %s", url, attempt, max_retries, e)
@@ -184,7 +226,6 @@ class WebScraper:
 
         self.logger.error("Giving up on %s after %d attempts", url, max_retries)
         return None
-
 
     # ------------------------------------------------------------------
     # Content cleaning ---------------------------------------------------
@@ -200,6 +241,13 @@ class WebScraper:
            `_format_source_name`.
         4. If a title was captured, prepend it to the text separated by a blank
            line.
+
+        Args:
+            html: HTML content to extract text from
+            url: URL of the page (for source name extraction)
+
+        Returns:
+            tuple: (cleaned text, source name)
         """
         try:
             # ── readability first ───────────────────────────────────────────
@@ -232,11 +280,19 @@ class WebScraper:
 
         return text, source_name
 
-
     # ------------------------------------------------------------------
     # Utility methods ----------------------------------------------------
     @staticmethod
     def _should_skip_url(url: str) -> bool:
+        """
+        Check if a URL should be skipped based on file extension
+
+        Args:
+            url: URL to check
+
+        Returns:
+            bool: True if URL should be skipped, False otherwise
+        """
         non_html_ext = (
             ".pdf",
             ".jpg",
@@ -251,6 +307,15 @@ class WebScraper:
 
     @staticmethod
     def _format_source_name(domain: str) -> str:
+        """
+        Format a domain into a prettified source name
+
+        Args:
+            domain: Domain to format
+
+        Returns:
+            str: Prettified source name
+        """
         clean = domain.replace("www.", "").split(".")[0]
         pretty = " ".join(word.capitalize() for word in clean.replace("-", " ").split())
         domain_map = {
@@ -291,7 +356,9 @@ class WebScraper:
 
     # ------------------------------------------------------------------
     async def aclose(self):
-        await self._client.aclose()
+        """Close the scraper's resources"""
+        if self._client:
+            await self._client.aclose()
         self._html_cache.close()
 
     # Context‑manager sugar so you can use `async with WebScraper(...)`
