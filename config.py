@@ -14,10 +14,11 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # OpenAI API settings
 OPENAI_MODEL = "gpt-4o"
-OPENAI_TEMPERATURE = 0.2
+OPENAI_TEMPERATURE = 0.7
 
 # Database table names
 DB_TABLE_SOURCES = "sources"  # Table for source reputation
+DB_TABLE_LOCAL_SOURCES = "local_sources"
 DB_TABLE_RESTAURANTS = "restaurants"
 DB_TABLE_PROCESSES = "processes"
 DB_TABLE_SEARCHES = "searches"

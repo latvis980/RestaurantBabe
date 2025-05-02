@@ -59,15 +59,30 @@ async def fetch_quick_preview(url):
 
 def check_source_reputation(url, config):
     """Check if a source is already in our reputation database or in-memory cache"""
-    # Extract domain from URL
-    domain = urlparse(url).netloc
+    # Extract and normalize domain from URL
+    domain = urlparse(url).netloc.lower()
+    if domain.startswith('www.'):
+        domain = domain[4:]  # Remove www. prefix
 
-    # First check in-memory cache
+    # Normalize common domains to avoid duplicates
+    domain_map = {
+        'guide.michelin.com': 'michelin.com',
+        'lexpress.fr': 'lexpress.fr',
+        'timeout.fr': 'timeout.fr',
+        # Add more mappings as needed
+    }
+
+    # Apply mapping if domain is in the map
+    if domain in domain_map:
+        domain = domain_map[domain]
+
+    # Add logging to see what domains we're checking
+    print(f"Checking reputation for normalized domain: {domain}")
+
+    # First check in-memory cache with longer TTL (1 week)
     if domain in _DOMAIN_CACHE:
         is_reputable, timestamp = _DOMAIN_CACHE[domain]
-
-        # Only use cache entries that are less than 1 day old
-        if time.time() - timestamp < 86400:  # 86400 seconds = 24 hours
+        if time.time() - timestamp < 604800:  # 604800 seconds = 1 week
             print(f"Using cached reputation for {domain}: {is_reputable}")
             return is_reputable
 
@@ -100,11 +115,13 @@ def preload_source_reputations(config):
             limit=1000
         )
 
-        # Load into memory cache
+        # Load into memory cache (with domain normalization)
         count = 0
         for source in sources:
             if "domain" in source and "is_reputable" in source:
-                _DOMAIN_CACHE[source["domain"]] = (source["is_reputable"], time.time())
+                # Normalize domain to avoid duplicates (remove www. and trailing slash)
+                domain = source["domain"].replace("www.", "").rstrip("/")
+                _DOMAIN_CACHE[domain] = (source["is_reputable"], time.time())
                 count += 1
 
         print(f"Preloaded {count} source reputation records")
