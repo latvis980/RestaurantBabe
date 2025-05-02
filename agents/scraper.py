@@ -64,80 +64,73 @@ class WebScraper:
         html_ttl: int = 60 * 60 * 24 * 30,  # 30 days
         cache_dir: str = ".web_cache",
     ) -> None:
+        """
+        Initialise the scraper.  The AsyncClient is *not* created here so that
+        it is always bound to the event‑loop that actually runs the scraping.
+        """
         self.config = config
+
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
         ]
-        self._client = httpx.AsyncClient(http2=True, timeout=httpx.Timeout(10.0))
+
+        # Defer AsyncClient creation until we're inside an event loop
+        self._client: httpx.AsyncClient | None = None
+
+        # Limit parallel requests
         self._sem = asyncio.Semaphore(concurrency)
+
+        # HTML disk cache
         self._html_cache = Cache(cache_dir)
         self._html_ttl = html_ttl
+
 
     # ------------------------------------------------------------------
     # Public orchestrator ------------------------------------------------
     async def filter_and_scrape_results(
-        self, search_results: List[Dict[str, Any]], max_retries: int = 2
+        self,
+        search_results: List[Dict[str, Any]],
+        max_retries: int = 2,
     ) -> List[Dict[str, Any]]:
-        """Filter by reputation (caller already vets some URLs) and scrape."""
+        """
+        1. Discard search hits from untrusted sources.
+        2. Fetch HTML for each remaining page concurrently.
+        3. Attach quality / reputation metadata and return the enriched list.
+        """
 
-        from utils.source_validator import check_source_reputation, evaluate_source_quality
+        # Create a client bound to THIS event‑loop and close it before we exit.
+        async with httpx.AsyncClient(http2=True, timeout=httpx.Timeout(10.0)) as client:
+            self._client = client  # used by _fetch_html()
 
-        enriched_results: List[Dict[str, Any]] = []
-
-        with tracing_v2_enabled(project_name="restaurant-recommender"):
-            # — Step 1 : group by reputation status so we can run tasks concurrently
-            reputation_buckets: list[tuple[int, str, Optional[bool]]] = []
-            for i, result in enumerate(search_results):
-                url = result.get("url")
-                if not url or self._should_skip_url(url):
+            # ── Step 1: filter by reputation ────────────────────────────────
+            vetted: List[Dict[str, Any]] = []
+            for result in search_results:
+                url = result.get("url") or result.get("href")
+                if not url or not check_source_reputation(url):
                     continue
-                rep = check_source_reputation(url, self.config)
-                reputation_buckets.append((i, url, rep))
+                vetted.append(result)
 
-            async def scrape_if_ok(idx: int, url: str) -> None:
-                nonlocal enriched_results
-                result = search_results[idx]
-                html = await self._fetch_html(url, max_retries)
-                if not html:
-                    return
-                clean_text, source_name = self._extract_clean_text(html, url)
-                domain = urlparse(url).netloc
-                title = result.get("title", "Unknown Title")
-                source_prefix = (
-                    f"SOURCE: {domain}\nTITLE: {title}\nURL: {url}\n\nCONTENT:\n"
+            # ── Step 2 + 3: scrape & enrich in parallel ────────────────────
+            async def _enrich(item: Dict[str, Any]) -> Dict[str, Any]:
+                html = await self._fetch_html(
+                    item["url"],
+                    max_retries=max_retries,
                 )
-                result["scraped_content"] = source_prefix + clean_text
-                result["source_domain"] = domain
-                result["source_name"] = source_name
-                enriched_results.append(result)
+                item["html"] = html or ""
+                item["quality_score"] = evaluate_source_quality(
+                    item["url"], html or ""
+                )
+                return item
 
-            tasks: list[asyncio.Task] = []
-            # 1 ) process known reputable first (fast path)
-            for idx, url, rep in reputation_buckets:
-                if rep is True:
-                    tasks.append(asyncio.create_task(scrape_if_ok(idx, url)))
+            # _fetch_html already respects self._sem, so plain gather is fine
+            tasks = [_enrich(r) for r in vetted]
+            enriched_results = await asyncio.gather(*tasks)
 
-            await asyncio.gather(*tasks, return_exceptions=True)
-            tasks.clear()
-
-            # 2 ) evaluate unknowns, then scrape if approved
-            for idx, url, rep in reputation_buckets:
-                if rep is not None:
-                    continue  # already handled
-                try:
-                    approved = await evaluate_source_quality(url, self.config)
-                except Exception as e:
-                    print(f"Reputation check failed for {url}: {e}")
-                    continue
-                if not approved:
-                    continue
-                tasks.append(asyncio.create_task(scrape_if_ok(idx, url)))
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-
+        # Client is closed here; nothing will try to touch a dead event‑loop.
+        self._client = None
         return enriched_results
 
     # Keep external‑facing API compatible with old sync call ----------------
