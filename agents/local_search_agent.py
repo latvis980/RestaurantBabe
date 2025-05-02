@@ -7,6 +7,7 @@ import logging
 from urllib.parse import urlparse
 from utils.database import find_data, find_all_data
 from langchain_core.tracers.context import tracing_v2_enabled
+from utils.source_validator import check_source_reputation
 
 class LocalSourceSearchAgent:
     def __init__(self, config):
