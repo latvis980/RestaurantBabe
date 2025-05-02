@@ -57,6 +57,52 @@ async def fetch_quick_preview(url):
         print(f"Error in quick preview fetch: {e}")
         return None
 
+def evaluate_source_quality(url, html_content):
+    """
+    Evaluate the quality of a source based on its URL and content
+
+    Args:
+        url (str): The URL of the source
+        html_content (str): The HTML content of the source
+
+    Returns:
+        float: A quality score between 0 and 1
+    """
+    domain = urlparse(url).netloc
+
+    # Check for known high-quality domains
+    reputable_guides = [
+        "theworlds50best.com",
+        "worldofmouth.app",
+        "guide.michelin.com",
+        "culinarybackstreets.com",
+        "oadguides.com",
+        "laliste.com",
+        "eater.com",
+        "bonappetit.com",
+        "foodandwine.com",
+        "infatuation.com",
+        "nytimes.com"
+    ]
+
+    for guide in reputable_guides:
+        if guide in domain:
+            return 1.0  # Maximum score for known reputable guides
+
+    # Basic heuristics for other sources
+    score = 0.5  # Default score
+
+    # Length-based heuristic (longer content often means more detailed reviews)
+    if len(html_content) > 5000:
+        score += 0.1
+
+    # Domain-based heuristics (well-established domains often have editorial standards)
+    if domain.endswith(".com") or domain.endswith(".org"):
+        score += 0.05
+
+    # Cap at 0.95 for sources that aren't in our known reputable list
+    return min(score, 0.95)
+
 def check_source_reputation(url, config):
     """Check if a source is already in our reputation database or in-memory cache"""
     # Extract and normalize domain from URL

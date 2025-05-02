@@ -1,34 +1,9 @@
-# async_web_scraper.py
-"""
-Async + Readability + Disk cache refactor of your original WebScraper.
-
-Key design choices
-------------------
-1. **httpx.AsyncClient** with a semaphore (default 5) so we hit many URLs in parallel
-   while staying polite.
-2. **DiskCache** (https://pypi.org/project/diskcache/) – an on‑disk, TTL‑aware
-   key‑value store.  *HTML* is cached for 30 days by default; you can adjust via
-   `html_ttl` in the constructor.
-3. **Mozilla Readability** (readability‑lxml) to extract the main article body and
-   title.  We fall back to the old BeautifulSoup logic if Readability doesn’t
-   find enough text (> 500 chars).
-4. The external source‑reputation utilities you already have are kept intact;
-   the scraper only worries about downloading & cleaning.
-5. Public API is still **scrape_search_results()** so you don’t need to touch the
-   downstream LangChain code.
-
-Install requirements
---------------------
-```bash
-pip install httpx[http2] readability-lxml diskcache beautifulsoup4
-```
-"""
-
 from __future__ import annotations
 
 import asyncio
 import random
 import time
+import logging
 from typing import List, Dict, Any, Optional
 
 import httpx
@@ -37,21 +12,24 @@ from diskcache import Cache
 from langchain_core.tracers.context import tracing_v2_enabled
 from readability import Document
 from urllib.parse import urlparse
+from utils.source_validator import check_source_reputation, evaluate_source_quality
 
-import brotli                      # only used inside the br-branch
-
-# --- utils --------------------------------------------------------------
+# Fix the missing logger
+logger = logging.getLogger(__name__)
 
 _PENDING_TASKS: set[asyncio.Task] = set()
 
-DEFAULT_HEADERS = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Cache-Control": "max-age=0",
-}
+@property
+def DEFAULT_HEADERS(self):
+    return {
+        "User-Agent": random.choice(self.user_agents),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Cache-Control": "max-age=0",
+    }
 
 
 # -----------------------------------------------------------------------
