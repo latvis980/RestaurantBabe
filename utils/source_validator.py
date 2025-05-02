@@ -27,8 +27,30 @@ async def fetch_quick_preview(url):
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, timeout=5) as response:
                 if response.status == 200:
-                    # Read just enough to evaluate (about 5KB)
-                    content_sample = await response.text(encoding='utf-8')
+                    # Try to get the encoding from the response
+                    content_type = response.headers.get('Content-Type', '')
+                    encoding = None
+
+                    # Extract charset from Content-Type if available
+                    if 'charset=' in content_type:
+                        encoding = content_type.split('charset=')[-1].strip()
+
+                    try:
+                        # Try with the specified encoding first, if available
+                        if encoding:
+                            content_sample = await response.text(encoding=encoding)
+                        else:
+                            content_sample = await response.text(encoding='utf-8')
+                    except UnicodeDecodeError:
+                        # Fallback to reading raw bytes and using a more liberal decoder
+                        raw_content = await response.read()
+                        try:
+                            # Try with 'latin-1' which accepts any byte value
+                            content_sample = raw_content.decode('latin-1')
+                        except:
+                            # Last resort: ignore problematic characters
+                            content_sample = raw_content.decode('utf-8', errors='ignore')
+
                     return content_sample[:5000]  # Return first 5000 chars
         return None
     except Exception as e:

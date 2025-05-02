@@ -48,15 +48,15 @@ class EditorAgent:
         OUTPUT FORMAT
         ────────────────────────
         Return a single JSON object:
-        {
-          "formatted_recommendations": {
+        {{
+          "formatted_recommendations": {{
             "main_list":    [ …restaurants… ],
             "hidden_gems":  [ …restaurants… ]
-          }
-        }
+          }}
+        }}
 
         Each restaurant object:
-        {
+        {{
           "name": "<bold restaurant name>",
           "address": "<full street address | 'Address unavailable'>",
           "description": "<concise description>",
@@ -69,7 +69,7 @@ class EditorAgent:
           "chef": "Chef Name" | null,
           "hours": "Mon–Sun 12-22" | null,
           "atmosphere": "short ambience note" | null
-        }
+        }}
 
         ────────────────────────
         PRESENTATION RULES
@@ -300,10 +300,10 @@ class EditorAgent:
 
             Return a JSON array, e.g.:
             [
-              {{
+              {{{{
                 "restaurant_name": "Example Bistro",
                 "queries": ["example bistro address", "example bistro price range"]
-              }},
+              }}}},
               …
             ]
             (Max 3 queries per restaurant.)
