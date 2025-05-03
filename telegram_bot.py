@@ -335,152 +335,6 @@ def load_user_data(uid: int):
         logger.error(f"Error loading user data: {e}")
 
 # ---------------------------------------------------------------------------
-# TELEGRAM HANDLERS
-# ---------------------------------------------------------------------------
-WELCOME_MESSAGE = (
-    """🍸 Hello! I'm an AI assistant Restaurant Babe, and I know all about the most delicious and trendy restaurants, cafes, bakeries, bars, and coffee shops around the world.\n\n
-
-    Tell me what you are looking for. For example:\n
-    '<i>What new restaurants have recently opened in Lisbon?</i>'\n
-    '<i>Local residents' favorite cevicherias in Lima</i>'\n
-    '<i>Where can I find the most delicious plov in Tashkent?</i>'\n
-    '<i>Recommend places with brunch and specialty coffee in Barcelona.</i>'\n
-    '<i>Best cocktail bars in Paris's Marais district</i>'\n\n
-
-    I will check with my restaurant critic friends and provide the best recommendations. This might take a couple of minutes because I search very carefully and thoroughly verify the results. But there won't be any random places in my list.\n
-
-    Shall we begin?"""
-)
-
-
-@bot.message_handler(commands=["start", "help"])
-def handle_start(msg):
-    uid = msg.from_user.id
-    # Initialize user state with empty preferences and no location
-    user_state[uid] = {"history": [], "prefs": [], "last_location": None}
-    # Try to load existing user data
-    load_user_data(uid)
-    bot.reply_to(msg, WELCOME_MESSAGE)
-
-
-@bot.message_handler(commands=["clear"])
-def handle_clear(msg):
-    """Clear user conversation history and location context but keep preferences"""
-    uid = msg.from_user.id
-    prefs = user_state.get(uid, {}).get("prefs", [])
-    user_state[uid] = {"history": [], "prefs": prefs, "last_location": None}
-    bot.reply_to(msg, "История очищена. Ваши предпочтения сохранены.")
-
-
-@bot.message_handler(commands=["forget_location"])
-def handle_forget_location(msg):
-    """Forget the user's last location"""
-    uid = msg.from_user.id
-    old_location = user_state.get(uid, {}).get("last_location")
-    if old_location:
-        user_state[uid]["last_location"] = None
-        bot.reply_to(msg, f"Местоположение {old_location} забыто. Сейчас вы можете искать рестораны в любом другом городе.")
-    else:
-        bot.reply_to(msg, "У меня нет сохраненного местоположения для вас.")
-
-
-@bot.message_handler(func=lambda _: True)
-def handle_text(msg):
-    uid = msg.from_user.id
-    text = msg.text.strip()
-
-    # Initialize user state if not exists
-    if uid not in user_state:
-        user_state[uid] = {"history": [], "prefs": [], "last_location": None}
-        load_user_data(uid)
-
-    append_history(uid, "user", text)
-
-    try:
-        # Log user's current state (for debugging)
-        logger.info(f"User {uid} state: prefs={user_state[uid].get('prefs')}, location={user_state[uid].get('last_location')}")
-
-        # Get response from OpenAI
-        rsp = openai_chat(uid)
-        m = rsp.choices[0].message
-
-        if m.function_call:
-            fn = m.function_call.name
-            args = json.loads(m.function_call.arguments or "{}")
-
-            # ------------------ store_pref ------------------
-            if fn == "store_pref":
-                val = args.get("value", "")
-                save_user_pref(uid, val)
-                append_history(uid, "function", json.dumps({"status": "stored", "value": val}))
-                confirm = openai_chat(uid)
-                txt = confirm.choices[0].message.content
-                append_history(uid, "assistant", txt)
-                chunk_and_send(msg.chat.id, txt)
-                return
-
-            # ------------------ submit_query ----------------
-            if fn == "submit_query":
-                query = args.get("query", "")
-
-                # Send typing status to indicate processing
-                bot.send_chat_action(msg.chat.id, 'typing')
-
-                # NEW CODE: Add a processing message
-                processing_message = "🔍 I'm searching for restaurants for you. It might take a couple of minutes as I'm looking through multiple guides and websites and double-check all the info."
-                bot.send_message(msg.chat.id, processing_message)
-
-                # Check for location patterns in query
-                location_indicators = ["in ", "at ", "near "]
-                has_location = any(indicator in query.lower() for indicator in location_indicators)
-
-                # Add location context if available and not already in query
-                last_location = user_state.get(uid, {}).get("last_location")
-                if last_location and not has_location:
-                    # Append the location to the query
-                    query = f"{query} in {last_location}"
-                    logger.info(f"Added location context to query: '{query}'")
-
-                try:
-                    # Process the query
-                    user_prefs = user_state.get(uid, {}).get("prefs", [])
-                    raw = orchestrator.process_query(query, user_prefs)
-
-                    # Update user's location based on query results
-                    update_user_location(uid, raw)
-
-                    # Save search to database
-                    save_search(uid, query, raw)
-
-                    # Extract telegram text from results
-                    out = raw.get("telegram_text", str(raw)) if isinstance(raw, dict) else str(raw)
-
-                    # Send response to user
-                    chunk_and_send(msg.chat.id, out)
-
-                    # Add assistant response to history
-                    append_history(uid, "assistant", "I've found some restaurant recommendations for you! [Results sent separately]")
-                except Exception as e:
-                    logger.error(f"Error processing query: {e}", exc_info=True)
-                    bot.reply_to(msg, "Извините, произошла ошибка при обработке запроса. Пожалуйста, попробуйте еще раз или уточните свой запрос.")
-                return
-
-            logger.warning(f"Unhandled function call {fn}")
-            return
-
-        # Regular assistant reply (no function call)
-        txt = m.content
-        append_history(uid, "assistant", txt)
-        chunk_and_send(msg.chat.id, txt)
-
-    except Exception as exc:
-        logger.error(f"Error in handle_text: {exc}", exc_info=True)
-        traceback.print_exc()
-        bot.reply_to(msg, "Sorry, an error occured, please try again later.")
-
-# Add this to telegram_bot.py
-
-# ---------------------------------------------------------------------------
 # ADMIN FEATURES
 # ---------------------------------------------------------------------------
 import os
@@ -898,6 +752,154 @@ def handle_stats(msg):
     except Exception as e:
         logger.error(f"Error getting stats: {e}")
         bot.reply_to(msg, f"❌ Error getting statistics: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# TELEGRAM HANDLERS
+# ---------------------------------------------------------------------------
+WELCOME_MESSAGE = (
+    """🍸 Hello! I'm an AI assistant Restaurant Babe, and I know all about the most delicious and trendy restaurants, cafes, bakeries, bars, and coffee shops around the world.\n\n
+
+    Tell me what you are looking for. For example:\n
+    '<i>What new restaurants have recently opened in Lisbon?</i>'\n
+    '<i>Local residents' favorite cevicherias in Lima</i>'\n
+    '<i>Where can I find the most delicious plov in Tashkent?</i>'\n
+    '<i>Recommend places with brunch and specialty coffee in Barcelona.</i>'\n
+    '<i>Best cocktail bars in Paris's Marais district</i>'\n\n
+
+    I will check with my restaurant critic friends and provide the best recommendations. This might take a couple of minutes because I search very carefully and thoroughly verify the results. But there won't be any random places in my list.\n
+
+    Shall we begin?"""
+)
+
+
+@bot.message_handler(commands=["start", "help"])
+def handle_start(msg):
+    uid = msg.from_user.id
+    # Initialize user state with empty preferences and no location
+    user_state[uid] = {"history": [], "prefs": [], "last_location": None}
+    # Try to load existing user data
+    load_user_data(uid)
+    bot.reply_to(msg, WELCOME_MESSAGE)
+
+
+@bot.message_handler(commands=["clear"])
+def handle_clear(msg):
+    """Clear user conversation history and location context but keep preferences"""
+    uid = msg.from_user.id
+    prefs = user_state.get(uid, {}).get("prefs", [])
+    user_state[uid] = {"history": [], "prefs": prefs, "last_location": None}
+    bot.reply_to(msg, "История очищена. Ваши предпочтения сохранены.")
+
+
+@bot.message_handler(commands=["forget_location"])
+def handle_forget_location(msg):
+    """Forget the user's last location"""
+    uid = msg.from_user.id
+    old_location = user_state.get(uid, {}).get("last_location")
+    if old_location:
+        user_state[uid]["last_location"] = None
+        bot.reply_to(msg, f"Местоположение {old_location} забыто. Сейчас вы можете искать рестораны в любом другом городе.")
+    else:
+        bot.reply_to(msg, "У меня нет сохраненного местоположения для вас.")
+
+
+@bot.message_handler(func=lambda _: True)
+def handle_text(msg):
+    uid = msg.from_user.id
+    text = msg.text.strip()
+
+    # Initialize user state if not exists
+    if uid not in user_state:
+        user_state[uid] = {"history": [], "prefs": [], "last_location": None}
+        load_user_data(uid)
+
+    append_history(uid, "user", text)
+
+    try:
+        # Log user's current state (for debugging)
+        logger.info(f"User {uid} state: prefs={user_state[uid].get('prefs')}, location={user_state[uid].get('last_location')}")
+
+        # Get response from OpenAI
+        rsp = openai_chat(uid)
+        m = rsp.choices[0].message
+
+        if m.function_call:
+            fn = m.function_call.name
+            args = json.loads(m.function_call.arguments or "{}")
+
+            # ------------------ store_pref ------------------
+            if fn == "store_pref":
+                val = args.get("value", "")
+                save_user_pref(uid, val)
+                append_history(uid, "function", json.dumps({"status": "stored", "value": val}))
+                confirm = openai_chat(uid)
+                txt = confirm.choices[0].message.content
+                append_history(uid, "assistant", txt)
+                chunk_and_send(msg.chat.id, txt)
+                return
+
+            # ------------------ submit_query ----------------
+            if fn == "submit_query":
+                query = args.get("query", "")
+
+                # Send typing status to indicate processing
+                bot.send_chat_action(msg.chat.id, 'typing')
+
+                # NEW CODE: Add a processing message
+                processing_message = "🔍 I'm searching for restaurants for you. It might take a couple of minutes as I'm looking through multiple guides and websites and double-check all the info."
+                bot.send_message(msg.chat.id, processing_message)
+
+                # Check for location patterns in query
+                location_indicators = ["in ", "at ", "near "]
+                has_location = any(indicator in query.lower() for indicator in location_indicators)
+
+                # Add location context if available and not already in query
+                last_location = user_state.get(uid, {}).get("last_location")
+                if last_location and not has_location:
+                    # Append the location to the query
+                    query = f"{query} in {last_location}"
+                    logger.info(f"Added location context to query: '{query}'")
+
+                try:
+                    # Process the query
+                    user_prefs = user_state.get(uid, {}).get("prefs", [])
+                    raw = orchestrator.process_query(query, user_prefs)
+
+                    # Update user's location based on query results
+                    update_user_location(uid, raw)
+
+                    # Save search to database
+                    save_search(uid, query, raw)
+
+                    # Extract telegram text from results
+                    out = raw.get("telegram_text", str(raw)) if isinstance(raw, dict) else str(raw)
+
+                    # Send response to user
+                    chunk_and_send(msg.chat.id, out)
+
+                    # Add assistant response to history
+                    append_history(uid, "assistant", "I've found some restaurant recommendations for you! [Results sent separately]")
+                except Exception as e:
+                    logger.error(f"Error processing query: {e}", exc_info=True)
+                    bot.reply_to(msg, "Извините, произошла ошибка при обработке запроса. Пожалуйста, попробуйте еще раз или уточните свой запрос.")
+                return
+
+            logger.warning(f"Unhandled function call {fn}")
+            return
+
+        # Regular assistant reply (no function call)
+        txt = m.content
+        append_history(uid, "assistant", txt)
+        chunk_and_send(msg.chat.id, txt)
+
+    except Exception as exc:
+        logger.error(f"Error in handle_text: {exc}", exc_info=True)
+        traceback.print_exc()
+        bot.reply_to(msg, "Sorry, an error occured, please try again later.")
+
+# Add this to telegram_bot.py
+
 
 # ---------------------------------------------------------------------------
 # RUN
