@@ -143,7 +143,13 @@ def check_source_reputation(url: str, config) -> Optional[bool]:
 def preload_source_reputations(config) -> int:
     """Load the first 1000 rows into the fast in‑memory cache so startup is quiet."""
     try:
-        rows = find_all_data(config.DB_TABLE_SOURCES, {}, config, limit=1000)
+        # Fix: Use the correct query format
+        rows = []
+        with engine.begin() as conn:
+            stmt = select(tables[config.DB_TABLE_SOURCES]).limit(1000)
+            result = conn.execute(stmt)
+            rows = [row[0] for row in result]
+
         for row in rows:
             if "domain" in row and "is_reputable" in row:
                 _DOMAIN_CACHE[_normalise_domain(row["domain"])] = (

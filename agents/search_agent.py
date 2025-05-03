@@ -13,17 +13,16 @@ class BraveSearchAgent:
         self.config = config
         self.base_url = "https://api.search.brave.com/res/v1/web/search"
 
+    ### 2. Debug the Search Results Issue
+
+    The issue might be in the data flow between modules. Let's add some debug logging:
+
+    #### In `search_agent.py`, add more debug output:
+
+    ```python
     def search(self, queries, max_retries=3, retry_delay=2):
         """
         Perform searches with the given queries
-
-        Args:
-            queries (list): List of search queries
-            max_retries (int): Maximum number of retries for failed requests
-            retry_delay (int): Delay between retries in seconds
-
-        Returns:
-            list: Combined search results from all queries
         """
         all_results = []
 
@@ -34,8 +33,14 @@ class BraveSearchAgent:
 
                 while not success and retry_count < max_retries:
                     try:
+                        # Add debug
+                        print(f"[SearchAgent] Searching for: {query}")
                         results = self._execute_search(query)
+                        print(f"[SearchAgent] Raw results count: {len(results.get('web', {}).get('results', []))}")
+
                         filtered_results = self._filter_results(results)
+                        print(f"[SearchAgent] Filtered results count: {len(filtered_results)}")
+
                         all_results.extend(filtered_results)
                         success = True
                     except Exception as e:
@@ -47,21 +52,13 @@ class BraveSearchAgent:
                         else:
                             print(f"Max retries reached for query '{query}'")
 
-                # Respect rate limits
-                time.sleep(1)
+                    # Respect rate limits
+                    time.sleep(1)
 
-        # Save results to database for future reference
-        if all_results:
-            save_data(
-                self.config.DB_TABLE_SEARCHES,
-                {
-                    "queries": queries,
-                    "timestamp": time.time(),
-                    "results": all_results
-                },
-                self.config
-            )
+        # Add debug
+        print(f"[SearchAgent] Total search results: {len(all_results)}")
 
+        # Save results...
         return all_results
 
     def _execute_search(self, query):

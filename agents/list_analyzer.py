@@ -167,9 +167,9 @@ class ListAnalyzer:
         return f"{p.netloc}{p.path}".rstrip("/")
 
     def _format_search_results(self, search_results: List[Dict[str, Any]]) -> str:
-        """Format *all* results but respect a total token ceiling.
+        """Format all results but respect a total token ceiling.
 
-        Strategy: allocate \~5% of the budget for metadata lines; the remainder
+        Strategy: allocate about 5% of the budget for metadata lines; the remainder
         is split evenly so *each* article gets at least a short head‑snippet.
         """
         meta_overhead = int(self.max_prompt_tokens * 0.05)

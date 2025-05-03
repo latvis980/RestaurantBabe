@@ -80,6 +80,12 @@ class LangChainOrchestrator:
             name="scrape"
         )
 
+        def _debug_scrape(self, combined_results):
+            print(f"[Orchestrator] Combined results to scrape: {len(combined_results)}")
+            enriched = self.scraper.scrape_search_results(combined_results)
+            print(f"[Orchestrator] Enriched results: {len(enriched)}")
+            return enriched
+        
         # Modify analyze_results to dump state
         def analyze_results_with_debug(x):
             try:
