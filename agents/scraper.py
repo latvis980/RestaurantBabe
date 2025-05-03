@@ -188,37 +188,38 @@ class WebScraper:
         for attempt in range(1, max_retries + 1):
             try:
                 async with self._sem:  # Respect concurrency limits
-                    async with self._client.get(url, headers=self.DEFAULT_HEADERS, timeout=20) as r:
-                        if r.status_code != 200:
-                            raise httpx.HTTPStatusError(f"HTTP {r.status_code}", request=r.request, response=r)
+                    # FIX: Use proper await instead of async context manager
+                    r = await self._client.get(url, headers=self.DEFAULT_HEADERS, timeout=20)
+                    if r.status_code != 200:
+                        raise httpx.HTTPStatusError(f"HTTP {r.status_code}", request=r.request, response=r)
 
-                        # ---- 1. make sure the bytes are Unicode ----
-                        encoding = r.headers.get("content-encoding")
-                        if encoding == "br":
-                            # httpx hands us raw bytes when brotli isn't auto-handled
-                            html_bytes = brotli.decompress(await r.aread())
-                            html = html_bytes.decode("utf-8", "replace")
-                        elif encoding in ("gzip", "deflate", None, ""):
-                            html = await r.text()
-                        else:
-                            # rare encodings – grab raw and hope chardet gets it right
-                            html = (await r.aread()).decode("utf-8", "replace")
+                    # ---- 1. make sure the bytes are Unicode ----
+                    encoding = r.headers.get("content-encoding")
+                    if encoding == "br":
+                        # httpx hands us raw bytes when brotli isn't auto-handled
+                        html_bytes = brotli.decompress(await r.aread())
+                        html = html_bytes.decode("utf-8", "replace")
+                    elif encoding in ("gzip", "deflate", None, ""):
+                        html = await r.atext()  # FIX: Use atext() instead of text()
+                    else:
+                        # rare encodings – grab raw and hope chardet gets it right
+                        html = (await r.aread()).decode("utf-8", "replace")
 
-                        # ---- 2. run Readability to strip boilerplate ----
-                        main_doc = Document(html)
-                        cleaned_html = main_doc.summary() or html   # fallback if Readability fails
+                    # ---- 2. run Readability to strip boilerplate ----
+                    main_doc = Document(html)
+                    cleaned_html = main_doc.summary() or html   # fallback if Readability fails
 
-                        # ---- 3. (optional) quick tag sanitise via BS ----
-                        soup = BeautifulSoup(cleaned_html, "lxml")
-                        # kill script / style tags that sometimes survive Readability
-                        for bad in soup(["script", "style", "noscript"]):
-                            bad.decompose()
+                    # ---- 3. (optional) quick tag sanitise via BS ----
+                    soup = BeautifulSoup(cleaned_html, "lxml")
+                    # kill script / style tags that sometimes survive Readability
+                    for bad in soup(["script", "style", "noscript"]):
+                        bad.decompose()
 
-                        final_html = str(soup)
+                    final_html = str(soup)
 
-                        # ---- 4. cache & go ----
-                        self._html_cache.set(url, final_html, expire=self._html_ttl)
-                        return final_html
+                    # ---- 4. cache & go ----
+                    self._html_cache.set(url, final_html, expire=self._html_ttl)
+                    return final_html
 
             except Exception as e:
                 self.logger.warning("Fetch %s failed (try %d/%d): %s", url, attempt, max_retries, e)
