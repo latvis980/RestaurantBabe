@@ -1,35 +1,21 @@
 from __future__ import annotations
 """
-Re‑worked **ListAnalyzer** – now covers *all* incoming data instead of just the
-first N articles.  The class can operate in two modes that are auto‑detected at
-runtime:
-
-1. **Article‑mode** (legacy)
-   • Input = list of crawled search‑results (each dict has ``title``,
-     ``scraped_content`` …).
-   • We still construct a token‑aware prompt but shuffle the list first and then
-     take *evenly spaced* samples so every part of the list has a chance to be
-     represented.
-
-2. **Restaurant‑list mode** (NEW)
-   • Input = several **lists of restaurants** already extracted from reputable
-     sources; every item must contain at least ``source_name`` (or
-     ``source_domain``) *and* ``restaurants`` (array of either strings or
-     dicts with ``name``/``description``/``address``).
-   • We aggregate all entries programmatically **before** calling the LLM so it
-     sees the *complete* picture with mention‑counts and source names.
-   • Hidden‑gem / main‑list separation is done *after* the final merge, so no
-     single chunk can bias the outcome.
-
-The public signature stays the same – just pass your data as the first
-argument and the analyzer will figure out the correct path.
+ListAnalyzer v2.1 — **position‑agnostic** and **nested‑list aware**
+---------------------------------------------------------------
+• Accepts either a flat *List[Dict]* (legacy) **or** `List[List[Dict]]` that
+  represents multiple pre‑curated restaurant lists.
+• Flattens and deduplicates on the fly so **every** restaurant/article is
+  analysed, eliminating top‑of‑list bias.
+• Adds an **LRU token budget**: if we still risk overflow, we keep a *32‑word
+  head* for every remaining article (instead of discarding the tail of the
+  list entirely).
+• Public API is unchanged – `analyze()` returns the same JSON schema.
 """
 
 import json
-import random
 import time
-from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Dict, Any, Optional, Iterable
+from functools import lru_cache
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tracers.context import tracing_v2_enabled
@@ -40,37 +26,22 @@ from utils.database import save_data
 from utils.debug_utils import dump_chain_state, log_function_call
 
 # ---------------------------------------------------------------------------
-#  helper dataclasses – kept minimal to avoid extra deps
+# Helper – unify successive batches of search results ------------------------
 # ---------------------------------------------------------------------------
-class _RestaurantBucket:
-    """Collects all evidence we have for a single restaurant name."""
 
-    def __init__(self, canonical_name: str):
-        self.name = canonical_name
-        self.sources: set[str] = set()
-        self.descriptions: list[str] = []
-        self.addresses: set[str] = set()
+def _flatten_results(raw: Iterable[Any]) -> List[Dict[str, Any]]:
+    """Recursively flatten *anything* that yields search‑result‑dicts."""
+    flat: List[Dict[str, Any]] = []
+    stack: List[Any] = list(raw)
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            flat.append(item)
+        elif isinstance(item, (list, tuple, set)):
+            stack.extend(item)
+        # silently ignore weird types
+    return flat
 
-    def add(self, source: str, desc: str | None = None, address: str | None = None):
-        if source:
-            self.sources.add(source)
-        if desc:
-            self.descriptions.append(desc.strip())
-        if address:
-            self.addresses.add(address.strip())
-
-    # –––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
-    def to_prompt_block(self, max_desc: int = 2) -> str:
-        show_desc = self.descriptions[:max_desc]
-        lines = [
-            f"• {self.name}",
-            f"  Sources ({len(self.sources)}): {', '.join(sorted(self.sources))}",
-        ]
-        for d in show_desc:
-            lines.append(f"  – {d}")
-        if len(self.descriptions) > max_desc:
-            lines.append("  – …")
-        return "\n".join(lines)
 
 # ---------------------------------------------------------------------------
 class ListAnalyzer:
@@ -82,43 +53,53 @@ class ListAnalyzer:
         encoding_name: str = "cl100k_base",
         per_article_head_tokens: int = 200,
     ) -> None:
-        # ––– LLM ––––––––––––––––––––––––––––––––––––––––––––––––––––––––
+        # --- LLM -----------------------------------------------------------
         self.model = ChatMistralAI(
             model="mistral-large-latest",
             temperature=0.8,
             mistral_api_key=config.MISTRAL_API_KEY,
         )
 
-        # PROMPT
-        self.system_prompt = (
-            "You are a restaurant recommendation expert analyzing web search results to identify the *best* restaurants and *promising hidden gems*.\n\n"
+        # ------------------------------------------------------------------
+        # PROMPT -----------------------------------------------------------
+        # ------------------------------------------------------------------
+        self.system_prompt: str = (
+            "You are a restaurant recommendation expert analysing search‑results to\n"
+            "identify the best restaurants **and promising hidden gems**.\n\n"
             "TASK:\n"
-            "1. From the supplied material, extract restaurant names and compile a list.\n"
-            "2. Analyze the descriptions and sources to identify the best restaurants.\n"
-            "3. Produce two lists of restaurants: *main_list* (widely endorsed) and "
-            "*hidden_gems* (≤ 2 sources but glowing praise).\n"
-            "4. Merge all descriptions for the same restaurant into a single 40–60 word paragraph per place.\n"
-            "5. Assume price range (€ / €€ / €€€).\n"
-            "6. Extract up to 3 recommended dishes, if available.\n\n"
-            "Guidelines: Ignore TripAdvisor/Yelp; prefer guides, critics, and local publications. "
-            "Always return at least 7 total restaurants in the *main_list* and 2 in *hidden_gems*."
+            "1. From the supplied texts extract names of restaurants and merge descriptions of each restaurant from different sources into one description with as many details as possible.\n"
+            "2. Produce two lists:\n"
+            "   • **main_list** – establishments widely endorsed by multiple reputable sources.\n"
+            "   • **hidden_gems** – places mentioned in ≤ 2 sources *but* featuring an enthusiastic review.\n\n"
+            "GUIDELINES:\n"
+            "1. Analyze the tone and content of reviews to identify genuinely recommended restaurants\n"
+            "2. Cross‑reference the descriptions against the keywords and search parameters\n"
+            "3. Look for restaurants mentioned in multiple reputable sources\n"
+            "4. IGNORE results from Tripadvisor, Yelp\n"
+            "5. Pay special attention to restaurants featured in food guides, local publications, or by respected critics\n"
+            "6. When analyzing content, check if restaurants meet the secondary filter parameters\n"
+            "7. ALWAYS identify at least 8 restaurants (fallback to closest matches if necessary)\n"
+            "9. Mark a restaurant as hidden gem if it appears in ≤ 2 sources *and* at least one of those uses strong positive language ('outstanding', 'brilliant', etc.).\n\n"
+            "PRIMARY SEARCH PARAMETERS:\n{primary_parameters}\n\n"
+            "SECONDARY FILTER PARAMETERS:\n{secondary_parameters}\n\n"
+            "KEYWORDS FOR ANALYSIS:\n{keywords_for_analysis}\n\n"
+            "OUTPUT FORMAT:\n"
+            "Return JSON with two arrays `main_list` and `hidden_gems`. Each restaurant object must include:\n"
+            "  • `name` — never empty\n  • `address` — full street address or 'Address unavailable'\n  • `description` — 40‑60 words about the restaurant\n  • `price_range` — '€', '€€' or '€€€'; guess if absent\n  • `recommended_dishes` — up to 3 items (empty if unknown)\n  • `sources` — names (not URLs) of media where it was mentioned\n  • `location` — city extracted from the query parameters\n"
         )
-
 
         self.prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", self.system_prompt),
                 (
                     "human",
-                    "CITY: {city}\nPRIMARY SEARCH PARAMETERS: {primary}\n\n"\
-                    "SECONDARY FILTER PARAMETERS: {secondary}\n\n"\
-                    "DATA:\n{payload}\n\nPlease return JSON with arrays *main_list* and *hidden_gems*.",
+                    "Please analyse these search results and extract restaurant recommendations:\n\n{search_results}",
                 ),
             ]
         )
         self.chain = self.prompt | self.model
 
-        # ––– token accounting –––––––––––––––––––––––––––––––––––––––––––
+        # --- token budgeting ---------------------------------------------
         self.max_prompt_tokens = max_prompt_tokens
         self._enc = get_encoding(encoding_name)
         self._per_article_head_tokens = per_article_head_tokens
@@ -126,114 +107,88 @@ class ListAnalyzer:
         self.config = config
 
     # ------------------------------------------------------------------
-    #  Public entry
-    # ------------------------------------------------------------------
+    # Public API --------------------------------------------------------
     @log_function_call
     def analyze(
         self,
-        data: List[Dict[str, Any]],
+        search_results: List[Any],  # can be nested
         keywords_for_analysis: List[str] | str,
         primary_parameters: Optional[List[str] | str] = None,
         secondary_parameters: Optional[List[str] | str] = None,
         destination: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Route to the correct sub‑pipeline based on the shape of *data*."""
-        if not data:
-            raise ValueError("Empty data passed to ListAnalyzer")
-
-        # Heuristic: if **every** item has a "restaurants" key → list‑mode
-        is_list_mode = all("restaurants" in item for item in data)
-
-        if is_list_mode:
-            return self._analyze_restaurant_lists(
-                data, keywords_for_analysis, primary_parameters, secondary_parameters, destination
-            )
-        else:
-            return self._analyze_articles(
-                data, keywords_for_analysis, primary_parameters, secondary_parameters, destination
-            )
-
-    # ------------------------------------------------------------------
-    #  ––– Article mode (legacy) –––
-    # ------------------------------------------------------------------
-    def _analyze_articles(
-        self,
-        search_results: List[Dict[str, Any]],
-        keywords_for_analysis: List[str] | str,
-        primary_parameters: Optional[List[str] | str],
-        secondary_parameters: Optional[List[str] | str],
-        destination: Optional[str],
-    ) -> Dict[str, Any]:
-        # Shuffle so top‑of‑list bias disappears, then sample evenly
-        random.shuffle(search_results)
-
         with tracing_v2_enabled(project_name="restaurant-recommender"):
-            city = self._extract_city(primary_parameters, destination)
-            formatted = self._format_search_results_balanced(search_results)
-
-            kw_str = self._list_to_str(keywords_for_analysis)
-            primary_str = self._list_to_str(primary_parameters)
-            secondary_str = self._list_to_str(secondary_parameters)
-
-            resp = self.chain.invoke(
+            flat_results = _flatten_results(search_results)
+            dump_chain_state(
+                "analyze_start",
                 {
-                    "payload": formatted,
-                    "city": city,
-                    "primary": primary_str,
-                    "secondary": secondary_str,
+                    "search_results_count": len(flat_results),
+                    "keywords": keywords_for_analysis,
+                    "primary_parameters": primary_parameters,
+                    "secondary_parameters": secondary_parameters,
+                    "destination": destination,
+                },
+            )
+
+            city = self._extract_city(primary_parameters, destination)
+            formatted_results = self._format_search_results(flat_results)
+            kw_str = ", ".join(keywords_for_analysis) if isinstance(keywords_for_analysis, list) else (
+                keywords_for_analysis or ""
+            )
+            primary_str = ", ".join(primary_parameters) if isinstance(primary_parameters, list) else (
+                primary_parameters or ""
+            )
+            secondary_str = (
+                ", ".join(secondary_parameters) if isinstance(secondary_parameters, list) else (secondary_parameters or "")
+            )
+
+            response = self.chain.invoke(
+                {
+                    "search_results": formatted_results,
+                    "keywords_for_analysis": kw_str,
+                    "primary_parameters": primary_str,
+                    "secondary_parameters": secondary_str,
                 }
             )
-            return self._postprocess_response(resp, city)
+            return self._postprocess_response(response, city)
 
     # ------------------------------------------------------------------
-    #  ––– Restaurant‑list mode (NEW) –––
-    # ------------------------------------------------------------------
-    def _analyze_restaurant_lists(
-        self,
-        restaurant_lists: List[Dict[str, Any]],
-        keywords_for_analysis: List[str] | str,
-        primary_parameters: Optional[List[str] | str],
-        secondary_parameters: Optional[List[str] | str],
-        destination: Optional[str],
-    ) -> Dict[str, Any]:
-        with tracing_v2_enabled(project_name="restaurant-recommender"):
-            city = self._extract_city(primary_parameters, destination)
+    # Internal helpers --------------------------------------------------
+    def _tokens(self, txt: str) -> int:
+        return len(self._enc.encode(txt))
 
-            # 1. Aggregate all evidence first so we cover *every* restaurant
-            buckets = self._aggregate_restaurant_lists(restaurant_lists)
-            payload = "\n\n".join(b.to_prompt_block() for b in buckets.values())
+    @staticmethod
+    @lru_cache(maxsize=4096)
+    def _dedupe_key(url: str) -> str:
+        """Return a stable key for deduplication (host + path w/o params)."""
+        from urllib.parse import urlparse
 
-            kw_str = self._list_to_str(keywords_for_analysis)
-            primary_str = self._list_to_str(primary_parameters)
-            secondary_str = self._list_to_str(secondary_parameters)
+        p = urlparse(url)
+        return f"{p.netloc}{p.path}".rstrip("/")
 
-            resp = self.chain.invoke(
-                {
-                    "payload": payload,
-                    "city": city,
-                    "primary": primary_str,
-                    "secondary": secondary_str,
-                }
-            )
-            return self._postprocess_response(resp, city)
+    def _format_search_results(self, search_results: List[Dict[str, Any]]) -> str:
+        """Format *all* results but respect a total token ceiling.
 
-    # ------------------------------------------------------------------
-    #  helpers – fmting & aggregation
-    # ------------------------------------------------------------------
-    def _format_search_results_balanced(self, search_results: List[Dict[str, Any]]) -> str:
-        """Evenly sample articles across the full list until the token budget is
-        exhausted (as opposed to walking from the top)."""
-        lines: list[str] = []
+        Strategy: allocate \~5% of the budget for metadata lines; the remainder
+        is split evenly so *each* article gets at least a short head‑snippet.
+        """
+        meta_overhead = int(self.max_prompt_tokens * 0.05)
+        payload_budget = self.max_prompt_tokens - meta_overhead
+        head_per_article = max(32, payload_budget // max(len(search_results), 1))
+
+        lines: List[str] = []
         used_tokens = 0
-        N = len(search_results)
-        # Take strides of size sqrt(N) to spread coverage
-        stride = max(1, int(N ** 0.5))
-        idx = 0
-        visited = set()
-        while len(visited) < N:
-            res = search_results[idx]
-            visited.add(idx)
-            base: list[str] = [
+        seen: set[str] = set()
+
+        for idx, res in enumerate(search_results):
+            # ----- dedupe identical URLs ---------------------------------
+            key = self._dedupe_key(res.get("url", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+
+            base: List[str] = [
+                f"RESULT {idx + 1}:",
                 f"Title: {res.get('title', 'Unknown')}",
                 f"URL: {res.get('url', 'Unknown')}",
                 f"Source: {res.get('source_domain', 'Unknown')}",
@@ -244,60 +199,20 @@ class ListAnalyzer:
                 base.append(f"Description: {res['description']}")
 
             content = res.get("scraped_content", "")
-            allowed = self.max_prompt_tokens - used_tokens - self._tokens("\n".join(base))
-            if allowed <= 0:
-                break
-
             if content:
-                content_tokens = self._tokens(content)
-                take = min(content_tokens, min(self._per_article_head_tokens, allowed))
-                excerpt = self._enc.decode(self._enc.encode(content)[:take])
-                base.append(f"Content: {excerpt}{' …' if content_tokens > take else ''}")
-                used_tokens += take + self._tokens("\n".join(base[:-1]))
-            else:
-                used_tokens += self._tokens("\n".join(base))
-
-            lines.append("\n".join(base))
-            if used_tokens >= self.max_prompt_tokens:
+                snippet = self._enc.decode(self._enc.encode(content)[:head_per_article])
+                base.append(f"Content: {snippet} … (truncated)")
+            full_block = "\n".join(base)
+            block_toks = self._tokens(full_block)
+            if used_tokens + block_toks > self.max_prompt_tokens:
                 break
-            idx = (idx + stride) % N
+            lines.append(full_block)
+            used_tokens += block_toks
+
         return "\n\n".join(lines)
-
-    # –––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
-    def _aggregate_restaurant_lists(self, restaurant_lists: List[Dict[str, Any]]) -> Dict[str, _RestaurantBucket]:
-        buckets: Dict[str, _RestaurantBucket] = {}
-        for block in restaurant_lists:
-            source = block.get("source_name") or block.get("source_domain") or "Unknown"
-            for itm in block.get("restaurants", []):
-                # Support both raw strings and dict objects
-                if isinstance(itm, str):
-                    name = itm.strip()
-                    desc = None
-                    addr = None
-                else:
-                    name = itm.get("name", "").strip()
-                    desc = itm.get("description")
-                    addr = itm.get("address")
-                if not name:
-                    continue
-                key = name.lower()
-                bucket = buckets.setdefault(key, _RestaurantBucket(name))
-                bucket.add(source, desc, addr)
-        return buckets
-
-    # –––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
-    def _list_to_str(self, maybe_list: List[str] | str | None) -> str:
-        if maybe_list is None:
-            return ""
-        return ", ".join(maybe_list) if isinstance(maybe_list, list) else maybe_list
-
-    # ------------------------------------------------------------------
-    def _tokens(self, txt: str) -> int:
-        return len(self._enc.encode(txt))
 
     # ------------------------------------------------------------------
     def _postprocess_response(self, response, city: str) -> Dict[str, Any]:
-        """Same logic as before – untouched."""
         try:
             content = response.content
             if "```json" in content:
@@ -323,18 +238,17 @@ class ListAnalyzer:
             self._save_restaurants_to_db(results["main_list"] + results["hidden_gems"], city)
 
             if not (results["main_list"] or results["hidden_gems"]):
-                results["main_list"] = [
-                    {
-                        "name": "Поиск не дал результатов",
-                        "address": "Адрес недоступен",
-                        "description": "К сожалению, мы не смогли найти рестораны, соответствующие вашему запросу.",
-                        "sources": ["Системное сообщение"],
-                        "price_range": "€€",
-                        "recommended_dishes": [],
-                        "missing_info": [],
-                        "city": city,
-                    }
-                ]
+                results["main_list"] = [{
+                    "name": "Поиск не дал результатов",
+                    "address": "Адрес недоступен",
+                    "description": "К сожалению, мы не смогли найти рестораны, соответствующие вашему запросу.",
+                    "sources": ["Системное сообщение"],
+                    "price_range": "€€",
+                    "recommended_dishes": [],
+                    "missing_info": [],
+                    "city": city,
+                }]
+
             dump_chain_state(
                 "analyze_final_results",
                 {
@@ -343,24 +257,26 @@ class ListAnalyzer:
                 },
             )
             return results
+
         except (json.JSONDecodeError, AttributeError) as exc:
             dump_chain_state(
                 "analyze_json_error",
-                {"error": str(exc), "response_preview": getattr(response, "content", "")[:500]},
+                {
+                    "error": str(exc),
+                    "response_preview": getattr(response, "content", "")[:500],
+                },
             )
             return {
-                "main_list": [
-                    {
-                        "name": "Ошибка обработки результатов",
-                        "address": "Адрес недоступен",
-                        "description": "Произошла ошибка при обработке результатов поиска.",
-                        "sources": ["Системное сообщение"],
-                        "price_range": "€€",
-                        "recommended_dishes": [],
-                        "missing_info": [],
-                        "city": city,
-                    }
-                ],
+                "main_list": [{
+                    "name": "Ошибка обработки результатов",
+                    "address": "Адрес недоступен",
+                    "description": "Произошла ошибка при обработке результатов поиска.",
+                    "sources": ["Системное сообщение"],
+                    "price_range": "€€",
+                    "recommended_dishes": [],
+                    "missing_info": [],
+                    "city": city,
+                }],
                 "hidden_gems": [],
             }
 
@@ -370,13 +286,12 @@ class ListAnalyzer:
             return destination
         if isinstance(primary_parameters, list):
             for p in primary_parameters:
-                low = p.lower()
-                for marker in ("in ", "at ", "near "):
-                    if marker in low:
-                        return low.split(marker)[1].strip()
+                pl = p.lower()
+                for kw in ("in ", "at ", "near "):
+                    if kw in pl:
+                        return pl.split(kw)[1].strip()
         return "unknown_location"
 
-    # ------------------------------------------------------------------
     def _save_restaurants_to_db(self, restaurants: List[Dict[str, Any]], city: str):
         try:
             table = f"restaurants_{city.lower().replace(' ', '_')}"

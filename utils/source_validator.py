@@ -1,357 +1,246 @@
-# utils/source_validator.py with improved caching
+from __future__ import annotations
+"""
+utils/source_validator.py  v3.0
+------------------------------
+
+* Single‑source of truth for **domain reputation**, backed by:
+  • `functools.lru_cache` (process‑lifetime)
+  • a TTL‑controlled in‑memory cache (fast refresh, 24 h / 7 d)
+  • the existing Mongo/Postgre table (long‑term)
+* Eliminates the duplicate `evaluate_source_quality` definition that used to
+  shadow the heuristic version.
+* Public API preserved: `check_source_reputation()`, `evaluate_source_quality()`,
+  `preload_source_reputations()`, `store_source_evaluation()`.
+"""
 from urllib.parse import urlparse
 import aiohttp
 import random
 import time
-from utils.database import find_data, save_data, update_data, find_all_data
+from functools import lru_cache
+from typing import Optional
+
+from utils.database import (
+    find_data,
+    save_data,
+    update_data,
+    find_all_data,
+)
+from utils.async_utils import sync_to_async
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from utils.async_utils import sync_to_async, track_async_task
+from langchain_core.messages import SystemMessage, HumanMessage
 
-# In-memory cache to avoid repeated database lookups in the same session
-_DOMAIN_CACHE = {}  # Domain -> (is_reputable, timestamp)
+# ---------------------------------------------------------------------------
+# Constants & in‑memory caches
+# ---------------------------------------------------------------------------
 
-async def fetch_quick_preview(url):
-    """Fetch a small preview of the page content for analysis"""
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-    ]
+# Fast‑refresh cache – survives for the lifetime of the Python process &
+# supports TTL so domains can be re‑checked periodically.
+_DOMAIN_CACHE: dict[str, tuple[bool, float]] = {}
 
+# Long‑lived list of obviously reputable guides – skip the AI step entirely.
+REPUTABLE_GUIDES = [
+    "theworlds50best.com",
+    "worldofmouth.app",
+    "guide.michelin.com",
+    "culinarybackstreets.com",
+    "oadguides.com",
+    "laliste.com",
+    "eater.com",
+    "bonappetit.com",
+    "foodandwine.com",
+    "infatuation.com",
+    "nytimes.com"
+]
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _normalise_domain(url_or_domain: str) -> str:
+    """Return a lower‑case domain without leading *www.* and trailing slash."""
+    domain = urlparse(url_or_domain).netloc or url_or_domain
+    domain = domain.lower()
+    if domain.startswith("www."):
+        domain = domain[4:]
+    return domain.rstrip("/")
+
+
+async def _fetch_quick_preview(url: str, max_bytes: int = 5000) -> Optional[str]:
+    """Grab the first *max_bytes* of the page so the LLM has some context."""
     headers = {
-        "User-Agent": random.choice(user_agents),
+        "User-Agent": random.choice(
+            [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+            ]
+        ),
         "Accept": "text/html,application/xhtml+xml,application/xml",
     }
-
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=5) as response:
-                if response.status == 200:
-                    # Try to get the encoding from the response
-                    content_type = response.headers.get('Content-Type', '')
-                    encoding = None
-
-                    # Extract charset from Content-Type if available
-                    if 'charset=' in content_type:
-                        encoding = content_type.split('charset=')[-1].strip()
-
+            async with session.get(url, headers=headers, timeout=6) as resp:
+                if resp.status != 200:
+                    return None
+                ctype = resp.headers.get("Content-Type", "")
+                encoding = None
+                if "charset=" in ctype:
+                    encoding = ctype.split("charset=")[1].split(";")[0].strip()
+                try:
+                    text = await resp.text(encoding=encoding) if encoding else await resp.text()
+                except UnicodeDecodeError:
+                    raw = await resp.read()
                     try:
-                        # Try with the specified encoding first, if available
-                        if encoding:
-                            content_sample = await response.text(encoding=encoding)
-                        else:
-                            content_sample = await response.text(encoding='utf-8')
-                    except UnicodeDecodeError:
-                        # Fallback to reading raw bytes and using a more liberal decoder
-                        raw_content = await response.read()
-                        try:
-                            # Try with 'latin-1' which accepts any byte value
-                            content_sample = raw_content.decode('latin-1')
-                        except:
-                            # Last resort: ignore problematic characters
-                            content_sample = raw_content.decode('utf-8', errors='ignore')
-
-                    return content_sample[:5000]  # Return first 5000 chars
-        return None
-    except Exception as e:
-        print(f"Error in quick preview fetch: {e}")
-        return None
-
-def evaluate_source_quality(url, html_content):
-    """
-    Evaluate the quality of a source based on its URL and content
-
-    Args:
-        url (str): The URL of the source
-        html_content (str): The HTML content of the source
-
-    Returns:
-        float: A quality score between 0 and 1
-    """
-    domain = urlparse(url).netloc
-
-    # Check for known high-quality domains
-    reputable_guides = [
-        "theworlds50best.com",
-        "worldofmouth.app",
-        "guide.michelin.com",
-        "culinarybackstreets.com",
-        "oadguides.com",
-        "laliste.com",
-        "eater.com",
-        "bonappetit.com",
-        "foodandwine.com",
-        "infatuation.com",
-        "nytimes.com"
-    ]
-
-    for guide in reputable_guides:
-        if guide in domain:
-            return 1.0  # Maximum score for known reputable guides
-
-    # Basic heuristics for other sources
-    score = 0.5  # Default score
-
-    # Length-based heuristic (longer content often means more detailed reviews)
-    if len(html_content) > 5000:
-        score += 0.1
-
-    # Domain-based heuristics (well-established domains often have editorial standards)
-    if domain.endswith(".com") or domain.endswith(".org"):
-        score += 0.05
-
-    # Cap at 0.95 for sources that aren't in our known reputable list
-    return min(score, 0.95)
-
-def check_source_reputation(url, config):
-    """Check if a source is already in our reputation database or in-memory cache"""
-    # Extract and normalize domain from URL
-    domain = urlparse(url).netloc.lower()
-    if domain.startswith('www.'):
-        domain = domain[4:]  # Remove www. prefix
-
-    # Normalize common domains to avoid duplicates
-    domain_map = {
-        'guide.michelin.com': 'michelin.com',
-        'lexpress.fr': 'lexpress.fr',
-        'timeout.fr': 'timeout.fr',
-        # Add more mappings as needed
-    }
-
-    # Apply mapping if domain is in the map
-    if domain in domain_map:
-        domain = domain_map[domain]
-
-    # Add logging to see what domains we're checking
-    print(f"Checking reputation for normalized domain: {domain}")
-
-    # First check in-memory cache with longer TTL (1 week)
-    if domain in _DOMAIN_CACHE:
-        is_reputable, timestamp = _DOMAIN_CACHE[domain]
-        if time.time() - timestamp < 604800:  # 604800 seconds = 1 week
-            print(f"Using cached reputation for {domain}: {is_reputable}")
-            return is_reputable
-
-    # Check if domain exists in known sources database
-    result = find_data(
-        config.DB_TABLE_SOURCES,
-        {"domain": domain},
-        config
-    )
-
-    if result:
-        # Store result in cache
-        _DOMAIN_CACHE[domain] = (result.get("is_reputable", False), time.time())
-
-        # Return the stored reputation
-        return result.get("is_reputable", False)
-
-    # Not in database or cache, need AI verification
+                        text = raw.decode("latin-1")
+                    except Exception:
+                        text = raw.decode("utf-8", errors="ignore")
+                return text[:max_bytes]
+    except Exception as exc:
+        print(f"[_fetch_quick_preview] {exc}")
     return None
 
-def preload_source_reputations(config):
-    """Preload known source reputations into memory cache"""
+
+# ---------------------------------------------------------------------------
+# Core reputation logic – cached aggressively with LRU
+# ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=2048)
+def _domain_reputation(domain: str, config) -> Optional[bool]:
+    """Return *True/False* if known, otherwise *None* (meaning unknown)."""
+    # 1) Known guide → True
+    if any(guide in domain for guide in REPUTABLE_GUIDES):
+        return True
+
+    # 2) DB look‑up (long‑term store)
+    rec = find_data(config.DB_TABLE_SOURCES, {"domain": domain}, config)
+    if rec:
+        return rec.get("is_reputable", False)
+
+    # 3) Unknown
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Public helpers
+# ---------------------------------------------------------------------------
+
+def check_source_reputation(url: str, config) -> Optional[bool]:
+    """Lightweight sync helper used by crawlers before deciding to scrape."""
+    domain = _normalise_domain(url)
+
+    # 1) short‑term cache (24 h)
+    if domain in _DOMAIN_CACHE:
+        is_rep, ts = _DOMAIN_CACHE[domain]
+        if time.time() - ts < 86_400:
+            return is_rep
+
+    # 2) lru‑cached DB / whitelist check
+    rep = _domain_reputation(domain, config)
+    if rep is not None:
+        _DOMAIN_CACHE[domain] = (rep, time.time())
+    return rep
+
+
+def preload_source_reputations(config) -> int:
+    """Load the first 1000 rows into the fast in‑memory cache so startup is quiet."""
     try:
-        print("Preloading source reputations...")
-        # Get all source records (up to 1000)
-        sources = find_all_data(
-            config.DB_TABLE_SOURCES,
-            {},  # Empty query to get all records
-            config,
-            limit=1000
-        )
-
-        # Load into memory cache (with domain normalization)
-        count = 0
-        for source in sources:
-            if "domain" in source and "is_reputable" in source:
-                # Normalize domain to avoid duplicates (remove www. and trailing slash)
-                domain = source["domain"].replace("www.", "").rstrip("/")
-                _DOMAIN_CACHE[domain] = (source["is_reputable"], time.time())
-                count += 1
-
-        print(f"Preloaded {count} source reputation records")
-        return count
-    except Exception as e:
-        print(f"Error preloading source reputations: {e}")
+        rows = find_all_data(config.DB_TABLE_SOURCES, {}, config, limit=1000)
+        for row in rows:
+            if "domain" in row and "is_reputable" in row:
+                _DOMAIN_CACHE[_normalise_domain(row["domain"])] = (
+                    row["is_reputable"],
+                    time.time(),
+                )
+        print(f"[source_validator] Preloaded {len(rows)} reputation rows")
+        return len(rows)
+    except Exception as exc:
+        print(f"[source_validator] preload error: {exc}")
         return 0
 
-async def ai_evaluate_source(content_sample, url, config):
-    """Use AI to evaluate if a source is reputable"""
-    # Extract domain for caching
-    domain = urlparse(url).netloc
 
-    # Check cache again (might have been updated by another process)
-    if domain in _DOMAIN_CACHE:
-        is_reputable, timestamp = _DOMAIN_CACHE[domain]
+# ---------------------------------------------------------------------------
+# Slow path — called only when we truly don’t know a domain
+# ---------------------------------------------------------------------------
 
-        # Only use cache entries that are less than 1 day old
-        if time.time() - timestamp < 86400:  # 86400 seconds = 24 hours
-            return is_reputable
-
-    # Create a lightweight model instance
-    model = ChatOpenAI(
-        model="gpt-4o",
-        temperature=0.1
+async def _ai_evaluate_source(url: str, preview: str, config) -> bool:
+    """Ask an LLM if this looks like a professional, trustworthy restaurant source."""
+    llm = ChatOpenAI(model="gpt-4o", temperature=0.1)
+    system_msg = SystemMessage(
+        content="""
+You are an expert in media credibility for restaurant information.
+Respond with a single word – "yes" if the site is reputable or "no" otherwise.
+        """,
     )
-
-    # Create system and human messages directly
-    from langchain_core.messages import SystemMessage, HumanMessage
-
-    system_message = SystemMessage(content="""
-    You are an expert at evaluating source credibility for restaurant information.
-    Your task is to determine if a website is a reputable source for restaurant recommendations.
-
-    INDICATIONS OF REPUTABLE SOURCES:
-    - Professional food critics or publications
-    - Local newspapers or city magazines
-    - Chef interviews or industry publications
-    - Culinary awards or recognition organizations
-    - Respected food bloggers with established expertise
-    - Trendy blogs or websites with a strong food focus
-    - International or local food guides (Michelin, Gault&Millau, etc.)
-
-    INDICATIONS OF NON-REPUTABLE SOURCES:
-    - Generic travel sites with crowdsourced reviews
-    - Sites that primarily aggregate other reviews
-    - SEO-optimized listicles with thin content
-    - Content farm sites with generic recommendations
-    - Sites with excessive advertisements
-
-    Respond ONLY with "yes" for reputable sources or "no" for non-reputable sources.
-    """)
-
-    human_message = HumanMessage(content=f"""
-    URL: {url}
-
-    Content Preview:
-    {content_sample[:1500]}
-
-    Is this a reputable source for restaurant recommendations? Answer only yes or no.
-    """)
-
-    # Create messages list
-    messages = [system_message, human_message]
-
+    human_msg = HumanMessage(
+        content=f"URL: {url}\n\nPreview:\n{preview[:1500]}\n\nIs this source reputable?",
+    )
     try:
-        # Invoke the model with messages
-        response = await model.ainvoke(messages)
-
-        # Check response type and extract the text
-        response_text = ""
-        if hasattr(response, 'content'):
-            response_text = response.content
-        elif isinstance(response, str):
-            response_text = response
-        elif isinstance(response, dict) and 'content' in response:
-            response_text = response['content']
-        else:
-            # If we can't identify the structure, convert to string
-            response_text = str(response)
-
-        # Determine if the source is reputable based on the response text
-        response_text = response_text.lower().strip()
-        is_reputable = "yes" in response_text and not "no" in response_text
-
-        # Update cache
-        _DOMAIN_CACHE[domain] = (is_reputable, time.time())
-
-        return is_reputable
-
-    except Exception as e:
-        print(f"Error in AI evaluation: {e}")
+        resp = await llm.ainvoke([system_msg, human_msg])
+        txt = getattr(resp, "content", str(resp)).lower()
+        return "yes" in txt and "no" not in txt
+    except Exception as exc:
+        print(f"[_ai_evaluate_source] {exc}")
         return False
 
-@sync_to_async
-async def evaluate_source_quality(url, config):
-    """Full process to evaluate a source's quality with caching"""
-    # Extract domain from URL
-    domain = urlparse(url).netloc
 
-    # Special cases - we know these are always reputable guides
-    reputable_guides = [
-        "theworlds50best.com",
-        "worldofmouth.app",
-        "guide.michelin.com",
-        "culinarybackstreets.com",
-        "oadguides.com",
-        "laliste.com",
-        "eater.com",
-        "bonappetit.com",
-        "foodandwine.com",
-        "infatuation.com",
-        "nytimes.com",
-        "zagat.com"
-    ]
+def store_source_evaluation(url: str, is_reputable: bool, config):
+    """Persist the outcome and update both caches."""
+    domain = _normalise_domain(url)
+    now = time.time()
 
-    # Check if this is a known reputable guide
-    for guide in reputable_guides:
-        if guide in domain:
-            print(f"Domain {domain} matches known reputable guide {guide}")
-            _DOMAIN_CACHE[domain] = (True, time.time())
-            store_source_evaluation(url, True, config)
-            return True
-
-    # Check in-memory cache first
-    if domain in _DOMAIN_CACHE:
-        is_reputable, timestamp = _DOMAIN_CACHE[domain]
-        if time.time() - timestamp < 86400:  # 86400 seconds = 24 hours
-            return is_reputable
-
-    # Not in cache, check database
-    result = find_data(
-        config.DB_TABLE_SOURCES,
-        {"domain": domain},
-        config
-    )
-
-    if result:
-        _DOMAIN_CACHE[domain] = (result.get("is_reputable", False), time.time())
-        return result.get("is_reputable", False)
-
-    # Not in database or cache, need to evaluate
-    content_sample = await fetch_quick_preview(url)
-    if not content_sample:
-        return False
-
-    is_reputable = await ai_evaluate_source(content_sample, url, config)
-
-    # Store result in database
-    store_source_evaluation(url, is_reputable, config)
-
-    return is_reputable
-
-def store_source_evaluation(url, is_reputable, config):
-    """Store the source evaluation in the database"""
-    domain = urlparse(url).netloc
-
-    source_data = {
+    row = {
         "domain": domain,
         "full_url": url,
         "is_reputable": is_reputable,
-        "evaluated_at": time.time(),
-        "evaluation_count": 1
+        "evaluated_at": now,
+        "evaluation_count": 1,
     }
 
-    # Update in-memory cache
-    _DOMAIN_CACHE[domain] = (is_reputable, time.time())
+    _DOMAIN_CACHE[domain] = (is_reputable, now)
 
-    # Check if already exists and update instead of insert
     existing = find_data(config.DB_TABLE_SOURCES, {"domain": domain}, config)
-
     if existing:
-        # Update existing record
-        source_data["evaluation_count"] = existing.get("evaluation_count", 0) + 1
-        update_data(
-            config.DB_TABLE_SOURCES,
-            {"domain": domain},
-            source_data,
-            config
-        )
+        row["evaluation_count"] = existing.get("evaluation_count", 0) + 1
+        update_data(config.DB_TABLE_SOURCES, {"domain": domain}, row, config)
     else:
-        # Insert new record
-        save_data(
-            config.DB_TABLE_SOURCES,
-            source_data,
-            config
-        )
+        save_data(config.DB_TABLE_SOURCES, row, config)
+
+
+# ---------------------------------------------------------------------------
+# Public async evaluation (slow path wrapper)
+# ---------------------------------------------------------------------------
+
+@sync_to_async  # keep signature compatible with legacy callers
+async def evaluate_source_quality(url: str, config) -> bool:
+    """Full pipeline returning a boolean; will cache & persist the result."""
+    domain = _normalise_domain(url)
+
+    # 1) Quick exit if we already know
+    cached = check_source_reputation(url, config)
+    if cached is not None:
+        return cached
+
+    # 2) Quick preview + heuristic (cheap)
+    preview = await _fetch_quick_preview(url)
+    if not preview:
+        return False
+
+    # Minimal heuristic: long‑form content earns +0.1, .com/.org earns +0.05
+    score = 0.5
+    if len(preview) > 5000:
+        score += 0.1
+    if domain.endswith((".com", ".org")):
+        score += 0.05
+    if any(g in domain for g in REPUTABLE_GUIDES):
+        score = 1.0
+
+    if score >= 0.95:
+        is_rep = True
+    elif score <= 0.55:
+        is_rep = False
+    else:
+        # 3) Ask the LLM (expensive, only for borderline cases)
+        is_rep = await _ai_evaluate_source(url, preview, config)
+
+    # 4) Persist & cache
+    store_source_evaluation(url, is_rep, config)
+    return is_rep
