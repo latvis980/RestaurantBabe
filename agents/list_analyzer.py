@@ -89,19 +89,21 @@ class ListAnalyzer:
             mistral_api_key=config.MISTRAL_API_KEY,
         )
 
-        # ––– PROMPT –––––––––––––––––––––––––––––––––––––––––––––––––––––
+        # PROMPT
         self.system_prompt = (
-            "You are a restaurant recommendation expert analysing web search results"
-            "for data to identify the *best* restaurants and *promising hidden gems*."
-            "\n\nTASK:\n"
-            "1. From the supplied material extract restaurant names and compile a list"\n
-            "2. Analyse the descriptions and sources to identify the best restaurants"
+            "You are a restaurant recommendation expert analyzing web search results to identify the *best* restaurants and *promising hidden gems*.\n\n"
+            "TASK:\n"
+            "1. From the supplied material, extract restaurant names and compile a list.\n"
+            "2. Analyze the descriptions and sources to identify the best restaurants.\n"
             "3. Produce two lists of restaurants: *main_list* (widely endorsed) and "
             "*hidden_gems* (≤ 2 sources but glowing praise).\n"
-            "4. Merge all descriptions for the same restaurant into a single 40‑60 word paragraph per place."\n
-            "5. Assume price‑range (€, €€, €€€)"\n 
-            "6. Extract up to 3 recommended dishes if available"\n
-            "Guidelines: Ignore TripAdvisor/Yelp; prefer guides, critics, local publications; always return at least 7 total restaurants in the main_list, 2 restaurants in hidden_gems." )
+            "4. Merge all descriptions for the same restaurant into a single 40–60 word paragraph per place.\n"
+            "5. Assume price range (€ / €€ / €€€).\n"
+            "6. Extract up to 3 recommended dishes, if available.\n\n"
+            "Guidelines: Ignore TripAdvisor/Yelp; prefer guides, critics, and local publications. "
+            "Always return at least 7 total restaurants in the *main_list* and 2 in *hidden_gems*."
+        )
+
 
         self.prompt = ChatPromptTemplate.from_messages(
             [
