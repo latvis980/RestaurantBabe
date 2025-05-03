@@ -13,9 +13,6 @@ class BraveSearchAgent:
         self.config = config
         self.base_url = "https://api.search.brave.com/res/v1/web/search"
 
-    #### In `search_agent.py`, add more debug output:
-
-    ```python
     def search(self, queries, max_retries=3, retry_delay=2):
         """
         Perform searches with the given queries
@@ -54,7 +51,18 @@ class BraveSearchAgent:
         # Add debug
         print(f"[SearchAgent] Total search results: {len(all_results)}")
 
-        # Save results...
+        # Save results to database for future reference
+        if all_results:
+            save_data(
+                self.config.DB_TABLE_SEARCHES,
+                {
+                    "queries": queries,
+                    "timestamp": time.time(),
+                    "results": all_results
+                },
+                self.config
+            )
+
         return all_results
 
     def _execute_search(self, query):
@@ -103,7 +111,7 @@ class BraveSearchAgent:
 
         return filtered_results
 
-    
+
     def follow_up_search(self, restaurant_name, location, additional_context=None):
         """
         Perform a follow-up search for a specific restaurant
