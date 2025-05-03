@@ -13,10 +13,6 @@ class BraveSearchAgent:
         self.config = config
         self.base_url = "https://api.search.brave.com/res/v1/web/search"
 
-    ### 2. Debug the Search Results Issue
-
-    The issue might be in the data flow between modules. Let's add some debug logging:
-
     #### In `search_agent.py`, add more debug output:
 
     ```python
