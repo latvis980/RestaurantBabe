@@ -275,30 +275,21 @@ async def handle_message(message):
             parse_mode="HTML"
         )
 
+async def run_bot():
+    """Run the bot asynchronously"""
+    try:
+        logger.info("Bot polling started")
+        await bot.polling(non_stop=True, interval=1)
+    except Exception as e:
+        logger.error(f"Bot polling error: {e}")
+        logger.error(traceback.format_exc())
+
 def main():
     """Start the Telegram bot"""
     logger.info("Starting restaurant recommendation Telegram bot")
 
-    # Start the bot polling in threaded mode
-    from telebot.util import threaded
-
-    @threaded
-    def bot_polling():
-        logger.info("Bot polling started")
-        asyncio.run(bot.polling(none_stop=True, interval=1))
-
-    # Start the bot
-    bot_polling()
-
-    try:
-        # Keep the main thread alive
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        # Handle graceful shutdown
-        logger.info("Bot shutting down...")
-        asyncio.run(wait_for_pending_tasks())
-        logger.info("Bot stopped")
+    # Run the bot
+    asyncio.run(run_bot())
 
 if __name__ == "__main__":
     main()
