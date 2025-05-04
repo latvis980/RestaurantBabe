@@ -15,6 +15,7 @@ import json
 from typing import Dict, Any, Optional, List
 import tempfile
 from pathlib import Path
+import threading
 
 
 # Fix the import path - use the correct path with agents prefix
@@ -707,6 +708,75 @@ def handle_scrape_test(msg):
     thread = threading.Thread(target=run_async_scraper_test)
     thread.daemon = True  # Make it a daemon thread so it doesn't prevent application shutdown
     thread.start()
+
+@bot.message_handler(commands=["fetch_test"])
+def handle_fetch_test(msg):
+    """Simple command to test URL fetching directly"""
+    user_id = msg.from_user.id
+
+    if not is_admin(user_id):
+        bot.reply_to(msg, "❌ This command is only available to administrators.")
+        return
+
+    # Parse command: /fetch_test [url]
+    parts = msg.text.split(maxsplit=1)
+
+    if len(parts) < 2:
+        bot.reply_to(msg, "Usage: /fetch_test [url]")
+        return
+
+    url = parts[1].strip()
+    bot.reply_to(msg, f"🔍 Testing URL fetch for: {url}\nThis will take a moment...")
+
+
+    def run_async_fetch():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(simple_fetch(url, msg.chat.id))
+        loop.close()
+
+    thread = threading.Thread(target=run_async_fetch)
+    thread.daemon = True
+    thread.start()
+
+async def simple_fetch(url, chat_id):
+    """Simple function to test URL fetching"""
+    result = {
+        "url": url,
+        "success": False,
+        "content_length": 0,
+        "error": None
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            }
+
+            response = await client.get(url, headers=headers, follow_redirects=True)
+
+            # Send status code 
+            bot.send_message(chat_id, f"📊 Status Code: {response.status_code}")
+
+            if 200 <= response.status_code < 300:
+                content = await response.atext()
+                result["content_length"] = len(content)
+                bot.send_message(chat_id, f"✅ Successfully fetched {len(content)} bytes")
+
+                # Send a small preview
+                preview = content[:1000]
+                bot.send_message(chat_id, f"📄 Content Preview:\n\n{preview}...\n\n(First 1000 characters)")
+            else:
+                bot.send_message(chat_id, f"❌ Failed with status code {response.status_code}")
+
+            return result
+    except Exception as e:
+        error_message = f"❌ Error fetching URL: {str(e)}"
+        bot.send_message(chat_id, error_message)
+        result["error"] = str(e)
+        return result
 
 async def perform_scraper_test(query, chat_id):
     """
