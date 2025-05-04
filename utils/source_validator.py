@@ -126,6 +126,7 @@ async def _ai_evaluate_source(url: str, content: str, config) -> bool:
         - SEO-optimized listicles with thin content and no original research
         - Content farm sites with generic recommendations
         - Sites with excessive advertisements and little editorial oversight
+        - social media platforms with user-generated content (like Facebook, Instagram)
         
         Respond ONLY with "yes" for reputable sources or "no" for non-reputable sources.
         """)
