@@ -283,45 +283,80 @@ class WebScraper:
             pre_filtered.append(result)
 
         # Second pass: validate domains and gather scraping tasks
+        scraping_tasks = []
+        domain_validations = {}
+
+        # First, run all domain validations (with a limit to avoid overloading)
         tasks = []
-        validated_domains = set()
+        domains_to_validate = set()
 
         for result in pre_filtered:
             url = result.get("url", "")
             domain = urlparse(url).netloc
+            domains_to_validate.add(domain)
 
-            # Only validate domain once
-            if domain not in validated_domains:
-                reputation_score = await validate_source(domain, self.config)
-                validated_domains.add(domain)
-                result["domain_reputation"] = 1.0 if reputation_score else 0.0
+        # Limit to 10 concurrent domain validations
+        semaphore = asyncio.Semaphore(10)
 
-                # Skip low reputation sources
-                if not reputation_score:
-                    continue
-
-            # Create scraping task
-            tasks.append(self.scrape_url(url))
-
-        # Execute scraping tasks concurrently (with rate limiting)
-        # Use semaphore to limit concurrent connections
-        semaphore = asyncio.Semaphore(5)
-
-        async def scrape_with_semaphore(url_task):
+        async def validate_with_semaphore(domain):
             async with semaphore:
-                return await url_task
+                try:
+                    return domain, await validate_source(domain, self.config)
+                except Exception as e:
+                    logger.error(f"Error validating domain {domain}: {e}")
+                    return domain, True  # Default to accepting on error
 
-        scraped_results = await asyncio.gather(*[scrape_with_semaphore(task) for task in tasks])
+        # Run all domain validations concurrently
+        validation_tasks = [validate_with_semaphore(domain) for domain in domains_to_validate]
+        validation_results = await asyncio.gather(*validation_tasks, return_exceptions=True)
 
-        # Merge scraped content with original results
-        for i, result in enumerate(pre_filtered[:len(scraped_results)]):
-            if i < len(scraped_results):  # Safety check
-                scraped = scraped_results[i]
+        # Process validation results
+        for result in validation_results:
+            if isinstance(result, Exception):
+                logger.error(f"Validation error: {result}")
+                continue
 
-                # Only include results with actual content
-                if scraped.get("scraped_content") and scraped.get("quality_score", 0) > 0.2:
-                    merged_result = {**result, **scraped}
-                    filtered_results.append(merged_result)
+            domain, is_valid = result
+            domain_validations[domain] = is_valid
+
+        # Now create scraping tasks for valid domains
+        for result in pre_filtered:
+            url = result.get("url", "")
+            domain = urlparse(url).netloc
+
+            # Skip invalid domains
+            if domain in domain_validations and not domain_validations[domain]:
+                continue
+
+            # Set reputation on result
+            result["domain_reputation"] = 1.0 if domain_validations.get(domain, True) else 0.0
+
+            # Add to scraping tasks
+            scraping_tasks.append((result, self.scrape_url(url)))
+
+        # Execute scraping tasks with a limit
+        scrape_semaphore = asyncio.Semaphore(5)
+
+        async def process_scrape_task(task_tuple):
+            result, scrape_task = task_tuple
+            async with scrape_semaphore:
+                try:
+                    scraped = await scrape_task
+                    if scraped.get("scraped_content") and scraped.get("quality_score", 0) > 0.2:
+                        return {**result, **scraped}
+                    return None
+                except Exception as e:
+                    logger.error(f"Error scraping {result.get('url')}: {e}")
+                    return None
+
+        # Process all scraping tasks safely
+        processing_tasks = [process_scrape_task(task) for task in scraping_tasks]
+        processing_results = await asyncio.gather(*processing_tasks, return_exceptions=True)
+
+        # Filter out errors and None values
+        for result in processing_results:
+            if result is not None and not isinstance(result, Exception):
+                filtered_results.append(result)
 
         # Sort by quality score
         filtered_results.sort(key=lambda x: x.get("quality_score", 0), reverse=True)
