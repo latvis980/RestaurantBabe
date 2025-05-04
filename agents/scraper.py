@@ -170,6 +170,8 @@ class WebScraper:
 
     # ------------------------------------------------------------------
     # Fetch helpers -----------------------------------------------------
+    # Fix for the scraper._fetch_html method
+
     async def _fetch_html(self, url: str, max_retries: int = 3) -> str | None:
         """
         Download, *fully* decompress, and pre-clean HTML.
@@ -182,13 +184,17 @@ class WebScraper:
         Returns:
             HTML content as string, or None if fetching fails
         """
+        # Check cache first
         if cached := self._html_cache.get(url):
             return cached
+
+        # Create client if not already created
+        if self._client is None:
+            self._client = httpx.AsyncClient(http2=True, timeout=httpx.Timeout(10.0))
 
         for attempt in range(1, max_retries + 1):
             try:
                 async with self._sem:  # Respect concurrency limits
-                    # FIX: Use proper await instead of async context manager
                     r = await self._client.get(url, headers=self.DEFAULT_HEADERS, timeout=20)
                     if r.status_code != 200:
                         raise httpx.HTTPStatusError(f"HTTP {r.status_code}", request=r.request, response=r)
@@ -200,7 +206,7 @@ class WebScraper:
                         html_bytes = brotli.decompress(await r.aread())
                         html = html_bytes.decode("utf-8", "replace")
                     elif encoding in ("gzip", "deflate", None, ""):
-                        html = await r.atext()  # FIX: Use atext() instead of text()
+                        html = await r.atext()  # Use atext() instead of text()
                     else:
                         # rare encodings – grab raw and hope chardet gets it right
                         html = (await r.aread()).decode("utf-8", "replace")
