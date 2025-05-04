@@ -170,66 +170,69 @@ class WebScraper:
 
     # ------------------------------------------------------------------
     # Fetch helpers -----------------------------------------------------
-    # Fix for the scraper._fetch_html method
 
+    # Fix for the _fetch_html method in scraper.py
     async def _fetch_html(self, url: str, max_retries: int = 3) -> str | None:
-        """
-        Download, *fully* decompress, and pre-clean HTML.
-        Returns Unicode HTML or None on hard failure.
-
-        Args:
-            url: URL to fetch
-            max_retries: Maximum number of retry attempts
-
-        Returns:
-            HTML content as string, or None if fetching fails
-        """
-        # Check cache first
+        """Download and clean HTML with improved error handling"""
         if cached := self._html_cache.get(url):
             return cached
 
-        # Create client if not already created
+        # Create client if not exists
         if self._client is None:
-            self._client = httpx.AsyncClient(http2=True, timeout=httpx.Timeout(10.0))
+            self._client = httpx.AsyncClient(
+                http2=True, 
+                timeout=httpx.Timeout(15.0),
+                follow_redirects=True  # Add this to handle redirects
+            )
 
         for attempt in range(1, max_retries + 1):
             try:
-                async with self._sem:  # Respect concurrency limits
-                    r = await self._client.get(url, headers=self.DEFAULT_HEADERS, timeout=20)
+                async with self._sem:
+                    # Get the response with redirects followed
+                    r = await self._client.get(url, headers=self.DEFAULT_HEADERS)
+
                     if r.status_code != 200:
                         raise httpx.HTTPStatusError(f"HTTP {r.status_code}", request=r.request, response=r)
 
-                    # ---- 1. make sure the bytes are Unicode ----
-                    encoding = r.headers.get("content-encoding")
-                    if encoding == "br":
-                        # httpx hands us raw bytes when brotli isn't auto-handled
-                        html_bytes = brotli.decompress(await r.aread())
-                        html = html_bytes.decode("utf-8", "replace")
-                    elif encoding in ("gzip", "deflate", None, ""):
-                        html = await r.atext()  # Use atext() instead of text()
-                    else:
-                        # rare encodings – grab raw and hope chardet gets it right
-                        html = (await r.aread()).decode("utf-8", "replace")
+                    # Handle content encoding - use text() instead of atext() for compatibility
+                    try:
+                        encoding = r.headers.get("content-encoding")
+                        if encoding == "br":
+                            try:
+                                # Use safer brotli decompression
+                                html_bytes = brotli.decompress(await r.aread())
+                                html = html_bytes.decode("utf-8", "replace")
+                            except Exception as e:
+                                # Fallback if brotli fails
+                                html = await r.text()
+                        else:
+                            # Use text() which works in all httpx versions
+                            html = await r.text()
 
-                    # ---- 2. run Readability to strip boilerplate ----
-                    main_doc = Document(html)
-                    cleaned_html = main_doc.summary() or html   # fallback if Readability fails
+                    except Exception as e:
+                        # Final fallback
+                        raw = await r.read()
+                        html = raw.decode("utf-8", errors="replace")
 
-                    # ---- 3. (optional) quick tag sanitise via BS ----
-                    soup = BeautifulSoup(cleaned_html, "lxml")
-                    # kill script / style tags that sometimes survive Readability
+                    # Run Readability & process
+                    try:
+                        main_doc = Document(html)
+                        cleaned_html = main_doc.summary() or html
+                    except:
+                        cleaned_html = html
+
+                    # Quick BS4 cleanup
+                    soup = BeautifulSoup(cleaned_html, "html.parser")  # Use html.parser instead of lxml
                     for bad in soup(["script", "style", "noscript"]):
                         bad.decompose()
 
                     final_html = str(soup)
-
-                    # ---- 4. cache & go ----
                     self._html_cache.set(url, final_html, expire=self._html_ttl)
                     return final_html
 
             except Exception as e:
                 self.logger.warning("Fetch %s failed (try %d/%d): %s", url, attempt, max_retries, e)
-                await asyncio.sleep(1.5 * attempt)  # simple back-off
+                await asyncio.sleep(1.5 * attempt)
 
         self.logger.error("Giving up on %s after %d attempts", url, max_retries)
         return None
