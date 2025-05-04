@@ -5,6 +5,8 @@ import time
 import json
 import re
 import logging
+import random
+from collections import deque
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 from langchain_core.tracers.context import tracing_v2_enabled
@@ -20,10 +22,18 @@ logger = logging.getLogger(__name__)
 # Initialize cache
 cache = Cache("./http_cache")
 
+# Constants
+CACHE_EXPIRE_SECONDS = 60 * 60 * 24 * 7   # 7 days
+MIN_TOKEN_KEEP = 50                       # Lower threshold
+DOMAINS_ALWAYS_KEEP = ("michelin.", "resy.", "worlds50", "theinfatuation.", "guide.", "culinarybackstreets.")
+RESTAURANT_KEYWORDS = ("restaurant", "chef", "menu", "dish", "food", "dining", "eat", "cuisine", "bistro", "cafe", "bar")
+
 class WebScraper:
     def __init__(self, config):
         self.config = config
         self.timeout = 15  # seconds
+        self.max_html_cache = 100_000  # Increased from 10,000 to 100,000 bytes
+
         try:
             self.tokenizer = tiktoken.get_encoding("cl100k_base")  # OpenAI's tokenizer
         except Exception as e:
@@ -36,6 +46,7 @@ class WebScraper:
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+            "Mozilla/5.0 (iPad; CPU OS 12_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.1 Mobile/15E148 Safari/604.1",
         ]
 
         # Default headers
@@ -61,21 +72,45 @@ class WebScraper:
             "youtube.com"
         ])
 
+        # Use proxy for retries if configured
+        self.use_proxy = getattr(config, 'USE_PROXY_FOR_RETRY', False)
+        self.proxy_url = getattr(config, 'PROXY_URL', None)
+
     @asynccontextmanager
-    async def get_client(self):
+    async def get_client(self, use_proxy=False):
         """Context manager for httpx client with appropriate settings"""
         try:
-            async with httpx.AsyncClient(
-                timeout=self.timeout,
-                follow_redirects=True,
-                http2=True,
-            ) as client:
+            kwargs = {
+                "timeout": self.timeout,
+                "follow_redirects": True,
+                "http2": True,
+            }
+
+            # Add proxy if configured and requested
+            if use_proxy and self.proxy_url:
+                kwargs["proxies"] = {"all://": self.proxy_url}
+
+            async with httpx.AsyncClient(**kwargs) as client:
                 yield client
         except Exception as e:
             logger.error(f"Error creating httpx client: {e}")
             # Create a basic client as fallback
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 yield client
+
+    async def _quick_preview(self, client, url):
+        """Return the first 300 chars of visible text (for ranking before full scrape)."""
+        try:
+            headers = self.default_headers.copy()
+            headers["User-Agent"] = random.choice(self.user_agents)
+
+            r = await client.get(url, headers=headers, timeout=5)
+            soup = BeautifulSoup(r.text, "lxml")
+            visible = soup.get_text(" ", strip=True)
+            return visible[:300]
+        except Exception as e:
+            logger.error(f"Error in quick preview for {url}: {e}")
+            return ""
 
     async def scrape_url(self, url, max_retries=2):
         """
@@ -98,7 +133,7 @@ class WebScraper:
             return cached_response
 
         # Parse domain to check exclusions
-        domain = urlparse(url).netloc
+        domain = urlparse(url).netloc.lower()
         if any(excluded in domain for excluded in self.excluded_domains):
             return {
                 "url": url,
@@ -110,17 +145,18 @@ class WebScraper:
             }
 
         # Select random user agent
-        import random
         headers = self.default_headers.copy()
         headers["User-Agent"] = random.choice(self.user_agents)
 
         error = None
         status_code = None
         html = ""
+        backoff = 1
 
-        for attempt in range(max_retries):
-            try:
-                async with self.get_client() as client:
+        # First try without proxy
+        async with self.get_client() as client:
+            for attempt in range(max_retries):
+                try:
                     response = await client.get(url, headers=headers, timeout=self.timeout)
                     status_code = response.status_code
 
@@ -130,16 +166,33 @@ class WebScraper:
                     else:
                         logger.warning(f"HTTP error {status_code} for {url}")
                         error = f"HTTP error {status_code}"
-                        # Add delay between retries
-                        await asyncio.sleep(1)
-            except httpx.TimeoutException:
-                error = "Timeout"
-                logger.warning(f"Timeout for {url}")
-                await asyncio.sleep(1)
-            except Exception as e:
-                error = str(e)
-                logger.error(f"Error fetching {url}: {e}")
-                await asyncio.sleep(1)
+                except httpx.TimeoutException:
+                    error = "Timeout"
+                    logger.warning(f"Timeout for {url}")
+                except Exception as e:
+                    error = str(e)
+                    logger.error(f"Error fetching {url}: {e}")
+
+                # If we still need to retry, use exponential backoff
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(backoff)
+                    backoff *= 2  # exponential backoff
+
+        # If failed with regular client, try with proxy if configured
+        if not html and self.use_proxy and self.proxy_url:
+            logger.info(f"Retrying {url} with proxy")
+            async with self.get_client(use_proxy=True) as proxy_client:
+                try:
+                    response = await proxy_client.get(url, headers=headers, timeout=self.timeout)
+                    status_code = response.status_code
+
+                    if status_code == 200:
+                        html = response.text
+                        error = None
+                    else:
+                        error = f"HTTP error {status_code} (proxy)"
+                except Exception as e:
+                    error = f"Proxy error: {str(e)}"
 
         # Extract and clean content
         scraped_content = ""
@@ -147,41 +200,11 @@ class WebScraper:
 
         if html:
             try:
-                # Use readability to extract main content
-                doc = Document(html)
-                title = doc.title()
-                content = doc.summary()
+                # Extract text using our improved method
+                scraped_content = self._extract_article_text(html)
 
-                # Parse with BeautifulSoup to clean further
-                soup = BeautifulSoup(content, "lxml")
-
-                # Remove script and style elements
-                for element in soup(["script", "style", "nav", "footer", "header"]):
-                    element.decompose()
-
-                # Get text and clean it
-                text = soup.get_text(separator=" ", strip=True)
-
-                # Clean up whitespace
-                scraped_content = re.sub(r'\s+', ' ', text).strip()
-
-                # Calculate quality score based on content length and restaurant indicators
-                content_length = len(scraped_content)
-                if self.tokenizer:
-                    tokens = len(self.tokenizer.encode(scraped_content))
-                else:
-                    tokens = content_length // 4  # Rough estimate
-
-                has_restaurant_indicators = any(word in scraped_content.lower() 
-                                               for word in ["restaurant", "dining", "chef", 
-                                                           "menu", "dish", "food"])
-
-                quality_score = min(1.0, (content_length / 5000) * 0.7 + (1 if has_restaurant_indicators else 0) * 0.3)
-
-                # Add structured data if available
-                structured_data = self._extract_structured_data(html)
-                if structured_data:
-                    scraped_content += "\n\nSTRUCTURED DATA: " + json.dumps(structured_data)
+                # Score the content
+                quality_score = self._score(scraped_content, domain)
 
             except Exception as e:
                 logger.error(f"Error parsing content from {url}: {e}")
@@ -190,7 +213,7 @@ class WebScraper:
         # Prepare result
         result = {
             "url": url,
-            "html": html[:10000] if html else "",  # Limit stored HTML to avoid huge objects
+            "html": html[:self.max_html_cache] if html else "",  # Limit stored HTML size
             "scraped_content": scraped_content,
             "status_code": status_code,
             "error": error,
@@ -200,9 +223,113 @@ class WebScraper:
 
         # Store in cache (only success cases)
         if scraped_content and not error:
-            cache.set(cache_key, result, expire=86400 * 7)  # Cache for 7 days
+            cache.set(cache_key, result, expire=CACHE_EXPIRE_SECONDS)
 
         return result
+
+    def _extract_article_text(self, html):
+        """
+        Extract and clean article text with improved listicle handling
+        """
+        try:
+            # Use readability to locate the main content area
+            doc = Document(html)
+            node = BeautifulSoup(doc.summary(), "lxml")  # Get the core candidate
+
+            # Walk siblings up to a reasonable limit, greedy merge if they
+            # contain restaurant words to avoid listicle truncation
+            queue = deque(node.find_all(recursive=False))
+            text_parts = []
+
+            seen_elements = set()  # Track elements we've already processed
+
+            while queue and len(queue) < 500:  # Safety limit
+                el = queue.popleft()
+
+                # Skip if already processed
+                if id(el) in seen_elements:
+                    continue
+                seen_elements.add(id(el))
+
+                # Skip script and style tags
+                if el.name in ("script", "style"):
+                    continue
+
+                # Process the content
+                txt = el.get_text(" ", strip=True)
+                if txt:
+                    # If it contains restaurant keywords or is part of a list, keep it
+                    if any(kw in txt.lower() for kw in RESTAURANT_KEYWORDS) or el.name == "li":
+                        text_parts.append(txt)
+
+                        # Check next sibling to pick up lists and related content
+                        if el.next_sibling:
+                            queue.append(el.next_sibling)
+
+                        # For lists, add all list items
+                        if el.name in ("ul", "ol"):
+                            for li in el.find_all("li", recursive=False):
+                                if id(li) not in seen_elements:
+                                    queue.append(li)
+
+                        # For div/section containers, check their children
+                        if el.name in ("div", "section", "article"):
+                            for child in el.find_all(recursive=False):
+                                if id(child) not in seen_elements:
+                                    queue.append(child)
+
+            # Clean and join text
+            cleaned = re.sub(r"\s+", " ", " ".join(text_parts)).strip()
+
+            # Add structured data if available
+            structured_data = self._extract_structured_data(html)
+            if structured_data:
+                cleaned += "\n\nSTRUCTURED DATA: " + json.dumps(structured_data)
+
+            return cleaned
+
+        except Exception as e:
+            logger.error(f"Error in _extract_article_text: {e}")
+            # Try a simpler fallback method
+            try:
+                soup = BeautifulSoup(html, "lxml")
+                # Just remove script and style tags
+                for tag in soup(["script", "style"]):
+                    tag.decompose()
+
+                text = soup.get_text(" ", strip=True)
+                return re.sub(r"\s+", " ", text).strip()
+            except:
+                return ""
+
+    def _score(self, text, domain):
+        """
+        Score the relevance and quality of the extracted content
+        """
+        if not text:
+            return 0.0
+
+        # Calculate tokens
+        tokens = len(self.tokenizer.encode(text)) if self.tokenizer else len(text) // 4
+
+        # Check for priority domains
+        is_priority_domain = any(d in domain for d in DOMAINS_ALWAYS_KEEP)
+
+        # Filter out short content unless it's from a priority domain
+        if tokens < MIN_TOKEN_KEEP and not is_priority_domain:
+            return 0.0
+
+        # Check for restaurant-related keywords
+        has_keywords = any(kw in text.lower() for kw in RESTAURANT_KEYWORDS)
+
+        # Add a small boost for priority domains
+        domain_boost = 0.2 if is_priority_domain else 0.0
+
+        # Calculate score based on length and restaurant relevance
+        base_score = min(1.0, (tokens / 7_500) * 0.6 + (1 if has_keywords else 0) * 0.4)
+
+        # Add domain boost but cap at 1.0
+        return min(1.0, base_score + domain_boost)
 
     def _extract_structured_data(self, html):
         """Extract structured data (JSON-LD, schema.org) from HTML"""
@@ -282,79 +409,74 @@ class WebScraper:
 
             pre_filtered.append(result)
 
-        # Second pass: validate domains and gather scraping tasks
-        scraping_tasks = []
+        if not pre_filtered:
+            return []
+
+        # Process domain validations first
         domain_validations = {}
+        validation_tasks = []
 
-        # First, run all domain validations (with a limit to avoid overloading)
-        tasks = []
-        domains_to_validate = set()
+        # Get unique domains
+        unique_domains = {urlparse(result.get("url", "")).netloc for result in pre_filtered}
 
-        for result in pre_filtered:
-            url = result.get("url", "")
-            domain = urlparse(url).netloc
-            domains_to_validate.add(domain)
+        # Create validation tasks
+        validation_sem = asyncio.Semaphore(10)  # Limit concurrent validations
 
-        # Limit to 10 concurrent domain validations
-        semaphore = asyncio.Semaphore(10)
-
-        async def validate_with_semaphore(domain):
-            async with semaphore:
+        async def validate_domain_with_semaphore(domain):
+            async with validation_sem:
                 try:
-                    return domain, await validate_source(domain, self.config)
+                    is_valid = await validate_source(domain, self.config)
+                    return domain, is_valid
                 except Exception as e:
                     logger.error(f"Error validating domain {domain}: {e}")
-                    return domain, True  # Default to accepting on error
+                    # Default to accepting on error
+                    return domain, True
 
-        # Run all domain validations concurrently
-        validation_tasks = [validate_with_semaphore(domain) for domain in domains_to_validate]
+        for domain in unique_domains:
+            validation_tasks.append(validate_domain_with_semaphore(domain))
+
+        # Run validations and store results
         validation_results = await asyncio.gather(*validation_tasks, return_exceptions=True)
 
-        # Process validation results
         for result in validation_results:
-            if isinstance(result, Exception):
-                logger.error(f"Validation error: {result}")
-                continue
-
-            domain, is_valid = result
-            domain_validations[domain] = is_valid
+            if isinstance(result, tuple) and len(result) == 2:
+                domain, is_valid = result
+                domain_validations[domain] = is_valid
 
         # Now create scraping tasks for valid domains
-        for result in pre_filtered:
+        scraping_tasks = []
+        scrape_sem = asyncio.Semaphore(5)  # Limit concurrent scrapes
+
+        async def scrape_with_semaphore(result):
             url = result.get("url", "")
             domain = urlparse(url).netloc
 
             # Skip invalid domains
             if domain in domain_validations and not domain_validations[domain]:
-                continue
+                return None
 
-            # Set reputation on result
+            # Set domain reputation
             result["domain_reputation"] = 1.0 if domain_validations.get(domain, True) else 0.0
 
-            # Add to scraping tasks
-            scraping_tasks.append((result, self.scrape_url(url)))
-
-        # Execute scraping tasks with a limit
-        scrape_semaphore = asyncio.Semaphore(5)
-
-        async def process_scrape_task(task_tuple):
-            result, scrape_task = task_tuple
-            async with scrape_semaphore:
+            # Scrape with semaphore
+            async with scrape_sem:
                 try:
-                    scraped = await scrape_task
+                    scraped = await self.scrape_url(url)
                     if scraped.get("scraped_content") and scraped.get("quality_score", 0) > 0.2:
                         return {**result, **scraped}
                     return None
                 except Exception as e:
-                    logger.error(f"Error scraping {result.get('url')}: {e}")
+                    logger.error(f"Error scraping {url}: {e}")
                     return None
 
-        # Process all scraping tasks safely
-        processing_tasks = [process_scrape_task(task) for task in scraping_tasks]
-        processing_results = await asyncio.gather(*processing_tasks, return_exceptions=True)
+        # Create tasks for all results
+        tasks = [scrape_with_semaphore(result) for result in pre_filtered]
+
+        # Process all tasks
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Filter out errors and None values
-        for result in processing_results:
+        for result in results:
             if result is not None and not isinstance(result, Exception):
                 filtered_results.append(result)
 
