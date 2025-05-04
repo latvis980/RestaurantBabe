@@ -694,107 +694,193 @@ def handle_scrape_test(msg):
 
     def run_async_scraper_test():
         """Run the async scraper test in a new thread"""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        results = loop.run_until_complete(perform_scraper_test(query, msg.chat.id))
-        loop.close()
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            results = loop.run_until_complete(perform_scraper_test(query, msg.chat.id))
+            loop.close()
+        except Exception as e:
+            logger.error(f"Error in scraper test thread: {e}", exc_info=True)
+            bot.send_message(msg.chat.id, f"❌ Error in scraper test: {str(e)}")
 
     # Start the test in a background thread
     thread = threading.Thread(target=run_async_scraper_test)
+    thread.daemon = True  # Make it a daemon thread so it doesn't prevent application shutdown
     thread.start()
 
 async def perform_scraper_test(query, chat_id):
     """
     Perform a scraper test and send results back to Telegram
+
+    Args:
+        query (str): Search query to test
+        chat_id (int): Telegram chat ID to send results to
     """
     
-    # Initialize components
-    from agents.search_agent import BraveSearchAgent
-    from agents.scraper import WebScraper
+    try:
+        # Initialize components
+        from agents.search_agent import BraveSearchAgent
+        from agents.scraper import WebScraper
 
-    search_agent = BraveSearchAgent(config)
-    scraper = WebScraper(config)
+        search_agent = BraveSearchAgent(config)
+        scraper = WebScraper(config)
 
-    # Send status message
-    bot.send_message(chat_id, "🔎 Performing search...")
+        # Send status message
+        bot.send_message(chat_id, "🔎 Performing search...")
 
-    # Get search results
-    search_queries = [query]
-    search_results = search_agent.search(search_queries)
+        # Get search results
+        search_queries = [query]
+        search_results = search_agent.search(search_queries)
 
-    bot.send_message(chat_id, f"📊 Found {len(search_results)} search results. Starting scraping process...")
+        bot.send_message(chat_id, f"📊 Found {len(search_results)} search results. Starting scraping process...")
 
-    # Scrape the search results
-    start_time = time.time()
-    enriched_results = await scraper.filter_and_scrape_results(search_results)
-    elapsed = time.time() - start_time
+        # Debug: Save raw search results before scraping
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            raw_path = f.name
+            json.dump(search_results, f, ensure_ascii=False, indent=2)
 
-    # Create stats message
-    total_content_length = sum(len(r.get('scraped_content', '')) for r in enriched_results)
-    avg_content_length = total_content_length / len(enriched_results) if enriched_results else 0
-    high_quality_count = sum(1 for r in enriched_results if r.get('quality_score', 0) > 0.7)
+        # Prepare results for scraper test - override reputation check temporarily
+        def mock_check_reputation(url, config):
+            return True  # Always return True to bypass reputation filtering
 
-    stats_message = (
-        f"✅ Scraping completed in {elapsed:.2f} seconds\n\n"
-        f"📊 Scraper Stats:\n"
-        f"- Total results: {len(enriched_results)}\n"
-        f"- Total content scraped: {total_content_length:,} characters\n"
-        f"- Average content per result: {avg_content_length:.1f} characters\n"
-        f"- Results with quality score > 0.7: {high_quality_count}\n"
-    )
+        # Save original function for later restoration
+        from utils.source_validator import check_source_reputation
+        original_check = check_source_reputation
 
-    bot.send_message(chat_id, stats_message)
+        # Patch the reputation check to always return True
+        import utils.source_validator
+        utils.source_validator.check_source_reputation = mock_check_reputation
 
-    # Create simplified results for preview
-    simplified_results = []
-    for result in enriched_results:
-        # Create a copy without the HTML (too verbose)
-        simplified = {k: v for k, v in result.items() if k != 'html'}
+        # Scrape the search results with extra verbose logging
+        bot.send_message(chat_id, "🔄 Bypassing reputation filter for test. Starting content scraping...")
 
-        # Truncate scraped_content for preview
-        if 'scraped_content' in simplified:
-            preview = simplified['scraped_content'][:300]
-            simplified['scraped_content'] = f"{preview}... (truncated in preview file)"
+        start_time = time.time()
+        try:
+            # Use more direct approach for testing
+            enriched_results = []
+            for idx, result in enumerate(search_results):
+                try:
+                    # Get HTML directly
+                    url = result.get("url", "")
+                    if not url:
+                        continue
 
-        simplified_results.append(simplified)
+                    # Simple progress update for long lists
+                    if idx % 3 == 0 and idx > 0:
+                        bot.send_message(chat_id, f"⏳ Progress: {idx}/{len(search_results)} URLs processed...")
 
-    # Save results to temporary files
-    with tempfile.TemporaryDirectory() as temp_dir:
-        # Complete file
-        complete_path = Path(temp_dir) / "complete_results.json"
-        with open(complete_path, 'w', encoding='utf-8') as f:
-            json.dump(enriched_results, f, ensure_ascii=False, indent=2)
+                    # Fetch HTML
+                    html = await scraper._fetch_html(url, max_retries=1)
 
-        # Simplified file
-        simple_path = Path(temp_dir) / "simple_results.json"
-        with open(simple_path, 'w', encoding='utf-8') as f:
-            json.dump(simplified_results, f, ensure_ascii=False, indent=2)
+                    # Process content
+                    if html:
+                        clean_text, source_name = scraper._extract_clean_text(html, url)
+                        result["html"] = html[:1000] + "..." if len(html) > 1000 else html
+                        result["scraped_content"] = clean_text
+                        result["source_name"] = source_name
+                        result["quality_score"] = 0.8  # Default for test
+                        enriched_results.append(result)
+                except Exception as e:
+                    bot.send_message(chat_id, f"⚠️ Error scraping {url}: {str(e)[:100]}...")
+                    continue
+        finally:
+            # Restore original function
+            utils.source_validator.check_source_reputation = original_check
 
-        # Sample file with just 3 results for quick viewing
-        sample_path = Path(temp_dir) / "sample_results.json"
-        with open(sample_path, 'w', encoding='utf-8') as f:
-            json.dump(simplified_results[:3], f, ensure_ascii=False, indent=2)
+        elapsed = time.time() - start_time
 
-        # Send files to Telegram
-        bot.send_message(chat_id, "📁 Sending result files...")
+        # Create stats message
+        total_content_length = sum(len(r.get('scraped_content', '')) for r in enriched_results)
+        avg_content_length = total_content_length / len(enriched_results) if enriched_results else 0
 
-        with open(sample_path, 'rb') as file:
-            bot.send_document(chat_id, file, caption="Sample (3 results)")
-
-        with open(simple_path, 'rb') as file:
-            bot.send_document(chat_id, file, caption="Simplified results (all)")
-
-        with open(complete_path, 'rb') as file:
-            bot.send_document(chat_id, file, caption="Complete results (all data)")
-
-        # Add a follow-up message with next steps
-        bot.send_message(
-            chat_id, 
-            "🔍 Review these files to see what content is being passed to the list_analyzer.\n\n"
-            "You can use these results to debug and improve your prompts and filters."
+        stats_message = (
+            f"✅ Scraping completed in {elapsed:.2f} seconds\n\n"
+            f"📊 Scraper Stats:\n"
+            f"- Total search results: {len(search_results)}\n"
+            f"- Successfully scraped: {len(enriched_results)}\n"
+            f"- Total content scraped: {total_content_length:,} characters\n"
+            f"- Average content per result: {avg_content_length:.1f} characters\n"
         )
 
-    return enriched_results
+        bot.send_message(chat_id, stats_message)
+
+        # Create simplified results for preview
+        simplified_results = []
+        for result in enriched_results:
+            # Create a copy without the HTML (too verbose)
+            simplified = {k: v for k, v in result.items() if k != 'html'}
+
+            # Truncate scraped_content for preview
+            if 'scraped_content' in simplified:
+                preview = simplified['scraped_content'][:300]
+                simplified['scraped_content'] = f"{preview}... (truncated in preview file)"
+
+            simplified_results.append(simplified)
+
+        # Save results to temporary files
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Raw search results (before scraping)
+            with open(raw_path, 'r') as f:
+                raw_results = json.load(f)
+
+            raw_path_in_temp = Path(temp_dir) / "raw_search_results.json"
+            with open(raw_path_in_temp, 'w', encoding='utf-8') as f:
+                json.dump(raw_results, f, ensure_ascii=False, indent=2)
+
+            # Complete file
+            complete_path = Path(temp_dir) / "complete_results.json"
+            with open(complete_path, 'w', encoding='utf-8') as f:
+                json.dump(enriched_results, f, ensure_ascii=False, indent=2)
+
+            # Simplified file
+            simple_path = Path(temp_dir) / "simple_results.json"
+            with open(simple_path, 'w', encoding='utf-8') as f:
+                json.dump(simplified_results, f, ensure_ascii=False, indent=2)
+
+            # Sample file with just 3 results for quick viewing
+            sample_results = simplified_results[:3] if len(simplified_results) >= 3 else simplified_results
+            sample_path = Path(temp_dir) / "sample_results.json"
+            with open(sample_path, 'w', encoding='utf-8') as f:
+                json.dump(sample_results, f, ensure_ascii=False, indent=2)
+
+            # Send files to Telegram
+            bot.send_message(chat_id, "📁 Sending result files...")
+
+            with open(raw_path_in_temp, 'rb') as file:
+                bot.send_document(chat_id, file, caption="Raw search results (before scraping)")
+
+            if sample_results:
+                with open(sample_path, 'rb') as file:
+                    bot.send_document(chat_id, file, caption="Sample (up to 3 results)")
+
+            if simplified_results:
+                with open(simple_path, 'rb') as file:
+                    bot.send_document(chat_id, file, caption="Simplified results (all)")
+
+            if enriched_results:
+                with open(complete_path, 'rb') as file:
+                    bot.send_document(chat_id, file, caption="Complete results (all data)")
+
+            # Add a follow-up message with next steps
+            bot.send_message(
+                chat_id, 
+                "🔍 Review these files to see what content is being passed to the list_analyzer.\n\n"
+                "You can use these results to debug and improve your prompts and filters."
+            )
+
+        # Clean up
+        try:
+            os.unlink(raw_path)
+        except:
+            pass
+
+        return enriched_results
+
+    except Exception as e:
+        error_message = f"❌ Error in scraper test: {str(e)}"
+        logger.error(error_message, exc_info=True)
+        bot.send_message(chat_id, error_message)
+        return []
 
 @bot.message_handler(commands=["add_admin"])
 def handle_add_admin(msg):
