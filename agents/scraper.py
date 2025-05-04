@@ -24,7 +24,11 @@ class WebScraper:
     def __init__(self, config):
         self.config = config
         self.timeout = 15  # seconds
-        self.tokenizer = tiktoken.get_encoding("cl100k_base")  # OpenAI's tokenizer
+        try:
+            self.tokenizer = tiktoken.get_encoding("cl100k_base")  # OpenAI's tokenizer
+        except Exception as e:
+            logger.warning(f"Failed to load tokenizer: {e}")
+            self.tokenizer = None
 
         # User agents for rotation
         self.user_agents = [
@@ -163,8 +167,14 @@ class WebScraper:
 
                 # Calculate quality score based on content length and restaurant indicators
                 content_length = len(scraped_content)
-                tokens = len(self.tokenizer.encode(scraped_content))
-                has_restaurant_indicators = any(word in scraped_content.lower() for word in ["restaurant", "dining", "chef", "menu", "dish", "food"])
+                if self.tokenizer:
+                    tokens = len(self.tokenizer.encode(scraped_content))
+                else:
+                    tokens = content_length // 4  # Rough estimate
+
+                has_restaurant_indicators = any(word in scraped_content.lower() 
+                                               for word in ["restaurant", "dining", "chef", 
+                                                           "menu", "dish", "food"])
 
                 quality_score = min(1.0, (content_length / 5000) * 0.7 + (1 if has_restaurant_indicators else 0) * 0.3)
 
@@ -284,10 +294,10 @@ class WebScraper:
             if domain not in validated_domains:
                 reputation_score = await validate_source(domain, self.config)
                 validated_domains.add(domain)
-                result["domain_reputation"] = reputation_score
+                result["domain_reputation"] = 1.0 if reputation_score else 0.0
 
                 # Skip low reputation sources
-                if reputation_score < 0.3:
+                if not reputation_score:
                     continue
 
             # Create scraping task
@@ -305,12 +315,13 @@ class WebScraper:
 
         # Merge scraped content with original results
         for i, result in enumerate(pre_filtered[:len(scraped_results)]):
-            scraped = scraped_results[i]
+            if i < len(scraped_results):  # Safety check
+                scraped = scraped_results[i]
 
-            # Only include results with actual content
-            if scraped.get("scraped_content") and scraped.get("quality_score", 0) > 0.2:
-                merged_result = {**result, **scraped}
-                filtered_results.append(merged_result)
+                # Only include results with actual content
+                if scraped.get("scraped_content") and scraped.get("quality_score", 0) > 0.2:
+                    merged_result = {**result, **scraped}
+                    filtered_results.append(merged_result)
 
         # Sort by quality score
         filtered_results.sort(key=lambda x: x.get("quality_score", 0), reverse=True)

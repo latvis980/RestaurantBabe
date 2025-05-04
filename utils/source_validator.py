@@ -127,7 +127,7 @@ async def _ai_evaluate_source(url: str, content: str, config) -> bool:
         - Content farm sites with generic recommendations
         - Sites with excessive advertisements and little editorial oversight
         - social media platforms with user-generated content (like Facebook, Instagram)
-        
+
         Respond ONLY with "yes" for reputable sources or "no" for non-reputable sources.
         """)
 
@@ -228,3 +228,6 @@ async def evaluate_source_quality(url: str, config) -> bool:
     store_source_evaluation(url, is_reputable, config)
 
     return is_reputable
+
+# Add this alias to fix the import in scraper.py
+validate_source = evaluate_source_quality
