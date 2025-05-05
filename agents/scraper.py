@@ -1,515 +1,479 @@
-# agents/scraper.py
-import httpx
-import asyncio
-import time
-import json
-import re
-import logging
-import random
-from collections import deque
-from bs4 import BeautifulSoup
+# agents/scraper.py  – patched for May 2025 stack
+import asyncio, logging, time, re, json
+from typing import Dict, List, Any, Optional
 from urllib.parse import urlparse
-from langchain_core.tracers.context import tracing_v2_enabled
-from diskcache import Cache
-import tiktoken
+
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from readability import Document
-from contextlib import asynccontextmanager, suppress
+from bs4 import BeautifulSoup
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.tracers.context import tracing_v2_enabled
+
 from utils.source_validator import validate_source
+from utils.async_utils import track_async_task
+from utils.debug_utils import dump_chain_state
 
-# Set up logging
-logger = logging.getLogger(__name__)
-
-# Initialize cache
-cache = Cache("./http_cache")
-
-# Constants
-CACHE_EXPIRE_SECONDS = 60 * 60 * 24 * 7   # 7 days
-MIN_TOKEN_KEEP = 50                       # Lower threshold
-DOMAINS_ALWAYS_KEEP = ("michelin.", "resy.", "worlds50", "theinfatuation.", "guide.", "culinarybackstreets.")
-RESTAURANT_KEYWORDS = ("restaurant", "chef", "menu", "dish", "food", "dining", "eat", "cuisine", "bistro", "cafe", "bar")
+logger = logging.getLogger("restaurant-recommender.scraper")
 
 class WebScraper:
     def __init__(self, config):
         self.config = config
-        self.timeout = 15  # seconds
-        self.max_html_cache = 100_000  # Increased from 10,000 to 100,000 bytes
 
-        try:
-            self.tokenizer = tiktoken.get_encoding("cl100k_base")  # OpenAI's tokenizer
-        except Exception as e:
-            logger.warning(f"Failed to load tokenizer: {e}")
-            self.tokenizer = None
+        self.model = ChatOpenAI(
+            model=config.OPENAI_MODEL,
+            temperature=0.2,
+        )
 
-        # User agents for rotation
-        self.user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-            "Mozilla/5.0 (iPad; CPU OS 12_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.1 Mobile/15E148 Safari/604.1",
-        ]
+        self.eval_system_prompt = """
+        You are an expert at evaluating web content about restaurants.
+        Your task is to analyze if a web page contains a curated list of restaurants or restaurant recommendations.
 
-        # Default headers
-        self.default_headers = {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "DNT": "1"
+        VALID CONTENT (score > 0.7):
+        - Curated lists of multiple restaurants (e.g., "Top 10 restaurants in Paris")
+        - Collections of restaurants in professional restaurant guides
+        - Food critic reviews covering multiple restaurants
+        - Articles in reputable media discussing various dining options in an area
+
+        NOT VALID CONTENT (score < 0.3):
+        - Official website of a single restaurant
+        - Individual restaurant menus
+        - Single restaurant reviews
+        - Social media posts about individual dining experiences
+        - Forum/Reddit discussions without professional curation
+        - Hotel booking sites
+
+        SCORING CRITERIA:
+        - Multiple restaurants mentioned (essential)
+        - Professional curation or expertise evident
+        - Detailed descriptions of restaurants/cuisine
+        - Location information for multiple restaurants
+        - Price or quality indications for multiple venues
+
+        FORMAT:
+        Respond with a JSON object containing:
+        {
+          "is_restaurant_list": true/false,
+          "restaurant_count": estimated number of restaurants mentioned,
+          "content_quality": 0.0-1.0 score (how useful for recommendations),
+          "source_type": "guide", "blog", "news", "aggregator", "official", "social", "other",
+          "reasoning": "brief explanation of your evaluation"
+        }
+        """
+
+        self.eval_prompt = ChatPromptTemplate.from_messages(
+            [("system", self.eval_system_prompt),
+             ("human", "URL: {url}\n\nPage Title: {title}\n\nContent Preview:\n{preview}")]
+        )
+        self.eval_chain = self.eval_prompt | self.model
+
+        self.browser_config = {
+            "headless": True,
+            "timeout": 30_000,
+            "user_agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/123.0.0.0 Safari/537.36"
+            ),
         }
 
-        # Excluded domains (in addition to config)
-        self.excluded_domains = set(config.EXCLUDED_RESTAURANT_SOURCES + [
-            "pinterest.com", 
-            "twitter.com", 
-            "facebook.com", 
-            "instagram.com",
-            "youtube.com"
-        ])
+        self.successful_urls, self.failed_urls = [], []
+        self.filtered_urls, self.invalid_content_urls = [], []
 
-        # Use proxy for retries if configured
-        self.use_proxy = getattr(config, 'USE_PROXY_FOR_RETRY', False)
-        self.proxy_url = getattr(config, 'PROXY_URL', None)
-
-    @asynccontextmanager
-    async def get_client(self, use_proxy=False):
-        """Context manager for httpx client with appropriate settings"""
-        try:
-            kwargs = {
-                "timeout": self.timeout,
-                "follow_redirects": True,
-                "http2": True,
-            }
-
-            # Add proxy if configured and requested
-            if use_proxy and self.proxy_url:
-                kwargs["proxies"] = {"all://": self.proxy_url}
-
-            async with httpx.AsyncClient(**kwargs) as client:
-                yield client
-        except Exception as e:
-            logger.error(f"Error creating httpx client: {e}")
-            # Create a basic client as fallback
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                yield client
-
-    async def _quick_preview(self, client, url):
-        """Return the first 300 chars of visible text (for ranking before full scrape)."""
-        try:
-            headers = self.default_headers.copy()
-            headers["User-Agent"] = random.choice(self.user_agents)
-
-            r = await client.get(url, headers=headers, timeout=5)
-            soup = BeautifulSoup(r.text, "lxml")
-            visible = soup.get_text(" ", strip=True)
-            return visible[:300]
-        except Exception as e:
-            logger.error(f"Error in quick preview for {url}: {e}")
-            return ""
-
-    async def scrape_url(self, url, max_retries=2):
+    # -------------------------------------------------
+    # Public orchestrator
+    async def filter_and_scrape_results(
+        self, search_results: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """
-        Scrape content from a URL with retries and caching
+        Main entry point: Filter search results and scrape valid content
 
         Args:
-            url (str): URL to scrape
-            max_retries (int): Maximum number of retry attempts
+            search_results: List of search result dictionaries with URLs
 
         Returns:
-            dict: Scraped content and metadata
+            List of enriched results with scraped content
         """
-        # Normalize URL
-        url = url.strip()
+        with tracing_v2_enabled(project_name="restaurant-recommender"):
+            start_time = time.time()
+            logger.info(f"Starting to process {len(search_results)} search results")
 
-        # Check cache first
-        cache_key = f"url:{url}"
-        cached_response = cache.get(cache_key)
-        if cached_response:
-            return cached_response
+            # Reset trackers
+            self.successful_urls = []
+            self.failed_urls = []
+            self.filtered_urls = []
+            self.invalid_content_urls = []
 
-        # Parse domain to check exclusions
-        domain = urlparse(url).netloc.lower()
-        if any(excluded in domain for excluded in self.excluded_domains):
-            return {
-                "url": url,
-                "html": "",
-                "scraped_content": "",
-                "status_code": None,
-                "error": "Excluded domain",
-                "quality_score": 0.0
-            }
+            # Process results in batches to avoid overwhelming the system
+            enriched_results = []
+            batch_size = 5
 
-        # Select random user agent
-        headers = self.default_headers.copy()
-        headers["User-Agent"] = random.choice(self.user_agents)
+            for i in range(0, len(search_results), batch_size):
+                batch = search_results[i:i+batch_size]
+                batch_tasks = [self._process_search_result(result) for result in batch]
+                batch_results = await asyncio.gather(*batch_tasks)
 
-        error = None
-        status_code = None
-        html = ""
-        backoff = 1
+                # Filter out None results (failed processing)
+                valid_results = [r for r in batch_results if r is not None]
+                enriched_results.extend(valid_results)
 
-        # First try without proxy
-        async with self.get_client() as client:
-            for attempt in range(max_retries):
-                try:
-                    response = await client.get(url, headers=headers, timeout=self.timeout)
-                    status_code = response.status_code
+                # Small delay between batches to be respectful to servers
+                await asyncio.sleep(1)
 
-                    if status_code == 200:
-                        html = response.text
-                        break
-                    else:
-                        logger.warning(f"HTTP error {status_code} for {url}")
-                        error = f"HTTP error {status_code}"
-                except httpx.TimeoutException:
-                    error = "Timeout"
-                    logger.warning(f"Timeout for {url}")
-                except Exception as e:
-                    error = str(e)
-                    logger.error(f"Error fetching {url}: {e}")
+            elapsed = time.time() - start_time
 
-                # If we still need to retry, use exponential backoff
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(backoff)
-                    backoff *= 2  # exponential backoff
+            # Log comprehensive statistics
+            logger.info(f"Scraping completed in {elapsed:.2f} seconds")
+            logger.info(f"Total results: {len(search_results)}")
+            logger.info(f"Successfully scraped: {len(self.successful_urls)}")
+            logger.info(f"Failed to scrape: {len(self.failed_urls)}")
+            logger.info(f"Filtered by source validator: {len(self.filtered_urls)}")
+            logger.info(f"Filtered by content evaluator: {len(self.invalid_content_urls)}")
+            logger.info(f"Final enriched results: {len(enriched_results)}")
 
-        # If failed with regular client, try with proxy if configured
-        if not html and self.use_proxy and self.proxy_url:
-            logger.info(f"Retrying {url} with proxy")
-            async with self.get_client(use_proxy=True) as proxy_client:
-                try:
-                    response = await proxy_client.get(url, headers=headers, timeout=self.timeout)
-                    status_code = response.status_code
+            # Dump state for debugging
+            dump_chain_state("scraper_results", {
+                "total_results": len(search_results),
+                "successful_urls": self.successful_urls,
+                "failed_urls": self.failed_urls,
+                "filtered_urls": self.filtered_urls,
+                "invalid_content_urls": self.invalid_content_urls,
+                "final_count": len(enriched_results)
+            })
 
-                    if status_code == 200:
-                        html = response.text
-                        error = None
-                    else:
-                        error = f"HTTP error {status_code} (proxy)"
-                except Exception as e:
-                    error = f"Proxy error: {str(e)}"
+            return enriched_results
 
-        # Extract and clean content
-        scraped_content = ""
-        quality_score = 0.0
+    # -------------------------------------------------
+    # Internal helpers
+    async def _process_search_result(self, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Process a single search result through the full pipeline
 
-        if html:
-            try:
-                # Extract text using our improved method
-                scraped_content = self._extract_article_text(html)
+        Args:
+            result: Search result dictionary with URL
 
-                # Score the content
-                quality_score = self._score(scraped_content, domain)
+        Returns:
+            Enriched result dictionary or None if processing failed
+        """
+        url = result.get("url")
+        if not url:
+            return None
 
-            except Exception as e:
-                logger.error(f"Error parsing content from {url}: {e}")
-                error = f"Parsing error: {str(e)}"
+        # 1. domain reputation
+        source_domain = self._extract_domain(url)
+        result["source_domain"] = source_domain
+        source_validation = validate_source(source_domain, self.config)
+        if not source_validation["is_valid"]:
+            logger.info(f"Filtered URL by source validation: {url}")
+            self.filtered_urls.append(url)
+            return None
 
-        # Prepare result
+        # 2. fetch html
+        fetch_result = await self.fetch_url(url)
+        if fetch_result.get("error"):
+            logger.warning(f"Failed to fetch URL: {url}, Error: {fetch_result['error']}")
+            self.failed_urls.append(url)
+            return None
+
+        # 3. AI evaluation
+        evaluation = await self._evaluate_content(
+            url,
+            fetch_result.get("title", ""),
+            fetch_result.get("content_preview", ""),
+        )
+        if not (
+            evaluation.get("is_restaurant_list")
+            and evaluation.get("content_quality", 0) > 0.5
+        ):
+            logger.info(f"Filtered URL by content evaluation: {url}")
+            self.invalid_content_urls.append(url)
+            return None
+
+        # 4. text extraction
+        processed_content = await self._process_content(fetch_result.get("html", ""))
+
+        # 5. pack result
+        enriched_result = {
+            **result,
+            "scraped_title": fetch_result.get("title", ""),
+            "scraped_content": processed_content,
+            "content_length": len(processed_content),
+            "source_reputation": source_validation.get("reputation_score", 0.5),
+            "quality_score": evaluation.get("content_quality", 0.0),
+            "restaurant_count": evaluation.get("restaurant_count", 0),
+            "timestamp": time.time(),
+        }
+        self.successful_urls.append(url)
+        logger.info(f"Successfully processed: {url}")
+        return enriched_result
+
+    async def fetch_url(self, url: str) -> Dict[str, Any]:
+        """
+        Fetch a URL using Playwright
+
+        Args:
+            url: URL to fetch
+
+        Returns:
+            Dictionary with HTML content and metadata
+        """
+        logger.info(f"Fetching URL: {url}")
         result = {
             "url": url,
-            "html": html[:self.max_html_cache] if html else "",  # Limit stored HTML size
-            "scraped_content": scraped_content,
-            "status_code": status_code,
-            "error": error,
-            "quality_score": quality_score,
-            "scraped_at": time.time()
+            "status_code": None,
+            "html": "",
+            "title": "",
+            "content_preview": "",
+            "error": None,
+            "content_length": 0
         }
 
-        # Store in cache (only success cases)
-        if scraped_content and not error:
-            cache.set(cache_key, result, expire=CACHE_EXPIRE_SECONDS)
+        try:
+            async with async_playwright() as p:
+                # Launch Playwright browser with better configuration for 1.45
+                browser = await p.chromium.launch(
+                    headless=self.browser_config['headless']
+                )
+
+                # Create context with additional options for 1.45
+                context = await browser.new_context(
+                    user_agent=self.browser_config['user_agent'],
+                    viewport={"width": 1280, "height": 800},
+                    locale="en-US",
+                    timezone_id="Europe/London",
+                    has_touch=False
+                )
+
+                # Set up page with improved error handling
+                page = await context.new_page()
+                page.set_default_timeout(self.browser_config['timeout'])
+
+                # Configure navigation and wait options (new in 1.45)
+                navigation_options = {
+                    "wait_until": "domcontentloaded",
+                    "timeout": self.browser_config['timeout'],
+                    "referer": "https://www.google.com/",
+                }
+
+                # Navigate to the URL with better options
+                response = await page.goto(url, **navigation_options)
+                result["status_code"] = response.status if response else 0
+
+                # Improved content loading - wait for network idle
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=5000)
+                except PlaywrightTimeoutError:
+                    # Continue anyway, many pages never reach network idle
+                    pass
+
+                # Get page content with better techniques
+                result["html"] = await page.content()
+                result["title"] = await page.title()
+
+                # Get a content preview using improved JavaScript evaluation
+                try:
+                    content_text = await page.evaluate('''() => {
+                        // Get visible text only
+                        function getVisibleText(node) {
+                            if (node.nodeType === Node.TEXT_NODE) {
+                                return node.textContent || "";
+                            }
+
+                            const style = window.getComputedStyle(node);
+                            if (style && (style.display === "none" || style.visibility === "hidden")) {
+                                return "";
+                            }
+
+                            let text = "";
+                            for (let child of node.childNodes) {
+                                if (child.nodeType === Node.TEXT_NODE) {
+                                    text += child.textContent || "";
+                                } else if (child.nodeType === Node.ELEMENT_NODE) {
+                                    text += getVisibleText(child);
+                                }
+                            }
+                            return text;
+                        }
+
+                        // Use main content area if available
+                        const mainContent = document.querySelector('main') || 
+                                          document.querySelector('article') || 
+                                          document.querySelector('.content') || 
+                                          document.body;
+
+                        return getVisibleText(mainContent).trim().substring(0, 2000);
+                    }''')
+                    result["content_preview"] = content_text
+                except Exception as e:
+                    # Fallback to simpler extraction
+                    content_text = await page.evaluate('document.body.innerText')
+                    result["content_preview"] = content_text[:2000] if content_text else ""
+
+                # Extract content length for logging
+                result["content_length"] = len(result["html"])
+
+                # Take screenshot for debugging if enabled
+                if getattr(self.config, 'SAVE_SCREENSHOTS', False):
+                    screenshot_dir = "debug/screenshots"
+                    os.makedirs(screenshot_dir, exist_ok=True)
+                    safe_filename = re.sub(r'[^a-zA-Z0-9]', '_', url)[:100]
+                    await page.screenshot(path=f"{screenshot_dir}/{safe_filename}.png")
+
+                # Clean close
+                await context.close()
+                await browser.close()
+
+        except PlaywrightTimeoutError:
+            result["error"] = "Timeout error"
+            logger.warning(f"Timeout fetching URL: {url}")
+        except Exception as e:
+            result["error"] = str(e)
+            logger.warning(f"Error fetching URL: {url}, Error: {str(e)}")
 
         return result
 
-    def _extract_article_text(self, html):
+    async def _evaluate_content(self, url: str, title: str, preview: str) -> Dict[str, Any]:
         """
-        Extract and clean article text with improved listicle handling
-        """
-        try:
-            # Use readability to locate the main content area
-            doc = Document(html)
-            node = BeautifulSoup(doc.summary(), "lxml")  # Get the core candidate
-
-            # Walk siblings up to a reasonable limit, greedy merge if they
-            # contain restaurant words to avoid listicle truncation
-            queue = deque(node.find_all(recursive=False))
-            text_parts = []
-
-            seen_elements = set()  # Track elements we've already processed
-
-            while queue and len(queue) < 500:  # Safety limit
-                el = queue.popleft()
-
-                # Skip if already processed
-                if id(el) in seen_elements:
-                    continue
-                seen_elements.add(id(el))
-
-                # Skip script and style tags
-                if el.name in ("script", "style"):
-                    continue
-
-                # Process the content
-                txt = el.get_text(" ", strip=True)
-                if txt:
-                    # If it contains restaurant keywords or is part of a list, keep it
-                    if any(kw in txt.lower() for kw in RESTAURANT_KEYWORDS) or el.name == "li":
-                        text_parts.append(txt)
-
-                        # Check next sibling to pick up lists and related content
-                        if el.next_sibling:
-                            queue.append(el.next_sibling)
-
-                        # For lists, add all list items
-                        if el.name in ("ul", "ol"):
-                            for li in el.find_all("li", recursive=False):
-                                if id(li) not in seen_elements:
-                                    queue.append(li)
-
-                        # For div/section containers, check their children
-                        if el.name in ("div", "section", "article"):
-                            for child in el.find_all(recursive=False):
-                                if id(child) not in seen_elements:
-                                    queue.append(child)
-
-            # Clean and join text
-            cleaned = re.sub(r"\s+", " ", " ".join(text_parts)).strip()
-
-            # Add structured data if available
-            structured_data = self._extract_structured_data(html)
-            if structured_data:
-                cleaned += "\n\nSTRUCTURED DATA: " + json.dumps(structured_data)
-
-            return cleaned
-
-        except Exception as e:
-            logger.error(f"Error in _extract_article_text: {e}")
-            # Try a simpler fallback method
-            try:
-                soup = BeautifulSoup(html, "lxml")
-                # Just remove script and style tags
-                for tag in soup(["script", "style"]):
-                    tag.decompose()
-
-                text = soup.get_text(" ", strip=True)
-                return re.sub(r"\s+", " ", text).strip()
-            except:
-                return ""
-
-    def _score(self, text, domain):
-        """
-        Score the relevance and quality of the extracted content
-        """
-        if not text:
-            return 0.0
-
-        # Calculate tokens
-        tokens = len(self.tokenizer.encode(text)) if self.tokenizer else len(text) // 4
-
-        # Check for priority domains
-        is_priority_domain = any(d in domain for d in DOMAINS_ALWAYS_KEEP)
-
-        # Filter out short content unless it's from a priority domain
-        if tokens < MIN_TOKEN_KEEP and not is_priority_domain:
-            return 0.0
-
-        # Check for restaurant-related keywords
-        has_keywords = any(kw in text.lower() for kw in RESTAURANT_KEYWORDS)
-
-        # Add a small boost for priority domains
-        domain_boost = 0.2 if is_priority_domain else 0.0
-
-        # Calculate score based on length and restaurant relevance
-        base_score = min(1.0, (tokens / 7_500) * 0.6 + (1 if has_keywords else 0) * 0.4)
-
-        # Add domain boost but cap at 1.0
-        return min(1.0, base_score + domain_boost)
-
-    def _extract_structured_data(self, html):
-        """Extract structured data (JSON-LD, schema.org) from HTML"""
-        structured_data = {}
-
-        try:
-            soup = BeautifulSoup(html, "lxml")
-
-            # Look for JSON-LD
-            for script in soup.find_all("script", type="application/ld+json"):
-                with suppress(Exception):
-                    data = json.loads(script.string)
-                    if data:
-                        if isinstance(data, list):
-                            for item in data:
-                                if item.get("@type") in ["Restaurant", "LocalBusiness", "FoodEstablishment"]:
-                                    structured_data = item
-                                    break
-                        elif data.get("@type") in ["Restaurant", "LocalBusiness", "FoodEstablishment"]:
-                            structured_data = data
-                            break
-        except Exception as e:
-            logger.error(f"Error extracting structured data: {e}")
-
-        return structured_data
-
-    async def scrape_search_results(self, search_results):
-        """
-        Scrape content from search results
+        Evaluate if the content is a restaurant list using AI
 
         Args:
-            search_results (list): List of search result dictionaries
+            url: URL of the page
+            title: Page title
+            preview: Content preview
 
         Returns:
-            list: Search results with scraped content
-        """
-        with tracing_v2_enabled(project_name="restaurant-recommender"):
-            # Validate and filter search results
-            filtered_results = await self.filter_and_scrape_results(search_results)
-            return filtered_results
-
-    async def filter_and_scrape_results(self, search_results):
-        """
-        Filter and scrape search results with domain validation
-
-        Args:
-            search_results (list): List of search result dictionaries
-
-        Returns:
-            list: Filtered and scraped search results
-        """
-        filtered_results = []
-
-        # First pass: quick filter before scraping
-        pre_filtered = []
-        seen_urls = set()
-
-        for result in search_results:
-            url = result.get("url", "")
-            if not url or url in seen_urls:
-                continue
-
-            seen_urls.add(url)
-
-            # Check domain against exclusion list
-            domain = urlparse(url).netloc
-            if any(excluded in domain for excluded in self.excluded_domains):
-                continue
-
-            # Check title and description for relevance
-            title = result.get("title", "").lower()
-            description = result.get("description", "").lower()
-
-            # Skip obvious non-restaurant results
-            if any(word in title for word in ["login", "sign up", "privacy policy", "terms of service"]):
-                continue
-
-            pre_filtered.append(result)
-
-        if not pre_filtered:
-            return []
-
-        # Process domain validations first
-        domain_validations = {}
-        validation_tasks = []
-
-        # Get unique domains
-        unique_domains = {urlparse(result.get("url", "")).netloc for result in pre_filtered}
-
-        # Create validation tasks
-        validation_sem = asyncio.Semaphore(10)  # Limit concurrent validations
-
-        async def validate_domain_with_semaphore(domain):
-            async with validation_sem:
-                try:
-                    is_valid = await validate_source(domain, self.config)
-                    return domain, is_valid
-                except Exception as e:
-                    logger.error(f"Error validating domain {domain}: {e}")
-                    # Default to accepting on error
-                    return domain, True
-
-        for domain in unique_domains:
-            validation_tasks.append(validate_domain_with_semaphore(domain))
-
-        # Run validations and store results
-        validation_results = await asyncio.gather(*validation_tasks, return_exceptions=True)
-
-        for result in validation_results:
-            if isinstance(result, tuple) and len(result) == 2:
-                domain, is_valid = result
-                domain_validations[domain] = is_valid
-
-        # Now create scraping tasks for valid domains
-        scraping_tasks = []
-        scrape_sem = asyncio.Semaphore(5)  # Limit concurrent scrapes
-
-        async def scrape_with_semaphore(result):
-            url = result.get("url", "")
-            domain = urlparse(url).netloc
-
-            # Skip invalid domains
-            if domain in domain_validations and not domain_validations[domain]:
-                return None
-
-            # Set domain reputation
-            result["domain_reputation"] = 1.0 if domain_validations.get(domain, True) else 0.0
-
-            # Scrape with semaphore
-            async with scrape_sem:
-                try:
-                    scraped = await self.scrape_url(url)
-                    if scraped.get("scraped_content") and scraped.get("quality_score", 0) > 0.2:
-                        return {**result, **scraped}
-                    return None
-                except Exception as e:
-                    logger.error(f"Error scraping {url}: {e}")
-                    return None
-
-        # Create tasks for all results
-        tasks = [scrape_with_semaphore(result) for result in pre_filtered]
-
-        # Process all tasks
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Filter out errors and None values
-        for result in results:
-            if result is not None and not isinstance(result, Exception):
-                filtered_results.append(result)
-
-        # Sort by quality score
-        filtered_results.sort(key=lambda x: x.get("quality_score", 0), reverse=True)
-
-        return filtered_results
-
-    async def fetch_url(self, url):
-        """
-        Simple method to fetch a URL directly (for testing purposes)
-
-        Args:
-            url (str): URL to fetch
-
-        Returns:
-            dict: Response data
+            Evaluation result with scores
         """
         try:
-            async with self.get_client() as client:
-                headers = self.default_headers.copy()
-                headers["User-Agent"] = self.user_agents[0]
-
-                response = await client.get(url, headers=headers, timeout=self.timeout)
-
-                return {
-                    "url": url,
-                    "status_code": response.status_code,
-                    "content_length": len(response.text),
-                    "content_preview": response.text[:500] + "..." if response.text else ""
-                }
-        except Exception as e:
-            return {
+            response = await self.eval_chain.ainvoke({
                 "url": url,
-                "error": str(e)
+                "title": title,
+                "preview": preview[:1500]  # Trim to avoid token limits
+            })
+
+            # Extract JSON from response
+            content = response.content
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+
+            evaluation = json.loads(content.strip())
+
+            # Log evaluation results
+            is_valid = evaluation.get("is_restaurant_list", False) and evaluation.get("content_quality", 0) > 0.5
+            logger.info(f"Content evaluation for {url}: Valid={is_valid}, Score={evaluation.get('content_quality')}")
+
+            # Return the evaluation
+            return evaluation
+        except Exception as e:
+            logger.error(f"Error evaluating content for {url}: {str(e)}")
+            # Return a conservative default (invalid content)
+            return {
+                "is_restaurant_list": False,
+                "restaurant_count": 0,
+                "content_quality": 0.0,
+                "source_type": "unknown",
+                "reasoning": "Error in evaluation"
             }
+
+    async def _process_content(self, html: str) -> str:
+        """
+        Process HTML content using readability and cleaning
+
+        Args:
+            html: Raw HTML content
+
+        Returns:
+            Cleaned and processed text content
+        """
+        if not html:
+            return ""
+
+        try:
+            # 1. Extract main content with readability
+            doc = Document(html)
+            readable_html = doc.summary()
+            title = doc.title()
+
+            # 2. Parse with BeautifulSoup to clean further
+            soup = BeautifulSoup(readable_html, 'html.parser')
+
+            # 3. Extract text and preserve some structure
+            paragraphs = []
+
+            # Process headings 
+            for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                paragraphs.append(f"HEADING: {heading.get_text().strip()}")
+                heading.extract()  # Remove from soup after extracting
+
+            # Process lists
+            for list_elem in soup.find_all(['ul', 'ol']):
+                list_items = []
+                for item in list_elem.find_all('li'):
+                    item_text = item.get_text().strip()
+                    if item_text:
+                        list_items.append(f"- {item_text}")
+
+                if list_items:
+                    paragraphs.append("\n".join(list_items))
+                list_elem.extract()  # Remove from soup after extracting
+
+            # Process regular paragraphs
+            for para in soup.find_all('p'):
+                text = para.get_text().strip()
+                if text:
+                    paragraphs.append(text)
+
+            # Get any remaining text
+            remaining_text = soup.get_text().strip()
+            if remaining_text:
+                # Split by newlines and filter empty strings
+                lines = [line.strip() for line in remaining_text.split('\n') if line.strip()]
+                paragraphs.extend(lines)
+
+            # Add title at the beginning
+            if title:
+                paragraphs.insert(0, f"TITLE: {title}")
+
+            # Join all paragraphs with double newlines
+            processed_text = "\n\n".join(paragraphs)
+
+            # Clean up extra whitespace
+            processed_text = re.sub(r'\n{3,}', '\n\n', processed_text)
+            processed_text = re.sub(r' {2,}', ' ', processed_text)
+
+            return processed_text
+        except Exception as e:
+            logger.error(f"Error processing content: {str(e)}")
+            # Return a basic text extraction as fallback
+            soup = BeautifulSoup(html, 'html.parser')
+            return soup.get_text(separator='\n\n')
+
+    def _extract_domain(self, url: str) -> str:
+        """Extract domain from URL"""
+        try:
+            parsed = urlparse(url)
+            domain = parsed.netloc
+            # Remove www. prefix if present
+            if domain.startswith('www.'):
+                domain = domain[4:]
+            return domain
+        except Exception:
+            return url
+
+    # -------------------------------------------------
+    # Legacy API compatibility for backward compatibility
+    # -------------------------------------------------
+    async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Legacy API method for backward compatibility
+
+        Args:
+            search_results: List of search result dictionaries with URLs
+
+        Returns:
+            List of enriched results with scraped content
+        """
+        logger.info("Using legacy API scrape_search_results - consider migrating to filter_and_scrape_results")
+        return await self.filter_and_scrape_results(search_results)

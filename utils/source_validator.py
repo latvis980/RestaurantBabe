@@ -1,17 +1,24 @@
 # utils/source_validator.py
-from urllib.parse import urlparse
-import aiohttp
-import random
+import logging
+import json
+import os
 import time
-from typing import Optional, Dict, Any
+import random
+from urllib.parse import urlparse
+from typing import Dict, Any, Optional
 
-from utils.database import find_data, save_data, update_data
-from utils.async_utils import sync_to_async
+import aiohttp
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
+from utils.database import find_data, save_data, update_data
+from utils.async_utils import sync_to_async
+
+logger = logging.getLogger("restaurant-recommender.source_validator")
+
 # Simple in-memory cache with TTL
 _DOMAIN_CACHE: Dict[str, tuple[bool, float]] = {}
+_SOURCE_REPUTATION_CACHE = {}
 
 def _normalize_domain(url: str) -> str:
     """Extract and normalize domain from URL"""
@@ -20,22 +27,73 @@ def _normalize_domain(url: str) -> str:
         domain = domain[4:]
     return domain.rstrip("/")
 
-def check_source_reputation(url: str, config) -> bool:
+def preload_source_reputations(config):
+    """Load source reputation data from file"""
+    global _SOURCE_REPUTATION_CACHE
+
+    try:
+        # Check for source reputation file
+        source_file = os.path.join(os.path.dirname(__file__), "../data/source_reputation.json")
+        if os.path.exists(source_file):
+            with open(source_file, 'r') as f:
+                _SOURCE_REPUTATION_CACHE = json.load(f)
+                logger.info(f"Preloaded reputation data for {len(_SOURCE_REPUTATION_CACHE)} sources")
+    except Exception as e:
+        logger.error(f"Error preloading source reputations: {e}")
+
+def validate_source(domain: str, config) -> Dict[str, Any]:
     """
-    Check if the source is reputable.
-    First checks cache, then database, then defaults to accepting unknown domains.
+    Validate if a source is reputable - synchronous version
+
+    Args:
+        domain: Domain to validate
+        config: Application config
+
+    Returns:
+        Dict with validation results:
+            - is_valid: Boolean indicating if source is valid
+            - reputation_score: Float score from 0.0 to 1.0
+            - reason: String describing reason for validation result
     """
+    # Normalize the domain
+    if domain.startswith("http"):
+        domain = _normalize_domain(domain)
+
+    # Check excluded domains from config
+    if any(excluded in domain for excluded in config.EXCLUDED_RESTAURANT_SOURCES):
+        return {
+            "is_valid": False,
+            "reputation_score": 0.0,
+            "reason": "Domain is in excluded list"
+        }
+
     # For testing purposes or emergencies, bypass all checks
     if getattr(config, 'BYPASS_REPUTATION_CHECK', False):
-        return True
-
-    domain = _normalize_domain(url)
+        return {
+            "is_valid": True,
+            "reputation_score": 1.0,
+            "reason": "Reputation check bypassed by config"
+        }
 
     # Check in-memory cache first (24h TTL)
     if domain in _DOMAIN_CACHE:
         is_reputable, timestamp = _DOMAIN_CACHE[domain]
         if time.time() - timestamp < 86400:  # 24 hours
-            return is_reputable
+            return {
+                "is_valid": is_reputable,
+                "reputation_score": 0.8 if is_reputable else 0.2,
+                "reason": "Based on cached evaluation"
+            }
+
+    # Check preloaded reputation cache
+    if domain in _SOURCE_REPUTATION_CACHE:
+        reputation = _SOURCE_REPUTATION_CACHE[domain]
+        is_valid = reputation.get("score", 0) >= 0.5
+        return {
+            "is_valid": is_valid,
+            "reputation_score": reputation.get("score", 0.5),
+            "reason": reputation.get("reason", "Based on preloaded reputation data")
+        }
 
     # Check database
     try:
@@ -43,13 +101,21 @@ def check_source_reputation(url: str, config) -> bool:
         if record and "is_reputable" in record:
             # Update cache and return result
             _DOMAIN_CACHE[domain] = (record["is_reputable"], time.time())
-            return record["is_reputable"]
+            return {
+                "is_valid": record["is_reputable"],
+                "reputation_score": 0.8 if record["is_reputable"] else 0.2,
+                "reason": "Based on database evaluation"
+            }
     except Exception as e:
-        print(f"Database error in check_source_reputation: {e}")
+        logger.error(f"Database error in validate_source: {e}")
 
     # If not in cache or database, default to accepting
     # We'll evaluate it properly in the background
-    return True
+    return {
+        "is_valid": True,
+        "reputation_score": 0.6,
+        "reason": "New domain, no reputation data available"
+    }
 
 async def _fetch_quick_preview(url: str) -> Optional[str]:
     """Fetch a small preview of the webpage content"""
@@ -92,7 +158,7 @@ async def _fetch_quick_preview(url: str) -> Optional[str]:
                 # Return trimmed preview
                 return content[:5000]
     except Exception as e:
-        print(f"Error fetching preview for {url}: {e}")
+        logger.error(f"Error fetching preview for {url}: {e}")
         return None
 
 async def _ai_evaluate_source(url: str, content: str, config) -> bool:
@@ -100,7 +166,7 @@ async def _ai_evaluate_source(url: str, content: str, config) -> bool:
     try:
         # Initialize the LLM
         model = ChatOpenAI(
-            model="gpt-4o",
+            model="gpt-4o",  # Using GPT-4o as requested
             temperature=0.1,
             api_key=config.OPENAI_API_KEY
         )
@@ -148,7 +214,7 @@ async def _ai_evaluate_source(url: str, content: str, config) -> bool:
         response_text = response.content.lower().strip()
         return "yes" in response_text and "no" not in response_text
     except Exception as e:
-        print(f"Error in AI evaluation for {url}: {e}")
+        logger.error(f"Error in AI evaluation for {url}: {e}")
         # Default to True in case of evaluation error
         return True
 
@@ -180,38 +246,88 @@ def store_source_evaluation(url: str, is_reputable: bool, config) -> None:
             # Create new record
             save_data(config.DB_TABLE_SOURCES, source_data, config)
 
-        print(f"Source evaluation stored for {domain}: {'reputable' if is_reputable else 'not reputable'}")
+        logger.info(f"Source evaluation stored for {domain}: {'reputable' if is_reputable else 'not reputable'}")
     except Exception as e:
-        print(f"Error storing source evaluation: {e}")
+        logger.error(f"Error storing source evaluation: {e}")
 
-def preload_source_reputations(config) -> int:
+def update_source_reputation(domain: str, score: float, reason: str = None):
     """
-    Simplified preload function that just initializes the system.
-    No need to load everything upfront - we'll use the database as needed.
+    Update the reputation score for a domain - used for admin interfaces
+
+    Args:
+        domain: Domain to update
+        score: New reputation score
+        reason: Reason for the score
     """
+    global _SOURCE_REPUTATION_CACHE
+
+    _SOURCE_REPUTATION_CACHE[domain] = {
+        "score": score,
+        "reason": reason or "Manual update"
+    }
+
+    # Optionally save to file
     try:
-        # Just log that we're starting up
-        print("[source_validator] Initialized reputation system")
-        return 0
+        source_file = os.path.join(os.path.dirname(__file__), "../data/source_reputation.json")
+        os.makedirs(os.path.dirname(source_file), exist_ok=True)
+        with open(source_file, 'w') as f:
+            json.dump(_SOURCE_REPUTATION_CACHE, f, indent=2)
     except Exception as e:
-        print(f"[source_validator] preload error: {e}")
-        return 0
+        logger.error(f"Error saving source reputation data: {e}")
 
 @sync_to_async
-async def evaluate_source_quality(url: str, config) -> bool:
+async def evaluate_source_quality(url: str, config) -> Dict[str, Any]:
     """
-    Evaluate source quality using AI.
-    This is the main function that should be called from other components.
+    Evaluate source quality using AI - asynchronous version
+
+    Args:
+        url: URL to evaluate
+        config: Application config
+
+    Returns:
+        Dict with validation results
     """
     domain = _normalize_domain(url)
 
-    # Check cache and database first (fast path)
-    cached_result = check_source_reputation(url, config)
+    # Quick check on excluded domains
+    if any(excluded in domain for excluded in config.EXCLUDED_RESTAURANT_SOURCES):
+        return {
+            "is_valid": False,
+            "reputation_score": 0.0,
+            "reason": "Domain is in excluded list"
+        }
 
-    # For known sources, return immediately
-    in_cache = domain in _DOMAIN_CACHE
-    if in_cache:
-        return cached_result
+    # For testing purposes or emergencies, bypass all checks
+    if getattr(config, 'BYPASS_REPUTATION_CHECK', False):
+        return {
+            "is_valid": True,
+            "reputation_score": 1.0,
+            "reason": "Reputation check bypassed by config"
+        }
+
+    # Check in-memory cache first (24h TTL)
+    if domain in _DOMAIN_CACHE:
+        is_reputable, timestamp = _DOMAIN_CACHE[domain]
+        if time.time() - timestamp < 86400:  # 24 hours
+            return {
+                "is_valid": is_reputable,
+                "reputation_score": 0.8 if is_reputable else 0.2,
+                "reason": "Based on cached evaluation"
+            }
+
+    # Check database
+    try:
+        record = find_data(config.DB_TABLE_SOURCES, {"domain": domain}, config)
+        if record and "is_reputable" in record:
+            # Update cache with DB result
+            _DOMAIN_CACHE[domain] = (record["is_reputable"], time.time())
+            return {
+                "is_valid": record["is_reputable"],
+                "reputation_score": 0.8 if record["is_reputable"] else 0.2,
+                "reason": "Based on database evaluation"
+            }
+    except Exception as e:
+        logger.error(f"Database error in evaluate_source_quality: {e}")
 
     # For unknown sources, fetch content and evaluate
     content = await _fetch_quick_preview(url)
@@ -219,7 +335,11 @@ async def evaluate_source_quality(url: str, config) -> bool:
     # If we can't fetch content, default to accepting
     if not content:
         store_source_evaluation(url, True, config)
-        return True
+        return {
+            "is_valid": True,
+            "reputation_score": 0.6,
+            "reason": "Could not fetch content, defaulting to accept"
+        }
 
     # Use AI to evaluate the source
     is_reputable = await _ai_evaluate_source(url, content, config)
@@ -227,7 +347,8 @@ async def evaluate_source_quality(url: str, config) -> bool:
     # Store the result
     store_source_evaluation(url, is_reputable, config)
 
-    return is_reputable
-
-# Add this alias to fix the import in scraper.py
-validate_source = evaluate_source_quality
+    return {
+        "is_valid": is_reputable,
+        "reputation_score": 0.8 if is_reputable else 0.2,
+        "reason": "Based on AI evaluation"
+    }

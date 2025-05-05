@@ -10,34 +10,32 @@ mistralai>=0.0.7
 psycopg2-binary>=2.9.5
 sqlalchemy>=2.0.0
 
-# Web scraping
+# Web scraping & browsing
 requests
-beautifulsoup4
+beautifulsoup4>=4.12.2
+playwright=1.45
+readability-lxml>=0.8.1
+goose3>=3.1.9
+lxml>=4.9.3,<5.0.0
 
-# Tracing & observability
-langsmith
+# HTTP handling & optimization
+httpx[http2]>=0.24.0
+brotli>=1.0.9
+diskcache>=5.6.1
 
 # Telegram bot
 pyTelegramBotAPI>=4.20.0
 
 # Utilities & config
 python-dotenv
+tiktoken>=0.5.2
+googlemaps>=4.10.0
+
+# Tracing & observability
+langsmith
 
 # Schema validation
 pydantic>=2.0
 
 # Async HTTP
 aiohttp>=3.8.5
-
-# Web scraping & caching
-httpx[http2]>=0.24.0
-brotli>=1.0.9
-diskcache>=5.6.1
-beautifulsoup4>=4.12.2
-tiktoken>=0.5.2
-lxml>=4.9.3,<5.0.0
-readability-lxml>=0.8.1
-
-tiktoken>=0.5.2
-googlemaps>=4.10.0
-
