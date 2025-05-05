@@ -3,7 +3,7 @@ from langchain_core.runnables import RunnableSequence, RunnableLambda
 from langchain_core.tracers.context import tracing_v2_enabled
 import time
 import json
-from utils.database import save_data, ensure_city_table
+from utils.database import save_data
 from utils.debug_utils import dump_chain_state, log_function_call
 
 class LangChainOrchestrator:

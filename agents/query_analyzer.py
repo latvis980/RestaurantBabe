@@ -4,7 +4,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.tracers.context import tracing_v2_enabled
 import json
 import re
-from utils.database import save_data, find_data, ensure_city_table
+from utils.database import save_data, find_data
 
 
 class QueryAnalyzer:
