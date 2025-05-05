@@ -55,8 +55,6 @@ class WebScraper:
         {
           "is_restaurant_list": true/false,
           "restaurant_count": estimated number of restaurants mentioned,
-          "content_quality": 0.0-1.0 score (how useful for recommendations),
-          "source_type": "guide", "blog", "news", "aggregator", "official", "social", "other",
           "reasoning": "brief explanation of your evaluation"
         }
         """
