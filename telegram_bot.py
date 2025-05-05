@@ -179,11 +179,92 @@ async def save_user_pref(uid: int, value: str):
     prefs = user_state.setdefault(uid, {}).setdefault("prefs", [])
     if value not in prefs:
         prefs.append(value)
-        # Use our new simplified function
-        success = await sync_to_async(save_user_prefs)(uid, prefs, config)
+        # Use our async function directly
+        success = await save_user_prefs(uid, prefs, config)
         if not success:
             logger.error(f"Failed to save preference for user {uid}")
 
+async def save_user_prefs(uid: int, prefs: list, config) -> bool:
+    """
+    Save user preferences to database (async-compatible)
+
+    Args:
+        uid: User ID
+        prefs: List of preference strings
+        config: App configuration
+
+    Returns:
+        bool: Success status
+    """
+    try:
+        # Create the data to save
+        data = {
+            "user_id": uid,
+            "preferences": prefs,
+            "timestamp": time.time()
+        }
+
+        # Use async operation with engine.begin()
+        async with engine.begin() as conn:
+            # Check if user already exists
+            result = await conn.execute(
+                USER_PREFS_TABLE.select().where(USER_PREFS_TABLE.c._id == str(uid))
+            )
+            existing = await result.fetchone()
+
+            if existing:
+                # Update existing record
+                await conn.execute(
+                    USER_PREFS_TABLE.update()
+                    .where(USER_PREFS_TABLE.c._id == str(uid))
+                    .values(data=data, timestamp=time.time())
+                )
+            else:
+                # Insert new record
+                await conn.execute(
+                    USER_PREFS_TABLE.insert().values(
+                        _id=str(uid),
+                        data=data,
+                        timestamp=time.time()
+                    )
+                )
+
+        logger.info(f"Saved preferences for user {uid}: {prefs}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error saving user preferences: {e}")
+        return False
+
+
+async def get_user_prefs(uid: int, config) -> list:
+    """
+    Get user preferences from database (async-compatible)
+
+    Args:
+        uid: User ID
+        config: App configuration
+
+    Returns:
+        list: User preferences
+    """
+    try:
+        async with engine.begin() as conn:
+            result = await conn.execute(
+                USER_PREFS_TABLE.select().where(USER_PREFS_TABLE.c._id == str(uid))
+            )
+            row = await result.fetchone()
+
+            if row and row[1]:  # Check if data exists
+                data = row[1]  # Get the 'data' column
+                if isinstance(data, dict) and "preferences" in data:
+                    return data["preferences"]
+
+        return []  # Return empty list if no preferences found
+
+    except Exception as e:
+        logger.error(f"Error getting user preferences: {e}")
+        return []
 
 def update_user_location(uid: int, result):
     """Update the user's last known location based on query results"""
@@ -341,8 +422,8 @@ async def chunk_and_send(chat_id: int, text: str):
 async def load_user_data(uid: int):
     """Load user preferences from database"""
     try:
-        # Get user preferences from our new simplified function
-        prefs = get_user_prefs(uid, config)
+        # Get user preferences from our async function
+        prefs = await get_user_prefs(uid, config)
         if prefs:
             user_state.setdefault(uid, {})["prefs"] = prefs
             logger.info(f"Loaded preferences for user {uid}: {prefs}")
