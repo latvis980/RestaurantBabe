@@ -11,7 +11,7 @@ import aiohttp
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from utils.database import find_data, save_data, update_data
+from utils.database import find_data, save_data
 from utils.async_utils import sync_to_async
 
 logger = logging.getLogger("restaurant-recommender.source_validator")
@@ -241,7 +241,6 @@ def store_source_evaluation(url: str, is_reputable: bool, config) -> None:
         if existing:
             # Update existing record
             source_data["evaluation_count"] = existing.get("evaluation_count", 0) + 1
-            update_data(config.DB_TABLE_SOURCES, {"domain": domain}, source_data, config)
         else:
             # Create new record
             save_data(config.DB_TABLE_SOURCES, source_data, config)
