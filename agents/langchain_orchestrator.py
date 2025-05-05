@@ -45,14 +45,6 @@ class LangChainOrchestrator:
             name="search"
         )
 
-        self.scrape = RunnableLambda(
-            lambda x: {
-                **x,
-                "enriched_results": self.scraper.scrape_search_results(x["search_results"])
-            },
-            name="scrape"
-        )
-
         from utils.async_utils import sync_to_async
 
         # Define a helper function that properly awaits the async method

@@ -240,7 +240,6 @@ def update_user_location(uid: int, result):
 async def save_search(uid: int, query: str, result: Any):
     """Save search query and result to database"""
     try:
-        # Convert to synchronous operation to avoid nested async issues
         trimmed_result = {
             "query": query,
             "timestamp": time.time(),
@@ -248,7 +247,7 @@ async def save_search(uid: int, query: str, result: Any):
             "destination": result.get("destination") if isinstance(result, dict) else None,
         }
 
-        # Use a properly awaited async with statement
+        # Use properly awaited async operation
         async with engine.begin() as conn:
             await conn.execute(
                 USER_SEARCHES_TABLE.insert().values(
