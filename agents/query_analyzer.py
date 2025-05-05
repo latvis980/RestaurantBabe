@@ -100,7 +100,6 @@ class QueryAnalyzer:
                 # Clean up response content to handle markdown formatting
                 content = response.content
 
-                # Handle markdown code blocks
                 if "```json" in content:
                     content = content.split("```json")[1].split("```")[0]
                 elif "```" in content:
@@ -117,49 +116,7 @@ class QueryAnalyzer:
                 location = result.get("destination")
                 is_english_speaking = result.get("is_english_speaking", True)
 
-                if location and not is_english_speaking:
-                    # Create city-specific table name for sources
-                    city_table_name = f"sources_{location.lower().replace(' ', '_').replace('-', '_')}"
-
-                    # Ensure the city-specific table exists
-                    ensure_city_table(location, self.config, table_type="sources")
-
-                    # Try to find sources in the city-specific table first
-                    local_sources = find_data(
-                        city_table_name,
-                        {"city": location},
-                        self.config
-                    )
-
-                    if not local_sources:
-                        # Try the general sources table as fallback
-                        local_sources = find_data(
-                            self.config.DB_TABLE_SOURCES,
-                            {"location": location},
-                            self.config
-                        )
-
-                    if not local_sources:
-                        # If still not found, compile new sources
-                        local_sources = self._compile_local_sources(location, result.get("local_language"))
-
-                        # Save to city-specific table
-                        save_data(
-                            city_table_name,
-                            {"location": location, "sources": local_sources, "city": location},
-                            self.config
-                        )
-
-                        # Also save to general table for backward compatibility
-                        save_data(
-                            self.config.DB_TABLE_SOURCES,
-                            {"location": location, "sources": local_sources},
-                            self.config
-                        )
-
-                    result["local_sources"] = local_sources
-
-                # Format search queries
+                # Format search queries - always include English query
                 search_queries = [result.get("english_search_query")]
 
                 # Add only one local language query for non-English speaking locations
@@ -210,7 +167,6 @@ class QueryAnalyzer:
                     "primary_search_parameters": primary_params,
                     "secondary_filter_parameters": secondary_params,
                     "keywords_for_analysis": keywords,
-                    "local_sources": result.get("local_sources", []),
                 }
 
             except (json.JSONDecodeError, AttributeError) as e:
@@ -282,7 +238,6 @@ class QueryAnalyzer:
                     "primary_search_parameters": primary_params,
                     "secondary_filter_parameters": secondary_params,
                     "keywords_for_analysis": query.split(),
-                    "local_sources": []
                 }
 
     

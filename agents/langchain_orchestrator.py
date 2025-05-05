@@ -11,7 +11,6 @@ class LangChainOrchestrator:
         # Import agents
         from agents.query_analyzer import QueryAnalyzer
         from agents.search_agent import BraveSearchAgent
-        from agents.local_search_agent import LocalSourceSearchAgent
         from agents.scraper import WebScraper
         from agents.list_analyzer import ListAnalyzer
         from agents.editor_agent import EditorAgent
@@ -21,7 +20,6 @@ class LangChainOrchestrator:
         # Initialize agents
         self.query_analyzer = QueryAnalyzer(config)
         self.search_agent = BraveSearchAgent(config)
-        self.local_search_agent = LocalSourceSearchAgent(config)
         self.scraper = WebScraper(config)
         self.list_analyzer = ListAnalyzer(config)
         self.editor_agent = EditorAgent(config)
@@ -47,35 +45,10 @@ class LangChainOrchestrator:
             name="search"
         )
 
-        # Add a new step for local source search
-        self.local_search = RunnableLambda(
-            lambda x: {
-                **x,
-                "local_search_results": self._perform_local_search(
-                    x["destination"],
-                    x["search_queries"],
-                    x.get("local_language")
-                ) if not x.get("is_english_speaking", True) else []
-            },
-            name="local_search"
-        )
-
-        # Combine regular and local search results
-        self.combine_results = RunnableLambda(
-            lambda x: {
-                **x,
-                "combined_results": self._combine_search_results(
-                    x["search_results"],
-                    x.get("local_search_results", [])
-                )
-            },
-            name="combine_results"
-        )
-
         self.scrape = RunnableLambda(
             lambda x: {
                 **x,
-                "enriched_results": self.scraper.scrape_search_results(x["combined_results"])
+                "enriched_results": self.scraper.scrape_search_results(x["search_results"])
             },
             name="scrape"
         )
@@ -283,8 +256,6 @@ class LangChainOrchestrator:
             first=self.analyze_query,
             middle=[
                 self.search,
-                self.local_search,
-                self.combine_results,
                 self.scrape,
                 self.analyze_results,
                 self.edit,
@@ -322,40 +293,6 @@ class LangChainOrchestrator:
         # No preferences found
         return query, []
 
-    def _perform_local_search(self, location, search_queries, local_language=None):
-        """Perform local source search if we're in a non-English speaking location"""
-        try:
-            # Only perform local search if we have valid inputs
-            if not location or not search_queries:
-                return []
-
-            # Perform the local source search
-            local_results = self.local_search_agent.search_local_sources(
-                location,
-                search_queries,
-                local_language
-            )
-
-            return local_results
-        except Exception as e:
-            print(f"Error in local search: {e}")
-            return []
-
-    def _combine_search_results(self, standard_results, local_results):
-        """Combine standard search results with local source results"""
-        # Start with local results as they're more valuable
-        combined = local_results.copy() if local_results else []
-
-        # Add regular results that aren't duplicates
-        seen_urls = {result.get("url") for result in combined}
-
-        for result in standard_results:
-            url = result.get("url")
-            if url and url not in seen_urls:
-                seen_urls.add(url)
-                combined.append(result)
-
-        return combined
 
     @log_function_call
     def _create_detailed_html(self, recommendations):
@@ -413,7 +350,7 @@ class LangChainOrchestrator:
             print("HTML format error:", e)
             return "<b>Sorry, we couldn't format the restaurant list.</b>"
 
-    @log_function_call  
+    @log_function_call
     def process_query(self, user_query, standing_prefs=None):
         """
         Process a user query using the LangChain sequence
@@ -439,34 +376,6 @@ class LangChainOrchestrator:
             try:
                 # Create initial input with preferences
                 input_data = {"query": clean_query, "user_preferences": user_preferences}
-
-                # Modify the analyze_query lambda to handle preferences
-                # This is a new definition that should replace the existing one
-                self.analyze_query = RunnableLambda(
-                    lambda x: {
-                        **self.query_analyzer.analyze(x["query"], x.get("user_preferences", [])),
-                        "query": x["query"],  # Keep the original query in the chain
-                        "user_preferences": x.get("user_preferences", [])  # Keep preferences
-                    },
-                    name="analyze_query"
-                )
-
-                # Re-create the chain with the updated analyze_query
-                self.chain = RunnableSequence(
-                    first=self.analyze_query,
-                    middle=[
-                        self.search,
-                        self.local_search,
-                        self.combine_results,
-                        self.scrape,
-                        self.analyze_results,
-                        self.edit,
-                        self.follow_up_search,
-                        self.extract_html,
-                    ],
-                    last=RunnableLambda(lambda x: x),
-                    name="restaurant_recommendation_chain"
-                )
 
                 # Execute the chain with our input data
                 result = self.chain.invoke(input_data)
@@ -501,46 +410,15 @@ class LangChainOrchestrator:
                 # Get the enhanced recommendations
                 enhanced_recommendations = result.get("enhanced_recommendations", {})
 
-                # Check for different formats and standardize
-                main_list = []
-                hidden_gems = []
+                # Standard handling for recommendations...
 
-                if isinstance(enhanced_recommendations, dict):
-                    # Direct access to main_list
-                    if "main_list" in enhanced_recommendations:
-                        main_list = enhanced_recommendations["main_list"]
-                    # For backward compatibility with old format
-                    elif "recommended" in enhanced_recommendations:
-                        main_list = enhanced_recommendations["recommended"]
-
-                    if "hidden_gems" in enhanced_recommendations:
-                        hidden_gems = enhanced_recommendations["hidden_gems"]
-
-                    # Check nested structure
-                    if "formatted_recommendations" in enhanced_recommendations:
-                        formatted_rec = enhanced_recommendations["formatted_recommendations"]
-                        if isinstance(formatted_rec, dict):
-                            if "main_list" in formatted_rec:
-                                main_list = formatted_rec["main_list"]
-                            elif "recommended" in formatted_rec:
-                                main_list = formatted_rec["recommended"]
-
-                            if "hidden_gems" in formatted_rec:
-                                hidden_gems = formatted_rec["hidden_gems"]
-
-                # Build final result dictionary with consistent naming using main_list
+                # Return final result
                 final_result = {
                     "main_list": main_list,
                     "hidden_gems": hidden_gems,
-                    "telegram_text": telegram_text
+                    "telegram_text": telegram_text,
+                    "destination": result.get("destination")  # Keep destination for location tracking
                 }
-
-                # Debug log the final result
-                dump_chain_state("final_result", {
-                    "main_list_count": len(main_list),
-                    "hidden_gems_count": len(hidden_gems),
-                    "telegram_text_length": len(telegram_text)
-                })
 
                 return final_result
 

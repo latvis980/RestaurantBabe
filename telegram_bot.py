@@ -174,16 +174,15 @@ def append_history(uid: int, role: str, content: str):
 
 
 async def save_user_pref(uid: int, value: str):
+    """Save a user preference"""
     value = value.lower().strip()
     prefs = user_state.setdefault(uid, {}).setdefault("prefs", [])
     if value not in prefs:
         prefs.append(value)
-        async with engine.begin() as conn:
-            await conn.execute(
-                insert(USER_PREFS_TABLE)
-                .values(_id=str(uid), data={"prefs": prefs}, timestamp=time.time())
-                .on_conflict_do_update(index_elements=[USER_PREFS_TABLE.c._id], set_={"data": {"prefs": prefs}, "timestamp": time.time()})
-            )
+        # Use our new simplified function
+        success = await sync_to_async(save_user_prefs)(uid, prefs, config)
+        if not success:
+            logger.error(f"Failed to save preference for user {uid}")
 
 
 def update_user_location(uid: int, result):
@@ -338,34 +337,13 @@ async def chunk_and_send(chat_id: int, text: str):
 
 
 async def load_user_data(uid: int):
-    """Load user preferences and last location from database if available"""
+    """Load user preferences from database"""
     try:
-        async with engine.begin() as conn:
-            # Get user preferences
-            stmt = select(USER_PREFS_TABLE.c.data).where(USER_PREFS_TABLE.c._id == str(uid))
-            prefs_row = await conn.execute(stmt)
-            prefs_row = await prefs_row.fetchone()
-
-            if prefs_row and prefs_row[0]:
-                prefs_data = prefs_row[0]
-                if isinstance(prefs_data, dict) and "prefs" in prefs_data:
-                    user_state.setdefault(uid, {})["prefs"] = prefs_data["prefs"]
-                    logger.info(f"Loaded preferences for user {uid}: {prefs_data['prefs']}")
-
-            # Get last search to extract location
-            stmt = select(USER_SEARCHES_TABLE.c.data).where(
-                USER_SEARCHES_TABLE.c._id.like(f"{uid}-%")
-            ).order_by(USER_SEARCHES_TABLE.c.timestamp.desc()).limit(1)
-
-            search_row = await conn.execute(stmt)
-            search_row = await search_row.fetchone()
-            if search_row and search_row[0]:
-                search_data = search_row[0]
-                if isinstance(search_data, dict) and "destination" in search_data:
-                    last_location = search_data["destination"]
-                    if last_location and last_location != "Unknown":
-                        user_state.setdefault(uid, {})["last_location"] = last_location
-                        logger.info(f"Loaded last location for user {uid}: {last_location}")
+        # Get user preferences from our new simplified function
+        prefs = get_user_prefs(uid, config)
+        if prefs:
+            user_state.setdefault(uid, {})["prefs"] = prefs
+            logger.info(f"Loaded preferences for user {uid}: {prefs}")
     except Exception as e:
         logger.error(f"Error loading user data: {e}")
 
