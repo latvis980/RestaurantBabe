@@ -5,6 +5,12 @@ import time
 import json
 from utils.database import save_data
 from utils.debug_utils import dump_chain_state, log_function_call
+from utils.async_utils import sync_to_async
+import asyncio
+import logging
+
+# Create logger
+logger = logging.getLogger("restaurant-recommender.orchestrator")
 
 class LangChainOrchestrator:
     def __init__(self, config):
@@ -48,10 +54,48 @@ class LangChainOrchestrator:
         from utils.async_utils import sync_to_async
 
         # Define a helper function that properly awaits the async method
+        async def _scrape_async(search_results):
+            """Inner async function to handle the scraping"""
+            # Log the actual call to help with debugging
+            logger.info(f"Starting scrape for {len(search_results)} search results") 
+            return await self.scraper.scrape_search_results(search_results)
+
+        # Define a wrapper that properly converts async to sync
         def scrape_helper(x):
-            enriched_results = sync_to_async(self.scraper.scrape_search_results)(x["search_results"])
+            """Wrapper to handle async scraping in the LangChain"""
+            import asyncio
+
+            # Get the search results from the chain data
+            search_results = x.get("search_results", [])
+            logger.info(f"Scrape helper running for {len(search_results)} results")
+
+            # Define an async function to call the scraper
+            async def _scrape_async():
+                logger.info(f"Starting scrape for {len(search_results)} search results")
+                return await self.scraper.scrape_search_results(search_results)
+
+            # Run the async function and get the results
+            try:
+                # Try running in the current event loop
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # We're in an async context already - need special handling
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        future = pool.submit(lambda: asyncio.run(_scrape_async()))
+                        enriched_results = future.result()
+                else:
+                    # Simple case - we can use the current loop
+                    enriched_results = loop.run_until_complete(_scrape_async())
+            except RuntimeError:
+                # No running event loop - create a new one
+                enriched_results = asyncio.run(_scrape_async())
+
+            # Return the results with the original data
+            logger.info(f"Scrape completed with {len(enriched_results)} enriched results")
             return {**x, "enriched_results": enriched_results}
 
+        # Assign the helper to the scrape step
         self.scrape = RunnableLambda(scrape_helper, name="scrape")
 
         def _debug_scrape(self, combined_results):

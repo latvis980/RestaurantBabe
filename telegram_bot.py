@@ -462,6 +462,33 @@ async def handle_forget_location(msg):
     else:
         await bot.reply_to(msg, "У меня нет сохраненного местоположения для вас.")
 
+async def process_query_async(query):
+    """Process a restaurant recommendation query asynchronously"""
+    import asyncio
+    import concurrent.futures
+    import traceback
+
+    try:
+        # This runs the orchestrator in a way that won't block the bot
+        global orchestrator
+        if orchestrator is None:
+            orchestrator = LangChainOrchestrator(config)
+
+        # The synchronous process_query function needs to run in a thread
+        # so it doesn't block the async event loop
+        loop = asyncio.get_running_loop()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            results = await loop.run_in_executor(pool, orchestrator.process_query, query)
+
+        logger.info(f"Query processing completed, results have {len(results.get('main_list', []))} main list items")
+        return results
+    except Exception as e:
+        logger.error(f"Error in process_query_async: {e}")
+        logger.error(traceback.format_exc())
+        return {
+            "telegram_text": "<b>Sorry, I encountered an error while searching for restaurants.</b>"
+        }
+
 
 # ---------------------------------------------------------------------------
 # TESTING FUNCTIONALITY FROM VERSION 21
