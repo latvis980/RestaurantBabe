@@ -237,22 +237,25 @@ def update_user_location(uid: int, result):
                                 return True
     return False
 
-
 async def save_search(uid: int, query: str, result: Any):
     """Save search query and result to database"""
     try:
-        async with engine.begin() as conn:
-            # Save only essential information to avoid bloating the database
-            trimmed_result = {
-                "query": query,
-                "timestamp": time.time(),
-                "has_results": bool(result),
-                "destination": result.get("destination") if isinstance(result, dict) else None,
-            }
+        # Convert to synchronous operation to avoid nested async issues
+        trimmed_result = {
+            "query": query,
+            "timestamp": time.time(),
+            "has_results": bool(result),
+            "destination": result.get("destination") if isinstance(result, dict) else None,
+        }
 
+        # Use a properly awaited async with statement
+        async with engine.begin() as conn:
             await conn.execute(
-                insert(USER_SEARCHES_TABLE)
-                .values(_id=f"{uid}-{int(time.time()*1000)}", data=trimmed_result, timestamp=time.time())
+                USER_SEARCHES_TABLE.insert().values(
+                    _id=f"{uid}-{int(time.time()*1000)}", 
+                    data=trimmed_result, 
+                    timestamp=time.time()
+                )
             )
     except Exception as e:
         logger.error(f"Error saving search: {e}")

@@ -53,6 +53,15 @@ class LangChainOrchestrator:
             name="scrape"
         )
 
+        from utils.async_utils import sync_to_async
+
+        # Define a helper function that properly awaits the async method
+        def scrape_helper(x):
+            enriched_results = sync_to_async(self.scraper.scrape_search_results)(x["search_results"])
+            return {**x, "enriched_results": enriched_results}
+
+        self.scrape = RunnableLambda(scrape_helper, name="scrape")
+
         def _debug_scrape(self, combined_results):
             print(f"[Orchestrator] Combined results to scrape: {len(combined_results)}")
             enriched = self.scraper.scrape_search_results(combined_results)
@@ -410,7 +419,9 @@ class LangChainOrchestrator:
                 # Get the enhanced recommendations
                 enhanced_recommendations = result.get("enhanced_recommendations", {})
 
-                # Standard handling for recommendations...
+                # Extract main_list and hidden_gems from enhanced_recommendations
+                main_list = enhanced_recommendations.get("main_list", [])
+                hidden_gems = enhanced_recommendations.get("hidden_gems", [])
 
                 # Return final result
                 final_result = {
