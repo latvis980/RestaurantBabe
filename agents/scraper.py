@@ -1,9 +1,23 @@
-# agents/scraper.py  – patched for May 2025 stack
-import asyncio, logging, time, re, json
+# agents/scraper.py - Optimized for Microsoft Playwright container
+import asyncio, logging, time, re, json, os
 from typing import Dict, List, Any, Optional
 from urllib.parse import urlparse
 
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+# Create semaphore for concurrency control
+SEM = asyncio.Semaphore(3)  # Adjust based on Railway plan RAM
+
+# We'll assume Playwright is available in the Microsoft container
+PLAYWRIGHT_ENABLED = True
+
+try:
+    from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+    logger = logging.getLogger("restaurant-recommender.scraper")
+    logger.info("Playwright successfully imported")
+except ImportError as e:
+    PLAYWRIGHT_ENABLED = False
+    logger = logging.getLogger("restaurant-recommender.scraper")
+    logger.error(f"Failed to import Playwright: {e}, falling back to HTTP methods")
+
 from readability import Document
 from bs4 import BeautifulSoup
 from langchain_openai import ChatOpenAI
@@ -55,6 +69,7 @@ class WebScraper:
         {
           "is_restaurant_list": true/false,
           "restaurant_count": estimated number of restaurants mentioned,
+          "content_quality": 0.0-1.0,
           "reasoning": "brief explanation of your evaluation"
         }
         """
@@ -73,6 +88,7 @@ class WebScraper:
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/123.0.0.0 Safari/537.36"
             ),
+            "args": ["--disable-dev-shm-usage"]  # Prevents /dev/shm crashes
         }
 
         self.successful_urls, self.failed_urls = [], []
@@ -106,17 +122,55 @@ class WebScraper:
             enriched_results = []
             batch_size = 5
 
-            for i in range(0, len(search_results), batch_size):
-                batch = search_results[i:i+batch_size]
-                batch_tasks = [self._process_search_result(result) for result in batch]
-                batch_results = await asyncio.gather(*batch_tasks)
+            # Initialize a single browser instance for the whole batch if Playwright is enabled
+            if PLAYWRIGHT_ENABLED:
+                try:
+                    logger.info("Initializing Playwright browser for batch processing")
+                    async with async_playwright() as p:
+                        browser = await p.chromium.launch(
+                            headless=True,
+                            args=["--disable-dev-shm-usage"]  # Prevents /dev/shm crashes
+                        )
 
-                # Filter out None results (failed processing)
-                valid_results = [r for r in batch_results if r is not None]
-                enriched_results.extend(valid_results)
+                        # Process batches with the shared browser instance
+                        for i in range(0, len(search_results), batch_size):
+                            batch = search_results[i:i+batch_size]
+                            batch_tasks = [self._process_search_result(result, browser) for result in batch]
+                            batch_results = await asyncio.gather(*batch_tasks)
 
-                # Small delay between batches to be respectful to servers
-                await asyncio.sleep(1)
+                            # Filter out None results (failed processing)
+                            valid_results = [r for r in batch_results if r is not None]
+                            enriched_results.extend(valid_results)
+
+                            # Small delay between batches to be respectful to servers
+                            await asyncio.sleep(1)
+
+                        # Close the browser when done
+                        await browser.close()
+                except Exception as e:
+                    logger.error(f"Error initializing Playwright: {e}. Falling back to HTTP methods.")
+                    # Fall back to HTTP methods
+                    for i in range(0, len(search_results), batch_size):
+                        batch = search_results[i:i+batch_size]
+                        batch_tasks = [self._process_search_result(result) for result in batch]
+                        batch_results = await asyncio.gather(*batch_tasks)
+
+                        valid_results = [r for r in batch_results if r is not None]
+                        enriched_results.extend(valid_results)
+
+                        await asyncio.sleep(1)
+            else:
+                # Playwright disabled, use HTTP methods instead
+                logger.info("Playwright is disabled, using HTTP methods")
+                for i in range(0, len(search_results), batch_size):
+                    batch = search_results[i:i+batch_size]
+                    batch_tasks = [self._process_search_result(result) for result in batch]
+                    batch_results = await asyncio.gather(*batch_tasks)
+
+                    valid_results = [r for r in batch_results if r is not None]
+                    enriched_results.extend(valid_results)
+
+                    await asyncio.sleep(1)
 
             elapsed = time.time() - start_time
 
@@ -143,79 +197,93 @@ class WebScraper:
 
     # -------------------------------------------------
     # Internal helpers
-    async def _process_search_result(self, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def _process_search_result(self, result: Dict[str, Any], browser=None) -> Optional[Dict[str, Any]]:
         """
         Process a single search result through the full pipeline
 
         Args:
             result: Search result dictionary with URL
+            browser: Optional browser instance for Playwright
 
         Returns:
             Enriched result dictionary or None if processing failed
         """
-        url = result.get("url")
-        if not url:
-            return None
+        # Use semaphore to limit concurrency
+        async with SEM:
+            url = result.get("url")
+            if not url:
+                return None
 
-        # 1. domain reputation
-        source_domain = self._extract_domain(url)
-        result["source_domain"] = source_domain
-        source_validation = validate_source(source_domain, self.config)
-        if not source_validation["is_valid"]:
-            logger.info(f"Filtered URL by source validation: {url}")
-            self.filtered_urls.append(url)
-            return None
+            try:
+                # 1. domain reputation
+                source_domain = self._extract_domain(url)
+                result["source_domain"] = source_domain
+                source_validation = validate_source(source_domain, self.config)
+                if not source_validation["is_valid"]:
+                    logger.info(f"Filtered URL by source validation: {url}")
+                    self.filtered_urls.append(url)
+                    return None
 
-        # 2. fetch html
-        fetch_result = await self.fetch_url(url)
-        if fetch_result.get("error"):
-            logger.warning(f"Failed to fetch URL: {url}, Error: {fetch_result['error']}")
-            self.failed_urls.append(url)
-            return None
+                # 2. fetch html - either with Playwright or HTTP methods
+                if PLAYWRIGHT_ENABLED and browser is not None:
+                    fetch_result = await self._fetch_with_playwright(url, browser)
+                else:
+                    fetch_result = await self._fetch_with_http(url)
 
-        # 3. AI evaluation
-        evaluation = await self._evaluate_content(
-            url,
-            fetch_result.get("title", ""),
-            fetch_result.get("content_preview", ""),
-        )
-        if not (
-            evaluation.get("is_restaurant_list")
-            and evaluation.get("content_quality", 0) > 0.5
-        ):
-            logger.info(f"Filtered URL by content evaluation: {url}")
-            self.invalid_content_urls.append(url)
-            return None
+                if fetch_result.get("error"):
+                    logger.warning(f"Failed to fetch URL: {url}, Error: {fetch_result['error']}")
+                    self.failed_urls.append(url)
+                    return None
 
-        # 4. text extraction
-        processed_content = await self._process_content(fetch_result.get("html", ""))
+                # 3. AI evaluation
+                evaluation = await self._evaluate_content(
+                    url,
+                    fetch_result.get("title", ""),
+                    fetch_result.get("content_preview", ""),
+                )
+                if not (
+                    evaluation.get("is_restaurant_list")
+                    and evaluation.get("content_quality", 0) > 0.5
+                ):
+                    logger.info(f"Filtered URL by content evaluation: {url}")
+                    self.invalid_content_urls.append(url)
+                    return None
 
-        # 5. pack result
-        enriched_result = {
-            **result,
-            "scraped_title": fetch_result.get("title", ""),
-            "scraped_content": processed_content,
-            "content_length": len(processed_content),
-            "source_reputation": source_validation.get("reputation_score", 0.5),
-            "quality_score": evaluation.get("content_quality", 0.0),
-            "restaurant_count": evaluation.get("restaurant_count", 0),
-            "timestamp": time.time(),
-        }
-        self.successful_urls.append(url)
-        logger.info(f"Successfully processed: {url}")
-        return enriched_result
+                # 4. text extraction
+                processed_content = await self._process_content(fetch_result.get("html", ""))
 
-    async def fetch_url(self, url: str) -> Dict[str, Any]:
+                # 5. pack result
+                enriched_result = {
+                    **result,
+                    "scraped_title": fetch_result.get("title", ""),
+                    "scraped_content": processed_content,
+                    "content_length": len(processed_content),
+                    "source_reputation": source_validation.get("reputation_score", 0.5),
+                    "quality_score": evaluation.get("content_quality", 0.0),
+                    "restaurant_count": evaluation.get("restaurant_count", 0),
+                    "timestamp": time.time(),
+                }
+                self.successful_urls.append(url)
+                logger.info(f"Successfully processed: {url}")
+                return enriched_result
+
+            except Exception as e:
+                logger.error(f"Error processing URL {url}: {str(e)}")
+                self.failed_urls.append(url)
+                return None
+
+    async def _fetch_with_playwright(self, url: str, browser) -> Dict[str, Any]:
         """
-        Fetch a URL using Playwright
+        Fetch a URL using Playwright with an existing browser instance
 
         Args:
             url: URL to fetch
+            browser: Browser instance
 
         Returns:
             Dictionary with HTML content and metadata
         """
-        logger.info(f"Fetching URL: {url}")
+        logger.info(f"Fetching URL with Playwright: {url}")
         result = {
             "url": url,
             "status_code": None,
@@ -227,105 +295,193 @@ class WebScraper:
         }
 
         try:
-            async with async_playwright() as p:
-                # Launch Playwright browser with better configuration
-                browser = await p.chromium.launch(
-                    headless=self.browser_config['headless']
-                )
+            # Create context with additional options
+            context = await browser.new_context(
+                user_agent=self.browser_config['user_agent'],
+                viewport={"width": 1280, "height": 800},
+                locale="en-US",
+                timezone_id="Europe/London",
+                has_touch=False
+            )
 
-                # Create context with additional options
-                context = await browser.new_context(
-                    user_agent=self.browser_config['user_agent'],
-                    viewport={"width": 1280, "height": 800},
-                    locale="en-US",
-                    timezone_id="Europe/London",
-                    has_touch=False
-                )
+            # Set up page with improved error handling
+            page = await context.new_page()
+            page.set_default_timeout(self.browser_config['timeout'])
 
-                # Set up page with improved error handling
-                page = await context.new_page()
-                page.set_default_timeout(self.browser_config['timeout'])
+            # Configure navigation and wait options
+            navigation_options = {
+                "wait_until": "domcontentloaded",
+                "timeout": self.browser_config['timeout'],
+                "referer": "https://www.google.com/",
+            }
 
-                # Configure navigation and wait options (new in 1.45)
-                navigation_options = {
-                    "wait_until": "domcontentloaded",
-                    "timeout": self.browser_config['timeout'],
-                    "referer": "https://www.google.com/",
-                }
+            # Navigate to the URL with better options
+            response = await page.goto(url, **navigation_options)
+            result["status_code"] = response.status if response else 0
 
-                # Navigate to the URL with better options
-                response = await page.goto(url, **navigation_options)
-                result["status_code"] = response.status if response else 0
+            # Improved content loading - wait for network idle
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            except PlaywrightTimeoutError:
+                # Continue anyway, many pages never reach network idle
+                pass
 
-                # Improved content loading - wait for network idle
-                try:
-                    await page.wait_for_load_state("networkidle", timeout=5000)
-                except PlaywrightTimeoutError:
-                    # Continue anyway, many pages never reach network idle
-                    pass
+            # Get page content with better techniques
+            result["html"] = await page.content()
+            result["title"] = await page.title()
 
-                # Get page content with better techniques
-                result["html"] = await page.content()
-                result["title"] = await page.title()
-
-                # Get a content preview using improved JavaScript evaluation
-                try:
-                    content_text = await page.evaluate('''() => {
-                        // Get visible text only
-                        function getVisibleText(node) {
-                            if (node.nodeType === Node.TEXT_NODE) {
-                                return node.textContent || "";
-                            }
-
-                            const style = window.getComputedStyle(node);
-                            if (style && (style.display === "none" || style.visibility === "hidden")) {
-                                return "";
-                            }
-
-                            let text = "";
-                            for (let child of node.childNodes) {
-                                if (child.nodeType === Node.TEXT_NODE) {
-                                    text += child.textContent || "";
-                                } else if (child.nodeType === Node.ELEMENT_NODE) {
-                                    text += getVisibleText(child);
-                                }
-                            }
-                            return text;
+            # Get a content preview using JavaScript evaluation
+            try:
+                content_text = await page.evaluate('''() => {
+                    // Get visible text only
+                    function getVisibleText(node) {
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            return node.textContent || "";
                         }
 
-                        // Use main content area if available
-                        const mainContent = document.querySelector('main') || 
-                                          document.querySelector('article') || 
-                                          document.querySelector('.content') || 
-                                          document.body;
+                        const style = window.getComputedStyle(node);
+                        if (style && (style.display === "none" || style.visibility === "hidden")) {
+                            return "";
+                        }
 
-                        return getVisibleText(mainContent).trim().substring(0, 2000);
-                    }''')
-                    result["content_preview"] = content_text
-                except Exception as e:
-                    # Fallback to simpler extraction
-                    content_text = await page.evaluate('document.body.innerText')
-                    result["content_preview"] = content_text[:2000] if content_text else ""
+                        let text = "";
+                        for (let child of node.childNodes) {
+                            if (child.nodeType === Node.TEXT_NODE) {
+                                text += child.textContent || "";
+                            } else if (child.nodeType === Node.ELEMENT_NODE) {
+                                text += getVisibleText(child);
+                            }
+                        }
+                        return text;
+                    }
 
-                # Extract content length for logging
-                result["content_length"] = len(result["html"])
+                    // Use main content area if available
+                    const mainContent = document.querySelector('main') || 
+                                      document.querySelector('article') || 
+                                      document.querySelector('.content') || 
+                                      document.body;
 
-                # Take screenshot for debugging if enabled
-                if getattr(self.config, 'SAVE_SCREENSHOTS', False):
-                    screenshot_dir = "debug/screenshots"
-                    os.makedirs(screenshot_dir, exist_ok=True)
-                    safe_filename = re.sub(r'[^a-zA-Z0-9]', '_', url)[:100]
-                    await page.screenshot(path=f"{screenshot_dir}/{safe_filename}.png")
+                    return getVisibleText(mainContent).trim().substring(0, 2000);
+                }''')
+                result["content_preview"] = content_text
+            except Exception as e:
+                # Fallback to simpler extraction
+                content_text = await page.evaluate('document.body.innerText')
+                result["content_preview"] = content_text[:2000] if content_text else ""
 
-                # Clean close
-                await context.close()
-                await browser.close()
+            # Extract content length for logging
+            result["content_length"] = len(result["html"])
+
+            # Clean close
+            await context.close()
 
         except PlaywrightTimeoutError:
             result["error"] = "Timeout error"
             logger.warning(f"Timeout fetching URL: {url}")
         except Exception as e:
             result["error"] = str(e)
+            logger.warning(f"Error fetching URL: {url}, Error: {str(e)}")
+
+        return result
+
+    async def _fetch_with_http(self, url: str) -> Dict[str, Any]:
+        """
+        Fetch a URL using HTTP libraries (requests/aiohttp)
+
+        Args:
+            url: URL to fetch
+
+        Returns:
+            Dictionary with HTML content and metadata
+        """
+        logger.info(f"Fetching URL with HTTP: {url}")
+        result = {
+            "url": url,
+            "status_code": None,
+            "html": "",
+            "title": "",
+            "content_preview": "",
+            "error": None,
+            "content_length": 0
+        }
+
+        try:
+            # Try to use aiohttp first (async)
+            try:
+                import aiohttp
+
+                headers = {
+                    "User-Agent": self.browser_config['user_agent'],
+                    "Accept": "text/html,application/xhtml+xml,application/xml",
+                    "Accept-Language": "en-US,en;q=0.9",
+                }
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers=headers, timeout=15) as response:
+                        result["status_code"] = response.status
+
+                        if response.status == 200:
+                            html = await response.text()
+                            soup = BeautifulSoup(html, 'html.parser')
+
+                            result["html"] = html
+                            result["title"] = soup.title.text if soup.title else ""
+
+                            # Extract content preview
+                            main_content = soup.find('main') or soup.find('article') or soup.find(class_='content') or soup.body
+                            if main_content:
+                                preview_text = main_content.get_text(separator=' ', strip=True)
+                                result["content_preview"] = preview_text[:2000]
+                            else:
+                                result["content_preview"] = soup.get_text(separator=' ', strip=True)[:2000]
+
+                            result["content_length"] = len(html)
+                            return result
+                        else:
+                            result["error"] = f"HTTP error: {response.status}"
+                            return result
+
+            except ImportError:
+                # Fallback to requests if aiohttp is not available
+                logger.info("aiohttp not available, falling back to requests")
+                pass
+            except Exception as e:
+                logger.warning(f"aiohttp fetch failed: {str(e)}, falling back to requests")
+                pass
+
+            # Fallback to requests (synchronous)
+            import requests
+
+            headers = {
+                "User-Agent": self.browser_config['user_agent'],
+                "Accept": "text/html,application/xhtml+xml,application/xml",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+
+            response = requests.get(url, headers=headers, timeout=15)
+            result["status_code"] = response.status_code
+
+            if response.status_code == 200:
+                html = response.text
+                soup = BeautifulSoup(html, 'html.parser')
+
+                result["html"] = html
+                result["title"] = soup.title.text if soup.title else ""
+
+                # Extract content preview
+                main_content = soup.find('main') or soup.find('article') or soup.find(class_='content') or soup.body
+                if main_content:
+                    preview_text = main_content.get_text(separator=' ', strip=True)
+                    result["content_preview"] = preview_text[:2000]
+                else:
+                    result["content_preview"] = soup.get_text(separator=' ', strip=True)[:2000]
+
+                result["content_length"] = len(html)
+            else:
+                result["error"] = f"HTTP error: {response.status_code}"
+
+        except Exception as e:
+            result["error"] = f"Error fetching URL: {str(e)}"
             logger.warning(f"Error fetching URL: {url}, Error: {str(e)}")
 
         return result
@@ -343,6 +499,16 @@ class WebScraper:
             Evaluation result with scores
         """
         try:
+            # Basic keyword check to avoid LLM calls for obviously irrelevant content
+            restaurant_keywords = ["restaurant", "dining", "food", "eat", "chef", "cuisine", "menu", "dish"]
+            if not any(kw in title.lower() or kw in preview.lower() for kw in restaurant_keywords):
+                return {
+                    "is_restaurant_list": False,
+                    "restaurant_count": 0,
+                    "content_quality": 0.0,
+                    "reasoning": "No restaurant-related keywords found"
+                }
+
             response = await self.eval_chain.ainvoke({
                 "url": url,
                 "title": title,
@@ -358,8 +524,12 @@ class WebScraper:
 
             evaluation = json.loads(content.strip())
 
+            # Ensure content_quality is in the response
+            if "content_quality" not in evaluation:
+                evaluation["content_quality"] = 0.8 if evaluation.get("is_restaurant_list", False) else 0.2
+
             # Log evaluation results
-            is_valid = evaluation.get("is_restaurant_list", False) and evaluation.get("content_quality", 0) > 0.5
+            is_valid = evaluation.get("is_restaurant_list") and evaluation.get("content_quality", 0) > 0.5
             logger.info(f"Content evaluation for {url}: Valid={is_valid}, Score={evaluation.get('content_quality')}")
 
             # Return the evaluation
