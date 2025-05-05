@@ -228,12 +228,12 @@ class WebScraper:
 
         try:
             async with async_playwright() as p:
-                # Launch Playwright browser with better configuration for 1.45
+                # Launch Playwright browser with better configuration
                 browser = await p.chromium.launch(
                     headless=self.browser_config['headless']
                 )
 
-                # Create context with additional options for 1.45
+                # Create context with additional options
                 context = await browser.new_context(
                     user_agent=self.browser_config['user_agent'],
                     viewport={"width": 1280, "height": 800},

@@ -13,7 +13,7 @@ sqlalchemy>=2.0.0
 # Web scraping & browsing
 requests
 beautifulsoup4>=4.12.2
-playwright>=1.45
+playwright<= 1.44.3
 readability-lxml>=0.8.1
 goose3>=3.1.9
 lxml>=4.9.3,<5.0.0
