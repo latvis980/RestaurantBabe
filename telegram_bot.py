@@ -319,24 +319,11 @@ def update_user_location(uid: int, result):
     return False
 
 async def save_search(uid: int, query: str, result: Any):
-    """Save search query and result to database"""
+    """Save search query and result to database (just log for now)"""
     try:
-        trimmed_result = {
-            "query": query,
-            "timestamp": time.time(),
-            "has_results": bool(result),
-            "destination": result.get("destination") if isinstance(result, dict) else None,
-        }
-
-        # Use properly awaited async operation
-        async with engine.begin() as conn:
-            await conn.execute(
-                USER_SEARCHES_TABLE.insert().values(
-                    _id=f"{uid}-{int(time.time()*1000)}", 
-                    data=trimmed_result, 
-                    timestamp=time.time()
-                )
-            )
+        # Just log that we would save the search, but don't actually do it
+        logger.info(f"Would save search for user {uid}: {query}")
+        # Skip the actual database operation for now
     except Exception as e:
         logger.error(f"Error saving search: {e}")
 
