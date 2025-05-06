@@ -64,32 +64,27 @@ class LangChainOrchestrator:
         def scrape_helper(x):
             """Wrapper to handle async scraping in the LangChain"""
             import asyncio
+            import concurrent.futures
 
             # Get the search results from the chain data
             search_results = x.get("search_results", [])
             logger.info(f"Scrape helper running for {len(search_results)} results")
 
-            # Define an async function to call the scraper
-            async def _scrape_async():
-                logger.info(f"Starting scrape for {len(search_results)} search results")
-                return await self.scraper.scrape_search_results(search_results)
+            # Define a function that runs in its own thread with a fresh event loop
+            def run_in_new_event_loop():
+                # Create a new event loop for this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
 
-            # Run the async function and get the results
-            try:
-                # Try running in the current event loop
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # We're in an async context already - need special handling
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor() as pool:
-                        future = pool.submit(lambda: asyncio.run(_scrape_async()))
-                        enriched_results = future.result()
-                else:
-                    # Simple case - we can use the current loop
-                    enriched_results = loop.run_until_complete(_scrape_async())
-            except RuntimeError:
-                # No running event loop - create a new one
-                enriched_results = asyncio.run(_scrape_async())
+                # Run the async function in this new loop
+                try:
+                    return loop.run_until_complete(self.scraper.filter_and_scrape_results(search_results))
+                finally:
+                    loop.close()
+
+            # Execute the function in a thread
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                enriched_results = pool.submit(run_in_new_event_loop).result()
 
             # Return the results with the original data
             logger.info(f"Scrape completed with {len(enriched_results)} enriched results")

@@ -108,6 +108,9 @@ class WebScraper:
         Returns:
             List of enriched results with scraped content
         """
+        # Create a local semaphore for this run
+        local_sem = asyncio.Semaphore(3)
+
         with tracing_v2_enabled(project_name="restaurant-recommender"):
             start_time = time.time()
             logger.info(f"Starting to process {len(search_results)} search results")
@@ -135,7 +138,8 @@ class WebScraper:
                         # Process batches with the shared browser instance
                         for i in range(0, len(search_results), batch_size):
                             batch = search_results[i:i+batch_size]
-                            batch_tasks = [self._process_search_result(result, browser) for result in batch]
+                            # Pass the local semaphore to _process_search_result
+                            batch_tasks = [self._process_search_result(result, browser, local_sem) for result in batch]
                             batch_results = await asyncio.gather(*batch_tasks)
 
                             # Filter out None results (failed processing)
@@ -197,19 +201,23 @@ class WebScraper:
 
     # -------------------------------------------------
     # Internal helpers
-    async def _process_search_result(self, result: Dict[str, Any], browser=None) -> Optional[Dict[str, Any]]:
+    async def _process_search_result(self, result: Dict[str, Any], browser=None, sem=None) -> Optional[Dict[str, Any]]:
         """
         Process a single search result through the full pipeline
 
         Args:
             result: Search result dictionary with URL
             browser: Optional browser instance for Playwright
+            sem: Optional semaphore to use for concurrency control
 
         Returns:
             Enriched result dictionary or None if processing failed
         """
-        # Use semaphore to limit concurrency
-        async with SEM:
+        # Use the passed semaphore if available, otherwise default to the global one
+        semaphore = sem if sem is not None else SEM
+
+        async with semaphore:  # Use the variable 'semaphore' here, not SEM
+            # Rest of the method stays the same
             url = result.get("url")
             if not url:
                 return None
@@ -626,6 +634,38 @@ class WebScraper:
             # Return a basic text extraction as fallback
             soup = BeautifulSoup(html, 'html.parser')
             return soup.get_text(separator='\n\n')
+
+    def _extract_source_info(self, url: str, title: str, domain: str, favicon: str = "") -> Dict[str, Any]:
+        """Extract and format source information"""
+        source_type = "Website"
+
+        # Try to determine source type based on domain and title
+        if any(kw in domain for kw in ["guide", "michelin"]):
+            source_type = "Restaurant Guide"
+        elif any(kw in domain for kw in ["news", "times", "post", "magazine"]):
+            source_type = "News Publication"
+        elif any(kw in domain for kw in ["blog", "food", "critic", "review"]):
+            source_type = "Food Blog"
+
+        # Extract source name from domain
+        source_name = domain.split('.')[0].capitalize()
+        if domain.startswith("www."):
+            source_name = domain[4:].split('.')[0].capitalize()
+
+        # If title contains the source name in a better format, use that
+        if title and len(title) > 3:
+            title_parts = title.split('|')
+            if len(title_parts) > 1:
+                possible_name = title_parts[-1].strip()
+                if 3 < len(possible_name) < 25:  # Reasonable length for a source name
+                    source_name = possible_name
+
+        return {
+            "name": source_name,
+            "domain": domain,
+            "type": source_type,
+            "favicon": favicon
+        }
 
     def _extract_domain(self, url: str) -> str:
         """Extract domain from URL"""
