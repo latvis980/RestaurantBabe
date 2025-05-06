@@ -1,5 +1,5 @@
 # Web scraping & browsing
-playwright==1.44.0
+playwright==1.52.0
 requests
 beautifulsoup4>=4.12.2
 readability-lxml>=0.8.1
