@@ -180,6 +180,35 @@ class ListAnalyzer:
         used_tokens = 0
         seen: set[str] = set()
 
+        # Extract the sources collection if it exists in the first result
+        sources_collection = None
+        if search_results and len(search_results) > 0 and "sources_collection" in search_results[0]:
+            sources_collection = search_results[0].get("sources_collection", [])
+
+            # Add a section for sources collection if available
+            if sources_collection:
+                sources_section = ["SOURCES COLLECTION:"]
+                for i, source in enumerate(sources_collection):
+                    source_name = source.get("name", "Unknown")
+                    source_domain = source.get("domain", "Unknown")
+                    source_type = source.get("type", "Website")
+                    result_index = source.get("result_index", i)
+
+                    sources_section.append(f"Source {i+1}: {source_name}")
+                    sources_section.append(f"Type: {source_type}")
+                    sources_section.append(f"Domain: {source_domain}")
+                    sources_section.append(f"Result Index: {result_index}")
+                    sources_section.append("")
+
+                # Add sources section to the formatted results
+                sources_text = "\n".join(sources_section)
+                sources_tokens = self._tokens(sources_text)
+
+                # Only add if within budget
+                if sources_tokens < meta_overhead // 2:
+                    lines.append(sources_text)
+                    used_tokens += sources_tokens
+
         for idx, res in enumerate(search_results):
             # ----- dedupe identical URLs ---------------------------------
             key = self._dedupe_key(res.get("url", ""))
@@ -191,10 +220,20 @@ class ListAnalyzer:
                 f"RESULT {idx + 1}:",
                 f"Title: {res.get('title', 'Unknown')}",
                 f"URL: {res.get('url', 'Unknown')}",
-                f"Source: {res.get('source_domain', 'Unknown')}",
             ]
-            if res.get("source_name"):
-                base.append(f"Source Name: {res['source_name']}")
+
+            # Add source information from either source_info or direct properties
+            if "source_info" in res:
+                source_info = res["source_info"]
+                base.append(f"Source Name: {source_info.get('name', 'Unknown')}")
+                base.append(f"Source Type: {source_info.get('type', 'Website')}")
+                base.append(f"Source Domain: {source_info.get('domain', 'Unknown')}")
+            else:
+                # Fallback to original properties
+                base.append(f"Source Domain: {res.get('source_domain', 'Unknown')}")
+                if res.get("source_name"):
+                    base.append(f"Source Name: {res['source_name']}")
+
             if res.get("description"):
                 base.append(f"Description: {res['description']}")
 

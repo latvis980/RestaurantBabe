@@ -252,6 +252,14 @@ class WebScraper:
                 # 4. text extraction
                 processed_content = await self._process_content(fetch_result.get("html", ""))
 
+                # Extract and format source information
+                source_info = self._extract_source_info(
+                    url, 
+                    fetch_result.get("title", ""), 
+                    source_domain,
+                    result.get("favicon", "")
+                )
+
                 # 5. pack result
                 enriched_result = {
                     **result,
@@ -261,6 +269,7 @@ class WebScraper:
                     "source_reputation": source_validation.get("reputation_score", 0.5),
                     "quality_score": evaluation.get("content_quality", 0.0),
                     "restaurant_count": evaluation.get("restaurant_count", 0),
+                    "source_info": source_info,
                     "timestamp": time.time(),
                 }
                 self.successful_urls.append(url)
