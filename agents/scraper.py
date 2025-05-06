@@ -31,6 +31,8 @@ from utils.debug_utils import dump_chain_state
 logger = logging.getLogger("restaurant-recommender.scraper")
 
 class WebScraper:
+    # In WebScraper class
+
     def __init__(self, config):
         self.config = config
 
@@ -38,6 +40,9 @@ class WebScraper:
             model=config.OPENAI_MODEL,
             temperature=0.2,
         )
+
+        self._concurrency = getattr(config, "SCRAPER_CONCURRENCY", 3)
+        self._semaphore = None  # This will be created per event loop
 
         self.eval_system_prompt = """
         You are an expert at evaluating web content about restaurants.
@@ -51,12 +56,12 @@ class WebScraper:
 
         NOT VALID CONTENT (score < 0.3):
         - Official website of a single restaurant
-        - Collections of restaurants on booking and delivery sites, like The Fork, Uber Eats, Glove, etc.
+        - Collections of restaurants in booking and delivery websites like Uber Eats, The Fork, Glovo, etc.
         - Individual restaurant menus
         - Single restaurant reviews
         - Social media posts about individual dining experiences
         - Forum/Reddit discussions without professional curation
-
+        - Hotel booking sites
 
         SCORING CRITERIA:
         - Multiple restaurants mentioned (essential)
@@ -94,6 +99,97 @@ class WebScraper:
 
         self.successful_urls, self.failed_urls = [], []
         self.filtered_urls, self.invalid_content_urls = [], []
+
+    # -------------------------------------------------
+    # Internal helpers
+    async def _process_search_result(self, result: Dict[str, Any], browser=None, sem=None) -> Optional[Dict[str, Any]]:
+        """
+        Process a single search result through the full pipeline
+
+        Args:
+            result: Search result dictionary with URL
+            browser: Optional browser instance for Playwright
+            sem: Optional semaphore to use for concurrency control
+
+        Returns:
+            Enriched result dictionary or None if processing failed
+        """
+        # Use the passed semaphore if available, otherwise default to the global one
+        semaphore = sem if sem is not None else SEM
+
+        async with semaphore:  # Use the variable 'semaphore' here, not SEM
+            # Rest of the method stays the same
+            url = result.get("url")
+            if not url:
+                return None
+
+            try:
+                # 1. domain reputation
+                source_domain = self._extract_domain(url)
+                result["source_domain"] = source_domain
+                source_validation = validate_source(source_domain, self.config)
+                if not source_validation["is_valid"]:
+                    logger.info(f"Filtered URL by source validation: {url}")
+                    self.filtered_urls.append(url)
+                    return None
+
+                # 2. fetch html - either with Playwright or HTTP methods
+                if PLAYWRIGHT_ENABLED and browser is not None:
+                    fetch_result = await self._fetch_with_playwright(url, browser)
+                else:
+                    fetch_result = await self._fetch_with_http(url)
+
+                if fetch_result.get("error"):
+                    logger.warning(f"Failed to fetch URL: {url}, Error: {fetch_result['error']}")
+                    self.failed_urls.append(url)
+                    return None
+
+                # 3. AI evaluation
+                evaluation = await self._evaluate_content(
+                    url,
+                    fetch_result.get("title", ""),
+                    fetch_result.get("content_preview", ""),
+                )
+                if not (
+                    evaluation.get("is_restaurant_list")
+                    and evaluation.get("content_quality", 0) > 0.5
+                ):
+                    logger.info(f"Filtered URL by content evaluation: {url}")
+                    self.invalid_content_urls.append(url)
+                    return None
+
+                # 4. text extraction
+                processed_content = await self._process_content(fetch_result.get("html", ""))
+
+                # Extract and format source information
+                source_info = self._extract_source_info(
+                    url, 
+                    fetch_result.get("title", ""), 
+                    source_domain,
+                    result.get("favicon", "")
+                )
+
+                # 5. pack result
+                enriched_result = {
+                    **result,
+                    "scraped_title": fetch_result.get("title", ""),
+                    "scraped_content": processed_content,
+                    "content_length": len(processed_content),
+                    "source_reputation": source_validation.get("reputation_score", 0.5),
+                    "quality_score": evaluation.get("content_quality", 0.0),
+                    "restaurant_count": evaluation.get("restaurant_count", 0),
+                    "source_info": source_info,
+                    "timestamp": time.time(),
+                }
+                self.successful_urls.append(url)
+                logger.info(f"Successfully processed: {url}")
+                return enriched_result
+
+            except Exception as e:
+                logger.error(f"Error processing URL {url}: {str(e)}")
+                self.failed_urls.append(url)
+                return None
+
 
     # -------------------------------------------------
     # Public orchestrator
@@ -200,95 +296,7 @@ class WebScraper:
 
             return enriched_results
 
-    # -------------------------------------------------
-    # Internal helpers
-    async def _process_search_result(self, result: Dict[str, Any], browser=None, sem=None) -> Optional[Dict[str, Any]]:
-        """
-        Process a single search result through the full pipeline
-
-        Args:
-            result: Search result dictionary with URL
-            browser: Optional browser instance for Playwright
-            sem: Optional semaphore to use for concurrency control
-
-        Returns:
-            Enriched result dictionary or None if processing failed
-        """
-        # Use the passed semaphore if available, otherwise default to the global one
-        semaphore = sem if sem is not None else SEM
-
-        async with semaphore:  # Use the variable 'semaphore' here, not SEM
-            # Rest of the method stays the same
-            url = result.get("url")
-            if not url:
-                return None
-
-            try:
-                # 1. domain reputation
-                source_domain = self._extract_domain(url)
-                result["source_domain"] = source_domain
-                source_validation = validate_source(source_domain, self.config)
-                if not source_validation["is_valid"]:
-                    logger.info(f"Filtered URL by source validation: {url}")
-                    self.filtered_urls.append(url)
-                    return None
-
-                # 2. fetch html - either with Playwright or HTTP methods
-                if PLAYWRIGHT_ENABLED and browser is not None:
-                    fetch_result = await self._fetch_with_playwright(url, browser)
-                else:
-                    fetch_result = await self._fetch_with_http(url)
-
-                if fetch_result.get("error"):
-                    logger.warning(f"Failed to fetch URL: {url}, Error: {fetch_result['error']}")
-                    self.failed_urls.append(url)
-                    return None
-
-                # 3. AI evaluation
-                evaluation = await self._evaluate_content(
-                    url,
-                    fetch_result.get("title", ""),
-                    fetch_result.get("content_preview", ""),
-                )
-                if not (
-                    evaluation.get("is_restaurant_list")
-                    and evaluation.get("content_quality", 0) > 0.5
-                ):
-                    logger.info(f"Filtered URL by content evaluation: {url}")
-                    self.invalid_content_urls.append(url)
-                    return None
-
-                # 4. text extraction
-                processed_content = await self._process_content(fetch_result.get("html", ""))
-
-                # Extract and format source information
-                source_info = self._extract_source_info(
-                    url, 
-                    fetch_result.get("title", ""), 
-                    source_domain,
-                    result.get("favicon", "")
-                )
-
-                # 5. pack result
-                enriched_result = {
-                    **result,
-                    "scraped_title": fetch_result.get("title", ""),
-                    "scraped_content": processed_content,
-                    "content_length": len(processed_content),
-                    "source_reputation": source_validation.get("reputation_score", 0.5),
-                    "quality_score": evaluation.get("content_quality", 0.0),
-                    "restaurant_count": evaluation.get("restaurant_count", 0),
-                    "source_info": source_info,
-                    "timestamp": time.time(),
-                }
-                self.successful_urls.append(url)
-                logger.info(f"Successfully processed: {url}")
-                return enriched_result
-
-            except Exception as e:
-                logger.error(f"Error processing URL {url}: {str(e)}")
-                self.failed_urls.append(url)
-                return None
+    
 
     async def _fetch_with_playwright(self, url: str, browser) -> Dict[str, Any]:
         """
