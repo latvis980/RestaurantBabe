@@ -51,12 +51,12 @@ class WebScraper:
 
         NOT VALID CONTENT (score < 0.3):
         - Official website of a single restaurant
-        - Collections of restaurants on booking and delivery sites like Fork, Uber eats, Glovo, etc.
+        - Collections of restaurants on booking and delivery sites, like The Fork, Uber Eats, Glove, etc.
         - Individual restaurant menus
         - Single restaurant reviews
         - Social media posts about individual dining experiences
         - Forum/Reddit discussions without professional curation
-        - Hotel booking sites
+
 
         SCORING CRITERIA:
         - Multiple restaurants mentioned (essential)

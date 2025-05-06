@@ -9,7 +9,7 @@ from utils.async_utils import sync_to_async
 import asyncio
 import logging
 
-# Create logger
+# Create logger. 
 logger = logging.getLogger("restaurant-recommender.orchestrator")
 
 class LangChainOrchestrator:
@@ -98,7 +98,7 @@ class LangChainOrchestrator:
             enriched = self.scraper.scrape_search_results(combined_results)
             print(f"[Orchestrator] Enriched results: {len(enriched)}")
             return enriched
-        
+
         # Modify analyze_results to dump state
         def analyze_results_with_debug(x):
             try:
