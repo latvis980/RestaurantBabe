@@ -66,12 +66,12 @@ class WebScraper:
 
         FORMAT:
         Respond with a JSON object containing:
-        {
+        {{
           "is_restaurant_list": true/false,
           "restaurant_count": estimated number of restaurants mentioned,
           "content_quality": 0.0-1.0,
           "reasoning": "brief explanation of your evaluation"
-        }
+        }}
         """
 
         self.eval_prompt = ChatPromptTemplate.from_messages(
@@ -645,3 +645,31 @@ class WebScraper:
         """
         logger.info("Using legacy API scrape_search_results - consider migrating to filter_and_scrape_results")
         return await self.filter_and_scrape_results(search_results)
+
+    # Public method for testing URL fetching separately
+    async def fetch_url(self, url: str) -> Dict[str, Any]:
+        """
+        Fetch a URL for testing purposes
+
+        Args:
+            url: URL to fetch
+
+        Returns:
+            Dictionary with content and status information
+        """
+        # Use the appropriate fetch method based on availability
+        if PLAYWRIGHT_ENABLED:
+            try:
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(
+                        headless=True, 
+                        args=["--disable-dev-shm-usage"]
+                    )
+                    result = await self._fetch_with_playwright(url, browser)
+                    await browser.close()
+                    return result
+            except Exception as e:
+                logger.error(f"Error using Playwright for testing: {e}, falling back to HTTP")
+                return await self._fetch_with_http(url)
+        else:
+            return await self._fetch_with_http(url)
