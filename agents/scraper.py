@@ -163,7 +163,10 @@ class WebScraper:
                     return None
 
                 # 4. text extraction
-                processed_content = await self._process_content(fetch_result.get("html", ""))
+                processed_content = await self._process_content(
+                    fetch_result.get("html", ""), 
+                    fetch_result.get("structured_content")
+                )
 
                 # Extract and format source information
                 source_info = self._extract_source_info(
@@ -209,6 +212,19 @@ class WebScraper:
         Returns:
             List of enriched results with scraped content
         """
+        logger.info(f"PLAYWRIGHT_ENABLED: {PLAYWRIGHT_ENABLED}")
+        if PLAYWRIGHT_ENABLED:
+            try:
+                # Test Playwright availability
+                async with async_playwright() as p:
+                    browser_version = await p.chromium.executable_path
+                    logger.info(f"Playwright browser executable: {browser_version}")
+                    logger.info("Playwright is available and functioning")
+            except Exception as e:
+                logger.error(f"Playwright test failed: {e}")
+                logger.error(f"Exception type: {type(e).__name__}")
+                logger.error(f"Will fall back to HTTP methods for all scraping")
+        
         # Create a local semaphore for this run
         local_sem = asyncio.Semaphore(3)
 
@@ -396,8 +412,124 @@ class WebScraper:
                 result["content_preview"] = content_text
             except Exception as e:
                 # Fallback to simpler extraction
-                content_text = await page.evaluate('document.body.innerText')
-                result["content_preview"] = content_text[:2000] if content_text else ""
+                content_text = await page.evaluate('''() => {
+                    // Get ALL visible text with special attention to potential restaurant names
+                    const extractedItems = [];
+
+                    // Specifically look for restaurant names in common patterns
+                    function findRestaurantNames() {
+                        // Restaurant names are often in headers, strong tags, or styled links
+                        const potentialNameElements = [];
+
+                        // Collect all headings (h1-h6)
+                        document.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(el => {
+                            const text = el.innerText.trim();
+                            if (text) potentialNameElements.push({
+                                text: text,
+                                type: 'HEADING',
+                                tag: el.tagName.toLowerCase()
+                            });
+                        });
+
+                        // Collect all bold/strong elements (often used for restaurant names)
+                        document.querySelectorAll('strong, b').forEach(el => {
+                            const text = el.innerText.trim();
+                            if (text && text.length < 100) potentialNameElements.push({
+                                text: text,
+                                type: 'STRONG',
+                                tag: el.tagName.toLowerCase()
+                            });
+                        });
+
+                        // Collect all links (a) with styling that might be restaurant names
+                        document.querySelectorAll('a').forEach(el => {
+                            const style = window.getComputedStyle(el);
+                            if (style.display !== 'none' && style.visibility !== 'hidden') {
+                                const text = el.innerText.trim();
+                                if (text && text.length < 100) potentialNameElements.push({
+                                    text: text,
+                                    type: 'LINK',
+                                    tag: 'a',
+                                    href: el.href
+                                });
+                            }
+                        });
+
+                        // Collect divs and spans with special styling (font-weight, etc.)
+                        document.querySelectorAll('div, span').forEach(el => {
+                            const style = window.getComputedStyle(el);
+                            if (style.fontWeight >= 600 || style.fontSize > '16px') {
+                                const text = el.innerText.trim();
+                                if (text && text.length < 100 && text.length > 2) potentialNameElements.push({
+                                    text: text,
+                                    type: 'STYLED',
+                                    tag: el.tagName.toLowerCase()
+                                });
+                            }
+                        });
+
+                        return potentialNameElements;
+                    }
+
+                    // Main text extraction - get all visible text
+                    function getAllVisibleText() {
+                        function isVisible(el) {
+                            const style = window.getComputedStyle(el);
+                            return !(style.display === 'none' || style.visibility === 'hidden');
+                        }
+
+                        // Use main content area if available
+                        const mainContent = document.querySelector('main') || 
+                                           document.querySelector('article') || 
+                                           document.querySelector('.content') || 
+                                           document.body;
+
+                        const textItems = [];
+
+                        // Get all paragraphs
+                        mainContent.querySelectorAll('p').forEach(el => {
+                            if (isVisible(el)) {
+                                const text = el.innerText.trim();
+                                if (text) textItems.push({
+                                    text: text,
+                                    type: 'PARAGRAPH'
+                                });
+                            }
+                        });
+
+                        // Get all list items
+                        mainContent.querySelectorAll('li').forEach(el => {
+                            if (isVisible(el)) {
+                                const text = el.innerText.trim();
+                                if (text) textItems.push({
+                                    text: text,
+                                    type: 'LIST_ITEM'
+                                });
+                            }
+                        });
+
+                        return textItems;
+                    }
+
+                    const restaurantNames = findRestaurantNames();
+                    const mainText = getAllVisibleText();
+
+                    return JSON.stringify({
+                        restaurantNames: restaurantNames,
+                        mainText: mainText
+                    });
+                }''')
+
+                # Store the structured data
+                try:
+                    structured_content = json.loads(content_text)
+                    result["restaurant_names"] = structured_content.get("restaurantNames", [])
+                    result["structured_content"] = structured_content
+                    result["content_preview"] = json.dumps(structured_content.get("restaurantNames", []))[:2000]
+                except Exception as e:
+                    logger.error(f"Error parsing structured content: {e}")
+                    # Fallback to simple content preview
+                    result["content_preview"] = content_text[:2000] if content_text else ""
 
             # Extract content length for logging
             result["content_length"] = len(result["html"])
@@ -591,78 +723,234 @@ class WebScraper:
                 "reasoning": "Error in evaluation"
             }
 
-    async def _process_content(self, html: str) -> str:
+    async def _process_content(self, html: str, extracted_content=None) -> str:
         """
-        Process HTML content using readability and cleaning
+        Process HTML content using readability and cleaning with enhanced extraction of restaurant names
 
         Args:
             html: Raw HTML content
+            extracted_content: Optional structured content extracted directly with Playwright
 
         Returns:
-            Cleaned and processed text content
+            Cleaned and processed text content with preserved restaurant names
         """
+        # Create a collection for all paragraphs/content elements
+        paragraphs = []
+        restaurant_names = set()  # For deduplication of restaurant names
+
+        # 1. HANDLE PLAYWRIGHT DIRECT EXTRACTION (if available)
+        if extracted_content and isinstance(extracted_content, dict):
+            logger.info("Using Playwright-extracted structured content")
+
+            # Process restaurant names from Playwright extraction
+            playwright_names = extracted_content.get("restaurantNames", [])
+            if playwright_names:
+                name_paragraphs = []
+                for item in playwright_names:
+                    if isinstance(item, dict):
+                        name_type = item.get("type", "UNKNOWN")
+                        name_text = item.get("text", "").strip()
+                        if name_text and 2 < len(name_text) < 100:
+                            name_paragraphs.append(f"RESTAURANT_NAME [{name_type}]: {name_text}")
+                            restaurant_names.add(name_text)
+
+                if name_paragraphs:
+                    paragraphs.append("LIKELY RESTAURANT NAMES:")
+                    paragraphs.extend(name_paragraphs)
+                    paragraphs.append("")  # Empty line separator
+
+            # Process main text content from Playwright
+            playwright_text = extracted_content.get("mainText", [])
+            if playwright_text:
+                for item in playwright_text:
+                    if isinstance(item, dict):
+                        text_type = item.get("type", "TEXT")
+                        text = item.get("text", "").strip()
+                        if text:
+                            paragraphs.append(f"{text_type}: {text}")
+
+        # 2. HTML PROCESSING WITH READABILITY & BEAUTIFULSOUP
         if not html:
+            if paragraphs:
+                return "\n\n".join(paragraphs)
             return ""
 
         try:
-            # 1. Extract main content with readability
+            # First extract title from HTML (before readability possibly removes it)
+            soup_full = BeautifulSoup(html, 'html.parser')
+            page_title = soup_full.title.text.strip() if soup_full.title else ""
+
+            # Add page title if not already included
+            if page_title and not any(page_title in p for p in paragraphs):
+                paragraphs.insert(0, f"TITLE: {page_title}")
+
+            # Use readability to extract main content
             doc = Document(html)
             readable_html = doc.summary()
-            title = doc.title()
+            doc_title = doc.title()
 
-            # 2. Parse with BeautifulSoup to clean further
+            # Add readability title if different from page title
+            if doc_title and doc_title != page_title:
+                paragraphs.insert(1, f"ARTICLE_TITLE: {doc_title}")
+
+            # Parse the readability-extracted HTML with BeautifulSoup
             soup = BeautifulSoup(readable_html, 'html.parser')
 
-            # 3. Extract text and preserve some structure
-            paragraphs = []
+            # RESTAURANT NAME EXTRACTION - Look specifically for patterns that typically contain restaurant names
 
-            # Process headings 
+            # 1. Extract names from links (common for restaurant lists)
+            link_names = []
+            for link in soup.find_all('a'):
+                link_text = link.get_text().strip()
+                # Restaurant names are typically short, non-sentence-like text
+                if (link_text and 2 < len(link_text) < 60 and 
+                        link_text.count(' ') < 8 and
+                        not link_text.lower().startswith(('http', 'www', 'click', 'read', 'more'))):
+                    if link_text not in restaurant_names:
+                        link_names.append(f"LINK: {link_text}")
+                        restaurant_names.add(link_text)
+
+            # Only add link section if we found potential restaurant names
+            if link_names:
+                paragraphs.append("POTENTIAL RESTAURANT NAMES FROM LINKS:")
+                paragraphs.extend(link_names)
+                paragraphs.append("")  # Separator
+
+            # 2. Extract names from headings
+            heading_texts = []
             for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
-                paragraphs.append(f"HEADING: {heading.get_text().strip()}")
-                heading.extract()  # Remove from soup after extracting
+                heading_text = heading.get_text().strip()
+                if heading_text and heading_text not in restaurant_names:
+                    heading_tag = heading.name
+                    heading_texts.append(f"HEADING_{heading_tag.upper()}: {heading_text}")
+                    restaurant_names.add(heading_text)
+                    # Remove processed heading to avoid duplication
+                    heading.extract()
 
-            # Process lists
+            if heading_texts:
+                paragraphs.append("HEADINGS (OFTEN RESTAURANT NAMES):")
+                paragraphs.extend(heading_texts)
+                paragraphs.append("")  # Separator
+
+            # 3. Extract names from styled elements (bold, strong, etc.)
+            styled_texts = []
+            for element in soup.find_all(['strong', 'b', 'em', 'i', 'mark']):
+                styled_text = element.get_text().strip()
+                if (styled_text and len(styled_text) < 60 and
+                        styled_text not in restaurant_names and
+                        not any(styled_text.lower().startswith(word) for word in ['http', 'www'])):
+                    styled_texts.append(f"STYLED: {styled_text}")
+                    restaurant_names.add(styled_text)
+
+            if styled_texts:
+                paragraphs.append("STYLED TEXT (POTENTIAL RESTAURANT NAMES):")
+                paragraphs.extend(styled_texts)
+                paragraphs.append("")  # Separator
+
+            # 4. Process lists (often contain restaurant info)
             for list_elem in soup.find_all(['ul', 'ol']):
                 list_items = []
                 for item in list_elem.find_all('li'):
                     item_text = item.get_text().strip()
                     if item_text:
-                        list_items.append(f"- {item_text}")
+                        # Try to extract restaurant names from list items that look like they contain restaurant names
+                        if len(item_text) < 200:  # Not too long
+                            list_items.append(f"LIST_ITEM: {item_text}")
+                        else:
+                            # For longer list items, still include but truncate for readability
+                            list_items.append(f"LIST_ITEM: {item_text[:200]}...")
 
                 if list_items:
-                    paragraphs.append("\n".join(list_items))
-                list_elem.extract()  # Remove from soup after extracting
+                    paragraphs.append("LIST ITEMS:")
+                    paragraphs.extend(list_items)
+                    paragraphs.append("")  # Separator
 
-            # Process regular paragraphs
+                # Remove processed list to avoid duplication
+                list_elem.extract()
+
+            # 5. Process regular paragraphs
+            para_texts = []
             for para in soup.find_all('p'):
                 text = para.get_text().strip()
                 if text:
-                    paragraphs.append(text)
+                    # Keep paragraphs at a reasonable length
+                    if len(text) > 500:
+                        para_texts.append(f"PARAGRAPH: {text[:500]}...")
+                    else:
+                        para_texts.append(f"PARAGRAPH: {text}")
+                # Remove processed paragraph to avoid duplication
+                para.extract()
 
-            # Get any remaining text
+            if para_texts:
+                paragraphs.append("CONTENT PARAGRAPHS:")
+                paragraphs.extend(para_texts)
+                paragraphs.append("")  # Separator
+
+            # 6. Get any remaining text not captured above
             remaining_text = soup.get_text().strip()
             if remaining_text:
                 # Split by newlines and filter empty strings
                 lines = [line.strip() for line in remaining_text.split('\n') if line.strip()]
-                paragraphs.extend(lines)
+                if lines:
+                    paragraphs.append("ADDITIONAL CONTENT:")
+                    for line in lines:
+                        # Avoid overly long lines
+                        if len(line) > 500:
+                            paragraphs.append(f"{line[:500]}...")
+                        else:
+                            paragraphs.append(line)
 
-            # Add title at the beginning
-            if title:
-                paragraphs.insert(0, f"TITLE: {title}")
+            # 7. Process divs with class attributes that might indicate restaurant content
+            restaurant_div_keywords = ['restaurant', 'venue', 'place', 'location', 'listing', 'item']
+            for div in soup_full.find_all('div', class_=True):
+                div_class = ' '.join(div.get('class', []))
+                if any(keyword in div_class.lower() for keyword in restaurant_div_keywords):
+                    div_text = div.get_text(strip=True)
+                    # Limit to reasonable length for restaurant section
+                    if 10 < len(div_text) < 500:  
+                        # Process nested elements for better structure
+                        div_content = []
 
-            # Join all paragraphs with double newlines
-            processed_text = "\n\n".join(paragraphs)
+                        # Check for restaurant name indicators
+                        for name_tag in div.find_all(['h3', 'h4', 'strong', 'b']):
+                            name_text = name_tag.get_text(strip=True)
+                            if name_text and name_text not in restaurant_names:
+                                div_content.append(f"NAME: {name_text}")
+                                restaurant_names.add(name_text)
+
+                        # Check for address indicators
+                        for addr_tag in div.find_all(['address', 'p']):
+                            addr_text = addr_tag.get_text(strip=True)
+                            if addr_text and len(addr_text) < 200:
+                                div_content.append(f"DETAIL: {addr_text}")
+
+                        if div_content:
+                            if "RESTAURANT SECTIONS:" not in paragraphs:
+                                paragraphs.append("RESTAURANT SECTIONS:")
+                            paragraphs.extend(div_content)
+                            paragraphs.append("---")  # Section separator
+
+            # Join all paragraphs with appropriate spacing
+            processed_text = "\n\n".join(p for p in paragraphs if p)
 
             # Clean up extra whitespace
             processed_text = re.sub(r'\n{3,}', '\n\n', processed_text)
             processed_text = re.sub(r' {2,}', ' ', processed_text)
 
             return processed_text
+
         except Exception as e:
             logger.error(f"Error processing content: {str(e)}")
-            # Return a basic text extraction as fallback
-            soup = BeautifulSoup(html, 'html.parser')
-            return soup.get_text(separator='\n\n')
+            # Return what we've been able to gather so far, or a simple extraction as fallback
+            if paragraphs:
+                return "\n\n".join(paragraphs)
+
+            # Last resort fallback - simple text extraction
+            try:
+                soup = BeautifulSoup(html, 'html.parser')
+                return soup.get_text(separator='\n\n')
+            except:
+                return "Failed to extract content from HTML"
 
     def _extract_source_info(self, url: str, title: str, domain: str, favicon: str = "") -> Dict[str, Any]:
         """Extract and format source information"""
