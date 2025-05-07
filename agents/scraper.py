@@ -127,9 +127,13 @@ class WebScraper:
                 # 1. domain reputation
                 source_domain = self._extract_domain(url)
                 result["source_domain"] = source_domain
+            
                 source_validation = validate_source(source_domain, self.config)
                 if not source_validation["is_valid"]:
                     logger.info(f"Filtered URL by source validation: {url}")
+                    logger.info(f"  - Domain: {source_domain}")
+                    logger.info(f"  - Reputation Score: {source_validation.get('reputation_score', 0)}")
+                    logger.info(f"  - Reason: {source_validation.get('reason', 'unknown')}")
                     self.filtered_urls.append(url)
                     return None
 
@@ -528,6 +532,7 @@ class WebScraper:
             # Basic keyword check to avoid LLM calls for obviously irrelevant content
             restaurant_keywords = ["restaurant", "dining", "food", "eat", "chef", "cuisine", "menu", "dish"]
             if not any(kw in title.lower() or kw in preview.lower() for kw in restaurant_keywords):
+                logger.info(f"URL filtered by basic keyword check: {url} - No restaurant keywords found")
                 return {
                     "is_restaurant_list": False,
                     "restaurant_count": 0,
@@ -554,9 +559,24 @@ class WebScraper:
             if "content_quality" not in evaluation:
                 evaluation["content_quality"] = 0.8 if evaluation.get("is_restaurant_list", False) else 0.2
 
-            # Log evaluation results
-            is_valid = evaluation.get("is_restaurant_list") and evaluation.get("content_quality", 0) > 0.5
-            logger.info(f"Content evaluation for {url}: Valid={is_valid}, Score={evaluation.get('content_quality')}")
+            # Get validity status based on current threshold
+            is_restaurant_list = evaluation.get("is_restaurant_list", False)
+            content_quality = evaluation.get("content_quality", 0.0)
+            reasoning = evaluation.get("reasoning", "No reasoning provided")
+            current_threshold = 0.5
+
+            # Log detailed evaluation results
+            logger.info(f"Content evaluation for {url}:")
+            logger.info(f"  - Title: {title[:50]}...")
+            logger.info(f"  - Is Restaurant List: {is_restaurant_list}")
+            logger.info(f"  - Quality Score: {content_quality}")
+            logger.info(f"  - Current Threshold: {current_threshold}")
+            logger.info(f"  - Pass Filter: {is_restaurant_list and content_quality > current_threshold}")
+            logger.info(f"  - Reasoning: {reasoning}")
+
+            # If it would pass with a lower threshold but not the current one, log that specifically
+            if is_restaurant_list and 0.3 <= content_quality <= current_threshold:
+                logger.info(f"  - NOTE: This content would pass with a lower threshold of 0.3")
 
             # Return the evaluation
             return evaluation
