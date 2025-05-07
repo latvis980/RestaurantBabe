@@ -40,7 +40,7 @@ from utils.debug_utils import dump_chain_state
 # Configuration constants – tweak here if you need different limits
 # ---------------------------------------------------------------------------
 
-MIN_ACCEPTABLE_RATING = 4.0           # rating threshold – <  ► rejected
+MIN_ACCEPTABLE_RATING = 4.1           # rating threshold – <  ► rejected
 MAX_RESULTS_PER_QUERY = 3             # courtesy cap for scraping
 MAPS_FIELDS = [                       # fields we request from Place Details
     "url",
@@ -136,15 +136,62 @@ class FollowUpSearchAgent:
     # Google Maps integration helpers
     # ------------------------------------------------------------------
 
-    def _get_google_maps_info(self, name: str, location: str) -> Optional[Dict[str, Any]]:
+    def _extract_restaurant_genre(self, restaurant: Dict[str, Any]) -> str:
+        """Extract restaurant genre/type from available data to improve Maps search.
+
+        This helps distinguish restaurants from other businesses with similar names.
+        """
+        # Check description for genre hints
+        description = restaurant.get("description", "").lower()
+
+        # Common restaurant types
+        genres = {
+            "italian restaurant": ["italian", "pasta", "pizza", "trattoria"],
+            "japanese restaurant": ["japanese", "sushi", "ramen", "izakaya"],
+            "chinese restaurant": ["chinese", "dim sum", "dumpling"],
+            "indian restaurant": ["indian", "curry"],
+            "french restaurant": ["french", "bistro", "brasserie"],
+            "steakhouse": ["steak", "steakhouse", "grill"],
+            "seafood restaurant": ["seafood", "fish"],
+            "cafe": ["cafe", "café", "coffee", "brunch"],
+            "cocktail bar": ["cocktail", "bar", "pub", "tapas"],
+            "fine dining restaurant": ["michelin", "fine dining", "gourmet"]
+        }
+
+        # Look for genre hints in description
+        for genre, keywords in genres.items():
+            if any(kw in description for kw in keywords):
+                return genre
+
+        # Default to "restaurant" if no specific genre found
+        return "restaurant"
+
+    def _get_google_maps_info(self, name: str, location: str, restaurant: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Look up the place on Google Maps and return basic metadata.
 
         We run a *Text Search* first because it does a decent job at matching
-        ambiguous names.  The first candidate is fed into *Place Details*
+        ambiguous names. The first candidate is fed into *Place Details*
         to get a stable *place_id* URL, rating, etc.
+
+        Includes restaurant genre to improve search accuracy.
         """
         try:
-            text_query = f"{name} {location}"
+            # Extract restaurant genre to help differentiate from other businesses
+            genre = self._extract_restaurant_genre(restaurant)
+
+            # Add genre to the search query to improve matching
+            text_query = f"{name} {genre} {location}"
+
+            dump_chain_state(
+                "google_maps_search",
+                {
+                    "restaurant": name,
+                    "genre": genre,
+                    "location": location,
+                    "full_query": text_query
+                },
+            )
+
             search_resp = self.gmaps.places(query=text_query)
             candidates = search_resp.get("results", [])
             if not candidates:
@@ -172,6 +219,7 @@ class FollowUpSearchAgent:
                 "address": formatted_address,
                 "url": url,
                 "hours": opening_hours,
+                "genre": genre  # Include the genre we used in the search
             }
         except Exception as exc:  # noqa: BLE001 – we want to log every failure
             dump_chain_state(
@@ -201,11 +249,12 @@ class FollowUpSearchAgent:
         restaurant_location = (
             restaurant.get("address", "").split(",")[0] if restaurant.get("address") else ""
         )
+        city = restaurant.get("city", restaurant_location)
 
         # ------------------------------------------------------------------
         # 1️⃣  Google Maps pass – decides early rejection / base metadata
         # ------------------------------------------------------------------
-        maps_info = self._get_google_maps_info(restaurant_name, restaurant_location)
+        maps_info = self._get_google_maps_info(restaurant_name, city or restaurant_location, restaurant)
         if maps_info and maps_info.get("rating") is not None:
             rating = float(maps_info["rating"])
             if rating < MIN_ACCEPTABLE_RATING:
@@ -230,6 +279,8 @@ class FollowUpSearchAgent:
                 )
             if maps_info.get("hours") and not restaurant.get("hours"):
                 restaurant["hours"] = maps_info["hours"]
+            if maps_info.get("genre"):
+                restaurant["genre"] = maps_info["genre"]
         else:
             # No Maps hit – we keep the candidate but do NOT add rating
             dump_chain_state(
@@ -251,24 +302,24 @@ class FollowUpSearchAgent:
 
         if not specific_queries:
             specific_queries = self._default_queries_for(
-                restaurant, restaurant_name, restaurant_location
+                restaurant, restaurant_name, restaurant_location or city
             )
 
         missing_info = restaurant.get("missing_info", [])
         specific_queries.extend(
-            f"{restaurant_name} restaurant {restaurant_location} {info}" for info in missing_info
+            f"{restaurant_name} restaurant {restaurant_location or city} {info}" for info in missing_info
         )
 
         if secondary_filter_parameters:
             specific_queries.extend(
-                f"{restaurant_name} restaurant {restaurant_location} {param}"
+                f"{restaurant_name} restaurant {restaurant_location or city} {param}"
                 for param in secondary_filter_parameters
             )
 
         # ------------------------------------------------------------------
         # 3️⃣  Global guide check – independent of Maps rating
         # ------------------------------------------------------------------
-        global_guide_info = self._check_global_guides(restaurant_name, restaurant_location)
+        global_guide_info = self._check_global_guides(restaurant_name, restaurant_location or city)
         global_guide_sources = self._extract_sources(global_guide_info)
 
         # ------------------------------------------------------------------
@@ -277,7 +328,15 @@ class FollowUpSearchAgent:
         all_search_results: List[Dict[str, Any]] = []
         for query in specific_queries:
             try:
-                results = self.search_agent._execute_search(query)
+                # Add restaurant genre to the query if available
+                if restaurant.get("genre") and "restaurant" in query:
+                    genre = restaurant.get("genre")
+                    # Replace generic "restaurant" with specific genre
+                    enhanced_query = query.replace("restaurant", genre)
+                else:
+                    enhanced_query = query
+
+                results = self.search_agent._execute_search(enhanced_query)
                 filtered = self.search_agent._filter_results(results)[:MAX_RESULTS_PER_QUERY]
                 scraped = self.scraper.scrape_search_results(filtered)
                 all_search_results.extend(scraped)
@@ -340,16 +399,20 @@ class FollowUpSearchAgent:
     def _default_queries_for(self, restaurant: Dict[str, Any], name: str, location: str) -> List[str]:
         """Return a minimal set of follow‑up queries based on missing fields."""
         queries: List[str] = []
+
+        # Get restaurant genre if available
+        genre = restaurant.get("genre", "restaurant")
+
         if not restaurant.get("address") or restaurant.get("address") == "Address unavailable":
-            queries.append(f"{name} restaurant {location} address location")
+            queries.append(f"{name} {genre} {location} address location")
         if not restaurant.get("price_range"):
-            queries.append(f"{name} restaurant {location} price range cost")
+            queries.append(f"{name} {genre} {location} price range cost")
         if not restaurant.get("recommended_dishes") or len(restaurant.get("recommended_dishes", [])) < 2:
-            queries.append(f"{name} restaurant {location} signature dishes menu specialties")
+            queries.append(f"{name} {genre} {location} signature dishes menu specialties")
         if not restaurant.get("sources") or len(restaurant.get("sources", [])) < 2:
-            queries.append(f"{name} restaurant {location} reviews recommended by critic guide")
+            queries.append(f"{name} {genre} {location} reviews recommended by critic guide")
         # Always check major guides even if everything else is complete
-        queries.append(f"{name} restaurant {location} michelin guide awards")
+        queries.append(f"{name} {genre} {location} michelin guide awards")
         return queries[:4]  # keep it short – we do a lot of calls already
 
     # ------------------------------------------------------------------
