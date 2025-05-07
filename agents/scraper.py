@@ -72,12 +72,12 @@ class WebScraper:
 
         FORMAT:
         Respond with a JSON object containing:
-        {
+        {{
           "is_restaurant_list": true/false,
           "restaurant_count": estimated number of restaurants mentioned,
           "content_quality": 0.0-1.0,
           "reasoning": "brief explanation of your evaluation"
-        }
+        }}
         """
 
         self.eval_prompt = ChatPromptTemplate.from_messages(
@@ -465,12 +465,12 @@ class WebScraper:
             restaurant_keywords = ["restaurant", "dining", "food", "eat", "chef", "cuisine", "menu", "dish"]
             if not any(kw in title.lower() or kw in preview.lower() for kw in restaurant_keywords):
                 logger.info(f"URL filtered by basic keyword check: {url}")
-                return {
+                return {{
                     "is_restaurant_list": False,
                     "restaurant_count": 0,
                     "content_quality": 0.0,
                     "reasoning": "No restaurant-related keywords found"
-                }
+                }}
 
             # Using LLM for evaluation
             response = await self.eval_chain.ainvoke({
