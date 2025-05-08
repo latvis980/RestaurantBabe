@@ -257,6 +257,7 @@ class WebScraper:
                     url,
                     fetch_result.get("title", ""),
                     fetch_result.get("content_preview", ""),
+                    fetch_result
                 )
 
                 if not (
@@ -315,7 +316,8 @@ class WebScraper:
             "title": "",
             "content_preview": "",
             "error": None,
-            "content_length": 0
+            "content_length": 0,
+            "likely_restaurant_list": False
         }
 
         try:
@@ -354,7 +356,7 @@ class WebScraper:
             result["html"] = await page.content()
             result["title"] = await page.title()
 
-            # Get content preview using JavaScript
+            # Get content preview using JavaScript with improved restaurant detection
             try:
                 content_text = await page.evaluate('''() => {
                     // Get visible text only
@@ -363,9 +365,14 @@ class WebScraper:
                             return node.textContent || "";
                         }
 
-                        const style = window.getComputedStyle(node);
-                        if (style && (style.display === "none" || style.visibility === "hidden")) {
-                            return "";
+                        // Skip invisible elements
+                        try {
+                            const style = window.getComputedStyle(node);
+                            if (style && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")) {
+                                return "";
+                            }
+                        } catch (e) {
+                            // Ignore errors with getComputedStyle
                         }
 
                         let text = "";
@@ -379,19 +386,149 @@ class WebScraper:
                         return text;
                     }
 
-                    // Use main content area if available
+                    // Helper to check if a node likely contains a restaurant entry
+                    function isLikelyRestaurantEntry(node) {
+                        const text = node.textContent.toLowerCase();
+                        const hasRestaurantKeywords = /restaurant|café|cafe|bistro|eatery|dining|bar|bakery|patisserie|brasserie/i.test(text);
+                        const hasAddressPattern = /\\d+\\s+[a-zA-Z\\s]+\\s+(street|st|avenue|ave|boulevard|blvd|road|rd)/i.test(text);
+                        const hasPriceInfo = /(\\$|€|£|¥)(\\$|€|£|¥)?(\\$|€|£|¥)?|\\s+\\d+\\s*(\\$|€|£|¥)/.test(text);
+
+                        return hasRestaurantKeywords || hasAddressPattern || hasPriceInfo;
+                    }
+
+                    // Find the most likely parent container of restaurant listings
+                    function findRestaurantListContainer() {
+                        // Common container selectors for listings
+                        const possibleContainers = [
+                            ...document.querySelectorAll('main, .content, article, .article, .list, .listings, .places, .restaurants, [class*="list"], [class*="grid"]'),
+                            ...document.querySelectorAll('div > ul, div > ol, section')
+                        ];
+
+                        // Score each container by how likely it is to contain restaurant listings
+                        const containerScores = possibleContainers.map(container => {
+                            let score = 0;
+
+                            // Score based on children that look like restaurant entries
+                            const children = Array.from(container.children);
+                            const restaurantLikeChildren = children.filter(isLikelyRestaurantEntry);
+                            score += restaurantLikeChildren.length * 5;
+
+                            // Score based on heading patterns
+                            const headings = container.querySelectorAll('h1, h2, h3, h4, h5, h6');
+                            const restaurantLikeHeadings = Array.from(headings).filter(h => 
+                                /^\\d+\\.|\\d+\\s+|top\\s+\\d+|best\\s+\\d+|restaurant|café|cafe|dining/i.test(h.textContent)
+                            );
+                            score += restaurantLikeHeadings.length * 10;
+
+                            // Score based on numbered items
+                            const numberedItems = container.querySelectorAll('ol > li, [class*="number"], [class*="item-"]');
+                            score += numberedItems.length * 2;
+
+                            // Score based on images (restaurants often have photos)
+                            const images = container.querySelectorAll('img');
+                            score += images.length * 0.5;
+
+                            // Bonus for specific classes/IDs
+                            if (/restaurant|cafe|listing|place|venue|spot|destination/i.test(container.className + container.id)) {
+                                score += 20;
+                            }
+
+                            return { container, score };
+                        });
+
+                        // Sort by score descending
+                        containerScores.sort((a, b) => b.score - a.score);
+
+                        // Return the highest scoring container, if it has a reasonable score
+                        return containerScores.length > 0 && containerScores[0].score > 5 
+                               ? containerScores[0].container 
+                               : null;
+                    }
+
+                    // Find potential restaurant entries
+                    const restaurantContainer = findRestaurantListContainer();
+
+                    if (restaurantContainer) {
+                        // For a list container, extract individual entries
+                        const listItems = restaurantContainer.querySelectorAll('li, article, .item, [class*="card"], [class*="list-item"]');
+                        if (listItems && listItems.length > 0) {
+                            // Get text from first few items
+                            let entriesText = "";
+                            const maxEntries = Math.min(5, listItems.length);
+
+                            for (let i = 0; i < maxEntries; i++) {
+                                entriesText += getVisibleText(listItems[i]) + "\\n\\n----------\\n\\n";
+                            }
+
+                            return entriesText.trim();
+                        }
+
+                        // If no distinct list items, get text from the container
+                        return getVisibleText(restaurantContainer).substring(0, 4000);
+                    }
+
+                    // Alternative approach: find numbered headings (like "1. Restaurant Name")
+                    const numberedHeadings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6'))
+                        .filter(el => /^\\d+\\.|\\d+\\s+/.test(el.textContent.trim()))
+                        .slice(0, 5);
+
+                    if (numberedHeadings.length > 0) {
+                        let headingsText = "";
+
+                        for (const heading of numberedHeadings) {
+                            // Get heading plus content until next heading
+                            let content = heading.textContent + "\\n";
+                            let nextEl = heading.nextElementSibling;
+
+                            while (nextEl && nextEl.tagName.toLowerCase() !== heading.tagName.toLowerCase()) {
+                                content += getVisibleText(nextEl) + "\\n";
+                                nextEl = nextEl.nextElementSibling;
+                                if (!nextEl) break;
+                            }
+
+                            headingsText += content + "\\n----------\\n\\n";
+                        }
+
+                        return headingsText.trim();
+                    }
+
+                    // Fallback: scan document for any section with restaurant-like content
+                    const allParagraphs = document.querySelectorAll('p');
+                    let restaurantParagraphs = "";
+                    let count = 0;
+
+                    for (const para of allParagraphs) {
+                        if (isLikelyRestaurantEntry(para)) {
+                            restaurantParagraphs += getVisibleText(para) + "\\n\\n";
+                            count++;
+                            if (count >= 5) break;
+                        }
+                    }
+
+                    if (restaurantParagraphs) {
+                        return restaurantParagraphs;
+                    }
+
+                    // Final fallback: just get main content
                     const mainContent = document.querySelector('main') || 
                                       document.querySelector('article') || 
                                       document.querySelector('.content') || 
                                       document.body;
 
-                    return getVisibleText(mainContent).trim().substring(0, 2000);
+                    return getVisibleText(mainContent).trim().substring(0, 4000);
                 }''')
                 result["content_preview"] = content_text
-            except Exception:
+
+                # Set likely_restaurant_list flag if preview contains restaurant indicators
+                if re.search(r'\b(\d+\.|No\.\s*\d+|Top\s*\d+)\s+', content_text) or \
+                   re.search(r'(restaurant|café|bistro|eatery|dining).*?(address|located|price|\$|€)', content_text, re.IGNORECASE):
+                    result["likely_restaurant_list"] = True
+
+            except Exception as e:
+                logger.warning(f"Error extracting content preview with JS: {e}")
                 # Fallback extraction
                 content_text = await page.evaluate('document.body.innerText')
-                result["content_preview"] = content_text[:2000] if content_text else ""
+                result["content_preview"] = content_text[:4000] if content_text else ""
 
             result["content_length"] = len(result["html"])
 
@@ -418,7 +555,8 @@ class WebScraper:
             "title": "",
             "content_preview": "",
             "error": None,
-            "content_length": 0
+            "content_length": 0,
+            "likely_restaurant_list": False
         }
 
         try:
@@ -440,13 +578,76 @@ class WebScraper:
                     result["html"] = html
                     result["title"] = soup.title.text if soup.title else ""
 
-                    # Extract content preview
-                    main_content = soup.find('main') or soup.find('article') or soup.find(class_='content') or soup.body
-                    if main_content:
-                        preview_text = main_content.get_text(separator=' ', strip=True)
-                        result["content_preview"] = preview_text[:2000]
+                    # IMPROVED: Extract content preview focused on restaurant content
+                    # First look for restaurant entries specifically
+                    restaurant_entries = []
+
+                    # Look for numbered entries (like "1. Restaurant Name")
+                    numbered_headings = soup.find_all(["h2", "h3", "h4"], 
+                                                      string=lambda s: s and re.match(r'^\d+\.|\d+\s+', s))
+                    restaurant_entries.extend(numbered_headings)
+
+                    # Look for restaurant-related headings
+                    restaurant_headings = soup.find_all(["h2", "h3", "h4"], 
+                                                     string=lambda s: s and re.search(r'restaurant|café|cafe|dining|bistro|eatery', s, re.I))
+                    restaurant_entries.extend(restaurant_headings)
+
+                    # Look for elements with restaurant-related classes/IDs
+                    restaurant_classes = soup.select('.restaurant, .cafe, .listing, .place, [id*="restaurant"], [id*="place"], [class*="listing-item"]')
+                    restaurant_entries.extend(restaurant_classes)
+
+                    # Try to find a list container that likely contains restaurant entries
+                    list_containers = soup.select('div > ul, div > ol, .list, .listings, [class*="list"]')
+                    for container in list_containers:
+                        # Check if this list looks like a restaurant list
+                        list_items = container.find_all('li')
+                        restaurant_like_items = [li for li in list_items if 
+                                                re.search(r'restaurant|café|cafe|bistro|address|\d+\s+[a-zA-Z]+\s+st|\$|€', 
+                                                          li.get_text().lower())]
+                        if len(restaurant_like_items) >= 2:
+                            restaurant_entries.append(container)
+
+                    # If we found restaurant entries, use them for the preview
+                    preview_text = ""
+                    if restaurant_entries:
+                        # Take up to 5 restaurant entries
+                        for i, entry in enumerate(restaurant_entries[:5]):
+                            # Get the parent element to include context
+                            container = entry.parent or entry
+
+                            # For headings, include content until next heading of same level
+                            if entry.name in ["h1", "h2", "h3", "h4", "h5", "h6"]:
+                                heading_level = entry.name
+                                content = entry.get_text() + "\n"
+
+                                # Get content until next heading of same level
+                                next_elem = entry.find_next()
+                                while next_elem and next_elem.name != heading_level:
+                                    if next_elem.name not in ["script", "style", "meta"]:
+                                        content += next_elem.get_text() + "\n"
+                                    next_elem = next_elem.find_next()
+
+                                preview_text += content + "\n----------\n\n"
+                            else:
+                                # For other elements, just get their text
+                                preview_text += container.get_text(separator=' ', strip=True) + "\n\n----------\n\n"
+
+                        result["content_preview"] = preview_text[:4000]
+                        result["likely_restaurant_list"] = True
                     else:
-                        result["content_preview"] = soup.get_text(separator=' ', strip=True)[:2000]
+                        # Fallback to main content
+                        main_content = soup.find('main') or soup.find('article') or soup.find(class_='content') or soup.body
+                        if main_content:
+                            preview_text = main_content.get_text(separator=' ', strip=True)
+                            result["content_preview"] = preview_text[:4000]
+                        else:
+                            result["content_preview"] = soup.get_text(separator=' ', strip=True)[:4000]
+
+                    # Check if the preview text contains restaurant list indicators
+                    if re.search(r'\b(\d+\.|No\.\s*\d+|Top\s*\d+)\s+', result["content_preview"]) or \
+                       re.search(r'(restaurant|café|bistro|eatery|dining).*?(address|located|price|\$|€)', 
+                                 result["content_preview"], re.IGNORECASE):
+                        result["likely_restaurant_list"] = True
 
                     result["content_length"] = len(html)
                 else:
@@ -458,19 +659,51 @@ class WebScraper:
         return result
 
     # Evaluate content quality
-    async def _evaluate_content(self, url: str, title: str, preview: str) -> Dict[str, Any]:
+    async def _evaluate_content(self, url: str, title: str, preview: str, fetch_result: Dict[str, Any] = None) -> Dict[str, Any]:
         """Evaluate if the content is a restaurant list using AI"""
         try:
+            # If we've already identified this as a restaurant list in a previous check
+            # or if the fetch_result indicates it's likely a restaurant list, skip the evaluation
+            if fetch_result and fetch_result.get("likely_restaurant_list"):
+                # If the preview doesn't have enough restaurant content, 
+                # but we know it's a restaurant list, assign good scores
+                logger.info(f"URL previously identified as restaurant list: {url}")
+                return {
+                    "is_restaurant_list": True,
+                    "restaurant_count": 5,  # Conservative estimate
+                    "content_quality": 0.8,
+                    "reasoning": "Pre-identified as restaurant list based on content patterns"
+                }
+
             # Basic keyword check
-            restaurant_keywords = ["restaurant", "dining", "food", "eat", "chef", "cuisine", "menu", "dish"]
+            restaurant_keywords = ["restaurant", "dining", "food", "eat", "chef", "cuisine", "menu", "dish", "café", "cafe", "bistro"]
             if not any(kw in title.lower() or kw in preview.lower() for kw in restaurant_keywords):
                 logger.info(f"URL filtered by basic keyword check: {url}")
-                return {{
+                return {
                     "is_restaurant_list": False,
                     "restaurant_count": 0,
                     "content_quality": 0.0,
                     "reasoning": "No restaurant-related keywords found"
-                }}
+                }
+
+            # Check for list format indicators - this is a fast pre-check before using the LLM
+            list_indicators = [
+                r'\b\d+\.\s+\w+',  # numbered items like "1. Restaurant"
+                r'best\s+\d+',      # "best 10" or similar
+                r'top\s+\d+',       # "top 10" or similar
+                r'\b\d+\s+best',    # "10 best" or similar
+            ]
+
+            list_pattern = re.compile('|'.join(list_indicators), re.IGNORECASE)
+            if list_pattern.search(title) or list_pattern.search(preview[:500]):
+                # Strong indication this is a restaurant list - skip LLM evaluation
+                logger.info(f"URL identified as restaurant list by pattern matching: {url}")
+                return {
+                    "is_restaurant_list": True,
+                    "restaurant_count": 10,  # Reasonable estimate for list articles
+                    "content_quality": 0.9,
+                    "reasoning": "Identified as a curated list article by pattern matching"
+                }
 
             # Using LLM for evaluation
             response = await self.eval_chain.ainvoke({
@@ -507,7 +740,7 @@ class WebScraper:
                 "is_restaurant_list": False,
                 "restaurant_count": 0,
                 "content_quality": 0.0,
-                "reasoning": "Error in evaluation"
+                "reasoning": f"Error in evaluation: {str(e)}"
             }
 
     # Process content
