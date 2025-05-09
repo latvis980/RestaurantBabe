@@ -1239,7 +1239,7 @@ async def handle_logsummary_command(msg):
         summary += f"{i}. {log_name} - {time_str}\n"
 
     await bot.reply_to(msg, summary, parse_mode="HTML")
-        
+
 # ---------------------------------------------------------------------------
 # MAIN MESSAGE HANDLER
 # ---------------------------------------------------------------------------
