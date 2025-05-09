@@ -1,6 +1,7 @@
 # agents/langchain_orchestrator.py
 from langchain_core.runnables import RunnableSequence, RunnableLambda
 from langchain_core.tracers.context import tracing_v2_enabled
+from agents.sync_scraper import scrape_search_results
 import time
 import json
 from utils.database import save_data

@@ -25,4 +25,4 @@ DB_TABLE_PROCESSES = "processes"
 EXCLUDED_RESTAURANT_SOURCES = ["tripadvisor.com", "yelp.com", "google.com/maps"]
 
 # Brave search settings
-BRAVE_SEARCH_COUNT = 10
+BRAVE_SEARCH_COUNT = 25
