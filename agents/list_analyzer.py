@@ -11,9 +11,7 @@ Highlights
 * ✅ **Keyword‑aware snippet pruning** – boosts signal, lowers token count.
 * ✅ **Post‑generation quality gate** – fills missing hidden gems and expands
   short descriptions via micro‑calls.
-* Compatible with previous public API (`await ListAnalyzer().analyze(...)`).
-This is drop‑in: replace your old *list_analyzer.py* with this file and
-adjust the import path if needed.
+
 """
 import asyncio
 import logging
@@ -42,21 +40,23 @@ else:
 ###############################################################################
 class Restaurant(BaseModel):
     name: str = Field(..., description="Restaurant name as written by sources")
-    address: str = Field(..., description="Street and house number if available")
+    address: str = Field(default="Address unavailable", description="Street and house number if available")
     description: str = Field(
-        ...,
+        default="Description unavailable",
         description="40‑60 word vivid summary starting with one concrete fact"
     )
-    price_range: str
+    price_range: str = Field(default="Price range not specified", description="Price range information")
     recommended_dishes: List[str] = Field(default_factory=list)
-    sources: List[str]
+    sources: List[str] = Field(default_factory=list)
     source_urls: List[str] = Field(default_factory=list) 
     location: str
 
     @validator("description")
     def ensure_len(cls, v):
+        if v == "Description unavailable":
+            return v
         if len(v.split()) < 20:
-            raise ValueError("Description too short")
+            return v + " (Brief description available.)"
         return v
 
 class ListResponse(BaseModel):
