@@ -333,55 +333,79 @@ def sanitize_html_for_telegram(text):
     import re
     from html import escape
 
-    # Replace any non-ASCII characters with their HTML entity or remove them
-    text = text.encode('ascii', 'xmlcharrefreplace').decode('ascii')
+    # First, escape any unescaped text content
+    # Do this for any text between > and <
+    def escape_text_content(match):
+        content = match.group(1)
+        # Only escape if it's not already escaped
+        if '&' in content and ('&lt;' in content or '&gt;' in content or '&amp;' in content):
+            return '>' + content + '<'
+        return '>' + escape(content) + '<'
 
-    # Make sure all HTML tags are properly formed
-    # Only allow a limited set of HTML tags that Telegram supports
-    allowed_tags = ['b', 'i', 'u', 's', 'a', 'code', 'pre']
+    # Fix unescaped content between tags
+    text = re.sub(r'>([^<]+)<', escape_text_content, text)
 
-    # Remove any HTML tags that aren't in the allowed list
-    for tag in re.findall(r'</?(\w+)[^>]*>', text):
-        if tag not in allowed_tags and tag + '>' not in allowed_tags:
-            text = re.sub(r'</?{}[^>]*>'.format(tag), '', text)
+    # Ensure all tags are properly closed
+    # Stack to track open tags
+    stack = []
+    result = []
+    i = 0
 
-    # Ensure all angle brackets not used in allowed tags are escaped
-    lines = []
-    in_tag = False
-    for line in text.split('\n'):
-        new_line = ""
-        i = 0
-        while i < len(line):
-            if line[i:i+1] == '<' and not in_tag:
-                # Check if this is the start of an allowed tag
-                is_allowed = False
-                for tag in allowed_tags:
-                    if line[i:].startswith('<' + tag) or line[i:].startswith('</' + tag):
-                        is_allowed = True
-                        break
+    allowed_tags = {'b', 'i', 'u', 's', 'a', 'code', 'pre'}
 
-                if is_allowed:
-                    in_tag = True
-                    new_line += '<'
+    while i < len(text):
+        if text[i] == '<':
+            # Find the end of the tag
+            end = text.find('>', i)
+            if end == -1:
+                # No closing bracket, treat as plain text
+                result.append('&lt;')
+                i += 1
+                continue
+
+            tag_content = text[i+1:end]
+            if tag_content.startswith('/'):
+                # Closing tag
+                tag_name = tag_content[1:].split()[0].lower()
+                if tag_name in allowed_tags:
+                    if stack and stack[-1] == tag_name:
+                        stack.pop()
+                        result.append(text[i:end+1])
+                    else:
+                        # Mismatched closing tag, just add as text
+                        result.append(escape(text[i:end+1]))
                 else:
-                    new_line += '&lt;'
-            elif line[i:i+1] == '>' and in_tag:
-                in_tag = False
-                new_line += '>'
-            elif line[i:i+1] == '>' and not in_tag:
-                new_line += '&gt;'
+                    # Not an allowed tag
+                    result.append(escape(text[i:end+1]))
             else:
-                new_line += line[i]
+                # Opening tag
+                tag_parts = tag_content.split(None, 1)
+                tag_name = tag_parts[0].lower()
+                if tag_name in allowed_tags:
+                    if tag_name == 'a':
+                        # Special handling for links
+                        if len(tag_parts) > 1 and 'href=' in tag_parts[1]:
+                            result.append(text[i:end+1])
+                            stack.append(tag_name)
+                        else:
+                            result.append(escape(text[i:end+1]))
+                    else:
+                        result.append(text[i:end+1])
+                        stack.append(tag_name)
+                else:
+                    # Not an allowed tag
+                    result.append(escape(text[i:end+1]))
+            i = end + 1
+        else:
+            result.append(text[i])
             i += 1
 
-        lines.append(new_line)
+    # Close any unclosed tags
+    while stack:
+        tag = stack.pop()
+        result.append(f'</{tag}>')
 
-    text = '\n'.join(lines)
-
-    # Replace any remaining problematic characters
-    text = text.replace('�', '')
-
-    return text
+    return ''.join(result)
 
 
 async def chunk_and_send(chat_id: int, text: str):

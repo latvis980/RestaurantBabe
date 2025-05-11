@@ -422,177 +422,147 @@ class LangChainOrchestrator:
     def _create_detailed_html(self, recommendations):
         """Create elegant, emoji-light HTML output for Telegram."""
         try:
-            # Log debug info
-            print(f"[_create_detailed_html] Starting HTML creation")
-            print(f"[_create_detailed_html] Input type: {type(recommendations)}")
-
-            if isinstance(recommendations, dict):
-                print(f"[_create_detailed_html] Input keys: {list(recommendations.keys())}")
+            # ――― Debug input ―――
+            logger.info(f"Creating HTML for recommendations: {list(recommendations.keys()) if isinstance(recommendations, dict) else type(recommendations)}")
 
             # ――― Get restaurant lists ―――
-            main_list = []
-            hidden_gems = []
+            main_list = recommendations.get("main_list", [])
+            hidden_gems = recommendations.get("hidden_gems", [])
 
-            # Check all possible structures
-            if isinstance(recommendations, dict):
-                # Direct structure
-                main_list = recommendations.get("main_list", [])
-                hidden_gems = recommendations.get("hidden_gems", [])
-
-                # Legacy format
-                if not main_list and "recommended" in recommendations:
-                    main_list = recommendations.get("recommended", [])
-
-                # Nested format (sometimes the enhanced_recommendations comes nested)
-                if not main_list and "enhanced_recommendations" in recommendations:
-                    nested = recommendations.get("enhanced_recommendations", {})
-                    if isinstance(nested, dict):
-                        main_list = nested.get("main_list", [])
-                        hidden_gems = nested.get("hidden_gems", [])
-
-                # Another possible nested format
-                if not main_list and "formatted_recommendations" in recommendations:
-                    nested = recommendations.get("formatted_recommendations", {})
-                    if isinstance(nested, dict):
-                        main_list = nested.get("main_list", [])
-                        hidden_gems = nested.get("hidden_gems", [])
+            # Check for legacy format
+            if not main_list and "recommended" in recommendations:
+                main_list = recommendations.get("recommended", [])
 
             # Debug log counts
-            print(f"[_create_detailed_html] Found {len(main_list)} main restaurants")
-            print(f"[_create_detailed_html] Found {len(hidden_gems)} hidden gems")
+            logger.info(f"Main list count: {len(main_list)}")
+            logger.info(f"Hidden gems count: {len(hidden_gems)}")
 
             # ――― If no restaurants found, return early ―――
             if not main_list and not hidden_gems:
-                print(f"[_create_detailed_html] No restaurants found, returning empty message")
+                logger.warning("No restaurants found in recommendations")
                 return "<b>No restaurants found for your query.</b>"
 
             # ――― Build HTML ―――
-            html = "<b>Recommended Restaurants</b>\n\n"
+            html_parts = []
+            html_parts.append("<b>Recommended Restaurants</b>\n\n")
 
             def format_restaurant_block(restaurants, title=None):
                 """Format a block of restaurants for HTML output"""
-                block_html = ""
+                block_parts = []
 
                 if title:
-                    block_html += f"<b>{title}</b>\n\n"
+                    block_parts.append(f"<b>{title}</b>\n\n")
 
                 for i, restaurant in enumerate(restaurants, 1):
-                    # Get restaurant details with fallbacks
-                    name = restaurant.get("name", "Restaurant")
-                    addr = restaurant.get("address", "Address unavailable")
-                    desc = restaurant.get("description", "")
-                    price = restaurant.get("price_range", "")
+                    # Safely get restaurant details
+                    name = str(restaurant.get("name", "Restaurant")).strip()
+                    addr = str(restaurant.get("address", "Address unavailable")).strip()
+                    desc = str(restaurant.get("description", "")).strip()
+                    price = str(restaurant.get("price_range", "")).strip()
                     dishes = restaurant.get("recommended_dishes", [])
                     sources = restaurant.get("sources", [])
 
-                    # Debug log individual restaurant
-                    print(f"[_create_detailed_html] Formatting restaurant {i}: {name}")
+                    # Debug individual restaurant
+                    logger.info(f"Formatting restaurant {i}: {name}")
 
-                    # Format restaurant entry
-                    block_html += f"<b>{i}. {name}</b>\n"
+                    # Format restaurant entry with proper escaping
+                    block_parts.append(f"<b>{i}. {escape(name)}</b>\n")
 
-                    # Handle address - check if it's already a formatted link
-                    if addr:
+                    # Handle address
+                    if addr and addr != "Address unavailable":
+                        # Check if it's already a formatted link
                         if "<a href=" in addr:
-                            # Already formatted, use as-is
-                            block_html += f"📍 {addr}\n"
+                            # Validate the link format
+                            import re
+                            link_match = re.search(r'<a href="([^"]+)"[^>]*>([^<]+)</a>', addr)
+                            if link_match:
+                                url, address_text = link_match.groups()
+                                # Properly format the link for Telegram
+                                block_parts.append(f'📍 <a href="{url}">{escape(address_text)}</a>\n')
+                            else:
+                                # Invalid link format, treat as plain text
+                                block_parts.append(f"📍 {escape(addr)}\n")
                         else:
                             # Plain text address
-                            block_html += f"📍 {addr}\n"
+                            block_parts.append(f"📍 {escape(addr)}\n")
                     else:
-                        block_html += f"📍 Address unavailable\n"
+                        block_parts.append("📍 Address unavailable\n")
 
                     # Add description
                     if desc:
-                        block_html += f"{desc}\n"
+                        block_parts.append(f"{escape(desc)}\n")
                     else:
-                        block_html += "Description unavailable\n"
+                        block_parts.append("Description unavailable\n")
 
                     # Add signature dishes
                     if dishes and isinstance(dishes, list):
-                        # Filter out empty strings and take first 3
-                        valid_dishes = [d for d in dishes if d and str(d).strip()][:3]
+                        # Filter and escape dishes
+                        valid_dishes = []
+                        for d in dishes:
+                            if d and str(d).strip():
+                                valid_dishes.append(escape(str(d).strip()))
                         if valid_dishes:
-                            dishes_str = ", ".join(valid_dishes)
-                            block_html += f"<i>Signature dishes:</i> {dishes_str}\n"
+                            dishes_str = ", ".join(valid_dishes[:3])
+                            block_parts.append(f"<i>Signature dishes:</i> {dishes_str}\n")
 
                     # Add sources
                     if sources and isinstance(sources, list):
-                        # Filter out empty strings and duplicates, take first 3
+                        # Filter and escape sources
                         valid_sources = []
                         seen = set()
                         for s in sources:
-                            if s and str(s).strip() and str(s).strip().lower() not in seen:
-                                valid_sources.append(str(s).strip())
-                                seen.add(str(s).strip().lower())
-
+                            if s and str(s).strip():
+                                source_str = escape(str(s).strip())
+                                if source_str.lower() not in seen:
+                                    valid_sources.append(source_str)
+                                    seen.add(source_str.lower())
                         if valid_sources:
                             sources_str = ", ".join(valid_sources[:3])
-                            block_html += f"<i>Recommended by:</i> {sources_str}\n"
+                            block_parts.append(f"<i>Recommended by:</i> {sources_str}\n")
 
                     # Add price range
                     if price:
-                        block_html += f"<i>Price range:</i> {price}\n"
+                        block_parts.append(f"<i>Price range:</i> {escape(price)}\n")
 
                     # Add spacing after restaurant
-                    block_html += "\n"
+                    block_parts.append("\n")
 
-                return block_html
+                return ''.join(block_parts)
 
             # Add main list
             if main_list:
-                print(f"[_create_detailed_html] Formatting {len(main_list)} main restaurants")
-                html += format_restaurant_block(main_list)
+                logger.info(f"Formatting {len(main_list)} main restaurants")
+                html_parts.append(format_restaurant_block(main_list))
 
             # Add hidden gems if they exist
             if hidden_gems:
-                print(f"[_create_detailed_html] Formatting {len(hidden_gems)} hidden gems")
-                html += format_restaurant_block(hidden_gems, title="Hidden Gems")
+                logger.info(f"Formatting {len(hidden_gems)} hidden gems")
+                html_parts.append(format_restaurant_block(hidden_gems, title="Hidden Gems"))
 
             # Add footer
-            html += "<i>Recommendations compiled from reputable critic and guide sources.</i>"
+            html_parts.append("<i>Recommendations compiled from reputable critic and guide sources.</i>")
+
+            # Join all parts
+            html = ''.join(html_parts)
+
+            # Apply final sanitization
+            html = sanitize_html_for_telegram(html)
 
             # Respect Telegram's message length limit (4096 characters)
             if len(html) > 4096:
                 html = html[:4093] + "…"
-                print(f"[_create_detailed_html] Truncated HTML to {len(html)} characters")
+                logger.info(f"Truncated HTML to {len(html)} characters")
 
-            print(f"[_create_detailed_html] Final HTML length: {len(html)}")
-            print(f"[_create_detailed_html] Successfully created HTML for {len(main_list)} main + {len(hidden_gems)} hidden gems")
+            logger.info(f"Final HTML length: {len(html)}")
+            logger.info(f"Successfully created HTML for {len(main_list)} main + {len(hidden_gems)} hidden gems")
 
             return html
 
         except Exception as e:
-            print(f"[_create_detailed_html] ERROR: {e}")
-            print(f"[_create_detailed_html] Recommendations type: {type(recommendations)}")
-
-            if isinstance(recommendations, dict):
-                print(f"[_create_detailed_html] Recommendations keys: {list(recommendations.keys())}")
-
-                # Try to extract any restaurants we can find
-                all_restaurants = []
-
-                # Collect from various possible locations
-                for key in ["main_list", "recommended", "hidden_gems"]:
-                    items = recommendations.get(key, [])
-                    if isinstance(items, list):
-                        all_restaurants.extend(items)
-
-                # Nested structures
-                for nested_key in ["enhanced_recommendations", "formatted_recommendations"]:
-                    nested = recommendations.get(nested_key, {})
-                    if isinstance(nested, dict):
-                        for key in ["main_list", "recommended", "hidden_gems"]:
-                            items = nested.get(key, [])
-                            if isinstance(items, list):
-                                all_restaurants.extend(items)
-
-                if all_restaurants:
-                    # Try to format with the restaurants we found
-                    try:
-                        return self._create_detailed_html({"main_list": all_restaurants})
-                    except:
-                        pass
+            logger.error(f"Error in _create_detailed_html: {e}")
+            logger.error(f"Exception details: {type(e).__name__}: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
 
             # Absolute fallback
             return "<b>Sorry, we couldn't format the restaurant list due to an error.</b>"
