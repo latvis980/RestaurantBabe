@@ -13,7 +13,7 @@ langchain-core
 langchain-community
 langchain-mistralai>=0.1.0
 openai>=1.0.0
-mistralai>=0.0.7
+langchain-mistralai
 
 # Database
 psycopg2-binary>=2.9.5
