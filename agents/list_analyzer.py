@@ -262,20 +262,56 @@ class ListAnalyzer:
             dump_chain_state("analyze_raw_response", {"raw_response": content[:1000]})
             results: Dict[str, Any] = json.loads(content)
 
+            # Handle legacy format (restaurants vs main_list)
             if "restaurants" in results and "main_list" not in results:
                 results["main_list"] = results.pop("restaurants")
 
+            # Ensure we have proper structure
             results.setdefault("main_list", [])
             results.setdefault("hidden_gems", [])
 
+            # Process each restaurant - remove square brackets and standardize fields
             for rec in results["main_list"] + results["hidden_gems"]:
+                # Remove square brackets from names that the scraper added
+                if rec.get("name"):
+                    rec["name"] = re.sub(r'^\[|\]$', '', rec["name"]).strip()
+
+                # Ensure all required fields are present
                 rec.setdefault("price_range", "€€")
                 rec.setdefault("recommended_dishes", [])
                 rec.setdefault("missing_info", [])
+                rec.setdefault("description", "")
+                rec.setdefault("address", "Address unavailable")
+                rec.setdefault("sources", [])
+
+                # Set the city for location tracking
                 rec["city"] = city
 
+                # Handle sources field - ensure it's a list
+                if isinstance(rec.get("sources"), str):
+                    rec["sources"] = [src.strip() for src in rec["sources"].split(",") if src.strip()]
+
+                # Handle recommended_dishes - ensure it's a list
+                if isinstance(rec.get("recommended_dishes"), str):
+                    rec["recommended_dishes"] = [dish.strip() for dish in rec["recommended_dishes"].split(",") if dish.strip()]
+
+                # Build missing_info array based on what's missing
+                missing = []
+                if not rec.get("address") or rec["address"] == "Address unavailable":
+                    missing.append("address")
+                if not rec.get("price_range") or rec["price_range"] == "€€":
+                    missing.append("price_range")
+                if not rec.get("recommended_dishes") or len(rec["recommended_dishes"]) < 2:
+                    missing.append("recommended_dishes")
+                if not rec.get("sources") or len(rec["sources"]) < 2:
+                    missing.append("sources")
+
+                rec["missing_info"] = missing
+
+            # Save restaurants to database
             self._save_restaurants_to_db(results["main_list"] + results["hidden_gems"], city)
 
+            # If no restaurants found, provide a helpful fallback
             if not (results["main_list"] or results["hidden_gems"]):
                 results["main_list"] = [{
                     "name": "Поиск не дал результатов",
@@ -293,6 +329,8 @@ class ListAnalyzer:
                 {
                     "main_list_count": len(results["main_list"]),
                     "hidden_gems_count": len(results["hidden_gems"]),
+                    "total_count": len(results["main_list"]) + len(results["hidden_gems"]),
+                    "city": city
                 },
             )
             return results
@@ -303,6 +341,7 @@ class ListAnalyzer:
                 {
                     "error": str(exc),
                     "response_preview": getattr(response, "content", "")[:500],
+                    "city": city
                 },
             )
             return {
