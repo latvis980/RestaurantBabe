@@ -1,10 +1,7 @@
-
 from __future__ import annotations
-
 """
-ListAnalyzer v3.0 — tuned for Mistral Large / Medium
+ListAnalyzer v3.0 — tuned for Mistral Large / Medium
 ====================================================
-
 Highlights
 ----------
 * ✅ **Structured JSON** – enforced with a Pydantic schema, so keys like
@@ -15,29 +12,25 @@ Highlights
 * ✅ **Post‑generation quality gate** – fills missing hidden gems and expands
   short descriptions via micro‑calls.
 * Compatible with previous public API (`await ListAnalyzer().analyze(...)`).
-
 This is drop‑in: replace your old *list_analyzer.py* with this file and
 adjust the import path if needed.
 """
-
 import asyncio
 import logging
 import os
 import re
 import time
 from typing import Any, Dict, List, Sequence
-
 from langchain.chat_models import ChatMistralAI
 from langchain.output_parsers import PydanticOutputParser, StrOutputParser
 from langchain.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field, validator
 from tenacity import retry, stop_after_attempt, wait_exponential
-
+import config
 
 ###############################################################################
 # Logging
 ###############################################################################
-
 logger = logging.getLogger(__name__)
 if os.getenv("LIST_ANALYZER_DEBUG"):
     logging.basicConfig(level=logging.DEBUG)
@@ -47,7 +40,6 @@ else:
 ###############################################################################
 # Pydantic schema
 ###############################################################################
-
 class Restaurant(BaseModel):
     name: str = Field(..., description="Restaurant name as written by sources")
     address: str = Field(..., description="Street and house number if available")
@@ -67,11 +59,9 @@ class Restaurant(BaseModel):
             raise ValueError("Description too short")
         return v
 
-
 class ListResponse(BaseModel):
     main_list: List[Restaurant]
     hidden_gems: List[Restaurant]
-
 
 # Parser to give the LLM format instructions + parse back to python.
 PARSER = PydanticOutputParser(pydantic_object=ListResponse)
@@ -79,13 +69,12 @@ PARSER = PydanticOutputParser(pydantic_object=ListResponse)
 ###############################################################################
 # Prompt pieces
 ###############################################################################
-
 SYSTEM_PROMPT = """You are restaurant list analyser. Follow ALL rules:
 1. ALWAYS output pure JSON with keys `main_list` with restaurants praised by multiple experts and `hidden_gems` highly recommended by one or two sources.
 2. No markdown, no code fences, no commentary.
-3. Each restaurant must include: name, location, description (40‑60 words, start with a concrete fact), price_range, recommended_dishes, sources.
+3. Each restaurant must include: name, location, description (40‑60 words, start with a concrete fact), price_range, recommended_dishes, sources, source_urls.
 4. Identify at least 8 restaurants that match the search parameters.
-5. Extract source URLs from the [URL] markers in the snippets.
+5. Extract source URLs from the [URL] markers in the snippets - include them in source_urls field.
 """
 
 HUMAN_TEMPLATE = (
@@ -106,10 +95,8 @@ PROMPT = ChatPromptTemplate.from_messages(
 ###############################################################################
 # Helpers
 ###############################################################################
-
 def _clean_sentence(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
-
 
 def _extract_keyword_sentences(text: str, keywords: Sequence[str], max_sent: int = 3) -> List[str]:
     """Return up to *max_sent* sentences from *text* containing any keyword."""
@@ -122,26 +109,30 @@ def _extract_keyword_sentences(text: str, keywords: Sequence[str], max_sent: int
             break
     return hits or sentences[:max_sent]  # fallback to first sentences
 
-
 def _build_snippets(raw_articles: Sequence[Dict[str, Any]], keywords: Sequence[str]) -> str:
     """Create a trimmed block of article snippets focusing on keyword sentences."""
     parts = []
+    seen_urls = set()  # Avoid duplicates
+
     for art in raw_articles:
-        # Extract source info from your current format
-        src_name = art.get("title", "") or art.get("source_domain", "unknown")
-        src_url = art.get("url", "")
+        url = art.get("url", "")
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+
+        title = art.get("title", "")
+        domain = art.get("source_domain", "")
+        source_name = title or domain or "unknown source"
         body = art.get("scraped_content", "")
 
         key_sents = _extract_keyword_sentences(body, keywords)
-        snippet = f"### {src_name} [{src_url}]\n" + "\n".join(key_sents[:3])
+        snippet = f"### Source: {source_name} [URL: {url}]\n" + "\n".join(key_sents[:3])
         parts.append(snippet)
     return "\n\n".join(parts)
-
 
 ###############################################################################
 # Retry wrapper
 ###############################################################################
-
 # Tenacity retry decorated coroutine
 def retry_async(fn):
     async def wrapper(*args, **kwargs):
@@ -152,16 +143,12 @@ def retry_async(fn):
         )
         async def _inner():
             return await fn(*args, **kwargs)
-
         return await _inner()
-
     return wrapper
-
 
 ###############################################################################
 # ListAnalyzer implementation
 ###############################################################################
-
 class ListAnalyzer:
     """Analyse scraped lists, extract names of the restaurants and descriptions, group descriptions for the same restaurant into one text. Return structured restaurant recommendations."""
 
@@ -170,12 +157,18 @@ class ListAnalyzer:
 
     def __init__(
         self,
-        model_name: str = os.getenv("MISTRAL_MODEL", "mistral-large-latest"),
+        config=None,  # Add this for compatibility
+        model_name: str = None,
         temperature: float = 0.5,
         api_key: str | None = None,
     ) -> None:
+        # Use config object if provided
+        if config:
+            model_name = model_name or getattr(config, 'MISTRAL_MODEL', 'mistral-large-latest')
+            api_key = api_key or getattr(config, 'MISTRAL_API_KEY', None)
+
         self.llm = ChatMistralAI(
-            model_name=model_name,
+            model_name=model_name or os.getenv("MISTRAL_MODEL", "mistral-large-latest"),
             temperature=temperature,
             api_key=api_key or os.getenv("MISTRAL_API_KEY"),
             # Use Mistral's native JSON mode to reinforce schema
@@ -251,21 +244,32 @@ class ListAnalyzer:
     # --------------------------------------------------------------------- #
     # Public API
     # --------------------------------------------------------------------- #
-
     async def analyze(
         self,
-        primary_parameters: str,
-        secondary_parameters: str,
-        keywords: Sequence[str],
-        raw_articles: Sequence[Dict[str, Any]],
+        search_results: Sequence[Dict[str, Any]],  # Changed parameter name for compatibility
+        keywords_for_analysis: Sequence[str],      # Changed parameter name for compatibility
+        primary_search_parameters: List[str] | str,  # Changed parameter name for compatibility
+        secondary_filter_parameters: List[str] | str,  # Changed parameter name for compatibility
+        destination: str = None,  # Added for compatibility
     ) -> Dict[str, Any]:
         """Main entry point used by downstream pipeline."""
 
-        snippets = _build_snippets(raw_articles, keywords)
+        # Convert parameters to match new interface
+        if isinstance(primary_search_parameters, list):
+            primary_params = ", ".join(primary_search_parameters)
+        else:
+            primary_params = primary_search_parameters
+
+        if isinstance(secondary_filter_parameters, list):
+            secondary_params = ", ".join(secondary_filter_parameters)
+        else:
+            secondary_params = secondary_filter_parameters
+
+        snippets = _build_snippets(search_results, keywords_for_analysis)
         prompt_values = dict(
-            primary=primary_parameters,
-            secondary=secondary_parameters,
-            keywords=", ".join(keywords),
+            primary=primary_params,
+            secondary=secondary_params,
+            keywords=", ".join(keywords_for_analysis),
             snippets=snippets,
             format_instructions=PARSER.get_format_instructions(),
         )
@@ -286,7 +290,7 @@ class ListAnalyzer:
         # -------------- Quality gates ------------- #
         response_model = await self._ensure_hidden_gems(response_model)
         response_model = await self._expand_short_descriptions(
-            response_model, location=self._derive_city(primary_parameters)
+            response_model, location=destination or self._derive_city(primary_params)
         )
 
         return response_model.model_dump()
@@ -294,7 +298,6 @@ class ListAnalyzer:
     # --------------------------------------------------------------------- #
     # Utility
     # --------------------------------------------------------------------- #
-
     @staticmethod
     def _derive_city(primary_parameters: str) -> str:
         match = re.search(r"\b(in|near)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)", primary_parameters)

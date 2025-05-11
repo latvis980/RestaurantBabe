@@ -99,8 +99,7 @@ class LangChainOrchestrator:
             print(f"[Orchestrator] Enriched results: {len(enriched)}")
             return enriched
 
-        # Modify analyze_results to dump state
-        def analyze_results_with_debug(x):
+        async def analyze_results_with_debug_async(x):
             try:
                 # Debug log before analysis
                 dump_chain_state("pre_analyze_results", {
@@ -111,12 +110,12 @@ class LangChainOrchestrator:
                     "destination": x.get("destination", "Unknown")  # Log the destination
                 })
 
-                # Execute list analyzer with the destination
-                recommendations = self.list_analyzer.analyze(
-                    x["enriched_results"],
-                    x.get("keywords_for_analysis", []),
-                    x.get("primary_search_parameters", []),
-                    x.get("secondary_filter_parameters", []),
+                # Execute list analyzer with the destination - AWAIT the async call
+                recommendations = await self.list_analyzer.analyze(
+                    search_results=x["enriched_results"],  # Changed parameter name
+                    keywords_for_analysis=x.get("keywords_for_analysis", []),  # Changed parameter name
+                    primary_search_parameters=x.get("primary_search_parameters", []),  # Changed parameter name
+                    secondary_filter_parameters=x.get("secondary_filter_parameters", []),  # Changed parameter name
                     destination=x.get("destination")  # Pass the destination!
                 )
 
@@ -126,6 +125,7 @@ class LangChainOrchestrator:
                     "recommendations": recommendations
                 })
 
+                # The rest remains the same...
                 # Explicitly standardize the structure
                 if isinstance(recommendations, dict):
                     # Check if we have the old format (recommended/hidden_gems)
@@ -159,8 +159,33 @@ class LangChainOrchestrator:
                     }
                 }
 
+        # And modify the RunnableLambda to handle async:
+        def async_analyze_results(x):
+            """Wrapper to run async analyze_results in the chain"""
+            import asyncio
+            import concurrent.futures
+
+            # Define a function that runs in its own thread with a fresh event loop
+            def run_in_new_event_loop():
+                # Create a new event loop for this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+                # Run the async function in this new loop
+                try:
+                    return loop.run_until_complete(analyze_results_with_debug_async(x))
+                finally:
+                    loop.close()
+
+            # Execute the function in a thread
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                result = pool.submit(run_in_new_event_loop).result()
+
+            return result
+
+        # Replace this line in the orchestrator:
         self.analyze_results = RunnableLambda(
-            analyze_results_with_debug,
+            async_analyze_results,  # Use the new async wrapper
             name="analyze_results"
         )
 
