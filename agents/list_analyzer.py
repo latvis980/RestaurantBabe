@@ -171,8 +171,8 @@ class ListAnalyzer:
             model_name=model_name or os.getenv("MISTRAL_MODEL", "mistral-large-latest"),
             temperature=temperature,
             api_key=api_key or os.getenv("MISTRAL_API_KEY"),
-            # Use Mistral's native JSON mode to reinforce schema
-            response_format={"type": "json_object"},
+            # Use model_kwargs instead of direct response_format parameter
+            model_kwargs={"response_format": {"type": "json_object"}},
         )
 
     @retry_async
