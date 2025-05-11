@@ -41,7 +41,7 @@ from utils.debug_utils import dump_chain_state
 # ---------------------------------------------------------------------------
 
 MIN_ACCEPTABLE_RATING = 4.1           # rating threshold – <  ► rejected
-MAX_RESULTS_PER_QUERY = 7             # courtesy cap for scraping
+MAX_RESULTS_PER_QUERY = 3             # courtesy cap for scraping
 MAPS_FIELDS = [                       # fields we request from Place Details
     "url",
     "formatted_address",

@@ -8,7 +8,6 @@
 # -------------------------------------------------------------------
 import os
 import json
-import glob
 import time
 import logging
 import traceback
@@ -492,7 +491,7 @@ async def process_query_async(query):
 
 
 # ---------------------------------------------------------------------------
-# TESTING FUNCTIONALITY
+# TESTING FUNCTIONALITY FROM VERSION 21
 # ---------------------------------------------------------------------------
 
 @bot.message_handler(commands=['fetch_test'])
@@ -1053,192 +1052,6 @@ async def handle_stats(msg):
         logger.error(f"Error getting stats: {e}")
         await bot.reply_to(msg, f"❌ Error getting statistics: {str(e)}")
 
-import os
-import glob
-import json
-
-@bot.message_handler(commands=["logs"])
-async def handle_logs_command(msg):
-    """Show available log files"""
-    user_id = msg.from_user.id
-
-    if not is_admin(user_id):
-        # Reply as if this was a normal message (don't reveal admin features)
-        await handle_normal_text(msg)
-        return
-
-    # Get all log files
-    log_files = glob.glob("debug_logs/*.json")
-
-    # Sort by modification time (newest first)
-    log_files.sort(key=os.path.getmtime, reverse=True)
-
-    # Get command arguments for filtering
-    command_args = msg.text.split(maxsplit=1)
-    filter_term = command_args[1].strip() if len(command_args) > 1 else None
-
-    # Filter logs if a term was provided
-    if filter_term:
-        log_files = [f for f in log_files if filter_term in os.path.basename(f)]
-
-    # Limit to 20 most recent files
-    log_files = log_files[:20]
-
-    if not log_files:
-        await bot.reply_to(msg, "No log files found" + (f" containing '{filter_term}'" if filter_term else ""))
-        return
-
-    # Format the list with timestamps and file sizes
-    log_list = []
-    for i, file_path in enumerate(log_files, 1):
-        file_name = os.path.basename(file_path)
-        file_size = os.path.getsize(file_path) / 1024  # Size in KB
-        mod_time = os.path.getmtime(file_path)
-        time_str = time.strftime("%H:%M:%S", time.localtime(mod_time))
-        log_list.append(f"{i}. {file_name} ({file_size:.1f} KB) - {time_str}")
-
-    # Create message with instructions
-    response = f"<b>Recent log files</b> {f'with \"{filter_term}\"' if filter_term else ''}:\n\n"
-    response += "\n".join(log_list)
-    response += "\n\nUse /getlog [number] to retrieve a specific file"
-    response += "\nUse /logs [filter] to filter the list"
-
-    await bot.reply_to(msg, response, parse_mode="HTML")
-
-
-@bot.message_handler(commands=["getlog"])
-async def handle_getlog_command(msg):
-    """Retrieve a specific log file by number"""
-    user_id = msg.from_user.id
-
-    if not is_admin(user_id):
-        # Reply as if this was a normal message (don't reveal admin features)
-        await handle_normal_text(msg)
-        return
-
-    # Parse command arguments
-    command_args = msg.text.split(maxsplit=1)
-    if len(command_args) < 2:
-        await bot.reply_to(msg, "Please specify a log number. Example: /getlog 1")
-        return
-
-    try:
-        log_number = int(command_args[1].strip())
-    except ValueError:
-        await bot.reply_to(msg, "Please provide a valid number")
-        return
-
-    # Get sorted log files (same logic as logs command)
-    log_files = glob.glob("debug_logs/*.json")
-    log_files.sort(key=os.path.getmtime, reverse=True)
-
-    if not log_files:
-        await bot.reply_to(msg, "No log files found")
-        return
-
-    if log_number < 1 or log_number > len(log_files):
-        await bot.reply_to(msg, f"Invalid log number. Please choose between 1 and {len(log_files)}")
-        return
-
-    selected_file = log_files[log_number - 1]
-    file_name = os.path.basename(selected_file)
-
-    try:
-        # First send as a document
-        with open(selected_file, 'rb') as doc:
-            await bot.send_document(
-                msg.chat.id,
-                doc,
-                caption=f"Log file: {file_name}",
-                visible_file_name=file_name
-            )
-
-        # Also show a formatted preview of the contents
-        try:
-            with open(selected_file, 'r', encoding='utf-8') as f:
-                log_data = json.load(f)
-
-            # Create a readable summary
-            preview = json.dumps(log_data, indent=2, ensure_ascii=False)
-
-            # Limit preview length
-            if len(preview) > 4000:
-                preview = preview[:4000] + "...\n(truncated, see full file above)"
-
-            await bot.send_message(
-                msg.chat.id,
-                f"<b>Preview of {file_name}:</b>\n\n<pre>{preview}</pre>",
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            await bot.send_message(
-                msg.chat.id,
-                f"Could not generate preview: {str(e)}"
-            )
-
-    except Exception as e:
-        await bot.reply_to(msg, f"Error retrieving log file: {str(e)}")
-
-
-@bot.message_handler(commands=["logsummary"])
-async def handle_logsummary_command(msg):
-    """Show a summary of available logs by category"""
-    user_id = msg.from_user.id
-
-    if not is_admin(user_id):
-        # Reply as if this was a normal message (don't reveal admin features)
-        await handle_normal_text(msg)
-        return
-
-    # Get all log files
-    log_files = glob.glob("debug_logs/*.json")
-
-    if not log_files:
-        await bot.reply_to(msg, "No log files found")
-        return
-
-    # Group files by stage name
-    stages = {}
-    errors = []
-
-    for file_path in log_files:
-        file_name = os.path.basename(file_path)
-        # Extract stage name from filename (timestamp_stagename.json)
-        parts = file_name.split('_', 1)
-        if len(parts) > 1:
-            stage_name = parts[1].rsplit('.', 1)[0]  # Remove .json extension
-
-            # Check if this is an error log
-            if "error" in stage_name.lower():
-                errors.append(file_path)
-
-            # Count by stage
-            stages[stage_name] = stages.get(stage_name, 0) + 1
-
-    # Sort stages by count (most frequent first)
-    sorted_stages = sorted(stages.items(), key=lambda x: x[1], reverse=True)
-
-    # Create summary message
-    summary = "<b>Log Summary</b>\n\n"
-    summary += "<b>Log categories:</b>\n"
-    for stage, count in sorted_stages:
-        summary += f"• {stage}: {count} files\n"
-
-    # Add error count
-    summary += f"\n<b>Error logs:</b> {len(errors)}\n"
-    if errors:
-        summary += "Use /logs error to see error logs\n"
-
-    # Add latest logs
-    recent_logs = sorted(log_files, key=os.path.getmtime, reverse=True)[:5]
-    summary += "\n<b>5 most recent logs:</b>\n"
-    for i, log_path in enumerate(recent_logs, 1):
-        log_name = os.path.basename(log_path)
-        mod_time = os.path.getmtime(log_path)
-        time_str = time.strftime("%H:%M:%S", time.localtime(mod_time))
-        summary += f"{i}. {log_name} - {time_str}\n"
-
-    await bot.reply_to(msg, summary, parse_mode="HTML")
 
 # ---------------------------------------------------------------------------
 # MAIN MESSAGE HANDLER
