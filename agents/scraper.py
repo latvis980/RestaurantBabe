@@ -1,14 +1,25 @@
-# agents/scraper.py - Enhanced Scraper with Load More and Better List Extraction
-import re
-import logging
-import time
-import asyncio
+# agents/scraper.py - Optimized for Microsoft Playwright container
+import asyncio, logging, time, re, json, os
 from typing import Dict, List, Any, Optional
 from urllib.parse import urlparse
 
-import httpx
-from bs4 import BeautifulSoup
+# Create semaphore for concurrency control
+SEM = asyncio.Semaphore(3)  # Adjust based on Railway plan RAM
+
+# We'll assume Playwright is available in the Microsoft container
+PLAYWRIGHT_ENABLED = True
+
+try:
+    from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+    logger = logging.getLogger("restaurant-recommender.scraper")
+    logger.info("Playwright successfully imported")
+except ImportError as e:
+    PLAYWRIGHT_ENABLED = False
+    logger = logging.getLogger("restaurant-recommender.scraper")
+    logger.error(f"Failed to import Playwright: {e}, falling back to HTTP methods")
+
 from readability import Document
+from bs4 import BeautifulSoup
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tracers.context import tracing_v2_enabled
@@ -17,34 +28,22 @@ from utils.source_validator import validate_source
 from utils.async_utils import track_async_task
 from utils.debug_utils import dump_chain_state
 
-# Configure logger
 logger = logging.getLogger("restaurant-recommender.scraper")
 
-# We'll assume Playwright is available in the container
-PLAYWRIGHT_ENABLED = True
-
-try:
-    from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
-    logger.info("Playwright successfully imported")
-except ImportError as e:
-    PLAYWRIGHT_ENABLED = False
-    logger.error(f"Failed to import Playwright: {e}, falling back to HTTP methods")
-
 class WebScraper:
+    # In WebScraper class
+
     def __init__(self, config):
         self.config = config
 
-        # Initialize model for content evaluation
         self.model = ChatOpenAI(
             model=config.OPENAI_MODEL,
             temperature=0.2,
         )
 
-        # Semaphore for concurrency control
         self._concurrency = getattr(config, "SCRAPER_CONCURRENCY", 3)
-        self._semaphore = None
+        self._semaphore = None  # This will be created per event loop
 
-        # Curated list evaluation prompt
         self.eval_system_prompt = """
         You are an expert at evaluating web content about restaurants.
         Your task is to analyze if a web page contains a curated list of restaurants or restaurant recommendations.
@@ -58,11 +57,11 @@ class WebScraper:
         NOT VALID CONTENT (score < 0.3):
         - Official website of a single restaurant
         - Collections of restaurants in booking and delivery websites like Uber Eats, The Fork, Glovo, etc.
-        - Wanderlog posts
         - Individual restaurant menus
         - Single restaurant reviews
         - Social media posts about individual dining experiences
         - Forum/Reddit discussions without professional curation
+        - Hotel booking sites
 
         SCORING CRITERIA:
         - Multiple restaurants mentioned (essential)
@@ -87,31 +86,6 @@ class WebScraper:
         )
         self.eval_chain = self.eval_prompt | self.model
 
-        # Restaurant extraction prompt
-        self.extraction_prompt = """
-        You are an expert travel journalist assistant. Your job is to extract the names of restaurants or cafés 
-        and their descriptions from the following text. If available, extract any information about:
-        - Address
-        - Price range
-        - Recommended dishes
-        - Chef
-        - Atmosphere
-        - Reservations requirements
-        - Instagram handle
-
-        IMPORTANT: Only include actual food and beverage places. Do not include intros, general tips, ads, 
-        or unrelated content. For each restaurant, provide as much of the requested information as available.
-
-        Format each restaurant name in square brackets like [Restaurant Name] for easy identification.
-        """
-
-        self.extract_prompt = ChatPromptTemplate.from_messages(
-            [("system", self.extraction_prompt),
-             ("human", "Extract restaurant information from this text:\n\n{content}")]
-        )
-        self.extract_chain = self.extract_prompt | self.model
-
-        # Browser configuration
         self.browser_config = {
             "headless": True,
             "timeout": 30_000,
@@ -123,177 +97,136 @@ class WebScraper:
             "args": ["--disable-dev-shm-usage"]  # Prevents /dev/shm crashes
         }
 
-        # Tracking variables
-        self.successful_urls = []
-        self.failed_urls = []
-        self.filtered_urls = []
-        self.invalid_content_urls = []
+        self.successful_urls, self.failed_urls = [], []
+        self.filtered_urls, self.invalid_content_urls = [], []
 
-    # New method for handling Load More buttons
-    async def _handle_load_more_buttons(self, page, max_clicks=5):
-        """Handle 'Load More' buttons to expand content"""
-        clicks = 0
-        while clicks < max_clicks:
+    # -------------------------------------------------
+    # Internal helpers
+    async def _process_search_result(self, result: Dict[str, Any], browser=None, sem=None) -> Optional[Dict[str, Any]]:
+        """
+        Process a single search result through the full pipeline
+
+        Args:
+            result: Search result dictionary with URL
+            browser: Optional browser instance for Playwright
+            sem: Optional semaphore to use for concurrency control
+
+        Returns:
+            Enriched result dictionary or None if processing failed
+        """
+        # Use the passed semaphore if available, otherwise default to the global one
+        semaphore = sem if sem is not None else SEM
+
+        async with semaphore:  # Use the variable 'semaphore' here, not SEM
+            # Rest of the method stays the same
+            url = result.get("url")
+            if not url:
+                return None
+
             try:
-                # Look for common "Load More" button patterns
-                load_more_selectors = [
-                    'button:has-text("Load more")',
-                    'button:has-text("Show more")',
-                    'button:has-text("Load more cafés")',
-                    'a:has-text("Load more")',
-                    'a:has-text("Show more")',
-                    '.load-more',
-                    '#load-more',
-                    '[class*="load-more"]',
-                    '[id*="load-more"]',
-                    '[class*="show-more"]',
-                    'button[data-action*="load"]'
-                ]
+                # 1. domain reputation
+                source_domain = self._extract_domain(url)
+                result["source_domain"] = source_domain
 
-                button_found = False
-                for selector in load_more_selectors:
-                    try:
-                        button = await page.query_selector(selector)
-                        if button and await button.is_visible():
-                            # Scroll to button to ensure it's in view
-                            await button.scroll_into_view_if_needed()
-                            await asyncio.sleep(1)  # Wait for scroll
+                source_validation = validate_source(source_domain, self.config)
+                if not source_validation["is_valid"]:
+                    logger.info(f"Filtered URL by source validation: {url}")
+                    logger.info(f"  - Domain: {source_domain}")
+                    logger.info(f"  - Reputation Score: {source_validation.get('reputation_score', 0)}")
+                    logger.info(f"  - Reason: {source_validation.get('reason', 'unknown')}")
+                    self.filtered_urls.append(url)
+                    return None
 
-                            # Click the button
-                            await button.click()
-                            await asyncio.sleep(2)  # Wait for content to load
+                # 2. fetch html - either with Playwright or HTTP methods
+                if PLAYWRIGHT_ENABLED and browser is not None:
+                    fetch_result = await self._fetch_with_playwright(url, browser)
+                else:
+                    fetch_result = await self._fetch_with_http(url)
 
-                            button_found = True
-                            clicks += 1
-                            logger.info(f"Clicked '{selector}' button (click {clicks})")
-                            break
-                    except Exception:
-                        continue
+                if fetch_result.get("error"):
+                    logger.warning(f"Failed to fetch URL: {url}, Error: {fetch_result['error']}")
+                    self.failed_urls.append(url)
+                    return None
 
-                if not button_found:
-                    break  # No more buttons found
+                # 3. AI evaluation
+                evaluation = await self._evaluate_content(
+                    url,
+                    fetch_result.get("title", ""),
+                    fetch_result.get("content_preview", ""),
+                )
+                if not (
+                    evaluation.get("is_restaurant_list")
+                    and evaluation.get("content_quality", 0) > 0.5
+                ):
+                    logger.info(f"Filtered URL by content evaluation: {url}")
+                    self.invalid_content_urls.append(url)
+                    return None
+
+                # 4. text extraction
+                processed_content = await self._process_content(
+                    fetch_result.get("html", ""), 
+                    fetch_result.get("structured_content")
+                )
+
+                # Extract and format source information
+                source_info = self._extract_source_info(
+                    url, 
+                    fetch_result.get("title", ""), 
+                    source_domain,
+                    result.get("favicon", "")
+                )
+
+                # 5. pack result
+                enriched_result = {
+                    **result,
+                    "scraped_title": fetch_result.get("title", ""),
+                    "scraped_content": processed_content,
+                    "content_length": len(processed_content),
+                    "source_reputation": source_validation.get("reputation_score", 0.5),
+                    "quality_score": evaluation.get("content_quality", 0.0),
+                    "restaurant_count": evaluation.get("restaurant_count", 0),
+                    "source_info": source_info,
+                    "timestamp": time.time(),
+                }
+                self.successful_urls.append(url)
+                logger.info(f"Successfully processed: {url}")
+                return enriched_result
 
             except Exception as e:
-                logger.warning(f"Error clicking load more button: {e}")
-                break
+                logger.error(f"Error processing URL {url}: {str(e)}")
+                self.failed_urls.append(url)
+                return None
 
-        return clicks
 
-    # New method for extracting structured restaurant lists
-    async def _extract_restaurant_list(self, page):
-        """Extract structured restaurant/cafe lists from pages"""
-        try:
-            # Get all potential restaurant entries
-            restaurant_data = await page.evaluate('''() => {
-                const restaurants = [];
-
-                // Common selectors for restaurant listings
-                const selectors = [
-                    // Cards/grid items (European Coffee Trip uses these)
-                    '[data-element_type="widget"] a[href*="/cafe/"]',
-                    '[data-element_type="widget"] a[href*="/restaurant/"]',
-                    '.elementor-widget-container a[href*="/cafe/"]',
-                    '.cafe-card, .restaurant-card, [class*="card"], [class*="item"]',
-                    // List items with links
-                    'li a[href*="/cafe/"], li a[href*="/restaurant/"]',
-                    // Named sections with links
-                    'h2 + a, h3 + a, h4 + a',
-                    // Sections or articles
-                    'article, section[class*="restaurant"], section[class*="cafe"]'
-                ];
-
-                for (const selector of selectors) {
-                    const elements = document.querySelectorAll(selector);
-
-                    for (const element of elements) {
-                        let name = '';
-                        let url = '';
-                        let description = '';
-
-                        // Extract name from various possible locations
-                        const nameElements = [
-                            element.querySelector('h2, h3, h4, h5, h6'),
-                            element.querySelector('[class*="title"], [class*="name"]'),
-                            element.querySelector('a'),
-                            element  // The element itself might be the link
-                        ];
-
-                        for (const nameEl of nameElements) {
-                            if (nameEl && nameEl.textContent.trim()) {
-                                name = nameEl.textContent.trim();
-                                // Clean up the name (remove awards, dates, etc.)
-                                name = name.replace(/NEW|2024 WINNER|\\d{4}|⭐|★/g, '').trim();
-                                if (name) break;
-                            }
-                        }
-
-                        // Extract URL
-                        const linkEl = element.querySelector('a') || element;
-                        if (linkEl && linkEl.href) {
-                            url = linkEl.href;
-                        }
-
-                        // Extract description
-                        const descElements = [
-                            element.querySelector('p, .description, [class*="desc"]'),
-                            element.nextElementSibling
-                        ];
-
-                        for (const descEl of descElements) {
-                            if (descEl && descEl.textContent.trim()) {
-                                description = descEl.textContent.trim();
-                                break;
-                            }
-                        }
-
-                        // Only add if we have a name and it looks like a restaurant/cafe
-                        if (name && (
-                            name.match(/café|cafe|coffee|restaurant|bistro|bar|brasserie/i) ||
-                            url.match(/cafe|restaurant|coffee/i) ||
-                            description.match(/café|cafe|coffee|restaurant|dining/i) ||
-                            name.length > 2  // Catch names without keywords
-                        )) {
-                            restaurants.push({
-                                name: name,
-                                url: url,
-                                description: description,
-                                type: 'cafe'
-                            });
-                        }
-                    }
-                }
-
-                // Deduplicate by name
-                const unique = [];
-                const seen = new Set();
-
-                for (const restaurant of restaurants) {
-                    const key = restaurant.name.toLowerCase().trim();
-                    if (!seen.has(key) && restaurant.name.length > 2) {
-                        seen.add(key);
-                        unique.push(restaurant);
-                    }
-                }
-
-                return unique;
-            }''')
-
-            logger.info(f"Extracted {len(restaurant_data)} restaurants from structured list")
-            for restaurant in restaurant_data[:5]:  # Log first 5
-                logger.info(f"  - [{restaurant['name']}]")
-
-            return restaurant_data
-        except Exception as e:
-            logger.error(f"Error extracting restaurant list: {e}")
-            return []
-
-    # Main entry point
-    async def filter_and_scrape_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # -------------------------------------------------
+    # Public orchestrator
+    async def filter_and_scrape_results(
+        self, search_results: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """
         Main entry point: Filter search results and scrape valid content
+
+        Args:
+            search_results: List of search result dictionaries with URLs
+
+        Returns:
+            List of enriched results with scraped content
         """
+        logger.info(f"PLAYWRIGHT_ENABLED: {PLAYWRIGHT_ENABLED}")
+        if PLAYWRIGHT_ENABLED:
+            try:
+                # Test Playwright availability
+                async with async_playwright() as p:
+                    browser_version = await p.chromium.executable_path
+                    logger.info(f"Playwright browser executable: {browser_version}")
+                    logger.info("Playwright is available and functioning")
+            except Exception as e:
+                logger.error(f"Playwright test failed: {e}")
+                logger.error(f"Exception type: {type(e).__name__}")
+                logger.error(f"Will fall back to HTTP methods for all scraping")
+
         # Create a local semaphore for this run
-        local_sem = asyncio.Semaphore(self._concurrency)
+        local_sem = asyncio.Semaphore(3)
 
         with tracing_v2_enabled(project_name="restaurant-recommender"):
             start_time = time.time()
@@ -305,40 +238,42 @@ class WebScraper:
             self.filtered_urls = []
             self.invalid_content_urls = []
 
-            # Process results in batches
+            # Process results in batches to avoid overwhelming the system
             enriched_results = []
             batch_size = 5
 
-            # Initialize Playwright browser if available
+            # Initialize a single browser instance for the whole batch if Playwright is enabled
             if PLAYWRIGHT_ENABLED:
                 try:
                     logger.info("Initializing Playwright browser for batch processing")
                     async with async_playwright() as p:
                         browser = await p.chromium.launch(
                             headless=True,
-                            args=["--disable-dev-shm-usage"]
+                            args=["--disable-dev-shm-usage"]  # Prevents /dev/shm crashes
                         )
 
-                        # Process batches with shared browser
+                        # Process batches with the shared browser instance
                         for i in range(0, len(search_results), batch_size):
                             batch = search_results[i:i+batch_size]
+                            # Pass the local semaphore to _process_search_result
                             batch_tasks = [self._process_search_result(result, browser, local_sem) for result in batch]
                             batch_results = await asyncio.gather(*batch_tasks)
 
-                            # Filter out None results
+                            # Filter out None results (failed processing)
                             valid_results = [r for r in batch_results if r is not None]
                             enriched_results.extend(valid_results)
 
-                            # Be respectful to servers
+                            # Small delay between batches to be respectful to servers
                             await asyncio.sleep(1)
 
+                        # Close the browser when done
                         await browser.close()
                 except Exception as e:
                     logger.error(f"Error initializing Playwright: {e}. Falling back to HTTP methods.")
                     # Fall back to HTTP methods
                     for i in range(0, len(search_results), batch_size):
                         batch = search_results[i:i+batch_size]
-                        batch_tasks = [self._process_search_result(result, None, local_sem) for result in batch]
+                        batch_tasks = [self._process_search_result(result) for result in batch]
                         batch_results = await asyncio.gather(*batch_tasks)
 
                         valid_results = [r for r in batch_results if r is not None]
@@ -346,11 +281,11 @@ class WebScraper:
 
                         await asyncio.sleep(1)
             else:
-                # Playwright disabled, use HTTP methods
+                # Playwright disabled, use HTTP methods instead
                 logger.info("Playwright is disabled, using HTTP methods")
                 for i in range(0, len(search_results), batch_size):
                     batch = search_results[i:i+batch_size]
-                    batch_tasks = [self._process_search_result(result, None, local_sem) for result in batch]
+                    batch_tasks = [self._process_search_result(result) for result in batch]
                     batch_results = await asyncio.gather(*batch_tasks)
 
                     valid_results = [r for r in batch_results if r is not None]
@@ -360,7 +295,7 @@ class WebScraper:
 
             elapsed = time.time() - start_time
 
-            # Log statistics
+            # Log comprehensive statistics
             logger.info(f"Scraping completed in {elapsed:.2f} seconds")
             logger.info(f"Total results: {len(search_results)}")
             logger.info(f"Successfully scraped: {len(self.successful_urls)}")
@@ -369,109 +304,31 @@ class WebScraper:
             logger.info(f"Filtered by content evaluator: {len(self.invalid_content_urls)}")
             logger.info(f"Final enriched results: {len(enriched_results)}")
 
-            # Debug state
+            # Dump state for debugging
             dump_chain_state("scraper_results", {
                 "total_results": len(search_results),
-                "successful_urls": len(self.successful_urls),
-                "failed_urls": len(self.failed_urls),
-                "filtered_urls": len(self.filtered_urls),
-                "invalid_content_urls": len(self.invalid_content_urls),
+                "successful_urls": self.successful_urls,
+                "failed_urls": self.failed_urls,
+                "filtered_urls": self.filtered_urls,
+                "invalid_content_urls": self.invalid_content_urls,
                 "final_count": len(enriched_results)
             })
 
             return enriched_results
 
-    # Processing a single search result
-    async def _process_search_result(self, result: Dict[str, Any], browser=None, sem=None) -> Optional[Dict[str, Any]]:
-        """Process a single search result through the full pipeline"""
-        semaphore = sem if sem is not None else asyncio.Semaphore(self._concurrency)
 
-        async with semaphore:
-            url = result.get("url")
-            if not url:
-                return None
 
-            try:
-                # 1. Source validation
-                source_domain = self._extract_domain(url)
-                result["source_domain"] = source_domain
-
-                source_validation = validate_source(source_domain, self.config)
-                if not source_validation["is_valid"]:
-                    logger.info(f"Filtered URL by source validation: {url}")
-                    self.filtered_urls.append(url)
-                    return None
-
-                # 2. Fetch content
-                if PLAYWRIGHT_ENABLED and browser is not None:
-                    fetch_result = await self._fetch_with_playwright(url, browser)
-                else:
-                    fetch_result = await self._fetch_with_http(url)
-
-                if fetch_result.get("error"):
-                    logger.warning(f"Failed to fetch URL: {url}, Error: {fetch_result['error']}")
-                    self.failed_urls.append(url)
-                    return None
-
-                # 3. Evaluate if it's a restaurant list
-                evaluation = await self._evaluate_content(
-                    url,
-                    fetch_result.get("title", ""),
-                    fetch_result.get("content_preview", ""),
-                    fetch_result
-                )
-
-                if not (
-                    evaluation.get("is_restaurant_list")
-                    and evaluation.get("content_quality", 0) > 0.5
-                ):
-                    logger.info(f"Filtered URL by content evaluation: {url}")
-                    self.invalid_content_urls.append(url)
-                    return None
-
-                # 4. Process and extract content
-                processed_content = await self._process_content(fetch_result.get("html", ""))
-
-                # 5. Extract restaurant information
-                extracted_info = await self._extract_restaurant_info(
-                    processed_content, 
-                    fetch_result.get("restaurant_list")
-                )
-
-                # 6. Format source info
-                source_info = self._extract_source_info(
-                    url, 
-                    fetch_result.get("title", ""), 
-                    source_domain,
-                    result.get("favicon", "")
-                )
-
-                # 7. Create enriched result
-                enriched_result = {
-                    **result,
-                    "scraped_title": fetch_result.get("title", ""),
-                    "scraped_content": processed_content,
-                    "extracted_restaurants": extracted_info,
-                    "content_length": len(processed_content),
-                    "source_reputation": source_validation.get("reputation_score", 0.5),
-                    "quality_score": evaluation.get("content_quality", 0.0),
-                    "restaurant_count": evaluation.get("restaurant_count", len(extracted_info)),
-                    "source_info": source_info,
-                    "timestamp": time.time(),
-                }
-
-                self.successful_urls.append(url)
-                logger.info(f"Successfully processed: {url}")
-                return enriched_result
-
-            except Exception as e:
-                logger.error(f"Error processing URL {url}: {str(e)}")
-                self.failed_urls.append(url)
-                return None
-
-    # Enhanced Fetch with Playwright
     async def _fetch_with_playwright(self, url: str, browser) -> Dict[str, Any]:
-        """Fetch a URL using Playwright with an existing browser instance"""
+        """
+        Fetch a URL using Playwright with an existing browser instance
+
+        Args:
+            url: URL to fetch
+            browser: Browser instance
+
+        Returns:
+            Dictionary with HTML content and metadata
+        """
         logger.info(f"Fetching URL with Playwright: {url}")
         result = {
             "url": url,
@@ -480,9 +337,7 @@ class WebScraper:
             "title": "",
             "content_preview": "",
             "error": None,
-            "content_length": 0,
-            "likely_restaurant_list": False,
-            "restaurant_list": []
+            "content_length": 0
         }
 
         try:
@@ -495,101 +350,188 @@ class WebScraper:
                 has_touch=False
             )
 
-            # Set up page
+            # Set up page with improved error handling
             page = await context.new_page()
             page.set_default_timeout(self.browser_config['timeout'])
 
-            # Navigation options
+            # Configure navigation and wait options
             navigation_options = {
                 "wait_until": "domcontentloaded",
                 "timeout": self.browser_config['timeout'],
                 "referer": "https://www.google.com/",
             }
 
-            # Navigate to URL
+            # Navigate to the URL with better options
             response = await page.goto(url, **navigation_options)
             result["status_code"] = response.status if response else 0
 
-            # Wait for network idle
+            # Improved content loading - wait for network idle
             try:
                 await page.wait_for_load_state("networkidle", timeout=5000)
             except PlaywrightTimeoutError:
-                # Continue anyway
+                # Continue anyway, many pages never reach network idle
                 pass
 
-            # Handle "Load More" buttons to expand content
-            try:
-                load_more_clicks = await self._handle_load_more_buttons(page)
-                if load_more_clicks > 0:
-                    logger.info(f"Clicked 'Load More' {load_more_clicks} times")
-                    # Wait for final content to settle
-                    await page.wait_for_load_state("networkidle", timeout=5000)
-            except Exception as e:
-                logger.warning(f"Error handling load more buttons: {e}")
-
-            # Get page content
+            # Get page content with better techniques
             result["html"] = await page.content()
             result["title"] = await page.title()
 
-            # Extract structured restaurant list
+            # Get a content preview using JavaScript evaluation
             try:
-                restaurant_list = await self._extract_restaurant_list(page)
-                if restaurant_list and len(restaurant_list) > 2:
-                    # Format as a clear list
-                    preview_parts = ["RESTAURANT LIST:"]
-                    for i, restaurant in enumerate(restaurant_list[:10], 1):
-                        preview_parts.append(f"{i}. [{restaurant['name']}]")
-                        if restaurant.get('description'):
-                            preview_parts.append(f"   {restaurant['description'][:100]}...")
-
-                    result["content_preview"] = "\n".join(preview_parts)
-                    result["likely_restaurant_list"] = True
-                    result["restaurant_list"] = restaurant_list
-                else:
-                    # Fall back to existing content extraction
-                    content_text = await page.evaluate('''() => {
-                        // Get visible text only
-                        function getVisibleText(node) {
-                            if (node.nodeType === Node.TEXT_NODE) {
-                                return node.textContent || "";
-                            }
-
-                            // Skip invisible elements
-                            try {
-                                const style = window.getComputedStyle(node);
-                                if (style && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")) {
-                                    return "";
-                                }
-                            } catch (e) {
-                                // Ignore errors with getComputedStyle
-                            }
-
-                            let text = "";
-                            for (let child of node.childNodes) {
-                                if (child.nodeType === Node.TEXT_NODE) {
-                                    text += child.textContent || "";
-                                } else if (child.nodeType === Node.ELEMENT_NODE) {
-                                    text += getVisibleText(child);
-                                }
-                            }
-                            return text;
+                content_text = await page.evaluate('''() => {
+                    // Get visible text only
+                    function getVisibleText(node) {
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            return node.textContent || "";
                         }
 
-                        // Get main content
-                        const mainContent = document.querySelector('main') || 
-                                          document.querySelector('article') || 
-                                          document.querySelector('.content') || 
-                                          document.body;
+                        const style = window.getComputedStyle(node);
+                        if (style && (style.display === "none" || style.visibility === "hidden")) {
+                            return "";
+                        }
 
-                        return getVisibleText(mainContent).trim().substring(0, 4000);
-                    }''')
-                    result["content_preview"] = content_text
+                        let text = "";
+                        for (let child of node.childNodes) {
+                            if (child.nodeType === Node.TEXT_NODE) {
+                                text += child.textContent || "";
+                            } else if (child.nodeType === Node.ELEMENT_NODE) {
+                                text += getVisibleText(child);
+                            }
+                        }
+                        return text;
+                    }
+
+                    // Use main content area if available
+                    const mainContent = document.querySelector('main') || 
+                                      document.querySelector('article') || 
+                                      document.querySelector('.content') || 
+                                      document.body;
+
+                    return getVisibleText(mainContent).trim().substring(0, 2000);
+                }''')
+                result["content_preview"] = content_text
             except Exception as e:
-                logger.warning(f"Error with restaurant list extraction: {e}")
-                # Final fallback extraction
-                content_text = await page.evaluate('document.body.innerText')
-                result["content_preview"] = content_text[:4000] if content_text else ""
+                # Fallback to simpler extraction
+                content_text = await page.evaluate('''() => {
+                    // Get ALL visible text with special attention to potential restaurant names
+                    const extractedItems = [];
 
+                    // Specifically look for restaurant names in common patterns
+                    function findRestaurantNames() {
+                        // Restaurant names are often in headers, strong tags, or styled links
+                        const potentialNameElements = [];
+
+                        // Collect all headings (h1-h6)
+                        document.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(el => {
+                            const text = el.innerText.trim();
+                            if (text) potentialNameElements.push({
+                                text: text,
+                                type: 'HEADING',
+                                tag: el.tagName.toLowerCase()
+                            });
+                        });
+
+                        // Collect all bold/strong elements (often used for restaurant names)
+                        document.querySelectorAll('strong, b').forEach(el => {
+                            const text = el.innerText.trim();
+                            if (text && text.length < 100) potentialNameElements.push({
+                                text: text,
+                                type: 'STRONG',
+                                tag: el.tagName.toLowerCase()
+                            });
+                        });
+
+                        // Collect all links (a) with styling that might be restaurant names
+                        document.querySelectorAll('a').forEach(el => {
+                            const style = window.getComputedStyle(el);
+                            if (style.display !== 'none' && style.visibility !== 'hidden') {
+                                const text = el.innerText.trim();
+                                if (text && text.length < 100) potentialNameElements.push({
+                                    text: text,
+                                    type: 'LINK',
+                                    tag: 'a',
+                                    href: el.href
+                                });
+                            }
+                        });
+
+                        // Collect divs and spans with special styling (font-weight, etc.)
+                        document.querySelectorAll('div, span').forEach(el => {
+                            const style = window.getComputedStyle(el);
+                            if (style.fontWeight >= 600 || style.fontSize > '16px') {
+                                const text = el.innerText.trim();
+                                if (text && text.length < 100 && text.length > 2) potentialNameElements.push({
+                                    text: text,
+                                    type: 'STYLED',
+                                    tag: el.tagName.toLowerCase()
+                                });
+                            }
+                        });
+
+                        return potentialNameElements;
+                    }
+
+                    // Main text extraction - get all visible text
+                    function getAllVisibleText() {
+                        function isVisible(el) {
+                            const style = window.getComputedStyle(el);
+                            return !(style.display === 'none' || style.visibility === 'hidden');
+                        }
+
+                        // Use main content area if available
+                        const mainContent = document.querySelector('main') || 
+                                           document.querySelector('article') || 
+                                           document.querySelector('.content') || 
+                                           document.body;
+
+                        const textItems = [];
+
+                        // Get all paragraphs
+                        mainContent.querySelectorAll('p').forEach(el => {
+                            if (isVisible(el)) {
+                                const text = el.innerText.trim();
+                                if (text) textItems.push({
+                                    text: text,
+                                    type: 'PARAGRAPH'
+                                });
+                            }
+                        });
+
+                        // Get all list items
+                        mainContent.querySelectorAll('li').forEach(el => {
+                            if (isVisible(el)) {
+                                const text = el.innerText.trim();
+                                if (text) textItems.push({
+                                    text: text,
+                                    type: 'LIST_ITEM'
+                                });
+                            }
+                        });
+
+                        return textItems;
+                    }
+
+                    const restaurantNames = findRestaurantNames();
+                    const mainText = getAllVisibleText();
+
+                    return JSON.stringify({
+                        restaurantNames: restaurantNames,
+                        mainText: mainText
+                    });
+                }''')
+
+                # Store the structured data
+                try:
+                    structured_content = json.loads(content_text)
+                    result["restaurant_names"] = structured_content.get("restaurantNames", [])
+                    result["structured_content"] = structured_content
+                    result["content_preview"] = json.dumps(structured_content.get("restaurantNames", []))[:2000]
+                except Exception as e:
+                    logger.error(f"Error parsing structured content: {e}")
+                    # Fallback to simple content preview
+                    result["content_preview"] = content_text[:2000] if content_text else ""
+
+            # Extract content length for logging
             result["content_length"] = len(result["html"])
 
             # Clean close
@@ -604,9 +546,16 @@ class WebScraper:
 
         return result
 
-    # Enhanced HTTP fetching
     async def _fetch_with_http(self, url: str) -> Dict[str, Any]:
-        """Fetch a URL using HTTP libraries"""
+        """
+        Fetch a URL using HTTP libraries (requests/aiohttp)
+
+        Args:
+            url: URL to fetch
+
+        Returns:
+            Dictionary with HTML content and metadata
+        """
         logger.info(f"Fetching URL with HTTP: {url}")
         result = {
             "url": url,
@@ -615,130 +564,107 @@ class WebScraper:
             "title": "",
             "content_preview": "",
             "error": None,
-            "content_length": 0,
-            "likely_restaurant_list": False,
-            "restaurant_list": []
+            "content_length": 0
         }
 
         try:
-            # Use httpx for async HTTP
+            # Try to use aiohttp first (async)
+            try:
+                import aiohttp
+
+                headers = {
+                    "User-Agent": self.browser_config['user_agent'],
+                    "Accept": "text/html,application/xhtml+xml,application/xml",
+                    "Accept-Language": "en-US,en;q=0.9",
+                }
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers=headers, timeout=15) as response:
+                        result["status_code"] = response.status
+
+                        if response.status == 200:
+                            html = await response.text()
+                            soup = BeautifulSoup(html, 'html.parser')
+
+                            result["html"] = html
+                            result["title"] = soup.title.text if soup.title else ""
+
+                            # Extract content preview
+                            main_content = soup.find('main') or soup.find('article') or soup.find(class_='content') or soup.body
+                            if main_content:
+                                preview_text = main_content.get_text(separator=' ', strip=True)
+                                result["content_preview"] = preview_text[:2000]
+                            else:
+                                result["content_preview"] = soup.get_text(separator=' ', strip=True)[:2000]
+
+                            result["content_length"] = len(html)
+                            return result
+                        else:
+                            result["error"] = f"HTTP error: {response.status}"
+                            return result
+
+            except ImportError:
+                # Fallback to requests if aiohttp is not available
+                logger.info("aiohttp not available, falling back to requests")
+                pass
+            except Exception as e:
+                logger.warning(f"aiohttp fetch failed: {str(e)}, falling back to requests")
+                pass
+
+            # Fallback to requests (synchronous)
+            import requests
+
             headers = {
                 "User-Agent": self.browser_config['user_agent'],
                 "Accept": "text/html,application/xhtml+xml,application/xml",
                 "Accept-Language": "en-US,en;q=0.9",
             }
 
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, headers=headers, timeout=15)
-                result["status_code"] = response.status_code
+            response = requests.get(url, headers=headers, timeout=15)
+            result["status_code"] = response.status_code
 
-                if response.status_code == 200:
-                    html = response.text
-                    soup = BeautifulSoup(html, 'html.parser')
+            if response.status_code == 200:
+                html = response.text
+                soup = BeautifulSoup(html, 'html.parser')
 
-                    result["html"] = html
-                    result["title"] = soup.title.text if soup.title else ""
+                result["html"] = html
+                result["title"] = soup.title.text if soup.title else ""
 
-                    # IMPROVED: Extract content preview focused on restaurant content
-                    # First look for restaurant entries specifically
-                    restaurant_entries = []
-
-                    # Look for numbered entries (like "1. Restaurant Name")
-                    numbered_headings = soup.find_all(["h2", "h3", "h4"], 
-                                                      string=lambda s: s and re.match(r'^\d+\.|\d+\s+', s))
-                    restaurant_entries.extend(numbered_headings)
-
-                    # Look for restaurant-related headings
-                    restaurant_headings = soup.find_all(["h2", "h3", "h4"], 
-                                                     string=lambda s: s and re.search(r'restaurant|café|cafe|dining|bistro|eatery', s, re.I))
-                    restaurant_entries.extend(restaurant_headings)
-
-                    # Look for elements with restaurant-related classes/IDs
-                    restaurant_classes = soup.select('.restaurant, .cafe, .listing, .place, [id*="restaurant"], [id*="place"], [class*="listing-item"]')
-                    restaurant_entries.extend(restaurant_classes)
-
-                    # Try to find a list container that likely contains restaurant entries
-                    list_containers = soup.select('div > ul, div > ol, .list, .listings, [class*="list"]')
-                    for container in list_containers:
-                        # Check if this list looks like a restaurant list
-                        list_items = container.find_all('li')
-                        restaurant_like_items = [li for li in list_items if 
-                                                re.search(r'restaurant|café|cafe|bistro|address|\d+\s+[a-zA-Z]+\s+st|\$|€', 
-                                                          li.get_text().lower())]
-                        if len(restaurant_like_items) >= 2:
-                            restaurant_entries.append(container)
-
-                    # If we found restaurant entries, use them for the preview
-                    preview_text = ""
-                    if restaurant_entries:
-                        # Take up to 5 restaurant entries
-                        for i, entry in enumerate(restaurant_entries[:5]):
-                            # Get the parent element to include context
-                            container = entry.parent or entry
-
-                            # For headings, include content until next heading of same level
-                            if entry.name in ["h1", "h2", "h3", "h4", "h5", "h6"]:
-                                heading_level = entry.name
-                                content = f"[{entry.get_text()}]\n"
-
-                                # Get content until next heading of same level
-                                next_elem = entry.find_next()
-                                while next_elem and next_elem.name != heading_level:
-                                    if next_elem.name not in ["script", "style", "meta"]:
-                                        content += next_elem.get_text() + "\n"
-                                    next_elem = next_elem.find_next()
-
-                                preview_text += content + "\n----------\n\n"
-                            else:
-                                # For other elements, just get their text
-                                preview_text += container.get_text(separator=' ', strip=True) + "\n\n----------\n\n"
-
-                        result["content_preview"] = preview_text[:4000]
-                        result["likely_restaurant_list"] = True
-                    else:
-                        # Fallback to main content
-                        main_content = soup.find('main') or soup.find('article') or soup.find(class_='content') or soup.body
-                        if main_content:
-                            preview_text = main_content.get_text(separator=' ', strip=True)
-                            result["content_preview"] = preview_text[:4000]
-                        else:
-                            result["content_preview"] = soup.get_text(separator=' ', strip=True)[:4000]
-
-                    # Check if the preview text contains restaurant list indicators
-                    if re.search(r'\b(\d+\.|No\.\s*\d+|Top\s*\d+)\s+', result["content_preview"]) or \
-                       re.search(r'(restaurant|café|bistro|eatery|dining).*?(address|located|price|\$|€)', 
-                                 result["content_preview"], re.IGNORECASE):
-                        result["likely_restaurant_list"] = True
-
-                    result["content_length"] = len(html)
+                # Extract content preview
+                main_content = soup.find('main') or soup.find('article') or soup.find(class_='content') or soup.body
+                if main_content:
+                    preview_text = main_content.get_text(separator=' ', strip=True)
+                    result["content_preview"] = preview_text[:2000]
                 else:
-                    result["error"] = f"HTTP error: {response.status_code}"
+                    result["content_preview"] = soup.get_text(separator=' ', strip=True)[:2000]
+
+                result["content_length"] = len(html)
+            else:
+                result["error"] = f"HTTP error: {response.status_code}"
+
         except Exception as e:
             result["error"] = f"Error fetching URL: {str(e)}"
             logger.warning(f"Error fetching URL: {url}, Error: {str(e)}")
 
         return result
 
-    # Fixed Evaluate content quality
-    async def _evaluate_content(self, url: str, title: str, preview: str, fetch_result: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Evaluate if the content is a restaurant list using AI"""
-        try:
-            # If we've already identified this as a restaurant list in a previous check or if the fetch_result indicates it's likely a restaurant list, skip the evaluation
-            if fetch_result and fetch_result.get("likely_restaurant_list"):
-                # If the preview doesn't have enough restaurant content, 
-                # but we know it's a restaurant list, assign good scores
-                logger.info(f"URL previously identified as restaurant list: {url}")
-                return {
-                    "is_restaurant_list": True,
-                    "restaurant_count": len(fetch_result.get("restaurant_list", [])) or 5,  # Use actual count or conservative estimate
-                    "content_quality": 0.8,
-                    "reasoning": "Pre-identified as restaurant list based on content patterns and/or structured list extraction"
-                }
+    async def _evaluate_content(self, url: str, title: str, preview: str) -> Dict[str, Any]:
+        """
+        Evaluate if the content is a restaurant list using AI
 
-            # Basic keyword check
-            restaurant_keywords = ["restaurant", "dining", "food", "eat", "chef", "cuisine", "menu", "dish", "café", "cafe", "bistro"]
+        Args:
+            url: URL of the page
+            title: Page title
+            preview: Content preview
+
+        Returns:
+            Evaluation result with scores
+        """
+        try:
+            # Basic keyword check to avoid LLM calls for obviously irrelevant content
+            restaurant_keywords = ["restaurant", "dining", "food", "eat", "chef", "cuisine", "menu", "dish"]
             if not any(kw in title.lower() or kw in preview.lower() for kw in restaurant_keywords):
-                logger.info(f"URL filtered by basic keyword check: {url}")
+                logger.info(f"URL filtered by basic keyword check: {url} - No restaurant keywords found")
                 return {
                     "is_restaurant_list": False,
                     "restaurant_count": 0,
@@ -746,268 +672,370 @@ class WebScraper:
                     "reasoning": "No restaurant-related keywords found"
                 }
 
-            # Check for list format indicators - this is a fast pre-check before using the LLM
-            list_indicators = [
-                r'\b\d+\.\s+\w+',  # numbered items like "1. Restaurant"
-                r'best\s+\d+',      # "best 10" or similar
-                r'top\s+\d+',       # "top 10" or similar
-                r'\b\d+\s+best',    # "10 best" or similar
-            ]
+            response = await self.eval_chain.ainvoke({
+                "url": url,
+                "title": title,
+                "preview": preview[:1500]  # Trim to avoid token limits
+            })
 
-            list_pattern = re.compile('|'.join(list_indicators), re.IGNORECASE)
-            if list_pattern.search(title) or list_pattern.search(preview[:500]):
-                # Strong indication this is a restaurant list - skip LLM evaluation
-                        logger.info(f"URL identified as restaurant list by pattern matching: {url}")
-                        return {
-                            "is_restaurant_list": True,
-                            "restaurant_count": 10,  # Reasonable estimate for list articles
-                            "content_quality": 0.9,
-                            "reasoning": "Identified as a curated list article by pattern matching"
-                        }
+            # Extract JSON from response
+            content = response.content
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
 
-                    # Using LLM for evaluation
-                    response = await self.eval_chain.ainvoke({
-                        "url": url,
-                        "title": title,
-                        "preview": preview[:1500]  # Trim to avoid token limits
-                    })
+            evaluation = json.loads(content.strip())
 
-                    # Extract JSON from response
-                    content = response.content
-                    if "```json" in content:
-                        content = content.split("```json")[1].split("```")[0].strip()
-                    elif "```" in content:
-                        content = content.split("```")[1].split("```")[0].strip()
+            # Ensure content_quality is in the response
+            if "content_quality" not in evaluation:
+                evaluation["content_quality"] = 0.8 if evaluation.get("is_restaurant_list", False) else 0.2
 
-                    import json
-                    evaluation = json.loads(content.strip())
+            # Get validity status based on current threshold
+            is_restaurant_list = evaluation.get("is_restaurant_list", False)
+            content_quality = evaluation.get("content_quality", 0.0)
+            reasoning = evaluation.get("reasoning", "No reasoning provided")
+            current_threshold = 0.5
 
-                    # Ensure content_quality is in response
-                    if "content_quality" not in evaluation:
-                        evaluation["content_quality"] = 0.8 if evaluation.get("is_restaurant_list", False) else 0.2
+            # Log detailed evaluation results
+            logger.info(f"Content evaluation for {url}:")
+            logger.info(f"  - Title: {title[:50]}...")
+            logger.info(f"  - Is Restaurant List: {is_restaurant_list}")
+            logger.info(f"  - Quality Score: {content_quality}")
+            logger.info(f"  - Current Threshold: {current_threshold}")
+            logger.info(f"  - Pass Filter: {is_restaurant_list and content_quality > current_threshold}")
+            logger.info(f"  - Reasoning: {reasoning}")
 
-                    # Log evaluation results
-                    logger.info(f"Content evaluation for {url}:")
-                    logger.info(f"  - Is Restaurant List: {evaluation.get('is_restaurant_list')}")
-                    logger.info(f"  - Quality Score: {evaluation.get('content_quality')}")
-                    logger.info(f"  - Reasoning: {evaluation.get('reasoning')}")
+            # If it would pass with a lower threshold but not the current one, log that specifically
+            if is_restaurant_list and 0.3 <= content_quality <= current_threshold:
+                logger.info(f"  - NOTE: This content would pass with a lower threshold of 0.3")
 
-                    return evaluation
-                except Exception as e:
-                    logger.error(f"Error evaluating content for {url}: {str(e)}")
-                    # Default to invalid content
-                    return {
-                        "is_restaurant_list": False,
-                        "restaurant_count": 0,
-                        "content_quality": 0.0,
-                        "reasoning": f"Error in evaluation: {str(e)}"
-                    }
+            # Return the evaluation
+            return evaluation
+        except Exception as e:
+            logger.error(f"Error evaluating content for {url}: {str(e)}")
+            # Return a conservative default (invalid content)
+            return {
+                "is_restaurant_list": False,
+                "restaurant_count": 0,
+                "content_quality": 0.0,
+                "source_type": "unknown",
+                "reasoning": "Error in evaluation"
+            }
 
-            # Process content
-            async def _process_content(self, html: str) -> str:
-                """Process HTML content using readability and cleaning"""
-                if not html:
-                    return ""
+    async def _process_content(self, html: str, extracted_content=None) -> str:
+        """
+        Process HTML content using readability and cleaning with enhanced extraction of restaurant names
 
-                try:
-                    # Extract main content with readability
-                    doc = Document(html)
-                    readable_html = doc.summary()
-                    title = doc.title()
+        Args:
+            html: Raw HTML content
+            extracted_content: Optional structured content extracted directly with Playwright
 
-                    # Parse with BeautifulSoup for cleaning
-                    soup = BeautifulSoup(readable_html, 'html.parser')
+        Returns:
+            Cleaned and processed text content with preserved restaurant names
+        """
+        # Create a collection for all paragraphs/content elements
+        paragraphs = []
+        restaurant_names = set()  # For deduplication of restaurant names
 
-                    # Extract text and preserve structure
-                    paragraphs = []
+        # 1. HANDLE PLAYWRIGHT DIRECT EXTRACTION (if available)
+        if extracted_content and isinstance(extracted_content, dict):
+            logger.info("Using Playwright-extracted structured content")
 
-                    # Process headings
-                    for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
-                        paragraphs.append(f"HEADING: {heading.get_text().strip()}")
-                        heading.extract()
+            # Process restaurant names from Playwright extraction
+            playwright_names = extracted_content.get("restaurantNames", [])
+            if playwright_names:
+                name_paragraphs = []
+                for item in playwright_names:
+                    if isinstance(item, dict):
+                        name_type = item.get("type", "UNKNOWN")
+                        name_text = item.get("text", "").strip()
+                        if name_text and 2 < len(name_text) < 100:
+                            name_paragraphs.append(f"RESTAURANT_NAME [{name_type}]: {name_text}")
+                            restaurant_names.add(name_text)
 
-                    # Process lists
-                    for list_elem in soup.find_all(['ul', 'ol']):
-                        list_items = []
-                        for item in list_elem.find_all('li'):
-                            item_text = item.get_text().strip()
-                            if item_text:
-                                list_items.append(f"- {item_text}")
+                if name_paragraphs:
+                    paragraphs.append("LIKELY RESTAURANT NAMES:")
+                    paragraphs.extend(name_paragraphs)
+                    paragraphs.append("")  # Empty line separator
 
-                        if list_items:
-                            paragraphs.append("\n".join(list_items))
-                        list_elem.extract()
-
-                    # Process regular paragraphs
-                    for para in soup.find_all('p'):
-                        text = para.get_text().strip()
+            # Process main text content from Playwright
+            playwright_text = extracted_content.get("mainText", [])
+            if playwright_text:
+                for item in playwright_text:
+                    if isinstance(item, dict):
+                        text_type = item.get("type", "TEXT")
+                        text = item.get("text", "").strip()
                         if text:
-                            paragraphs.append(text)
+                            paragraphs.append(f"{text_type}: {text}")
 
-                    # Get remaining text
-                    remaining_text = soup.get_text().strip()
-                    if remaining_text:
-                        lines = [line.strip() for line in remaining_text.split('\n') if line.strip()]
-                        paragraphs.extend(lines)
+        # 2. HTML PROCESSING WITH READABILITY & BEAUTIFULSOUP
+        if not html:
+            if paragraphs:
+                return "\n\n".join(paragraphs)
+            return ""
 
-                    # Add title at beginning
-                    if title:
-                        paragraphs.insert(0, f"TITLE: {title}")
+        try:
+            # First extract title from HTML (before readability possibly removes it)
+            soup_full = BeautifulSoup(html, 'html.parser')
+            page_title = soup_full.title.text.strip() if soup_full.title else ""
 
-                    # Join all paragraphs
-                    processed_text = "\n\n".join(paragraphs)
+            # Add page title if not already included
+            if page_title and not any(page_title in p for p in paragraphs):
+                paragraphs.insert(0, f"TITLE: {page_title}")
 
-                    # Clean up whitespace
-                    processed_text = re.sub(r'\n{3,}', '\n\n', processed_text)
-                    processed_text = re.sub(r' {2,}', ' ', processed_text)
+            # Use readability to extract main content
+            doc = Document(html)
+            readable_html = doc.summary()
+            doc_title = doc.title()
 
-                    return processed_text
-                except Exception as e:
-                    logger.error(f"Error processing content: {str(e)}")
-                    # Fallback extraction
-                    soup = BeautifulSoup(html, 'html.parser')
-                    return soup.get_text(separator='\n\n')
+            # Add readability title if different from page title
+            if doc_title and doc_title != page_title:
+                paragraphs.insert(1, f"ARTICLE_TITLE: {doc_title}")
 
-            # Enhanced restaurant extraction
-            async def _extract_restaurant_info(self, content: str, restaurant_list=None) -> List[Dict[str, Any]]:
-                """Extract restaurant information from content using AI"""
-                try:
-                    # Use the structured list if available
-                    if restaurant_list:
-                        restaurants = []
-                        for item in restaurant_list:
-                            restaurant = {
-                                "name": f"[{item['name']}]",  # Add square brackets for visibility
-                                "description": item.get('description', ''),
-                                "url": item.get('url', ''),
-                                "type": item.get('type', 'restaurant')
-                            }
-                            restaurants.append(restaurant)
-                        return restaurants
+            # Parse the readability-extracted HTML with BeautifulSoup
+            soup = BeautifulSoup(readable_html, 'html.parser')
 
-                    # Fall back to LLM extraction for unstructured content
-                    response = await self.extract_chain.ainvoke({"content": content[:4000]})
-                    extracted_text = response.content
+            # RESTAURANT NAME EXTRACTION - Look specifically for patterns that typically contain restaurant names
 
-                    # Process the extraction into structured data
-                    restaurants = []
-                    current_restaurant = None
+            # 1. Extract names from links (common for restaurant lists)
+            link_names = []
+            for link in soup.find_all('a'):
+                link_text = link.get_text().strip()
+                # Restaurant names are typically short, non-sentence-like text
+                if (link_text and 2 < len(link_text) < 60 and 
+                        link_text.count(' ') < 8 and
+                        not link_text.lower().startswith(('http', 'www', 'click', 'read', 'more'))):
+                    if link_text not in restaurant_names:
+                        link_names.append(f"LINK: {link_text}")
+                        restaurant_names.add(link_text)
 
-                    for line in extracted_text.split('\n'):
-                        line = line.strip()
-                        if not line:
-                            continue
+            # Only add link section if we found potential restaurant names
+            if link_names:
+                paragraphs.append("POTENTIAL RESTAURANT NAMES FROM LINKS:")
+                paragraphs.extend(link_names)
+                paragraphs.append("")  # Separator
 
-                        # Check if this is a new restaurant name
-                        if line.startswith("Restaurant Name:") or line.startswith("Name:"):
-                            # Save previous restaurant if exists
-                            if current_restaurant and current_restaurant.get("name"):
-                                restaurants.append(current_restaurant)
+            # 2. Extract names from headings
+            heading_texts = []
+            for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                heading_text = heading.get_text().strip()
+                if heading_text and heading_text not in restaurant_names:
+                    heading_tag = heading.name
+                    heading_texts.append(f"HEADING_{heading_tag.upper()}: {heading_text}")
+                    restaurant_names.add(heading_text)
+                    # Remove processed heading to avoid duplication
+                    heading.extract()
 
-                            # Start new restaurant with square brackets
-                            name = line.split(":", 1)[1].strip()
-                            current_restaurant = {"name": f"[{name}]"}
-                        elif current_restaurant is not None:
-                            # Process other fields
-                            if ":" in line:
-                                key, value = line.split(":", 1)
-                                key = key.strip().lower()
-                                value = value.strip()
+            if heading_texts:
+                paragraphs.append("HEADINGS (OFTEN RESTAURANT NAMES):")
+                paragraphs.extend(heading_texts)
+                paragraphs.append("")  # Separator
 
-                                # Map to our standard fields
-                                if "address" in key:
-                                    current_restaurant["address"] = value
-                                elif "price" in key:
-                                    current_restaurant["price_range"] = value
-                                elif "dish" in key or "recommend" in key or "signature" in key:
-                                    current_restaurant.setdefault("recommended_dishes", []).append(value)
-                                elif "chef" in key:
-                                    current_restaurant["chef"] = value
-                                elif "atmosphere" in key or "ambience" in key:
-                                    current_restaurant["atmosphere"] = value
-                                elif "reserv" in key:
-                                    current_restaurant["reservations_required"] = "required" in value.lower() or "recommended" in value.lower()
-                                elif "instagram" in key:
-                                    current_restaurant["instagram"] = value
-                                elif "description" in key:
-                                    current_restaurant["description"] = value
+            # 3. Extract names from styled elements (bold, strong, etc.)
+            styled_texts = []
+            for element in soup.find_all(['strong', 'b', 'em', 'i', 'mark']):
+                styled_text = element.get_text().strip()
+                if (styled_text and len(styled_text) < 60 and
+                        styled_text not in restaurant_names and
+                        not any(styled_text.lower().startswith(word) for word in ['http', 'www'])):
+                    styled_texts.append(f"STYLED: {styled_text}")
+                    restaurant_names.add(styled_text)
 
-                    # Add the last restaurant if exists
-                    if current_restaurant and current_restaurant.get("name"):
-                        restaurants.append(current_restaurant)
+            if styled_texts:
+                paragraphs.append("STYLED TEXT (POTENTIAL RESTAURANT NAMES):")
+                paragraphs.extend(styled_texts)
+                paragraphs.append("")  # Separator
 
-                    return restaurants
-                except Exception as e:
-                    logger.error(f"Error extracting restaurant info: {str(e)}")
-                    return []
+            # 4. Process lists (often contain restaurant info)
+            for list_elem in soup.find_all(['ul', 'ol']):
+                list_items = []
+                for item in list_elem.find_all('li'):
+                    item_text = item.get_text().strip()
+                    if item_text:
+                        # Try to extract restaurant names from list items that look like they contain restaurant names
+                        if len(item_text) < 200:  # Not too long
+                            list_items.append(f"LIST_ITEM: {item_text}")
+                        else:
+                            # For longer list items, still include but truncate for readability
+                            list_items.append(f"LIST_ITEM: {item_text[:200]}...")
 
-            # Extract source information
-            def _extract_source_info(self, url: str, title: str, domain: str, favicon: str = "") -> Dict[str, Any]:
-                """Extract and format source information"""
-                source_type = "Website"
+                if list_items:
+                    paragraphs.append("LIST ITEMS:")
+                    paragraphs.extend(list_items)
+                    paragraphs.append("")  # Separator
 
-                # Determine source type
-                if any(kw in domain for kw in ["guide", "michelin"]):
-                    source_type = "Restaurant Guide"
-                elif any(kw in domain for kw in ["news", "times", "post", "magazine"]):
-                    source_type = "News Publication" 
-                elif any(kw in domain for kw in ["blog", "food", "critic", "review"]):
-                    source_type = "Food Blog"
+                # Remove processed list to avoid duplication
+                list_elem.extract()
 
-                # Extract source name from domain
-                source_name = domain.split('.')[0].capitalize()
-                if domain.startswith("www."):
-                    source_name = domain[4:].split('.')[0].capitalize()
+            # 5. Process regular paragraphs
+            para_texts = []
+            for para in soup.find_all('p'):
+                text = para.get_text().strip()
+                if text:
+                    # Keep paragraphs at a reasonable length
+                    if len(text) > 500:
+                        para_texts.append(f"PARAGRAPH: {text[:500]}...")
+                    else:
+                        para_texts.append(f"PARAGRAPH: {text}")
+                # Remove processed paragraph to avoid duplication
+                para.extract()
 
-                # If title contains source name in better format, use that
-                if title and len(title) > 3:
-                    title_parts = title.split('|')
-                    if len(title_parts) > 1:
-                        possible_name = title_parts[-1].strip()
-                        if 3 < len(possible_name) < 25:
-                            source_name = possible_name
+            if para_texts:
+                paragraphs.append("CONTENT PARAGRAPHS:")
+                paragraphs.extend(para_texts)
+                paragraphs.append("")  # Separator
 
-                return {
-                    "name": source_name,
-                    "domain": domain,
-                    "type": source_type,
-                    "favicon": favicon
-                }
+            # 6. Get any remaining text not captured above
+            remaining_text = soup.get_text().strip()
+            if remaining_text:
+                # Split by newlines and filter empty strings
+                lines = [line.strip() for line in remaining_text.split('\n') if line.strip()]
+                if lines:
+                    paragraphs.append("ADDITIONAL CONTENT:")
+                    for line in lines:
+                        # Avoid overly long lines
+                        if len(line) > 500:
+                            paragraphs.append(f"{line[:500]}...")
+                        else:
+                            paragraphs.append(line)
 
-            # Extract domain
-            def _extract_domain(self, url: str) -> str:
-                """Extract domain from URL"""
-                try:
-                    parsed = urlparse(url)
-                    domain = parsed.netloc
-                    if domain.startswith('www.'):
-                        domain = domain[4:]
-                    return domain
-                except Exception:
-                    return url
+            # 7. Process divs with class attributes that might indicate restaurant content
+            restaurant_div_keywords = ['restaurant', 'venue', 'place', 'location', 'listing', 'item']
+            for div in soup_full.find_all('div', class_=True):
+                div_class = ' '.join(div.get('class', []))
+                if any(keyword in div_class.lower() for keyword in restaurant_div_keywords):
+                    div_text = div.get_text(strip=True)
+                    # Limit to reasonable length for restaurant section
+                    if 10 < len(div_text) < 500:  
+                        # Process nested elements for better structure
+                        div_content = []
 
-            # Legacy API compatibility
-            async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-                """Legacy API method for backward compatibility"""
-                logger.info("Using legacy API scrape_search_results")
-                return await self.filter_and_scrape_results(search_results)
+                        # Check for restaurant name indicators
+                        for name_tag in div.find_all(['h3', 'h4', 'strong', 'b']):
+                            name_text = name_tag.get_text(strip=True)
+                            if name_text and name_text not in restaurant_names:
+                                div_content.append(f"NAME: {name_text}")
+                                restaurant_names.add(name_text)
 
-            # Public method for testing
-            async def fetch_url(self, url: str) -> Dict[str, Any]:
-                """Fetch a URL for testing purposes"""
-                if PLAYWRIGHT_ENABLED:
-                    try:
-                        async with async_playwright() as p:
-                            browser = await p.chromium.launch(
-                                headless=True,
-                                args=["--disable-dev-shm-usage"]
-                            )
-                            result = await self._fetch_with_playwright(url, browser)
-                            await browser.close()
-                            return result
-                    except Exception as e:
-                        logger.error(f"Error using Playwright for testing: {e}, falling back to HTTP")
-                        return await self._fetch_with_http(url)
-                else:
-                    return await self._fetch_with_http(url)
+                        # Check for address indicators
+                        for addr_tag in div.find_all(['address', 'p']):
+                            addr_text = addr_tag.get_text(strip=True)
+                            if addr_text and len(addr_text) < 200:
+                                div_content.append(f"DETAIL: {addr_text}")
 
+                        if div_content:
+                            if "RESTAURANT SECTIONS:" not in paragraphs:
+                                paragraphs.append("RESTAURANT SECTIONS:")
+                            paragraphs.extend(div_content)
+                            paragraphs.append("---")  # Section separator
+
+            # Join all paragraphs with appropriate spacing
+            processed_text = "\n\n".join(p for p in paragraphs if p)
+
+            # Clean up extra whitespace
+            processed_text = re.sub(r'\n{3,}', '\n\n', processed_text)
+            processed_text = re.sub(r' {2,}', ' ', processed_text)
+
+            return processed_text
+
+        except Exception as e:
+            logger.error(f"Error processing content: {str(e)}")
+            # Return what we've been able to gather so far, or a simple extraction as fallback
+            if paragraphs:
+                return "\n\n".join(paragraphs)
+
+            # Last resort fallback - simple text extraction
+            try:
+                soup = BeautifulSoup(html, 'html.parser')
+                return soup.get_text(separator='\n\n')
+            except:
+                return "Failed to extract content from HTML"
+
+    def _extract_source_info(self, url: str, title: str, domain: str, favicon: str = "") -> Dict[str, Any]:
+        """Extract and format source information"""
+        source_type = "Website"
+
+        # Try to determine source type based on domain and title
+        if any(kw in domain for kw in ["guide", "michelin"]):
+            source_type = "Restaurant Guide"
+        elif any(kw in domain for kw in ["news", "times", "post", "magazine"]):
+            source_type = "News Publication"
+        elif any(kw in domain for kw in ["blog", "food", "critic", "review"]):
+            source_type = "Food Blog"
+
+        # Extract source name from domain
+        source_name = domain.split('.')[0].capitalize()
+        if domain.startswith("www."):
+            source_name = domain[4:].split('.')[0].capitalize()
+
+        # If title contains the source name in a better format, use that
+        if title and len(title) > 3:
+            title_parts = title.split('|')
+            if len(title_parts) > 1:
+                possible_name = title_parts[-1].strip()
+                if 3 < len(possible_name) < 25:  # Reasonable length for a source name
+                    source_name = possible_name
+
+        return {
+            "name": source_name,
+            "domain": domain,
+            "type": source_type,
+            "favicon": favicon
+        }
+
+    def _extract_domain(self, url: str) -> str:
+        """Extract domain from URL"""
+        try:
+            parsed = urlparse(url)
+            domain = parsed.netloc
+            # Remove www. prefix if present
+            if domain.startswith('www.'):
+                domain = domain[4:]
+            return domain
+        except Exception:
+            return url
+
+    # -------------------------------------------------
+    # Legacy API compatibility for backward compatibility
+    # -------------------------------------------------
+    async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Legacy API method for backward compatibility
+
+        Args:
+            search_results: List of search result dictionaries with URLs
+
+        Returns:
+            List of enriched results with scraped content
+        """
+        logger.info("Using legacy API scrape_search_results - consider migrating to filter_and_scrape_results")
+        return await self.filter_and_scrape_results(search_results)
+
+    # Public method for testing URL fetching separately
+    async def fetch_url(self, url: str) -> Dict[str, Any]:
+        """
+        Fetch a URL for testing purposes
+
+        Args:
+            url: URL to fetch
+
+        Returns:
+            Dictionary with content and status information
+        """
+        # Use the appropriate fetch method based on availability
+        if PLAYWRIGHT_ENABLED:
+            try:
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(
+                        headless=True, 
+                        args=["--disable-dev-shm-usage"]
+                    )
+                    result = await self._fetch_with_playwright(url, browser)
+                    await browser.close()
+                    return result
+            except Exception as e:
+                logger.error(f"Error using Playwright for testing: {e}, falling back to HTTP")
+                return await self._fetch_with_http(url)
+        else:
+            return await self._fetch_with_http(url)
