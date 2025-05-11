@@ -757,258 +757,257 @@ class WebScraper:
             list_pattern = re.compile('|'.join(list_indicators), re.IGNORECASE)
             if list_pattern.search(title) or list_pattern.search(preview[:500]):
                 # Strong indication this is a restaurant list - skip LLM evaluation
+                        logger.info(f"URL identified as restaurant list by pattern matching: {url}")
+                        return {
+                            "is_restaurant_list": True,
+                            "restaurant_count": 10,  # Reasonable estimate for list articles
+                            "content_quality": 0.9,
+                            "reasoning": "Identified as a curated list article by pattern matching"
+                        }
 
-        # Strong indication this is a restaurant list - skip LLM evaluation
-                    logger.info(f"URL identified as restaurant list by pattern matching: {url}")
+                    # Using LLM for evaluation
+                    response = await self.eval_chain.ainvoke({
+                        "url": url,
+                        "title": title,
+                        "preview": preview[:1500]  # Trim to avoid token limits
+                    })
+
+                    # Extract JSON from response
+                    content = response.content
+                    if "```json" in content:
+                        content = content.split("```json")[1].split("```")[0].strip()
+                    elif "```" in content:
+                        content = content.split("```")[1].split("```")[0].strip()
+
+                    import json
+                    evaluation = json.loads(content.strip())
+
+                    # Ensure content_quality is in response
+                    if "content_quality" not in evaluation:
+                        evaluation["content_quality"] = 0.8 if evaluation.get("is_restaurant_list", False) else 0.2
+
+                    # Log evaluation results
+                    logger.info(f"Content evaluation for {url}:")
+                    logger.info(f"  - Is Restaurant List: {evaluation.get('is_restaurant_list')}")
+                    logger.info(f"  - Quality Score: {evaluation.get('content_quality')}")
+                    logger.info(f"  - Reasoning: {evaluation.get('reasoning')}")
+
+                    return evaluation
+                except Exception as e:
+                    logger.error(f"Error evaluating content for {url}: {str(e)}")
+                    # Default to invalid content
                     return {
-                        "is_restaurant_list": True,
-                        "restaurant_count": 10,  # Reasonable estimate for list articles
-                        "content_quality": 0.9,
-                        "reasoning": "Identified as a curated list article by pattern matching"
+                        "is_restaurant_list": False,
+                        "restaurant_count": 0,
+                        "content_quality": 0.0,
+                        "reasoning": f"Error in evaluation: {str(e)}"
                     }
 
-                # Using LLM for evaluation
-                response = await self.eval_chain.ainvoke({
-                    "url": url,
-                    "title": title,
-                    "preview": preview[:1500]  # Trim to avoid token limits
-                })
+            # Process content
+            async def _process_content(self, html: str) -> str:
+                """Process HTML content using readability and cleaning"""
+                if not html:
+                    return ""
 
-                # Extract JSON from response
-                content = response.content
-                if "```json" in content:
-                    content = content.split("```json")[1].split("```")[0].strip()
-                elif "```" in content:
-                    content = content.split("```")[1].split("```")[0].strip()
+                try:
+                    # Extract main content with readability
+                    doc = Document(html)
+                    readable_html = doc.summary()
+                    title = doc.title()
 
-                import json
-                evaluation = json.loads(content.strip())
+                    # Parse with BeautifulSoup for cleaning
+                    soup = BeautifulSoup(readable_html, 'html.parser')
 
-                # Ensure content_quality is in response
-                if "content_quality" not in evaluation:
-                    evaluation["content_quality"] = 0.8 if evaluation.get("is_restaurant_list", False) else 0.2
+                    # Extract text and preserve structure
+                    paragraphs = []
 
-                # Log evaluation results
-                logger.info(f"Content evaluation for {url}:")
-                logger.info(f"  - Is Restaurant List: {evaluation.get('is_restaurant_list')}")
-                logger.info(f"  - Quality Score: {evaluation.get('content_quality')}")
-                logger.info(f"  - Reasoning: {evaluation.get('reasoning')}")
+                    # Process headings
+                    for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                        paragraphs.append(f"HEADING: {heading.get_text().strip()}")
+                        heading.extract()
 
-                return evaluation
-            except Exception as e:
-                logger.error(f"Error evaluating content for {url}: {str(e)}")
-                # Default to invalid content
+                    # Process lists
+                    for list_elem in soup.find_all(['ul', 'ol']):
+                        list_items = []
+                        for item in list_elem.find_all('li'):
+                            item_text = item.get_text().strip()
+                            if item_text:
+                                list_items.append(f"- {item_text}")
+
+                        if list_items:
+                            paragraphs.append("\n".join(list_items))
+                        list_elem.extract()
+
+                    # Process regular paragraphs
+                    for para in soup.find_all('p'):
+                        text = para.get_text().strip()
+                        if text:
+                            paragraphs.append(text)
+
+                    # Get remaining text
+                    remaining_text = soup.get_text().strip()
+                    if remaining_text:
+                        lines = [line.strip() for line in remaining_text.split('\n') if line.strip()]
+                        paragraphs.extend(lines)
+
+                    # Add title at beginning
+                    if title:
+                        paragraphs.insert(0, f"TITLE: {title}")
+
+                    # Join all paragraphs
+                    processed_text = "\n\n".join(paragraphs)
+
+                    # Clean up whitespace
+                    processed_text = re.sub(r'\n{3,}', '\n\n', processed_text)
+                    processed_text = re.sub(r' {2,}', ' ', processed_text)
+
+                    return processed_text
+                except Exception as e:
+                    logger.error(f"Error processing content: {str(e)}")
+                    # Fallback extraction
+                    soup = BeautifulSoup(html, 'html.parser')
+                    return soup.get_text(separator='\n\n')
+
+            # Enhanced restaurant extraction
+            async def _extract_restaurant_info(self, content: str, restaurant_list=None) -> List[Dict[str, Any]]:
+                """Extract restaurant information from content using AI"""
+                try:
+                    # Use the structured list if available
+                    if restaurant_list:
+                        restaurants = []
+                        for item in restaurant_list:
+                            restaurant = {
+                                "name": f"[{item['name']}]",  # Add square brackets for visibility
+                                "description": item.get('description', ''),
+                                "url": item.get('url', ''),
+                                "type": item.get('type', 'restaurant')
+                            }
+                            restaurants.append(restaurant)
+                        return restaurants
+
+                    # Fall back to LLM extraction for unstructured content
+                    response = await self.extract_chain.ainvoke({"content": content[:4000]})
+                    extracted_text = response.content
+
+                    # Process the extraction into structured data
+                    restaurants = []
+                    current_restaurant = None
+
+                    for line in extracted_text.split('\n'):
+                        line = line.strip()
+                        if not line:
+                            continue
+
+                        # Check if this is a new restaurant name
+                        if line.startswith("Restaurant Name:") or line.startswith("Name:"):
+                            # Save previous restaurant if exists
+                            if current_restaurant and current_restaurant.get("name"):
+                                restaurants.append(current_restaurant)
+
+                            # Start new restaurant with square brackets
+                            name = line.split(":", 1)[1].strip()
+                            current_restaurant = {"name": f"[{name}]"}
+                        elif current_restaurant is not None:
+                            # Process other fields
+                            if ":" in line:
+                                key, value = line.split(":", 1)
+                                key = key.strip().lower()
+                                value = value.strip()
+
+                                # Map to our standard fields
+                                if "address" in key:
+                                    current_restaurant["address"] = value
+                                elif "price" in key:
+                                    current_restaurant["price_range"] = value
+                                elif "dish" in key or "recommend" in key or "signature" in key:
+                                    current_restaurant.setdefault("recommended_dishes", []).append(value)
+                                elif "chef" in key:
+                                    current_restaurant["chef"] = value
+                                elif "atmosphere" in key or "ambience" in key:
+                                    current_restaurant["atmosphere"] = value
+                                elif "reserv" in key:
+                                    current_restaurant["reservations_required"] = "required" in value.lower() or "recommended" in value.lower()
+                                elif "instagram" in key:
+                                    current_restaurant["instagram"] = value
+                                elif "description" in key:
+                                    current_restaurant["description"] = value
+
+                    # Add the last restaurant if exists
+                    if current_restaurant and current_restaurant.get("name"):
+                        restaurants.append(current_restaurant)
+
+                    return restaurants
+                except Exception as e:
+                    logger.error(f"Error extracting restaurant info: {str(e)}")
+                    return []
+
+            # Extract source information
+            def _extract_source_info(self, url: str, title: str, domain: str, favicon: str = "") -> Dict[str, Any]:
+                """Extract and format source information"""
+                source_type = "Website"
+
+                # Determine source type
+                if any(kw in domain for kw in ["guide", "michelin"]):
+                    source_type = "Restaurant Guide"
+                elif any(kw in domain for kw in ["news", "times", "post", "magazine"]):
+                    source_type = "News Publication" 
+                elif any(kw in domain for kw in ["blog", "food", "critic", "review"]):
+                    source_type = "Food Blog"
+
+                # Extract source name from domain
+                source_name = domain.split('.')[0].capitalize()
+                if domain.startswith("www."):
+                    source_name = domain[4:].split('.')[0].capitalize()
+
+                # If title contains source name in better format, use that
+                if title and len(title) > 3:
+                    title_parts = title.split('|')
+                    if len(title_parts) > 1:
+                        possible_name = title_parts[-1].strip()
+                        if 3 < len(possible_name) < 25:
+                            source_name = possible_name
+
                 return {
-                    "is_restaurant_list": False,
-                    "restaurant_count": 0,
-                    "content_quality": 0.0,
-                    "reasoning": f"Error in evaluation: {str(e)}"
+                    "name": source_name,
+                    "domain": domain,
+                    "type": source_type,
+                    "favicon": favicon
                 }
 
-        # Process content
-        async def _process_content(self, html: str) -> str:
-            """Process HTML content using readability and cleaning"""
-            if not html:
-                return ""
-
-            try:
-                # Extract main content with readability
-                doc = Document(html)
-                readable_html = doc.summary()
-                title = doc.title()
-
-                # Parse with BeautifulSoup for cleaning
-                soup = BeautifulSoup(readable_html, 'html.parser')
-
-                # Extract text and preserve structure
-                paragraphs = []
-
-                # Process headings
-                for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
-                    paragraphs.append(f"HEADING: {heading.get_text().strip()}")
-                    heading.extract()
-
-                # Process lists
-                for list_elem in soup.find_all(['ul', 'ol']):
-                    list_items = []
-                    for item in list_elem.find_all('li'):
-                        item_text = item.get_text().strip()
-                        if item_text:
-                            list_items.append(f"- {item_text}")
-
-                    if list_items:
-                        paragraphs.append("\n".join(list_items))
-                    list_elem.extract()
-
-                # Process regular paragraphs
-                for para in soup.find_all('p'):
-                    text = para.get_text().strip()
-                    if text:
-                        paragraphs.append(text)
-
-                # Get remaining text
-                remaining_text = soup.get_text().strip()
-                if remaining_text:
-                    lines = [line.strip() for line in remaining_text.split('\n') if line.strip()]
-                    paragraphs.extend(lines)
-
-                # Add title at beginning
-                if title:
-                    paragraphs.insert(0, f"TITLE: {title}")
-
-                # Join all paragraphs
-                processed_text = "\n\n".join(paragraphs)
-
-                # Clean up whitespace
-                processed_text = re.sub(r'\n{3,}', '\n\n', processed_text)
-                processed_text = re.sub(r' {2,}', ' ', processed_text)
-
-                return processed_text
-            except Exception as e:
-                logger.error(f"Error processing content: {str(e)}")
-                # Fallback extraction
-                soup = BeautifulSoup(html, 'html.parser')
-                return soup.get_text(separator='\n\n')
-
-        # Enhanced restaurant extraction
-        async def _extract_restaurant_info(self, content: str, restaurant_list=None) -> List[Dict[str, Any]]:
-            """Extract restaurant information from content using AI"""
-            try:
-                # Use the structured list if available
-                if restaurant_list:
-                    restaurants = []
-                    for item in restaurant_list:
-                        restaurant = {
-                            "name": f"[{item['name']}]",  # Add square brackets for visibility
-                            "description": item.get('description', ''),
-                            "url": item.get('url', ''),
-                            "type": item.get('type', 'restaurant')
-                        }
-                        restaurants.append(restaurant)
-                    return restaurants
-
-                # Fall back to LLM extraction for unstructured content
-                response = await self.extract_chain.ainvoke({"content": content[:4000]})
-                extracted_text = response.content
-
-                # Process the extraction into structured data
-                restaurants = []
-                current_restaurant = None
-
-                for line in extracted_text.split('\n'):
-                    line = line.strip()
-                    if not line:
-                        continue
-
-                    # Check if this is a new restaurant name
-                    if line.startswith("Restaurant Name:") or line.startswith("Name:"):
-                        # Save previous restaurant if exists
-                        if current_restaurant and current_restaurant.get("name"):
-                            restaurants.append(current_restaurant)
-
-                        # Start new restaurant with square brackets
-                        name = line.split(":", 1)[1].strip()
-                        current_restaurant = {"name": f"[{name}]"}
-                    elif current_restaurant is not None:
-                        # Process other fields
-                        if ":" in line:
-                            key, value = line.split(":", 1)
-                            key = key.strip().lower()
-                            value = value.strip()
-
-                            # Map to our standard fields
-                            if "address" in key:
-                                current_restaurant["address"] = value
-                            elif "price" in key:
-                                current_restaurant["price_range"] = value
-                            elif "dish" in key or "recommend" in key or "signature" in key:
-                                current_restaurant.setdefault("recommended_dishes", []).append(value)
-                            elif "chef" in key:
-                                current_restaurant["chef"] = value
-                            elif "atmosphere" in key or "ambience" in key:
-                                current_restaurant["atmosphere"] = value
-                            elif "reserv" in key:
-                                current_restaurant["reservations_required"] = "required" in value.lower() or "recommended" in value.lower()
-                            elif "instagram" in key:
-                                current_restaurant["instagram"] = value
-                            elif "description" in key:
-                                current_restaurant["description"] = value
-
-                # Add the last restaurant if exists
-                if current_restaurant and current_restaurant.get("name"):
-                    restaurants.append(current_restaurant)
-
-                return restaurants
-            except Exception as e:
-                logger.error(f"Error extracting restaurant info: {str(e)}")
-                return []
-
-        # Extract source information
-        def _extract_source_info(self, url: str, title: str, domain: str, favicon: str = "") -> Dict[str, Any]:
-            """Extract and format source information"""
-            source_type = "Website"
-
-            # Determine source type
-            if any(kw in domain for kw in ["guide", "michelin"]):
-                source_type = "Restaurant Guide"
-            elif any(kw in domain for kw in ["news", "times", "post", "magazine"]):
-                source_type = "News Publication" 
-            elif any(kw in domain for kw in ["blog", "food", "critic", "review"]):
-                source_type = "Food Blog"
-
-            # Extract source name from domain
-            source_name = domain.split('.')[0].capitalize()
-            if domain.startswith("www."):
-                source_name = domain[4:].split('.')[0].capitalize()
-
-            # If title contains source name in better format, use that
-            if title and len(title) > 3:
-                title_parts = title.split('|')
-                if len(title_parts) > 1:
-                    possible_name = title_parts[-1].strip()
-                    if 3 < len(possible_name) < 25:
-                        source_name = possible_name
-
-            return {
-                "name": source_name,
-                "domain": domain,
-                "type": source_type,
-                "favicon": favicon
-            }
-
-        # Extract domain
-        def _extract_domain(self, url: str) -> str:
-            """Extract domain from URL"""
-            try:
-                parsed = urlparse(url)
-                domain = parsed.netloc
-                if domain.startswith('www.'):
-                    domain = domain[4:]
-                return domain
-            except Exception:
-                return url
-
-        # Legacy API compatibility
-        async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-            """Legacy API method for backward compatibility"""
-            logger.info("Using legacy API scrape_search_results")
-            return await self.filter_and_scrape_results(search_results)
-
-        # Public method for testing
-        async def fetch_url(self, url: str) -> Dict[str, Any]:
-            """Fetch a URL for testing purposes"""
-            if PLAYWRIGHT_ENABLED:
+            # Extract domain
+            def _extract_domain(self, url: str) -> str:
+                """Extract domain from URL"""
                 try:
-                    async with async_playwright() as p:
-                        browser = await p.chromium.launch(
-                            headless=True,
-                            args=["--disable-dev-shm-usage"]
-                        )
-                        result = await self._fetch_with_playwright(url, browser)
-                        await browser.close()
-                        return result
-                except Exception as e:
-                    logger.error(f"Error using Playwright for testing: {e}, falling back to HTTP")
+                    parsed = urlparse(url)
+                    domain = parsed.netloc
+                    if domain.startswith('www.'):
+                        domain = domain[4:]
+                    return domain
+                except Exception:
+                    return url
+
+            # Legacy API compatibility
+            async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                """Legacy API method for backward compatibility"""
+                logger.info("Using legacy API scrape_search_results")
+                return await self.filter_and_scrape_results(search_results)
+
+            # Public method for testing
+            async def fetch_url(self, url: str) -> Dict[str, Any]:
+                """Fetch a URL for testing purposes"""
+                if PLAYWRIGHT_ENABLED:
+                    try:
+                        async with async_playwright() as p:
+                            browser = await p.chromium.launch(
+                                headless=True,
+                                args=["--disable-dev-shm-usage"]
+                            )
+                            result = await self._fetch_with_playwright(url, browser)
+                            await browser.close()
+                            return result
+                    except Exception as e:
+                        logger.error(f"Error using Playwright for testing: {e}, falling back to HTTP")
+                        return await self._fetch_with_http(url)
+                else:
                     return await self._fetch_with_http(url)
-            else:
-                return await self._fetch_with_http(url)
+
