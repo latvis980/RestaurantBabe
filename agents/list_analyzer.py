@@ -21,7 +21,7 @@ import os
 import re
 import time
 from typing import Any, Dict, List, Sequence
-from langchain.chat_models import ChatMistralAI
+from langchain_mistralai import ChatMistralAI
 from langchain.output_parsers import PydanticOutputParser, StrOutputParser
 from langchain.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field, validator
