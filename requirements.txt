@@ -10,6 +10,7 @@ lxml>=4.9.3,<5.0.0
 langchain
 langchain-openai
 langchain-core
+langchain-community
 langchain-mistralai>=0.1.0
 openai>=1.0.0
 mistralai>=0.0.7
