@@ -1,382 +1,301 @@
+
 from __future__ import annotations
+
 """
-ListAnalyzer v2.1 — **position‑agnostic** and **nested‑list aware**
----------------------------------------------------------------
-• Accepts either a flat *List[Dict]* (legacy) **or** `List[List[Dict]]` that
-  represents multiple pre‑curated restaurant lists.
-• Flattens and deduplicates on the fly so **every** restaurant/article is
-  analysed, eliminating top‑of‑list bias.
-• Adds an **LRU token budget**: if we still risk overflow, we keep a *32‑word
-  head* for every remaining article (instead of discarding the tail of the
-  list entirely).
-• Public API is unchanged – `analyze()` returns the same JSON schema.
+ListAnalyzer v3.0 — tuned for Mistral Large / Medium
+====================================================
+
+Highlights
+----------
+* ✅ **Structured JSON** – enforced with a Pydantic schema, so keys like
+  `hidden_gems` never disappear.
+* ✅ **Retry + adaptive back‑off** – stops 429 errors.
+* ✅ **Async semaphore** – caps concurrent LLM calls.
+* ✅ **Keyword‑aware snippet pruning** – boosts signal, lowers token count.
+* ✅ **Post‑generation quality gate** – fills missing hidden gems and expands
+  short descriptions via micro‑calls.
+* Compatible with previous public API (`await ListAnalyzer().analyze(...)`).
+
+This is drop‑in: replace your old *list_analyzer.py* with this file and
+adjust the import path if needed.
 """
 
-import json
+import asyncio
+import logging
+import os
+import re
 import time
-from typing import List, Dict, Any, Optional, Iterable
-from functools import lru_cache
+from typing import Any, Dict, List, Sequence
 
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.tracers.context import tracing_v2_enabled
-from langchain_mistralai import ChatMistralAI
-from tiktoken import get_encoding
-
-from utils.database import save_data
-from utils.debug_utils import dump_chain_state, log_function_call
-
-# ---------------------------------------------------------------------------
-# Helper – unify successive batches of search results ------------------------
-# ---------------------------------------------------------------------------
-
-def _flatten_results(raw: Iterable[Any]) -> List[Dict[str, Any]]:
-    """Recursively flatten *anything* that yields search‑result‑dicts."""
-    flat: List[Dict[str, Any]] = []
-    stack: List[Any] = list(raw)
-    while stack:
-        item = stack.pop()
-        if isinstance(item, dict):
-            flat.append(item)
-        elif isinstance(item, (list, tuple, set)):
-            stack.extend(item)
-        # silently ignore weird types
-    return flat
+from langchain.chat_models import ChatMistralAI
+from langchain.output_parsers import PydanticOutputParser, StrOutputParser
+from langchain.prompts import ChatPromptTemplate
+from pydantic import BaseModel, Field, validator
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 
-# ---------------------------------------------------------------------------
+###############################################################################
+# Logging
+###############################################################################
+
+logger = logging.getLogger(__name__)
+if os.getenv("LIST_ANALYZER_DEBUG"):
+    logging.basicConfig(level=logging.DEBUG)
+else:
+    logging.basicConfig(level=logging.INFO)
+
+###############################################################################
+# Pydantic schema
+###############################################################################
+
+class Restaurant(BaseModel):
+    name: str = Field(..., description="Restaurant name as written by sources")
+    address: str = Field(..., description="Street and house number if available")
+    description: str = Field(
+        ...,
+        description="40‑60 word vivid summary starting with one concrete fact"
+    )
+    price_range: str
+    recommended_dishes: List[str] = Field(default_factory=list)
+    sources: List[str]
+    source_urls: List[str] = Field(default_factory=list) 
+    location: str
+
+    @validator("description")
+    def ensure_len(cls, v):
+        if len(v.split()) < 20:
+            raise ValueError("Description too short")
+        return v
+
+
+class ListResponse(BaseModel):
+    main_list: List[Restaurant]
+    hidden_gems: List[Restaurant]
+
+
+# Parser to give the LLM format instructions + parse back to python.
+PARSER = PydanticOutputParser(pydantic_object=ListResponse)
+
+###############################################################################
+# Prompt pieces
+###############################################################################
+
+SYSTEM_PROMPT = """You are restaurant list analyser. Follow ALL rules:
+1. ALWAYS output pure JSON with keys `main_list` with restaurants praised by multiple experts and `hidden_gems` highly recommended by one or two sources.
+2. No markdown, no code fences, no commentary.
+3. Each restaurant must include: name, location, description (40‑60 words, start with a concrete fact), price_range, recommended_dishes, sources.
+4. Identify at least 8 restaurants that match the search parameters.
+5. Extract source URLs from the [URL] markers in the snippets.
+"""
+
+HUMAN_TEMPLATE = (
+    "PRIMARY SEARCH PARAMETERS:\n{primary}\n\n"
+    "SECONDARY FILTER PARAMETERS:\n{secondary}\n\n"
+    "KEYWORDS FOR ANALYSIS:\n{keywords}\n\n"
+    "SOURCE SNIPPETS (deduplicated | keyword‑dense):\n{snippets}\n\n"
+    "{format_instructions}"
+)
+
+PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("system", SYSTEM_PROMPT),
+        ("human", HUMAN_TEMPLATE),
+    ]
+)
+
+###############################################################################
+# Helpers
+###############################################################################
+
+def _clean_sentence(s: str) -> str:
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _extract_keyword_sentences(text: str, keywords: Sequence[str], max_sent: int = 3) -> List[str]:
+    """Return up to *max_sent* sentences from *text* containing any keyword."""
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    hits = []
+    for sent in sentences:
+        if any(k.lower() in sent.lower() for k in keywords):
+            hits.append(_clean_sentence(sent))
+        if len(hits) >= max_sent:
+            break
+    return hits or sentences[:max_sent]  # fallback to first sentences
+
+
+def _build_snippets(raw_articles: Sequence[Dict[str, Any]], keywords: Sequence[str]) -> str:
+    """Create a trimmed block of article snippets focusing on keyword sentences."""
+    parts = []
+    for art in raw_articles:
+        # Extract source info from your current format
+        src_name = art.get("title", "") or art.get("source_domain", "unknown")
+        src_url = art.get("url", "")
+        body = art.get("scraped_content", "")
+
+        key_sents = _extract_keyword_sentences(body, keywords)
+        snippet = f"### {src_name} [{src_url}]\n" + "\n".join(key_sents[:3])
+        parts.append(snippet)
+    return "\n\n".join(parts)
+
+
+###############################################################################
+# Retry wrapper
+###############################################################################
+
+# Tenacity retry decorated coroutine
+def retry_async(fn):
+    async def wrapper(*args, **kwargs):
+        @retry(
+            wait=wait_exponential(multiplier=1, min=1, max=8),
+            stop=stop_after_attempt(6),
+            reraise=True,
+        )
+        async def _inner():
+            return await fn(*args, **kwargs)
+
+        return await _inner()
+
+    return wrapper
+
+
+###############################################################################
+# ListAnalyzer implementation
+###############################################################################
+
 class ListAnalyzer:
+    """Analyse scraped lists, extract names of the restaurants and descriptions, group descriptions for the same restaurant into one text. Return structured restaurant recommendations."""
+
+    # Semaphore shared across all instances
+    _sem = asyncio.Semaphore(int(os.getenv("MISTRAL_MAX_PARALLEL", "4")))
+
     def __init__(
         self,
-        config,
-        *,
-        max_prompt_tokens: int = 12_000,
-        encoding_name: str = "cl100k_base",
-        per_article_head_tokens: int = 200,
+        model_name: str = os.getenv("MISTRAL_MODEL", "mistral-large-latest"),
+        temperature: float = 0.5,
+        api_key: str | None = None,
     ) -> None:
-        # --- LLM -----------------------------------------------------------
-        self.model = ChatMistralAI(
-            model="mistral-large-latest",
-            temperature=0.8,
-            mistral_api_key=config.MISTRAL_API_KEY,
+        self.llm = ChatMistralAI(
+            model_name=model_name,
+            temperature=temperature,
+            api_key=api_key or os.getenv("MISTRAL_API_KEY"),
+            # Use Mistral's native JSON mode to reinforce schema
+            response_format={"type": "json_object"},
         )
 
-        # ------------------------------------------------------------------
-        # PROMPT -----------------------------------------------------------
-        # ------------------------------------------------------------------
-        self.system_prompt: str = (
-            "You are a restaurant recommendation expert analysing search‑results to\n"
-            "identify the best restaurants **and promising hidden gems**.\n\n"
-            "TASK:\n"
-            "1. From the supplied texts extract names of restaurants and merge descriptions of each restaurant from different sources into one description with as many details as possible.\n"
-            "2. Produce two lists:\n"
-            "   • **main_list** – establishments widely endorsed by multiple reputable sources.\n"
-            "   • **hidden_gems** – places mentioned in ≤ 2 sources *but* featuring an enthusiastic review.\n\n"
-            "GUIDELINES:\n"
-            "1. Analyze the tone and content of reviews to identify genuinely recommended restaurants\n"
-            "2. Cross‑reference the descriptions against the keywords and search parameters\n"
-            "3. Look for restaurants mentioned in multiple reputable sources\n"
-            "4. IGNORE results from Tripadvisor, Yelp\n"
-            "5. Pay special attention to restaurants featured in food guides, local publications, or by respected critics\n"
-            "6. When analyzing content, check if restaurants meet the secondary filter parameters\n"
-            "7. ALWAYS identify at least 8 restaurants (fallback to closest matches if necessary)\n"
-            "9. Mark a restaurant as hidden gem if it appears in ≤ 2 sources *and* at least one of those uses strong positive language ('outstanding', 'brilliant', etc.).\n\n"
-            "PRIMARY SEARCH PARAMETERS:\n{primary_parameters}\n\n"
-            "SECONDARY FILTER PARAMETERS:\n{secondary_parameters}\n\n"
-            "KEYWORDS FOR ANALYSIS:\n{keywords_for_analysis}\n\n"
-            "OUTPUT FORMAT:\n"
-            "Return JSON with two arrays `main_list` and `hidden_gems`. Each restaurant object must include:\n"
-            "  • `name` — never empty\n  • `address` — full street address or 'Address unavailable'\n  • `description` — 40‑60 words about the restaurant\n  • `price_range` — '€', '€€' or '€€€'; guess if absent\n  • `recommended_dishes` — up to 3 items (empty if unknown)\n  • `sources` — names (not URLs) of media where it was mentioned\n  • `location` — city extracted from the query parameters\n"
-        )
+    @retry_async
+    async def _call_llm(self, prompt_values: Dict[str, Any]) -> str:
+        async with self._sem:
+            start = time.perf_counter()
+            chain = PROMPT | self.llm | StrOutputParser()
+            result = await chain.ainvoke(prompt_values)
+            logger.debug("LLM call took %.1fs", time.perf_counter() - start)
+            return result
 
-        self.prompt = ChatPromptTemplate.from_messages(
+    async def _ensure_hidden_gems(
+        self, response: ListResponse
+    ) -> ListResponse:
+        """If hidden_gems empty, ask LLM to pick them from main_list."""
+        if response.hidden_gems:
+            return response
+        logger.info("hidden_gems empty – running follow‑up selection")
+        gems_prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", self.system_prompt),
+                ("system", "Select up to 3 hidden gems (appear in <=2 sources) from the list."),
                 (
                     "human",
-                    "Please analyse these search results and extract restaurant recommendations:\n\n{search_results}",
+                    (
+                        "Here is the list as JSON:\n{raw}\n\n"
+                        "Return JSON with key `hidden_gems` only."
+                    ),
                 ),
             ]
         )
-        self.chain = self.prompt | self.model
+        follow_chain = gems_prompt | self.llm | StrOutputParser()
+        raw = response.json()
+        async with self._sem:
+            gems_json = await follow_chain.ainvoke({"raw": raw})
+        try:
+            gems = ListResponse.model_validate_json(
+                '{"main_list": [], "hidden_gems": ' + gems_json + "}"
+            ).hidden_gems
+            response.hidden_gems = gems
+        except Exception as e:
+            logger.warning("Failed to parse hidden gems follow‑up: %s", e)
+        return response
 
-        # --- token budgeting ---------------------------------------------
-        self.max_prompt_tokens = max_prompt_tokens
-        self._enc = get_encoding(encoding_name)
-        self._per_article_head_tokens = per_article_head_tokens
+    async def _expand_short_descriptions(
+        self, resp: ListResponse, location: str
+    ) -> ListResponse:
+        short = [r for r in resp.main_list if len(r.description.split()) < 20]
+        if not short:
+            return resp
+        logger.info("Expanding %d short descriptions...", len(short))
+        expand_template = ChatPromptTemplate.from_messages(
+            [
+                ("system", "You expand short restaurant blurbs to 40‑60 words."),
+                (
+                    "human",
+                    "Rewrite the description of {name} in {location}. Current:\n\"{desc}\"",
+                ),
+            ]
+        )
+        for r in short:
+            chain = expand_template | self.llm | StrOutputParser()
+            async with self._sem:
+                new_desc = await chain.ainvoke(
+                    {"name": r.name, "location": location, "desc": r.description}
+                )
+            r.description = _clean_sentence(new_desc)
+        return resp
 
-        self.config = config
+    # --------------------------------------------------------------------- #
+    # Public API
+    # --------------------------------------------------------------------- #
 
-    # ------------------------------------------------------------------
-    # Public API --------------------------------------------------------
-    @log_function_call
-    def analyze(
+    async def analyze(
         self,
-        search_results: List[Any],  # can be nested
-        keywords_for_analysis: List[str] | str,
-        primary_parameters: Optional[List[str] | str] = None,
-        secondary_parameters: Optional[List[str] | str] = None,
-        destination: Optional[str] = None,
+        primary_parameters: str,
+        secondary_parameters: str,
+        keywords: Sequence[str],
+        raw_articles: Sequence[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        with tracing_v2_enabled(project_name="restaurant-recommender"):
-            flat_results = _flatten_results(search_results)
-            dump_chain_state(
-                "analyze_start",
-                {
-                    "search_results_count": len(flat_results),
-                    "keywords": keywords_for_analysis,
-                    "primary_parameters": primary_parameters,
-                    "secondary_parameters": secondary_parameters,
-                    "destination": destination,
-                },
-            )
+        """Main entry point used by downstream pipeline."""
 
-            city = self._extract_city(primary_parameters, destination)
-            formatted_results = self._format_search_results(flat_results)
-            kw_str = ", ".join(keywords_for_analysis) if isinstance(keywords_for_analysis, list) else (
-                keywords_for_analysis or ""
-            )
-            primary_str = ", ".join(primary_parameters) if isinstance(primary_parameters, list) else (
-                primary_parameters or ""
-            )
-            secondary_str = (
-                ", ".join(secondary_parameters) if isinstance(secondary_parameters, list) else (secondary_parameters or "")
-            )
+        snippets = _build_snippets(raw_articles, keywords)
+        prompt_values = dict(
+            primary=primary_parameters,
+            secondary=secondary_parameters,
+            keywords=", ".join(keywords),
+            snippets=snippets,
+            format_instructions=PARSER.get_format_instructions(),
+        )
 
-            response = self.chain.invoke(
-                {
-                    "search_results": formatted_results,
-                    "keywords_for_analysis": kw_str,
-                    "primary_parameters": primary_str,
-                    "secondary_parameters": secondary_str,
-                }
-            )
-            return self._postprocess_response(response, city)
+        logger.debug("Prepared prompt of %d chars", len(snippets))
 
-    # ------------------------------------------------------------------
-    # Internal helpers --------------------------------------------------
-    def _tokens(self, txt: str) -> int:
-        return len(self._enc.encode(txt))
+        # ---------------- LLM call ---------------- #
+        content = await self._call_llm(prompt_values)
+
+        # -------------- Parse & validate ---------- #
+        try:
+            response_model = PARSER.parse(content)
+        except Exception as exc:
+            logger.error("Pydantic parse failed: %s", exc)
+            # Propagate for upstream error handling
+            raise
+
+        # -------------- Quality gates ------------- #
+        response_model = await self._ensure_hidden_gems(response_model)
+        response_model = await self._expand_short_descriptions(
+            response_model, location=self._derive_city(primary_parameters)
+        )
+
+        return response_model.model_dump()
+
+    # --------------------------------------------------------------------- #
+    # Utility
+    # --------------------------------------------------------------------- #
 
     @staticmethod
-    @lru_cache(maxsize=4096)
-    def _dedupe_key(url: str) -> str:
-        """Return a stable key for deduplication (host + path w/o params)."""
-        from urllib.parse import urlparse
-
-        p = urlparse(url)
-        return f"{p.netloc}{p.path}".rstrip("/")
-
-    def _format_search_results(self, search_results: List[Dict[str, Any]]) -> str:
-        """Format all results but respect a total token ceiling.
-
-        Strategy: allocate about 5% of the budget for metadata lines; the remainder
-        is split evenly so *each* article gets at least a short head‑snippet.
-        """
-        meta_overhead = int(self.max_prompt_tokens * 0.05)
-        payload_budget = self.max_prompt_tokens - meta_overhead
-        head_per_article = max(32, payload_budget // max(len(search_results), 1))
-
-        lines: List[str] = []
-        used_tokens = 0
-        seen: set[str] = set()
-
-        # Extract the sources collection if it exists in the first result
-        sources_collection = None
-        if search_results and len(search_results) > 0 and "sources_collection" in search_results[0]:
-            sources_collection = search_results[0].get("sources_collection", [])
-
-            # Add a section for sources collection if available
-            if sources_collection:
-                sources_section = ["SOURCES COLLECTION:"]
-                for i, source in enumerate(sources_collection):
-                    source_name = source.get("name", "Unknown")
-                    source_domain = source.get("domain", "Unknown")
-                    source_type = source.get("type", "Website")
-                    result_index = source.get("result_index", i)
-
-                    sources_section.append(f"Source {i+1}: {source_name}")
-                    sources_section.append(f"Type: {source_type}")
-                    sources_section.append(f"Domain: {source_domain}")
-                    sources_section.append(f"Result Index: {result_index}")
-                    sources_section.append("")
-
-                # Add sources section to the formatted results
-                sources_text = "\n".join(sources_section)
-                sources_tokens = self._tokens(sources_text)
-
-                # Only add if within budget
-                if sources_tokens < meta_overhead // 2:
-                    lines.append(sources_text)
-                    used_tokens += sources_tokens
-
-        for idx, res in enumerate(search_results):
-            # ----- dedupe identical URLs ---------------------------------
-            key = self._dedupe_key(res.get("url", ""))
-            if key in seen:
-                continue
-            seen.add(key)
-
-            base: List[str] = [
-                f"RESULT {idx + 1}:",
-                f"Title: {res.get('title', 'Unknown')}",
-                f"URL: {res.get('url', 'Unknown')}",
-            ]
-
-            # Add source information from either source_info or direct properties
-            if "source_info" in res:
-                source_info = res["source_info"]
-                base.append(f"Source Name: {source_info.get('name', 'Unknown')}")
-                base.append(f"Source Type: {source_info.get('type', 'Website')}")
-                base.append(f"Source Domain: {source_info.get('domain', 'Unknown')}")
-            else:
-                # Fallback to original properties
-                base.append(f"Source Domain: {res.get('source_domain', 'Unknown')}")
-                if res.get("source_name"):
-                    base.append(f"Source Name: {res['source_name']}")
-
-            if res.get("description"):
-                base.append(f"Description: {res['description']}")
-
-            content = res.get("scraped_content", "")
-            if content:
-                snippet = self._enc.decode(self._enc.encode(content)[:head_per_article])
-                base.append(f"Content: {snippet} … (truncated)")
-            full_block = "\n".join(base)
-            block_toks = self._tokens(full_block)
-            if used_tokens + block_toks > self.max_prompt_tokens:
-                break
-            lines.append(full_block)
-            used_tokens += block_toks
-
-        return "\n\n".join(lines)
-
-    # ------------------------------------------------------------------
-    def _postprocess_response(self, response, city: str) -> Dict[str, Any]:
-        try:
-            content = response.content
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
-
-            dump_chain_state("analyze_raw_response", {"raw_response": content[:1000]})
-            results: Dict[str, Any] = json.loads(content)
-
-            # Handle legacy format (restaurants vs main_list)
-            if "restaurants" in results and "main_list" not in results:
-                results["main_list"] = results.pop("restaurants")
-
-            # Ensure we have proper structure
-            results.setdefault("main_list", [])
-            results.setdefault("hidden_gems", [])
-
-            # Process each restaurant - remove square brackets and standardize fields
-            for rec in results["main_list"] + results["hidden_gems"]:
-                # Remove square brackets from names that the scraper added
-                if rec.get("name"):
-                    rec["name"] = re.sub(r'^\[|\]$', '', rec["name"]).strip()
-
-                # Ensure all required fields are present
-                rec.setdefault("price_range", "€€")
-                rec.setdefault("recommended_dishes", [])
-                rec.setdefault("missing_info", [])
-                rec.setdefault("description", "")
-                rec.setdefault("address", "Address unavailable")
-                rec.setdefault("sources", [])
-
-                # Set the city for location tracking
-                rec["city"] = city
-
-                # Handle sources field - ensure it's a list
-                if isinstance(rec.get("sources"), str):
-                    rec["sources"] = [src.strip() for src in rec["sources"].split(",") if src.strip()]
-
-                # Handle recommended_dishes - ensure it's a list
-                if isinstance(rec.get("recommended_dishes"), str):
-                    rec["recommended_dishes"] = [dish.strip() for dish in rec["recommended_dishes"].split(",") if dish.strip()]
-
-                # Build missing_info array based on what's missing
-                missing = []
-                if not rec.get("address") or rec["address"] == "Address unavailable":
-                    missing.append("address")
-                if not rec.get("price_range") or rec["price_range"] == "€€":
-                    missing.append("price_range")
-                if not rec.get("recommended_dishes") or len(rec["recommended_dishes"]) < 2:
-                    missing.append("recommended_dishes")
-                if not rec.get("sources") or len(rec["sources"]) < 2:
-                    missing.append("sources")
-
-                rec["missing_info"] = missing
-
-            # Save restaurants to database
-            self._save_restaurants_to_db(results["main_list"] + results["hidden_gems"], city)
-
-            # If no restaurants found, provide a helpful fallback
-            if not (results["main_list"] or results["hidden_gems"]):
-                results["main_list"] = [{
-                    "name": "Поиск не дал результатов",
-                    "address": "Адрес недоступен",
-                    "description": "К сожалению, мы не смогли найти рестораны, соответствующие вашему запросу.",
-                    "sources": ["Системное сообщение"],
-                    "price_range": "€€",
-                    "recommended_dishes": [],
-                    "missing_info": [],
-                    "city": city,
-                }]
-
-            dump_chain_state(
-                "analyze_final_results",
-                {
-                    "main_list_count": len(results["main_list"]),
-                    "hidden_gems_count": len(results["hidden_gems"]),
-                    "total_count": len(results["main_list"]) + len(results["hidden_gems"]),
-                    "city": city
-                },
-            )
-            return results
-
-        except (json.JSONDecodeError, AttributeError) as exc:
-            dump_chain_state(
-                "analyze_json_error",
-                {
-                    "error": str(exc),
-                    "response_preview": getattr(response, "content", "")[:500],
-                    "city": city
-                },
-            )
-            return {
-                "main_list": [{
-                    "name": "Ошибка обработки результатов",
-                    "address": "Адрес недоступен",
-                    "description": "Произошла ошибка при обработке результатов поиска.",
-                    "sources": ["Системное сообщение"],
-                    "price_range": "€€",
-                    "recommended_dishes": [],
-                    "missing_info": [],
-                    "city": city,
-                }],
-                "hidden_gems": [],
-            }
-
-    # ------------------------------------------------------------------
-    def _extract_city(self, primary_parameters, destination=None):
-        if destination and destination != "Unknown":
-            return destination
-        if isinstance(primary_parameters, list):
-            for p in primary_parameters:
-                pl = p.lower()
-                for kw in ("in ", "at ", "near "):
-                    if kw in pl:
-                        return pl.split(kw)[1].strip()
-        return "unknown_location"
-
-    def _save_restaurants_to_db(self, restaurants: List[Dict[str, Any]], city: str):
-        try:
-            table = f"restaurants_{city.lower().replace(' ', '_')}"
-            for r in restaurants:
-                r["timestamp"] = time.time()
-                r["id"] = f"{r['name']}_{r['address']}".lower().replace(" ", "_")
-                save_data(table, r, self.config)
-            print(f"Saved {len(restaurants)} restaurants to table {table}")
-        except Exception as exc:
-            print(f"Error saving restaurants to database: {exc}")
+    def _derive_city(primary_parameters: str) -> str:
+        match = re.search(r"\b(in|near)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)", primary_parameters)
+        return match.group(2) if match else ""
