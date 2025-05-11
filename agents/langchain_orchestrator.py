@@ -279,7 +279,9 @@ class LangChainOrchestrator:
             name="follow_up_search"
         )
 
-        # Improved HTML extraction
+        #  HTML extraction
+        # In langchain_orchestrator.py, modify the extract_html_step function
+
         def extract_html_step(x):
             try:
                 # Debug before html extraction
@@ -287,10 +289,15 @@ class LangChainOrchestrator:
                     "enhanced_recommendations_keys": list(x.get("enhanced_recommendations", {}).keys())
                 })
 
-                # Get the recommendations
+                # Get the recommendations - THIS IS THE KEY FIX
                 enhanced_recommendations = x.get("enhanced_recommendations", {})
 
-                # Create HTML output
+                # Log what we're actually getting
+                logger.info(f"Enhanced recommendations structure: {list(enhanced_recommendations.keys())}")
+                logger.info(f"Main list count: {len(enhanced_recommendations.get('main_list', []))}")
+                logger.info(f"Hidden gems count: {len(enhanced_recommendations.get('hidden_gems', []))}")
+
+                # Create HTML output with the correct structure
                 telegram_text = self._create_detailed_html(enhanced_recommendations)
 
                 # Debug after html extraction
@@ -299,16 +306,68 @@ class LangChainOrchestrator:
                     "telegram_text_preview": telegram_text[:200] if telegram_text else None
                 })
 
-                # Return result
-                return {**x, "telegram_formatted_text": telegram_text}
+                # Return result with proper structure
+                return {
+                    **x, 
+                    "telegram_formatted_text": telegram_text,
+                    "final_recommendations": enhanced_recommendations  # Keep the original data for debugging
+                }
             except Exception as e:
-                print(f"Error in extract_html: {e}")
+                logger.error(f"Error in extract_html: {e}")
                 # Log the error and return a fallback
                 dump_chain_state("extract_html_error", x, error=e)
                 return {
                     **x, 
                     "telegram_formatted_text": "<b>Извините, не удалось найти рестораны по вашему запросу.</b>"
                 }
+
+        # Also modify the process_query method to return the full structure
+        @log_function_call
+        def process_query(self, user_query, standing_prefs=None):
+            """Process a user query using the LangChain sequence"""
+            # ... existing code ...
+
+            with tracing_v2_enabled(project_name="restaurant-recommender"):
+                try:
+                    # Create initial input with preferences
+                    input_data = {"query": clean_query, "user_preferences": user_preferences}
+
+                    # Execute the chain with our input data
+                    result = self.chain.invoke(input_data)
+
+                    # Log completion and dump final state
+                    dump_chain_state("process_query_complete", {
+                        "result_keys": list(result.keys()),
+                        "has_recommendations": "enhanced_recommendations" in result,
+                        "has_telegram_text": "telegram_formatted_text" in result
+                    })
+
+                    # Get the telegram text
+                    telegram_text = result.get("telegram_formatted_text", 
+                                             "<b>Извините, не удалось найти рестораны по вашему запросу.</b>")
+
+                    # Get the enhanced recommendations
+                    enhanced_recommendations = result.get("enhanced_recommendations", {})
+
+                    # Extract main_list and hidden_gems
+                    main_list = enhanced_recommendations.get("main_list", [])
+                    hidden_gems = enhanced_recommendations.get("hidden_gems", [])
+
+                    # ADD THIS DEBUG LOG
+                    logger.info(f"Final result - Main list: {len(main_list)}, Hidden gems: {len(hidden_gems)}")
+
+                    # Return the complete data structure
+                    return {
+                        "telegram_text": telegram_text,
+                        "enhanced_recommendations": enhanced_recommendations,  # Include the full structure
+                        "main_list": main_list,
+                        "hidden_gems": hidden_gems,
+                        "destination": result.get("destination")
+                    }
+
+                except Exception as e:
+                    logger.error(f"Error in chain execution: {e}")
+                    # ... existing error handling ...
 
         # Extract HTML with debugging
         self.extract_html = RunnableLambda(
@@ -363,57 +422,181 @@ class LangChainOrchestrator:
     def _create_detailed_html(self, recommendations):
         """Create elegant, emoji-light HTML output for Telegram."""
         try:
-            # ――― Headings ―――
+            # Log debug info
+            print(f"[_create_detailed_html] Starting HTML creation")
+            print(f"[_create_detailed_html] Input type: {type(recommendations)}")
+
+            if isinstance(recommendations, dict):
+                print(f"[_create_detailed_html] Input keys: {list(recommendations.keys())}")
+
+            # ――― Get restaurant lists ―――
+            main_list = []
+            hidden_gems = []
+
+            # Check all possible structures
+            if isinstance(recommendations, dict):
+                # Direct structure
+                main_list = recommendations.get("main_list", [])
+                hidden_gems = recommendations.get("hidden_gems", [])
+
+                # Legacy format
+                if not main_list and "recommended" in recommendations:
+                    main_list = recommendations.get("recommended", [])
+
+                # Nested format (sometimes the enhanced_recommendations comes nested)
+                if not main_list and "enhanced_recommendations" in recommendations:
+                    nested = recommendations.get("enhanced_recommendations", {})
+                    if isinstance(nested, dict):
+                        main_list = nested.get("main_list", [])
+                        hidden_gems = nested.get("hidden_gems", [])
+
+                # Another possible nested format
+                if not main_list and "formatted_recommendations" in recommendations:
+                    nested = recommendations.get("formatted_recommendations", {})
+                    if isinstance(nested, dict):
+                        main_list = nested.get("main_list", [])
+                        hidden_gems = nested.get("hidden_gems", [])
+
+            # Debug log counts
+            print(f"[_create_detailed_html] Found {len(main_list)} main restaurants")
+            print(f"[_create_detailed_html] Found {len(hidden_gems)} hidden gems")
+
+            # ――― If no restaurants found, return early ―――
+            if not main_list and not hidden_gems:
+                print(f"[_create_detailed_html] No restaurants found, returning empty message")
+                return "<b>No restaurants found for your query.</b>"
+
+            # ――― Build HTML ―――
             html = "<b>Recommended Restaurants</b>\n\n"
 
-            main_list   = recommendations.get("main_list", []) or recommendations.get("recommended", [])
-            hidden_gems = recommendations.get("hidden_gems", [])
+            def format_restaurant_block(restaurants, title=None):
+                """Format a block of restaurants for HTML output"""
+                block_html = ""
 
-            def block(restaurants, title=None):
-                nonlocal html
                 if title:
-                    html += f"<b>{title}</b>\n\n"
-                for i, r in enumerate(restaurants, 1):
-                    name = r.get("name", "Restaurant")
-                    addr = r.get("address", "Address unavailable")
-                    desc = r.get("description", "")
-                    price = r.get("price_range", "")
-                    dishes = ", ".join(r.get("recommended_dishes", [])[:3])
-                    sources = ", ".join(sorted(set(r.get("sources", [])))[:3])
+                    block_html += f"<b>{title}</b>\n\n"
 
-                    # Check if address is a Google Maps link and format it properly for Telegram
-                    if addr and ("<a href=" in addr):
-                        # Extract just the URL and text parts
-                        import re
-                        link_match = re.search(r'<a href="([^"]+)"[^>]*>([^<]+)</a>', addr)
-                        if link_match:
-                            map_url, address_text = link_match.groups()
-                            addr = f'<a href="{map_url}">{address_text}</a>'
+                for i, restaurant in enumerate(restaurants, 1):
+                    # Get restaurant details with fallbacks
+                    name = restaurant.get("name", "Restaurant")
+                    addr = restaurant.get("address", "Address unavailable")
+                    desc = restaurant.get("description", "")
+                    price = restaurant.get("price_range", "")
+                    dishes = restaurant.get("recommended_dishes", [])
+                    sources = restaurant.get("sources", [])
 
-                    html += (
-                        f"<b>{i}. {name}</b>\n"
-                        f"📍 {addr}\n"              # now properly formatted for Telegram
-                        f"{desc}\n"
-                    )
+                    # Debug log individual restaurant
+                    print(f"[_create_detailed_html] Formatting restaurant {i}: {name}")
 
-                    if dishes:
-                        html += f"<i>Signature dishes:</i> {dishes}\n"
-                    if sources:
-                        html += f"<i>Recommended by:</i> {sources}\n"
+                    # Format restaurant entry
+                    block_html += f"<b>{i}. {name}</b>\n"
+
+                    # Handle address - check if it's already a formatted link
+                    if addr:
+                        if "<a href=" in addr:
+                            # Already formatted, use as-is
+                            block_html += f"📍 {addr}\n"
+                        else:
+                            # Plain text address
+                            block_html += f"📍 {addr}\n"
+                    else:
+                        block_html += f"📍 Address unavailable\n"
+
+                    # Add description
+                    if desc:
+                        block_html += f"{desc}\n"
+                    else:
+                        block_html += "Description unavailable\n"
+
+                    # Add signature dishes
+                    if dishes and isinstance(dishes, list):
+                        # Filter out empty strings and take first 3
+                        valid_dishes = [d for d in dishes if d and str(d).strip()][:3]
+                        if valid_dishes:
+                            dishes_str = ", ".join(valid_dishes)
+                            block_html += f"<i>Signature dishes:</i> {dishes_str}\n"
+
+                    # Add sources
+                    if sources and isinstance(sources, list):
+                        # Filter out empty strings and duplicates, take first 3
+                        valid_sources = []
+                        seen = set()
+                        for s in sources:
+                            if s and str(s).strip() and str(s).strip().lower() not in seen:
+                                valid_sources.append(str(s).strip())
+                                seen.add(str(s).strip().lower())
+
+                        if valid_sources:
+                            sources_str = ", ".join(valid_sources[:3])
+                            block_html += f"<i>Recommended by:</i> {sources_str}\n"
+
+                    # Add price range
                     if price:
-                        html += f"<i>Price range:</i> {price}\n"
-                    html += "\n"
+                        block_html += f"<i>Price range:</i> {price}\n"
 
-            block(main_list)
+                    # Add spacing after restaurant
+                    block_html += "\n"
+
+                return block_html
+
+            # Add main list
+            if main_list:
+                print(f"[_create_detailed_html] Formatting {len(main_list)} main restaurants")
+                html += format_restaurant_block(main_list)
+
+            # Add hidden gems if they exist
             if hidden_gems:
-                block(hidden_gems, title="Hidden Gems")
+                print(f"[_create_detailed_html] Formatting {len(hidden_gems)} hidden gems")
+                html += format_restaurant_block(hidden_gems, title="Hidden Gems")
 
+            # Add footer
             html += "<i>Recommendations compiled from reputable critic and guide sources.</i>"
-            return html[:3997] + "…" if len(html) > 4000 else html
+
+            # Respect Telegram's message length limit (4096 characters)
+            if len(html) > 4096:
+                html = html[:4093] + "…"
+                print(f"[_create_detailed_html] Truncated HTML to {len(html)} characters")
+
+            print(f"[_create_detailed_html] Final HTML length: {len(html)}")
+            print(f"[_create_detailed_html] Successfully created HTML for {len(main_list)} main + {len(hidden_gems)} hidden gems")
+
+            return html
 
         except Exception as e:
-            print("HTML format error:", e)
-            return "<b>Sorry, we couldn't format the restaurant list.</b>"
+            print(f"[_create_detailed_html] ERROR: {e}")
+            print(f"[_create_detailed_html] Recommendations type: {type(recommendations)}")
+
+            if isinstance(recommendations, dict):
+                print(f"[_create_detailed_html] Recommendations keys: {list(recommendations.keys())}")
+
+                # Try to extract any restaurants we can find
+                all_restaurants = []
+
+                # Collect from various possible locations
+                for key in ["main_list", "recommended", "hidden_gems"]:
+                    items = recommendations.get(key, [])
+                    if isinstance(items, list):
+                        all_restaurants.extend(items)
+
+                # Nested structures
+                for nested_key in ["enhanced_recommendations", "formatted_recommendations"]:
+                    nested = recommendations.get(nested_key, {})
+                    if isinstance(nested, dict):
+                        for key in ["main_list", "recommended", "hidden_gems"]:
+                            items = nested.get(key, [])
+                            if isinstance(items, list):
+                                all_restaurants.extend(items)
+
+                if all_restaurants:
+                    # Try to format with the restaurants we found
+                    try:
+                        return self._create_detailed_html({"main_list": all_restaurants})
+                    except:
+                        pass
+
+            # Absolute fallback
+            return "<b>Sorry, we couldn't format the restaurant list due to an error.</b>"
+    
 
     @log_function_call
     def process_query(self, user_query, standing_prefs=None):

@@ -11,11 +11,16 @@ class EditorAgent:
             temperature=0.3
         )
 
-        # Editor prompt - updated to generate hidden_gems from main_list
+        # Updated system prompt with explicit preservation instructions
         self.system_prompt = """
         You are a professional editor for a food publication specializing in restaurant recommendations.
         You will receive raw recommendations and must format & polish them according to the guidelines below.
-        ⚠️ NEVER omit a restaurant: format every item you receive.
+
+        ⚠️ CRITICAL RULES:
+        1. NEVER omit a restaurant: format every item you receive
+        2. MAINTAIN THE EXACT COUNT: If you receive 10 restaurants, output exactly 10
+        3. DO NOT filter, merge, or remove any restaurants
+        4. PRESERVE all main_list and hidden_gems exactly as received
 
         ────────────────────────
         MANDATORY FIELDS (each restaurant)
@@ -77,10 +82,9 @@ class EditorAgent:
         1. Split output into two sections: "Recommended Restaurants" and "Hidden Gems".
         2. Apply consistent formatting; no emojis.
         3. Ensure every description is concise yet informative.
-        4. Verify all mandatory data; flag what’s missing in missing_info.
+        4. Verify all mandatory data; flag what's missing in missing_info.
         5. Also generate follow-up search queries (outside the JSON) for any missing mandatory info.
         """
-
 
         # Create prompt template
         self.prompt = ChatPromptTemplate.from_messages([
@@ -93,7 +97,6 @@ class EditorAgent:
 
         self.config = config
 
-    
     def _slim_recommendations(self, recs: dict) -> dict:
         """
         Return a lightweight copy of `recs` that keeps only the fields
@@ -118,7 +121,6 @@ class EditorAgent:
             out["hidden_gems"] = [slim_one(r) for r in recs["hidden_gems"]]
         return out
 
-    
     @log_function_call
     def edit(self, recommendations: dict, original_query: str) -> dict:
         """
@@ -127,7 +129,7 @@ class EditorAgent:
         Args
         ----
         recommendations : dict   – raw result from ListAnalyzer
-        original_query  : str    – user’s initial query
+        original_query  : str    – user's initial query
 
         Returns
         -------
@@ -138,6 +140,9 @@ class EditorAgent:
         with tracing_v2_enabled(project_name="restaurant-recommender"):
             try:
                 # ── 1. debug input ──────────────────────────────────────────
+                input_main_count = len(recommendations.get("main_list", [])) if isinstance(recommendations, dict) else 0
+                input_hidden_count = len(recommendations.get("hidden_gems", [])) if isinstance(recommendations, dict) else 0
+
                 dump_chain_state(
                     "editor_input",
                     {
@@ -145,8 +150,14 @@ class EditorAgent:
                         if isinstance(recommendations, dict)
                         else [],
                         "original_query": original_query,
+                        "input_main_list_count": input_main_count,
+                        "input_hidden_gems_count": input_hidden_count,
+                        "total_input_restaurants": input_main_count + input_hidden_count
                     },
                 )
+
+                # Log detailed restaurant info
+                print(f"[EditorAgent] STARTING EDIT: {input_main_count} main + {input_hidden_count} hidden = {input_main_count + input_hidden_count} total restaurants")
 
                 # ── 2. follow-up query skeletons ──────────────────────────
                 follow_up_queries = self._generate_follow_up_queries(
@@ -163,13 +174,27 @@ class EditorAgent:
                     else:
                         recommendations["main_list"] = []
 
+                # Ensure hidden_gems exists
+                if "hidden_gems" not in recommendations:
+                    recommendations["hidden_gems"] = []
+
+                # Log before formatting
+                pre_format_main = len(recommendations.get("main_list", []))
+                pre_format_hidden = len(recommendations.get("hidden_gems", []))
+                print(f"[EditorAgent] PRE-FORMAT: {pre_format_main} main + {pre_format_hidden} hidden")
+
                 # ── 4. call the LLM formatter ─────────────────────────────
+                slim_recs = self._slim_recommendations(recommendations)
+
+                # Log what we're sending to the LLM
+                print(f"[EditorAgent] SENDING TO LLM: {len(slim_recs.get('main_list', []))} main + {len(slim_recs.get('hidden_gems', []))} hidden")
+
                 response = self.chain.invoke(
                     {
                         "recommendations": json.dumps(
-                            self._slim_recommendations(recommendations),   #  ← token-friendly!
+                            slim_recs,
                             ensure_ascii=False,
-                            separators=(",", ":")  # no pretty-print indent -> even fewer tokens
+                            separators=(",", ":")  # compact format
                         ),
                         "original_query": original_query,
                     }
@@ -204,36 +229,52 @@ class EditorAgent:
                 orig_main   = recommendations.get("main_list",   [])
                 orig_hidden = recommendations.get("hidden_gems", [])
 
-                def _merge_list(orig: list, fmt: list) -> list:
+                def _merge_list(orig: list, fmt: list, list_name: str) -> list:
                     """
                     • If the formatter returned nothing, fall back to the original list.
                     • If the formatter returned fewer items, append the missing ones.
                     """
                     if not fmt and orig:
+                        print(f"[EditorAgent] {list_name} EMPTY after formatting - using original {len(orig)} items")
                         return orig
 
                     if len(fmt) < len(orig):
+                        print(f"[EditorAgent] {list_name} LOST RESTAURANTS: {len(orig)} → {len(fmt)} - restoring missing")
                         fmt_names = { (r.get("name") or "").lower() for r in fmt }
                         missing   = [r for r in orig
                                      if (r.get("name") or "").lower() not in fmt_names]
                         fmt.extend(missing)
+                        print(f"[EditorAgent] {list_name} RESTORED: {len(fmt)} total after restoration")
 
                     return fmt
 
                 if isinstance(formatted_rec, dict):
-                    formatted_rec["main_list"]   = _merge_list(orig_main,   formatted_rec.get("main_list",   []))
-                    formatted_rec["hidden_gems"] = _merge_list(orig_hidden, formatted_rec.get("hidden_gems", []))
-                    formatted_results["formatted_recommendations"] = formatted_rec
+                    print(f"[EditorAgent] POST-FORMAT COUNTS: {len(formatted_rec.get('main_list', []))} main + {len(formatted_rec.get('hidden_gems', []))} hidden")
 
+                    formatted_rec["main_list"]   = _merge_list(orig_main,   formatted_rec.get("main_list",   []), "main_list")
+                    formatted_rec["hidden_gems"] = _merge_list(orig_hidden, formatted_rec.get("hidden_gems", []), "hidden_gems")
+
+                    formatted_results["formatted_recommendations"] = formatted_rec
 
                 # ── 8. attach follow-up queries & finish ────────────────
                 formatted_results["follow_up_queries"] = follow_up_queries
+
+                # Final verification
+                final_main_count = len(formatted_rec.get("main_list", []))
+                final_hidden_count = len(formatted_rec.get("hidden_gems", []))
+                print(f"[EditorAgent] FINAL RESULT: {final_main_count} main + {final_hidden_count} hidden = {final_main_count + final_hidden_count} total")
+
+                if (final_main_count + final_hidden_count) != (input_main_count + input_hidden_count):
+                    print(f"[EditorAgent] WARNING: Restaurant count mismatch! Input: {input_main_count + input_hidden_count} → Output: {final_main_count + final_hidden_count}")
 
                 dump_chain_state(
                     "editor_final_results",
                     {
                         "formatted_keys": list(formatted_results.keys()),
                         "follow_up_queries": len(follow_up_queries),
+                        "final_main_count": final_main_count,
+                        "final_hidden_count": final_hidden_count,
+                        "total_output_restaurants": final_main_count + final_hidden_count
                     },
                 )
                 return formatted_results
@@ -244,10 +285,11 @@ class EditorAgent:
                     "editor_json_error",
                     {"error": str(exc), "response_preview": str(response.content)[:500]},
                 )
+                print(f"[EditorAgent] JSON ERROR - falling back to original data")
                 return {
                     "formatted_recommendations": {
                         "main_list": recommendations.get("main_list", []),
-                        "hidden_gems": [],
+                        "hidden_gems": recommendations.get("hidden_gems", []),
                     },
                     "follow_up_queries": follow_up_queries if "follow_up_queries" in locals() else [],
                 }
@@ -262,18 +304,18 @@ class EditorAgent:
                     },
                     error=exc,
                 )
+                print(f"[EditorAgent] GENERAL ERROR - falling back to original data: {exc}")
                 return {
                     "formatted_recommendations": {
                         "main_list": recommendations.get("main_list", [])
                         if isinstance(recommendations, dict)
                         else [],
-                        "hidden_gems": [],
+                        "hidden_gems": recommendations.get("hidden_gems", [])
+                        if isinstance(recommendations, dict)
+                        else [],
                     },
                     "follow_up_queries": [],
                 }
-
-
-    # Improved follow-up query generator for EditorAgent
 
     def _generate_follow_up_queries(self, recommendations, original_query):
         """Generate follow-up search queries for each restaurant, focusing on mandatory information."""
@@ -345,7 +387,6 @@ class EditorAgent:
         except Exception as exc:
             print(f"Error generating follow-up queries: {exc}")
             return self._generate_basic_queries(recommendations)
-
 
     def _generate_basic_queries(self, recommendations):
         """Generate basic follow-up queries focused on mandatory information if the main generation fails"""
