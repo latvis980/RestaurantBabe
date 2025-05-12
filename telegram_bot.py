@@ -27,6 +27,7 @@ import config
 from utils.debug_utils import dump_chain_state
 from utils.database import initialize_db, tables, engine
 from utils.async_utils import sync_to_async, wait_for_pending_tasks, track_async_task
+from agents.langchain_orchestrator import sanitize_html_for_telegram
 
 # ---------------------------------------------------------------------------
 # CONFIGURATION
