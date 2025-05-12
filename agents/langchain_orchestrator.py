@@ -3,15 +3,96 @@ from langchain_core.runnables import RunnableSequence, RunnableLambda
 from langchain_core.tracers.context import tracing_v2_enabled
 import time
 import json
+import re
+from html import escape
 from utils.database import save_data
 from utils.debug_utils import dump_chain_state, log_function_call
 from utils.async_utils import sync_to_async
 import asyncio
 import logging
-from telegram_bot import sanitize_html_for_telegram
 
-#№ Create logger. 
+# Create logger. 
 logger = logging.getLogger("restaurant-recommender.orchestrator")
+
+# Move the sanitize_html_for_telegram function here instead of importing from telegram_bot
+def sanitize_html_for_telegram(text):
+    """Clean HTML text to ensure it's safe for Telegram API"""
+    if not text:
+        return ""
+
+    # First, escape any unescaped text content
+    # Do this for any text between > and <
+    def escape_text_content(match):
+        content = match.group(1)
+        # Only escape if it's not already escaped
+        if '&' in content and ('&lt;' in content or '&gt;' in content or '&amp;' in content):
+            return '>' + content + '<'
+        return '>' + escape(content) + '<'
+
+    # Fix unescaped content between tags
+    text = re.sub(r'>([^<]+)<', escape_text_content, text)
+
+    # Ensure all tags are properly closed
+    # Stack to track open tags
+    stack = []
+    result = []
+    i = 0
+
+    allowed_tags = {'b', 'i', 'u', 's', 'a', 'code', 'pre'}
+
+    while i < len(text):
+        if text[i] == '<':
+            # Find the end of the tag
+            end = text.find('>', i)
+            if end == -1:
+                # No closing bracket, treat as plain text
+                result.append('&lt;')
+                i += 1
+                continue
+
+            tag_content = text[i+1:end]
+            if tag_content.startswith('/'):
+                # Closing tag
+                tag_name = tag_content[1:].split()[0].lower()
+                if tag_name in allowed_tags:
+                    if stack and stack[-1] == tag_name:
+                        stack.pop()
+                        result.append(text[i:end+1])
+                    else:
+                        # Mismatched closing tag, just add as text
+                        result.append(escape(text[i:end+1]))
+                else:
+                    # Not an allowed tag
+                    result.append(escape(text[i:end+1]))
+            else:
+                # Opening tag
+                tag_parts = tag_content.split(None, 1)
+                tag_name = tag_parts[0].lower()
+                if tag_name in allowed_tags:
+                    if tag_name == 'a':
+                        # Special handling for links
+                        if len(tag_parts) > 1 and 'href=' in tag_parts[1]:
+                            result.append(text[i:end+1])
+                            stack.append(tag_name)
+                        else:
+                            result.append(escape(text[i:end+1]))
+                    else:
+                        result.append(text[i:end+1])
+                        stack.append(tag_name)
+                else:
+                    # Not an allowed tag
+                    result.append(escape(text[i:end+1]))
+            i = end + 1
+        else:
+            result.append(text[i])
+            i += 1
+
+    # Close any unclosed tags
+    while stack:
+        tag = stack.pop()
+        result.append(f'</{tag}>')
+
+    return ''.join(result)
 
 class LangChainOrchestrator:
     def __init__(self, config):
@@ -52,15 +133,6 @@ class LangChainOrchestrator:
             name="search"
         )
 
-        from utils.async_utils import sync_to_async
-
-        # Define a helper function that properly awaits the async method
-        async def _scrape_async(search_results):
-            """Inner async function to handle the scraping"""
-            # Log the actual call to help with debugging
-            logger.info(f"Starting scrape for {len(search_results)} search results") 
-            return await self.scraper.scrape_search_results(search_results)
-
         # Define a wrapper that properly converts async to sync
         def scrape_helper(x):
             """Wrapper to handle async scraping in the LangChain"""
@@ -94,12 +166,6 @@ class LangChainOrchestrator:
         # Assign the helper to the scrape step
         self.scrape = RunnableLambda(scrape_helper, name="scrape")
 
-        def _debug_scrape(self, combined_results):
-            print(f"[Orchestrator] Combined results to scrape: {len(combined_results)}")
-            enriched = self.scraper.scrape_search_results(combined_results)
-            print(f"[Orchestrator] Enriched results: {len(enriched)}")
-            return enriched
-
         async def analyze_results_with_debug_async(x):
             try:
                 # Debug log before analysis
@@ -126,7 +192,6 @@ class LangChainOrchestrator:
                     "recommendations": recommendations
                 })
 
-                # The rest remains the same...
                 # Explicitly standardize the structure
                 if isinstance(recommendations, dict):
                     # Check if we have the old format (recommended/hidden_gems)
@@ -280,9 +345,7 @@ class LangChainOrchestrator:
             name="follow_up_search"
         )
 
-        #  HTML extraction
-        # In langchain_orchestrator.py, modify the extract_html_step function
-
+        # HTML extraction
         def extract_html_step(x):
             try:
                 # Debug before html extraction
@@ -321,54 +384,6 @@ class LangChainOrchestrator:
                     **x, 
                     "telegram_formatted_text": "<b>Извините, не удалось найти рестораны по вашему запросу.</b>"
                 }
-
-        # Also modify the process_query method to return the full structure
-        @log_function_call
-        def process_query(self, user_query, standing_prefs=None):
-            """Process a user query using the LangChain sequence"""
-            # ... existing code ...
-
-            with tracing_v2_enabled(project_name="restaurant-recommender"):
-                try:
-                    # Create initial input with preferences
-                    input_data = {"query": clean_query, "user_preferences": user_preferences}
-
-                    # Execute the chain with our input data
-                    result = self.chain.invoke(input_data)
-
-                    # Log completion and dump final state
-                    dump_chain_state("process_query_complete", {
-                        "result_keys": list(result.keys()),
-                        "has_recommendations": "enhanced_recommendations" in result,
-                        "has_telegram_text": "telegram_formatted_text" in result
-                    })
-
-                    # Get the telegram text
-                    telegram_text = result.get("telegram_formatted_text", 
-                                             "<b>Извините, не удалось найти рестораны по вашему запросу.</b>")
-
-                    # Get the enhanced recommendations
-                    enhanced_recommendations = result.get("enhanced_recommendations", {})
-
-                    # Extract main_list and hidden_gems
-                    main_list = enhanced_recommendations.get("main_list", [])
-                    hidden_gems = enhanced_recommendations.get("hidden_gems", [])
-
-                    # ADD THIS DEBUG LOG
-                    logger.info(f"Final result - Main list: {len(main_list)}, Hidden gems: {len(hidden_gems)}")
-
-                    # Return the complete data structure
-                    return {
-                        "telegram_text": telegram_text,
-                        "enhanced_recommendations": enhanced_recommendations,  # Include the full structure
-                        "main_list": main_list,
-                        "hidden_gems": hidden_gems,
-                        "destination": result.get("destination")
-                    }
-
-                except Exception as e:
-                    logger.error(f"Error in chain execution: {e}")
-                    # ... existing error handling ...
 
         # Extract HTML with debugging
         self.extract_html = RunnableLambda(
@@ -417,7 +432,6 @@ class LangChainOrchestrator:
 
         # No preferences found
         return query, []
-
 
     @log_function_call
     def _create_detailed_html(self, recommendations):
@@ -474,7 +488,6 @@ class LangChainOrchestrator:
                         # Check if it's already a formatted link
                         if "<a href=" in addr:
                             # Validate the link format
-                            import re
                             link_match = re.search(r'<a href="([^"]+)"[^>]*>([^<]+)</a>', addr)
                             if link_match:
                                 url, address_text = link_match.groups()
@@ -567,7 +580,6 @@ class LangChainOrchestrator:
 
             # Absolute fallback
             return "<b>Sorry, we couldn't format the restaurant list due to an error.</b>"
-    
 
     @log_function_call
     def process_query(self, user_query, standing_prefs=None):
@@ -633,18 +645,20 @@ class LangChainOrchestrator:
                 main_list = enhanced_recommendations.get("main_list", [])
                 hidden_gems = enhanced_recommendations.get("hidden_gems", [])
 
-                # Return final result
-                final_result = {
+                # ADD THIS DEBUG LOG
+                logger.info(f"Final result - Main list: {len(main_list)}, Hidden gems: {len(hidden_gems)}")
+
+                # Return the complete data structure
+                return {
+                    "telegram_text": telegram_text,
+                    "enhanced_recommendations": enhanced_recommendations,  # Include the full structure
                     "main_list": main_list,
                     "hidden_gems": hidden_gems,
-                    "telegram_text": telegram_text,
-                    "destination": result.get("destination")  # Keep destination for location tracking
+                    "destination": result.get("destination")
                 }
 
-                return final_result
-
             except Exception as e:
-                print(f"Error in chain execution: {e}")
+                logger.error(f"Error in chain execution: {e}")
                 # Log the error
                 dump_chain_state("process_query_error", {"query": user_query}, error=e)
 
