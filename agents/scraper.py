@@ -24,7 +24,6 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tracers.context import tracing_v2_enabled
 
-from utils.source_validator import validate_source
 from utils.async_utils import track_async_task
 from utils.debug_utils import dump_chain_state
 
@@ -98,7 +97,6 @@ class WebScraper:
         }
 
         self.successful_urls, self.failed_urls = [], []
-        self.filtered_urls, self.invalid_content_urls = [], []
 
     # -------------------------------------------------
     # Internal helpers
@@ -127,15 +125,6 @@ class WebScraper:
                 # 1. domain reputation
                 source_domain = self._extract_domain(url)
                 result["source_domain"] = source_domain
-
-                source_validation = validate_source(source_domain, self.config)
-                if not source_validation["is_valid"]:
-                    logger.info(f"Filtered URL by source validation: {url}")
-                    logger.info(f"  - Domain: {source_domain}")
-                    logger.info(f"  - Reputation Score: {source_validation.get('reputation_score', 0)}")
-                    logger.info(f"  - Reason: {source_validation.get('reason', 'unknown')}")
-                    self.filtered_urls.append(url)
-                    return None
 
                 # 2. fetch html - either with Playwright or HTTP methods
                 if PLAYWRIGHT_ENABLED and browser is not None:
@@ -235,7 +224,6 @@ class WebScraper:
             # Reset trackers
             self.successful_urls = []
             self.failed_urls = []
-            self.filtered_urls = []
             self.invalid_content_urls = []
 
             # Process results in batches to avoid overwhelming the system
@@ -300,7 +288,6 @@ class WebScraper:
             logger.info(f"Total results: {len(search_results)}")
             logger.info(f"Successfully scraped: {len(self.successful_urls)}")
             logger.info(f"Failed to scrape: {len(self.failed_urls)}")
-            logger.info(f"Filtered by source validator: {len(self.filtered_urls)}")
             logger.info(f"Filtered by content evaluator: {len(self.invalid_content_urls)}")
             logger.info(f"Final enriched results: {len(enriched_results)}")
 
@@ -309,7 +296,6 @@ class WebScraper:
                 "total_results": len(search_results),
                 "successful_urls": self.successful_urls,
                 "failed_urls": self.failed_urls,
-                "filtered_urls": self.filtered_urls,
                 "invalid_content_urls": self.invalid_content_urls,
                 "final_count": len(enriched_results)
             })
