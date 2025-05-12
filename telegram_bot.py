@@ -331,27 +331,64 @@ async def save_search(uid: int, query: str, result: Any):
         logger.error(f"Error saving search: {e}")
 
 
+# Add this import at the top of your telegram_bot.py file:
+from telebot import util
+
+# Replace your existing chunk_and_send function with this improved version:
 async def chunk_and_send(chat_id: int, text: str):
-    """Split long messages and send them in chunks"""
-    MAX = 4000
+    """Split long messages and send them in chunks using smart_split"""
+    MAX_MESSAGE_LENGTH = 4096
 
     # First sanitize the text
     clean_text = sanitize_html_for_telegram(text)
 
-    for i in range(0, len(clean_text), MAX):
-        chunk = clean_text[i:i+MAX]
+    # If the message is within limits, send it directly
+    if len(clean_text) <= MAX_MESSAGE_LENGTH:
         try:
-            await bot.send_message(chat_id, chunk, parse_mode="HTML")
+            await bot.send_message(chat_id, clean_text, parse_mode="HTML")
         except Exception as e:
             logger.error(f"Error sending message: {e}")
             # Fallback: Try sending without HTML parsing
             try:
-                await bot.send_message(chat_id, chunk, parse_mode=None)
+                await bot.send_message(chat_id, clean_text, parse_mode=None)
             except Exception as e2:
                 logger.error(f"Error sending plain message: {e2}")
-                # Last resort: Send a generic error message
                 await bot.send_message(chat_id, "Sorry, I encountered an error while formatting the message. Please try again.")
+        return
 
+    # Use smart_split for long messages
+    # smart_split handles HTML better and splits at appropriate boundaries
+    try:
+        split_messages = util.smart_split(clean_text, chars_per_string=MAX_MESSAGE_LENGTH - 100)  # Leave some margin
+
+        for i, message_part in enumerate(split_messages):
+            try:
+                await bot.send_message(chat_id, message_part, parse_mode="HTML")
+                # Small delay between messages to ensure order
+                if i < len(split_messages) - 1:  # Don't delay after the last message
+                    await asyncio.sleep(0.1)
+            except Exception as e:
+                logger.error(f"Error sending message part {i}: {e}")
+                # Try without HTML parsing as fallback
+                try:
+                    await bot.send_message(chat_id, message_part, parse_mode=None)
+                except Exception as e2:
+                    logger.error(f"Error sending plain message part {i}: {e2}")
+                    continue
+
+    except Exception as e:
+        logger.error(f"Error splitting message: {e}")
+        # Fallback to simple splitting if smart_split fails
+        for i in range(0, len(clean_text), MAX_MESSAGE_LENGTH - 100):
+            chunk = clean_text[i:i + MAX_MESSAGE_LENGTH - 100]
+            try:
+                await bot.send_message(chat_id, chunk, parse_mode="HTML")
+            except Exception as e:
+                try:
+                    await bot.send_message(chat_id, chunk, parse_mode=None)
+                except Exception as e2:
+                    logger.error(f"Error sending fallback chunk: {e2}")
+                    continue
 
 async def load_user_data(uid: int):
     """Load user preferences from database"""

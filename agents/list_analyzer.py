@@ -50,6 +50,7 @@ class Restaurant(BaseModel):
     sources: List[str] = Field(default_factory=list)
     source_urls: List[str] = Field(default_factory=list) 
     location: str
+    city: str = Field(default="", description="City name from the query")
 
     @validator("description")
     def ensure_len(cls, v):
@@ -72,15 +73,18 @@ PARSER = PydanticOutputParser(pydantic_object=ListResponse)
 SYSTEM_PROMPT = """You are restaurant list analyser. Follow ALL rules:
 1. ALWAYS output pure JSON with keys `main_list` with restaurants praised by multiple experts and `hidden_gems` highly recommended by one or two sources.
 2. No markdown, no code fences, no commentary.
-3. Each restaurant must include: name, location, description (40‑60 words, start with a concrete fact), price_range, recommended_dishes, sources, source_urls.
-4. Identify at least 8 restaurants that match the search parameters.
+3. Each restaurant must include: name, location, city (from query), description (40‑60 words, start with a concrete fact), price_range, recommended_dishes, sources (publication names only, not full article titles), source_urls.
+4. Identify at least 8 restaurants that match the search parameters and are in the specified location/city.
 5. Extract source URLs from the [URL] markers in the snippets - include them in source_urls field.
+6. For sources, only include the publication/website name (e.g., "Eater", "Time Out"), not the full article title.
+7. Only include restaurants from the city specified in the query - filter out any results from other locations.
 """
 
 HUMAN_TEMPLATE = (
     "PRIMARY SEARCH PARAMETERS:\n{primary}\n\n"
     "SECONDARY FILTER PARAMETERS:\n{secondary}\n\n"
     "KEYWORDS FOR ANALYSIS:\n{keywords}\n\n"
+    "DESTINATION CITY: {destination}\n\n"
     "SOURCE SNIPPETS (deduplicated | keyword‑dense):\n{snippets}\n\n"
     "{format_instructions}"
 )
@@ -120,11 +124,42 @@ def _build_snippets(raw_articles: Sequence[Dict[str, Any]], keywords: Sequence[s
             continue
         seen_urls.add(url)
 
-        title = art.get("title", "")
-        domain = art.get("source_domain", "")
-        source_name = title or domain or "unknown source"
-        body = art.get("scraped_content", "")
+        # Get the source name from source_info if available, otherwise extract from domain
+        source_name = ""
+        if "source_info" in art and "name" in art["source_info"]:
+            source_name = art["source_info"]["name"]
+        elif "source_domain" in art:
+            # Extract clean source name from domain
+            domain = art["source_domain"]
+            if domain.startswith('www.'):
+                domain = domain[4:]
+            source_name = domain.split('.')[0].capitalize()
 
+            # Map common domains to proper names
+            source_map = {
+                'eater': 'Eater',
+                'timeout': 'Time Out',
+                'thefork': 'The Fork',
+                'infatuation': 'The Infatuation',
+                'michelin': 'Michelin Guide',
+                'worldofmouth': 'World of Mouth',
+                'nytimes': 'New York Times',
+                'forbes': 'Forbes',
+                'guardian': 'The Guardian',
+                'telegraph': 'The Telegraph',
+                'cntraveler': 'Condé Nast Traveler',
+                'laliste': 'La Liste',
+                'oadguides': 'OAD Guides'
+            }
+
+            for key, val in source_map.items():
+                if key in domain.lower():
+                    source_name = val
+                    break
+        else:
+            source_name = "Unknown Source"
+
+        body = art.get("scraped_content", "")
         key_sents = _extract_keyword_sentences(body, keywords)
         snippet = f"### Source: {source_name} [URL: {url}]\n" + "\n".join(key_sents[:3])
         parts.append(snippet)
@@ -171,8 +206,8 @@ class ListAnalyzer:
             model_name=model_name or os.getenv("MISTRAL_MODEL", "mistral-large-latest"),
             temperature=temperature,
             api_key=api_key or os.getenv("MISTRAL_API_KEY"),
-            # Use model_kwargs instead of direct response_format parameter
-            model_kwargs={"response_format": {"type": "json_object"}},
+            # Use Mistral's native JSON mode to reinforce schema
+            response_format={"type": "json_object"},
         )
 
     @retry_async
@@ -185,7 +220,7 @@ class ListAnalyzer:
             return result
 
     async def _ensure_hidden_gems(
-        self, response: ListResponse
+        self, response: ListResponse, destination: str
     ) -> ListResponse:
         """If hidden_gems empty, ask LLM to pick them from main_list."""
         if response.hidden_gems:
@@ -193,7 +228,7 @@ class ListAnalyzer:
         logger.info("hidden_gems empty – running follow‑up selection")
         gems_prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", "Select up to 3 hidden gems (appear in <=2 sources) from the list."),
+                ("system", f"Select up to 3 hidden gems (appear in <=2 sources) from the list. Only include restaurants in {destination}."),
                 (
                     "human",
                     (
@@ -254,6 +289,10 @@ class ListAnalyzer:
     ) -> Dict[str, Any]:
         """Main entry point used by downstream pipeline."""
 
+        # Ensure we have a destination
+        if not destination or destination == "Unknown":
+            destination = self._derive_city(primary_search_parameters)
+
         # Convert parameters to match new interface
         if isinstance(primary_search_parameters, list):
             primary_params = ", ".join(primary_search_parameters)
@@ -270,6 +309,7 @@ class ListAnalyzer:
             primary=primary_params,
             secondary=secondary_params,
             keywords=", ".join(keywords_for_analysis),
+            destination=destination,
             snippets=snippets,
             format_instructions=PARSER.get_format_instructions(),
         )
@@ -288,10 +328,15 @@ class ListAnalyzer:
             raise
 
         # -------------- Quality gates ------------- #
-        response_model = await self._ensure_hidden_gems(response_model)
+        response_model = await self._ensure_hidden_gems(response_model, destination)
         response_model = await self._expand_short_descriptions(
-            response_model, location=destination or self._derive_city(primary_params)
+            response_model, location=destination
         )
+
+        # Set the city for all restaurants
+        for restaurant in response_model.main_list + response_model.hidden_gems:
+            restaurant.city = destination
+            restaurant.location = destination
 
         return response_model.model_dump()
 
@@ -300,5 +345,23 @@ class ListAnalyzer:
     # --------------------------------------------------------------------- #
     @staticmethod
     def _derive_city(primary_parameters: str) -> str:
-        match = re.search(r"\b(in|near)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)", primary_parameters)
-        return match.group(2) if match else ""
+        if isinstance(primary_parameters, list):
+            primary_parameters = " ".join(primary_parameters)
+
+        # Look for common patterns in the query
+        patterns = [
+            r"\bin\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
+            r"\bat\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
+            r"\bnear\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
+            r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+restaurants?",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, primary_parameters)
+            if match:
+                city = match.group(1)
+                # Filter out generic words that might be captured
+                if city.lower() not in ['best', 'top', 'good', 'great', 'amazing', 'recommended']:
+                    return city
+
+        return "Unknown"
