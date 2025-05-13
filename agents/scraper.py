@@ -6,6 +6,8 @@ from urllib.parse import urlparse
 # Create semaphore for concurrency control
 SEM = asyncio.Semaphore(3)  # Adjust based on Railway plan RAM
 
+logger = logging.getLogger("restaurant-recommender.scraper")
+
 # We'll assume Playwright is available in the Microsoft container
 PLAYWRIGHT_ENABLED = True
 
@@ -14,7 +16,6 @@ try:
     logger.info("Playwright successfully imported")
 except ImportError as e:
     PLAYWRIGHT_ENABLED = False
-    logger = logging.getLogger("restaurant-recommender.scraper")
     logger.error(f"Failed to import Playwright: {e}, falling back to HTTP methods")
 
 from readability import Document
