@@ -11,7 +11,6 @@ PLAYWRIGHT_ENABLED = True
 
 try:
     from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
-    logger = logging.getLogger("restaurant-recommender.scraper")
     logger.info("Playwright successfully imported")
 except ImportError as e:
     PLAYWRIGHT_ENABLED = False
@@ -27,6 +26,13 @@ from langchain_core.tracers.context import tracing_v2_enabled
 from utils.async_utils import track_async_task
 from utils.debug_utils import dump_chain_state
 
+import platform
+
+# Set proper event loop policy for Windows
+if platform.system() == 'Windows':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
 logger = logging.getLogger("restaurant-recommender.scraper")
 
 class WebScraper:
@@ -38,6 +44,9 @@ class WebScraper:
         self.model = ChatOpenAI(
             model=config.OPENAI_MODEL,
             temperature=0.2,
+            default_headers={
+                "Connection": "close"
+            }
         )
 
         self._concurrency = getattr(config, "SCRAPER_CONCURRENCY", 3)
@@ -98,6 +107,7 @@ class WebScraper:
         }
 
         self.successful_urls, self.failed_urls = [], []
+        self.invalid_content_urls = []
 
     # -------------------------------------------------
     # Internal helpers
@@ -172,7 +182,6 @@ class WebScraper:
                     "scraped_title": fetch_result.get("title", ""),
                     "scraped_content": processed_content,
                     "content_length": len(processed_content),
-                    "source_reputation": source_validation.get("reputation_score", 0.5),
                     "quality_score": evaluation.get("content_quality", 0.0),
                     "restaurant_count": evaluation.get("restaurant_count", 0),
                     "source_info": source_info,
@@ -216,8 +225,15 @@ class WebScraper:
                 logger.error(f"Will fall back to HTTP methods for all scraping")
 
         # Create a local semaphore for this run
-        local_sem = asyncio.Semaphore(3)
+        local_sem = asyncio.Semaphore(5)
 
+        MAX_URLS_TO_PROCESS = 15  # Adjust based on your needs
+
+        # Limit the number of URLs we process
+        if len(search_results) > MAX_URLS_TO_PROCESS:
+            logger.info(f"Limiting processing from {len(search_results)} to {MAX_URLS_TO_PROCESS} URLs")
+            search_results = search_results[:MAX_URLS_TO_PROCESS]
+        
         with tracing_v2_enabled(project_name="restaurant-recommender"):
             start_time = time.time()
             logger.info(f"Starting to process {len(search_results)} search results")
@@ -242,8 +258,15 @@ class WebScraper:
                         )
 
                         # Process batches with the shared browser instance
+                        batch_size = 3
+                        
                         for i in range(0, len(search_results), batch_size):
                             batch = search_results[i:i+batch_size]
+
+                            # Add a small delay between batches
+                            if i > 0:
+                                await asyncio.sleep(2)  # Give the event loop time to breathe
+                                
                             # Pass the local semaphore to _process_search_result
                             batch_tasks = [self._process_search_result(result, browser, local_sem) for result in batch]
                             batch_results = await asyncio.gather(*batch_tasks)
@@ -534,15 +557,7 @@ class WebScraper:
         return result
 
     async def _fetch_with_http(self, url: str) -> Dict[str, Any]:
-        """
-        Fetch a URL using HTTP libraries (requests/aiohttp)
-
-        Args:
-            url: URL to fetch
-
-        Returns:
-            Dictionary with HTML content and metadata
-        """
+        """Fetch a URL using HTTP libraries with proper connection handling"""
         logger.info(f"Fetching URL with HTTP: {url}")
         result = {
             "url": url,
@@ -563,10 +578,14 @@ class WebScraper:
                     "User-Agent": self.browser_config['user_agent'],
                     "Accept": "text/html,application/xhtml+xml,application/xml",
                     "Accept-Language": "en-US,en;q=0.9",
+                    "Connection": "close"  # Add connection close header
                 }
 
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, headers=headers, timeout=15) as response:
+                # Define timeout before using it
+                timeout = aiohttp.ClientTimeout(total=30)
+
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(url, headers=headers) as response:
                         result["status_code"] = response.status
 
                         if response.status == 200:
@@ -591,7 +610,6 @@ class WebScraper:
                             return result
 
             except ImportError:
-                # Fallback to requests if aiohttp is not available
                 logger.info("aiohttp not available, falling back to requests")
                 pass
             except Exception as e:
@@ -605,6 +623,7 @@ class WebScraper:
                 "User-Agent": self.browser_config['user_agent'],
                 "Accept": "text/html,application/xhtml+xml,application/xml",
                 "Accept-Language": "en-US,en;q=0.9",
+                "Connection": "close"  # Force connection close
             }
 
             response = requests.get(url, headers=headers, timeout=15)
