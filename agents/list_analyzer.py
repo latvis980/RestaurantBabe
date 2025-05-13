@@ -56,8 +56,7 @@ class Restaurant(BaseModel):
     def ensure_len(cls, v):
         if v == "Description unavailable":
             return v
-        if len(v.split()) < 20:
-            return v + " (Brief description available.)"
+        # Simply return the description as-is, don't append any text
         return v
 
 class ListResponse(BaseModel):

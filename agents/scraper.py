@@ -56,6 +56,7 @@ class WebScraper:
         NOT VALID CONTENT (score < 0.3):
         - Official website of a single restaurant
         - Collections of restaurants in booking and delivery websites like Uber Eats, The Fork, Glovo, etc.
+        - Wanderlog content
         - Individual restaurant menus
         - Single restaurant reviews
         - Social media posts about individual dining experiences
