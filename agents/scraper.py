@@ -77,6 +77,7 @@ class FirecrawlWebScraper:
     async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Main entry point for scraping search results.
+        Now includes specialized handling for Eater and Timeout.
 
         Args:
             search_results: List of search results from BraveSearchAgent
@@ -87,32 +88,71 @@ class FirecrawlWebScraper:
         with tracing_v2_enabled(project_name="restaurant-recommender"):
             logger.info(f"Starting Firecrawl v2.0 scraping for {len(search_results)} URLs")
 
-            # Create async tasks for all URLs
-            tasks = []
+            # First, check for specialized URLs (Eater, Timeout)
+            specialized_urls = []
+            regular_urls = []
+
             for result in search_results:
-                task = self._scrape_single_result(result)
-                tasks.append(task)
+                url = result.get('url', '')
+                domain = url.lower()
 
-            # Execute all scraping tasks concurrently
-            scraped_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            # Process results and handle exceptions
-            enriched_results = []
-            for original_result, scraped_data in zip(search_results, scraped_results):
-                if isinstance(scraped_data, Exception):
-                    logger.error(f"Error scraping {original_result.get('url', 'unknown')}: {scraped_data}")
-                    # Keep original result but mark as failed
-                    original_result["scraping_failed"] = True
-                    original_result["scraping_error"] = str(scraped_data)
-                    enriched_results.append(original_result)
+                if 'eater.com' in domain or 'timeout.com' in domain:
+                    specialized_urls.append(result)
                 else:
-                    enriched_results.append(scraped_data)
+                    regular_urls.append(result)
+
+            enriched_results = []
+
+            # Process specialized URLs with RSS/sitemap approach
+            if specialized_urls:
+                logger.info(f"Processing {len(specialized_urls)} specialized URLs (Eater/Timeout)")
+
+                try:
+                    from agents.specialized_scraper import EaterTimeoutSpecializedScraper
+
+                    async with EaterTimeoutSpecializedScraper(self.config) as specialized_scraper:
+                        specialized_results = await specialized_scraper.process_specialized_urls(specialized_urls)
+                        enriched_results.extend(specialized_results)
+
+                        # Log specialized scraper stats
+                        specialized_scraper._log_stats()
+
+                except Exception as e:
+                    logger.error(f"Error in specialized scraping: {e}")
+                    # Fall back to regular scraping for these URLs
+                    regular_urls.extend(specialized_urls)
+
+            # Process regular URLs with standard Firecrawl approach
+            if regular_urls:
+                logger.info(f"Processing {len(regular_urls)} regular URLs with Firecrawl")
+
+                # Create async tasks for regular URLs
+                tasks = []
+                for result in regular_urls:
+                    task = self._scrape_single_result(result)
+                    tasks.append(task)
+
+                # Execute all scraping tasks concurrently
+                scraped_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Process results and handle exceptions
+                for original_result, scraped_data in zip(regular_urls, scraped_results):
+                    if isinstance(scraped_data, Exception):
+                        logger.error(f"Error scraping {original_result.get('url', 'unknown')}: {scraped_data}")
+                        # Keep original result but mark as failed
+                        original_result["scraping_failed"] = True
+                        original_result["scraping_error"] = str(scraped_data)
+                        enriched_results.append(original_result)
+                    else:
+                        enriched_results.append(scraped_data)
 
             # Log final statistics
             self._log_scraping_stats()
 
             dump_chain_state("firecrawl_v2_scraping_complete", {
                 "input_count": len(search_results),
+                "specialized_count": len(specialized_urls),
+                "regular_count": len(regular_urls),
                 "output_count": len(enriched_results),
                 "stats": self.stats
             })
@@ -122,6 +162,7 @@ class FirecrawlWebScraper:
     async def _scrape_single_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """
         Scrape a single URL and extract restaurant data using Firecrawl v2.0 patterns.
+        Updated with better handling for complex sites like Eater.com.
 
         Args:
             result: Search result dictionary with URL and metadata
@@ -137,8 +178,20 @@ class FirecrawlWebScraper:
 
             logger.info(f"Scraping URL with v2.0 SDK: {url}")
 
-            # Rate limiting for 2025 API limits
-            await asyncio.sleep(2)  # More reasonable for current limits
+            # Check if this is a problematic domain
+            problematic_domains = [
+                'eater.com', 
+                'timeout.com', 
+                'thrillist.com',
+                'foodandwine.com',
+                'bonappetit.com'
+            ]
+
+            is_problematic = any(domain in url.lower() for domain in problematic_domains)
+
+            # Use longer delays for problematic sites
+            delay = 5 if is_problematic else 2
+            await asyncio.sleep(delay)
 
             try:
                 # Extract restaurant data using Firecrawl's v2.0 extraction
@@ -159,7 +212,8 @@ class FirecrawlWebScraper:
                             "extraction_method": extraction_result.extraction_method
                         },
                         "scraping_success": True,
-                        "restaurant_count": len(extraction_result.restaurants)
+                        "restaurant_count": len(extraction_result.restaurants),
+                        "is_problematic_site": is_problematic
                     })
 
                     logger.info(f"Successfully extracted {len(extraction_result.restaurants)} restaurants from {url}")
@@ -169,17 +223,27 @@ class FirecrawlWebScraper:
                     self.stats["failed_extractions"] += 1
                     logger.error(f"Failed to extract restaurants from {url}: {extraction_result.error_message}")
 
+                    # For problematic sites, provide more context
+                    if is_problematic:
+                        logger.warning(f"Site {url} is known to be difficult to scrape (JavaScript-heavy/anti-bot protection)")
+
                     # Return original result with failure info
                     result["scraping_failed"] = True
                     result["scraping_error"] = extraction_result.error_message
+                    result["is_problematic_site"] = is_problematic
                     return result
 
             except Exception as e:
                 self.stats["failed_extractions"] += 1
                 logger.error(f"Exception while scraping {url}: {e}")
 
+                # Provide helpful context for problematic sites
+                if is_problematic:
+                    logger.warning(f"Site {url} is known for anti-bot protection. Consider manual review.")
+
                 result["scraping_failed"] = True
                 result["scraping_error"] = str(e)
+                result["is_problematic_site"] = is_problematic
                 return result
 
             finally:
@@ -188,80 +252,102 @@ class FirecrawlWebScraper:
     async def _extract_restaurants_with_retry(self, url: str) -> RestaurantExtractionResult:
         """
         Extract restaurants with retry logic using Firecrawl v2.0 patterns.
+        Updated with better timeout handling for complex sites.
         """
 
-        for attempt in range(self.max_retries):
+        # Check if this is a problematic domain and adjust settings
+        problematic_domains = ['eater.com', 'timeout.com', 'thrillist.com', 'foodandwine.com', 'bonappetit.com']
+        is_problematic = any(domain in url.lower() for domain in problematic_domains)
+
+        # Reduce retries for problematic sites to avoid wasting time
+        max_retries = 2 if is_problematic else self.max_retries
+        retry_delay = 5 if is_problematic else self.retry_delay
+
+        for attempt in range(max_retries):
             try:
                 # Method 1: Try new v2.0 scrape with extract (most reliable)
                 try:
-                    result = await self._extract_with_v2_scrape_extract(url)
+                    result = await self._extract_with_v2_scrape_extract(url, is_problematic)
                     if result.success and result.restaurants:
                         return result
                 except Exception as e:
                     logger.warning(f"V2.0 scrape extract failed for {url} (attempt {attempt + 1}): {e}")
 
-                # Method 2: Basic scrape + GPT processing (fallback)
-                try:
-                    result = await self._extract_with_v2_basic_scrape(url)
-                    if result.success and result.restaurants:
-                        return result
-                except Exception as e:
-                    logger.warning(f"V2.0 basic scrape failed for {url} (attempt {attempt + 1}): {e}")
+                # For problematic sites, skip basic scrape to save time
+                if not is_problematic:
+                    # Method 2: Basic scrape + GPT processing (fallback)
+                    try:
+                        result = await self._extract_with_v2_basic_scrape(url, is_problematic)
+                        if result.success and result.restaurants:
+                            return result
+                    except Exception as e:
+                        logger.warning(f"V2.0 basic scrape failed for {url} (attempt {attempt + 1}): {e}")
 
                 # If we reach here, all methods failed for this attempt
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(self.retry_delay * (attempt + 1))
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay * (attempt + 1))
 
             except Exception as e:
                 logger.error(f"Unexpected error during extraction attempt {attempt + 1} for {url}: {e}")
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(self.retry_delay * (attempt + 1))
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay * (attempt + 1))
 
         # All attempts failed
+        error_msg = "All extraction methods failed after retries"
+        if is_problematic:
+            error_msg += " (site known for anti-bot protection)"
+
         return RestaurantExtractionResult(
             restaurants=[],
             source_url=url,
             source_name=self._extract_source_name(url),
             extraction_method="failed",
             success=False,
-            error_message="All extraction methods failed after retries"
+            error_message=error_msg
         )
 
-    async def _extract_with_v2_scrape_extract(self, url: str) -> RestaurantExtractionResult:
+    async def _extract_with_v2_scrape_extract(self, url: str, is_problematic: bool = False) -> RestaurantExtractionResult:
         """
         Extract using Firecrawl v2.0 scrape_url with named parameters and typed responses.
+        Updated with better timeout handling for problematic sites.
         """
-        logger.debug(f"Attempting v2.0 scrape with extract for {url}")
+        logger.debug(f"Attempting v2.0 scrape with extract for {url} (problematic: {is_problematic})")
 
         try:
+            # Use shorter timeout for problematic sites to fail fast
+            timeout_seconds = 30 if is_problematic else 60
+
             # Use v2.0 scrape_url with named parameters
-            scrape_result = await self.async_firecrawl.scrape_url(
-                url=url,  # Named parameter
-                formats=['markdown', 'extract'],
-                extract={
-                    'prompt': """
-                    Find and extract ALL restaurants mentioned on this page. Return as JSON:
+            scrape_result = await asyncio.wait_for(
+                self.async_firecrawl.scrape_url(
+                    url=url,  # Named parameter
+                    formats=['markdown', 'extract'],
+                    extract={
+                        'prompt': """
+                        Find and extract ALL restaurants mentioned on this page. Return as JSON:
 
-                    {{
-                      "restaurants": [
                         {{
-                          "name": "Restaurant Name",
-                          "description": "Full description with cuisine, atmosphere, and specialties",
-                          "address": "Street address",
-                          "city": "City name", 
-                          "price_range": "Price indicators (€, €€, etc.)",
-                          "cuisine_type": "Cuisine type",
-                          "recommended_dishes": ["dish1", "dish2"],
-                          "source_url": "current_page_url"
+                          "restaurants": [
+                            {{
+                              "name": "Restaurant Name",
+                              "description": "Full description with cuisine, atmosphere, and specialties",
+                              "address": "Street address",
+                              "city": "City name", 
+                              "price_range": "Price indicators (€, €€, etc.)",
+                              "cuisine_type": "Cuisine type",
+                              "recommended_dishes": ["dish1", "dish2"],
+                              "source_url": "current_page_url"
+                            }}
+                          ],
+                          "source_publication": "Publication name (Time Out, Eater, etc.)"
                         }}
-                      ],
-                      "source_publication": "Publication name (Time Out, Eater, etc.)"
-                    }}
 
-                    Extract every restaurant mentioned, even if information is incomplete.
-                    """,
-                    'schema': RestaurantListSchema.model_json_schema()
-                }
+                        Extract every restaurant mentioned, even if information is incomplete.
+                        """,
+                        'schema': RestaurantListSchema.model_json_schema()
+                    }
+                ),
+                timeout=timeout_seconds
             )
 
             # Handle v2.0 typed response object
@@ -302,10 +388,12 @@ class FirecrawlWebScraper:
                 success=True
             )
 
+        except asyncio.TimeoutError:
+            raise Exception(f"Request timeout after {timeout_seconds}s - site may have anti-bot protection")
         except Exception as e:
             raise Exception(f"V2.0 scrape extract failed: {str(e)}")
 
-    async def _extract_with_v2_basic_scrape(self, url: str) -> RestaurantExtractionResult:
+    async def _extract_with_v2_basic_scrape(self, url: str, is_problematic: bool = False) -> RestaurantExtractionResult:
         """
         Last resort: Basic scrape + GPT processing using v2.0 patterns.
         """
