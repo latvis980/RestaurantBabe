@@ -25,7 +25,7 @@ import googlemaps
 from langchain_core.tracers.context import tracing_v2_enabled
 
 from agents.search_agent import BraveSearchAgent
-from agents.scraper import WebScraper
+from agents.optimized_scraper import WebScraper
 from utils.debug_utils import dump_chain_state
 
 # ---------------------------------------------------------------------------
