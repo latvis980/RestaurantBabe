@@ -1152,7 +1152,7 @@ async def test_scrapers_command(message):
         )
 
         # Generate comprehensive test results
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # ← ADD THIS LINE
         test_results = await generate_comprehensive_test_results(
             search_query, 
             search_results,
@@ -1160,7 +1160,9 @@ async def test_scrapers_command(message):
             enhanced_results,
             default_time,
             enhanced_time,
-            timestamp
+            timestamp,
+            default_scraper,
+            enhanced_scraper
         )
 
         # Create downloadable ZIP file
@@ -1355,13 +1357,13 @@ async def test_single_url_command(message):
             parse_mode="Markdown"
         )
 
-async def generate_comprehensive_test_results(query, search_results, default_results, enhanced_results, default_time, enhanced_time, timestamp):
+async def generate_comprehensive_test_results(query, search_results, default_results, enhanced_results, default_time, enhanced_time, timestamp, default_scraper=None, enhanced_scraper=None):
     """Generate comprehensive test analysis"""
 
     # URL analysis
     searched_urls = [r.get('url') for r in search_results]
-    default_successful = getattr(WebScraper(config), 'successful_urls', [])
-    enhanced_successful = getattr(EnhancedWebScraper(config), 'successful_urls', [])
+    default_successful = getattr(default_scraper, 'successful_urls', []) if default_scraper else []
+    enhanced_successful = getattr(enhanced_scraper, 'successful_urls', []) if enhanced_scraper else []
 
     analysis = {
         "test_metadata": {
