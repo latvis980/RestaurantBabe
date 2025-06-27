@@ -44,58 +44,42 @@ WELCOME_MESSAGE = (
 
 # Request analysis prompt with session awareness
 REQUEST_ANALYSIS_PROMPT = """
-You are an AI assistant that helps users with restaurant search requests. Your job is to analyze incoming messages and decide what to do, taking into account the conversation history.
-
-ANALYZE the user's message and conversation context, then respond with a JSON object containing:
-{{
-    "action": "process" | "ask_clarification" | "remind_purpose" | "update_session",
-    "response": "your response message to the user",
-    "reasoning": "brief explanation of your decision",
-    "session_updates": {{"location": "city_name", "cuisine_type": "cuisine", "dining_style": "style", "other_preferences": "preferences"}}
-}}
-
-ACTIONS:
-1. "process" - Have both location AND restaurant preferences. Ready to search.
-2. "ask_clarification" - Missing either location or restaurant type, ask for the missing piece
-3. "remind_purpose" - Off-topic or asking about specific single restaurants  
-4. "update_session" - User provided new info, update session and ask for remaining details
+You are an AI assistant for restaurant search. Analyze the user's message and conversation context.
 
 CONVERSATION CONTEXT:
-- Previous location mentioned: {previous_location}
-- Previous preferences mentioned: {previous_preferences}
-- Previous cuisine type: {previous_cuisine}
+- Previous location: {previous_location}
+- Previous cuisine: {previous_cuisine}
 - Previous dining style: {previous_dining_style}
+- Previous preferences: {previous_preferences}
 
-GUIDELINES:
-- If user already provided location in conversation, don't ask for it again
-- If user already provided restaurant preferences, build on them rather than ignoring them
-- Only ask for ONE missing piece at a time
-- Be conversational and reference what they already told you
-- For "process": Must have BOTH location AND some restaurant preference (cuisine, style, type, etc.)
+DECISION RULES:
+1. If we have BOTH location AND any restaurant preference (cuisine/style) → "process" 
+2. If missing location but have restaurant preference → ask for location only
+3. If have location but missing restaurant preference → ask for cuisine/preference only
+4. If completely off-topic → "remind_purpose"
+
+Return JSON:
+{{
+    "action": "process" | "ask_clarification" | "remind_purpose",
+    "response": "your response to user",
+    "session_updates": {{"location": "", "cuisine_type": "", "dining_style": "", "other_preferences": ""}}
+}}
 
 EXAMPLES:
 
-Context: location="", preferences="", cuisine="", style=""
-User: "ramen restaurants"
-→ {{"action": "ask_clarification", "response": "Great choice! Ramen is amazing. Which city are you looking for ramen restaurants in?", "session_updates": {{"cuisine_type": "ramen"}}}}
+Context: location="", cuisine="ramen", style="", preferences=""
+User: "Lisbon"
+→ {{"action": "process", "response": "Perfect! I'll search for the best ramen restaurants in Lisbon. Let me check with my critic friends - this will take a couple of minutes.", "session_updates": {{"location": "Lisbon"}}}}
 
-Context: location="Lisbon", preferences="", cuisine="", style=""  
-User: "ramen restaurants"
-→ {{"action": "process", "response": "Perfect! I'll search for the best ramen restaurants in Lisbon. Let me check with my critic friends - this will take a couple of minutes.", "session_updates": {{"cuisine_type": "ramen"}}}}
+Context: location="Lisbon", cuisine="", style="", preferences=""
+User: "ramen restaurants"  
+→ {{"action": "process", "response": "Excellent! I'll find the best ramen restaurants in Lisbon for you. This will take a few minutes.", "session_updates": {{"cuisine_type": "ramen"}}}}
 
-Context: location="", preferences="", cuisine="", style=""
-User: "restaurants in Paris"
-→ {{"action": "ask_clarification", "response": "Paris has incredible dining! What type of cuisine or dining experience are you looking for? For example, traditional French bistros, fine dining, specific cuisines, or casual spots?", "session_updates": {{"location": "Paris"}}}}
+Context: location="Lisbon", cuisine="ramen", style="", preferences=""
+User: "actually make it traditional Portuguese instead"
+→ {{"action": "process", "response": "Great choice! I'll search for traditional Portuguese restaurants in Lisbon instead.", "session_updates": {{"cuisine_type": "traditional Portuguese"}}}}
 
-Context: location="Paris", preferences="", cuisine="", style=""
-User: "something romantic"
-→ {{"action": "process", "response": "Wonderful! I'll find romantic restaurants in Paris for you. This will take a few minutes while I consult the best sources.", "session_updates": {{"dining_style": "romantic"}}}}
-
-Context: location="Tokyo", preferences="local favorites", cuisine="", style=""
-User: "actually, make it Kyoto instead"
-→ {{"action": "update_session", "response": "Got it! So you're looking for local favorite restaurants in Kyoto. What type of cuisine or dining experience interests you most?", "session_updates": {{"location": "Kyoto"}}}}
-
-Always be friendly and reference what the user has already shared with you.
+Be conversational and reference what they already told you. Once you have location + any food preference, always choose "process".
 """
 
 def get_user_session(user_id):
@@ -150,7 +134,7 @@ def session_has_enough_info(session):
 def create_analysis_chain():
     analysis_prompt = ChatPromptTemplate.from_messages([
         ("system", REQUEST_ANALYSIS_PROMPT),
-        ("human", "{user_message}")
+        ("human", "User message: {user_message}\n\nPrevious context:\nLocation: {previous_location}\nCuisine: {previous_cuisine}\nDining style: {previous_dining_style}\nOther preferences: {previous_preferences}")
     ])
     return analysis_prompt | request_analyzer
 
@@ -236,11 +220,14 @@ def handle_message(message):
             update_user_session(user_id, session_updates)
             session = get_user_session(user_id)  # Get updated session
 
-        logger.info(f"Analysis result for user {user_id}: action={action}, session={session}")
+        logger.info(f"Analysis result for user {user_id}: action={action}")
+        logger.info(f"Session state: {session}")
+        logger.info(f"Has enough info: {session_has_enough_info(session)}")
 
-        if action == "process" or (action == "update_session" and session_has_enough_info(session)):
+        if action == "process":
             # Build complete query from session
             complete_query = build_query_from_session(session)
+            logger.info(f"Built query: {complete_query}")
 
             if complete_query:
                 # Send immediate response
@@ -254,6 +241,7 @@ def handle_message(message):
                 ).start()
             else:
                 # Fallback if query building fails
+                logger.error(f"Failed to build query from session: {session}")
                 bot.reply_to(message, "I have some information but need a bit more. What type of restaurants are you looking for?", parse_mode='HTML')
 
         else:
