@@ -44,8 +44,8 @@ class RestaurantListSchema(BaseModel):
 
 class FirecrawlWebScraper:
     """
-    AI-powered web scraper using Firecrawl for restaurant content extraction.
-    Updated to follow latest Firecrawl SDK patterns and best practices.
+    AI-powered web scraper using Firecrawl SDK v2.0+ for restaurant content extraction.
+    Updated for 2025 with named parameters, typed responses, and async extract API.
     """
 
     def __init__(self, config):
@@ -59,10 +59,10 @@ class FirecrawlWebScraper:
         self.firecrawl = FirecrawlApp(api_key=config.FIRECRAWL_API_KEY)
         self.async_firecrawl = AsyncFirecrawlApp(api_key=config.FIRECRAWL_API_KEY)
 
-        # Rate limiting and retry settings - updated for current limits
+        # Rate limiting and retry settings - updated for 2025 limits
         self.max_retries = 3
         self.retry_delay = 2
-        self.max_concurrent = 3  # Updated based on current rate limits
+        self.max_concurrent = 3  # Conservative for free tier
         self.semaphore = asyncio.Semaphore(self.max_concurrent)
 
         # Statistics tracking
@@ -85,7 +85,7 @@ class FirecrawlWebScraper:
             List of enriched results with scraped restaurant data
         """
         with tracing_v2_enabled(project_name="restaurant-recommender"):
-            logger.info(f"Starting Firecrawl scraping for {len(search_results)} URLs")
+            logger.info(f"Starting Firecrawl v2.0 scraping for {len(search_results)} URLs")
 
             # Create async tasks for all URLs
             tasks = []
@@ -111,7 +111,7 @@ class FirecrawlWebScraper:
             # Log final statistics
             self._log_scraping_stats()
 
-            dump_chain_state("firecrawl_scraping_complete", {
+            dump_chain_state("firecrawl_v2_scraping_complete", {
                 "input_count": len(search_results),
                 "output_count": len(enriched_results),
                 "stats": self.stats
@@ -121,7 +121,7 @@ class FirecrawlWebScraper:
 
     async def _scrape_single_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Scrape a single URL and extract restaurant data.
+        Scrape a single URL and extract restaurant data using Firecrawl v2.0 patterns.
 
         Args:
             result: Search result dictionary with URL and metadata
@@ -135,13 +135,13 @@ class FirecrawlWebScraper:
                 logger.warning("No URL found in result")
                 return result
 
-            logger.info(f"Scraping URL: {url}")
+            logger.info(f"Scraping URL with v2.0 SDK: {url}")
 
-            # Updated rate limiting based on current Firecrawl limits
-            await asyncio.sleep(3)  # More reasonable delay for current rate limits
+            # Rate limiting for 2025 API limits
+            await asyncio.sleep(2)  # More reasonable for current limits
 
             try:
-                # Extract restaurant data using Firecrawl's AI extraction
+                # Extract restaurant data using Firecrawl's v2.0 extraction
                 extraction_result = await self._extract_restaurants_with_retry(url)
 
                 if extraction_result.success:
@@ -187,35 +187,26 @@ class FirecrawlWebScraper:
 
     async def _extract_restaurants_with_retry(self, url: str) -> RestaurantExtractionResult:
         """
-        Extract restaurants with retry logic and multiple extraction methods.
-        Updated to use latest Firecrawl SDK patterns.
+        Extract restaurants with retry logic using Firecrawl v2.0 patterns.
         """
 
         for attempt in range(self.max_retries):
             try:
-                # Method 1: Try new extract endpoint with schema (most precise)
+                # Method 1: Try new v2.0 scrape with extract (most reliable)
                 try:
-                    result = await self._extract_with_new_extract_api(url)
+                    result = await self._extract_with_v2_scrape_extract(url)
                     if result.success and result.restaurants:
                         return result
                 except Exception as e:
-                    logger.warning(f"New extract API failed for {url} (attempt {attempt + 1}): {e}")
+                    logger.warning(f"V2.0 scrape extract failed for {url} (attempt {attempt + 1}): {e}")
 
-                # Method 2: Fallback to scrape with extract format
+                # Method 2: Basic scrape + GPT processing (fallback)
                 try:
-                    result = await self._extract_with_scrape_extract(url)
+                    result = await self._extract_with_v2_basic_scrape(url)
                     if result.success and result.restaurants:
                         return result
                 except Exception as e:
-                    logger.warning(f"Scrape extract failed for {url} (attempt {attempt + 1}): {e}")
-
-                # Method 3: Last resort - basic scrape + GPT processing
-                try:
-                    result = await self._extract_with_basic_scrape(url)
-                    if result.success and result.restaurants:
-                        return result
-                except Exception as e:
-                    logger.warning(f"Basic scrape failed for {url} (attempt {attempt + 1}): {e}")
+                    logger.warning(f"V2.0 basic scrape failed for {url} (attempt {attempt + 1}): {e}")
 
                 # If we reach here, all methods failed for this attempt
                 if attempt < self.max_retries - 1:
@@ -236,90 +227,16 @@ class FirecrawlWebScraper:
             error_message="All extraction methods failed after retries"
         )
 
-    async def _extract_with_new_extract_api(self, url: str) -> RestaurantExtractionResult:
+    async def _extract_with_v2_scrape_extract(self, url: str) -> RestaurantExtractionResult:
         """
-        Extract using Firecrawl's new dedicated Extract API endpoint.
-        This is the recommended method for structured data extraction.
+        Extract using Firecrawl v2.0 scrape_url with named parameters and typed responses.
         """
-        logger.debug(f"Attempting new Extract API for {url}")
+        logger.debug(f"Attempting v2.0 scrape with extract for {url}")
 
         try:
-            # Use the new extract method with proper parameters
-            extract_result = await self.async_firecrawl.extract(
-                urls=[url],
-                schema=RestaurantListSchema.model_json_schema(),
-                prompt="""
-                Extract ALL restaurants mentioned on this page. For each restaurant, get:
-                - Exact name as written
-                - Complete description with all details (cuisine, atmosphere, specialties)
-                - Full address if available
-                - City name
-                - Price indicators (€, €€, €€€, $ symbols, price ranges)
-                - Cuisine type
-                - Any recommended dishes or specialties mentioned
-                - Contact info if available
-                - Hours if mentioned
-                - Ratings or review scores
-
-                Also identify the source publication name (Time Out, Eater, Michelin, etc.).
-
-                Be thorough - extract every restaurant mentioned, even if briefly.
-                """
-            )
-
-            # Handle the response format
-            if hasattr(extract_result, 'success') and extract_result.success:
-                extracted_data = extract_result.data
-            elif hasattr(extract_result, 'data'):
-                extracted_data = extract_result.data
-            else:
-                raise Exception("No data returned from extract API")
-
-            # Convert to our format
-            restaurants = []
-            if "restaurants" in extracted_data:
-                for rest_data in extracted_data["restaurants"]:
-                    restaurant = {
-                        "name": rest_data.get("name", ""),
-                        "description": rest_data.get("description", ""),
-                        "address": rest_data.get("address", ""),
-                        "city": rest_data.get("city", ""),
-                        "price_range": rest_data.get("price_range", ""),
-                        "cuisine_type": rest_data.get("cuisine_type", ""),
-                        "recommended_dishes": rest_data.get("recommended_dishes", []),
-                        "phone": rest_data.get("phone", ""),
-                        "website": rest_data.get("website", ""),
-                        "rating": rest_data.get("rating", ""),
-                        "opening_hours": rest_data.get("opening_hours", ""),
-                        "source_url": url
-                    }
-                    restaurants.append(restaurant)
-
-            source_name = extracted_data.get("source_publication", self._extract_source_name(url))
-            self.stats["credits_used"] += 50  # Extract API cost
-
-            return RestaurantExtractionResult(
-                restaurants=restaurants,
-                source_url=url,
-                source_name=source_name,
-                extraction_method="new_extract_api",
-                success=True
-            )
-
-        except Exception as e:
-            raise Exception(f"New Extract API failed: {str(e)}")
-
-    async def _extract_with_scrape_extract(self, url: str) -> RestaurantExtractionResult:
-        """
-        Extract using scrape_url with extract format.
-        Updated method using current SDK patterns.
-        """
-        logger.debug(f"Attempting scrape with extract for {url}")
-
-        try:
-            # Use scrape_url with extract format
+            # Use v2.0 scrape_url with named parameters
             scrape_result = await self.async_firecrawl.scrape_url(
-                url,
+                url=url,  # Named parameter
                 formats=['markdown', 'extract'],
                 extract={
                     'prompt': """
@@ -347,18 +264,29 @@ class FirecrawlWebScraper:
                 }
             )
 
-            # Handle the response format
-            if hasattr(scrape_result, 'success') and scrape_result.success:
-                data = scrape_result.data
-            elif hasattr(scrape_result, 'data'):
-                data = scrape_result.data
-            else:
-                raise Exception("No data returned from scrape")
+            # Handle v2.0 typed response object
+            extracted_data = {}
 
-            # Get extracted data
-            extracted_data = data.get('extract', {})
-            restaurants = extracted_data.get("restaurants", [])
-            source_name = extracted_data.get("source_publication", self._extract_source_name(url))
+            # Try to access data in different ways based on v2.0 response structure
+            if hasattr(scrape_result, 'data') and scrape_result.data:
+                data = scrape_result.data
+                if isinstance(data, dict):
+                    extracted_data = data.get('extract', {})
+                else:
+                    # data might be the extract result directly
+                    extracted_data = data if isinstance(data, dict) else {}
+            elif hasattr(scrape_result, 'extract'):
+                extracted_data = scrape_result.extract
+            elif hasattr(scrape_result, 'success') and scrape_result.success:
+                # Try to convert object to dict
+                result_dict = dict(scrape_result) if hasattr(scrape_result, '__dict__') else {}
+                extracted_data = result_dict.get('extract', result_dict.get('data', {}))
+            else:
+                raise Exception("No data returned from v2.0 scrape")
+
+            # Extract restaurants from the response
+            restaurants = extracted_data.get("restaurants", []) if isinstance(extracted_data, dict) else []
+            source_name = extracted_data.get("source_publication", self._extract_source_name(url)) if isinstance(extracted_data, dict) else self._extract_source_name(url)
 
             # Ensure all restaurants have source_url
             for restaurant in restaurants:
@@ -370,36 +298,44 @@ class FirecrawlWebScraper:
                 restaurants=restaurants,
                 source_url=url,
                 source_name=source_name,
-                extraction_method="scrape_extract",
+                extraction_method="v2_scrape_extract",
                 success=True
             )
 
         except Exception as e:
-            raise Exception(f"Scrape extract failed: {str(e)}")
+            raise Exception(f"V2.0 scrape extract failed: {str(e)}")
 
-    async def _extract_with_basic_scrape(self, url: str) -> RestaurantExtractionResult:
+    async def _extract_with_v2_basic_scrape(self, url: str) -> RestaurantExtractionResult:
         """
-        Last resort: Basic scrape + GPT processing.
-        Updated to use current SDK patterns.
+        Last resort: Basic scrape + GPT processing using v2.0 patterns.
         """
-        logger.debug(f"Attempting basic scrape for {url}")
+        logger.debug(f"Attempting v2.0 basic scrape for {url}")
 
         try:
-            # Use basic scrape endpoint
+            # Use v2.0 basic scrape endpoint with named parameters
             scrape_result = await self.async_firecrawl.scrape_url(
-                url,
+                url=url,  # Named parameter
                 formats=["markdown"]
             )
 
-            # Handle the response format
-            if hasattr(scrape_result, 'success') and scrape_result.success:
-                data = scrape_result.data
-            elif hasattr(scrape_result, 'data'):
-                data = scrape_result.data
-            else:
-                raise Exception("No data returned from basic scrape")
+            # Handle v2.0 typed response object for markdown
+            markdown_content = None
 
-            markdown_content = data.get("markdown", "")
+            if hasattr(scrape_result, 'data') and scrape_result.data:
+                data = scrape_result.data
+                if isinstance(data, dict):
+                    markdown_content = data.get("markdown", "")
+                else:
+                    # data might be the markdown directly
+                    markdown_content = data if isinstance(data, str) else ""
+            elif hasattr(scrape_result, 'markdown'):
+                markdown_content = scrape_result.markdown
+            elif hasattr(scrape_result, 'success') and scrape_result.success:
+                # Try to convert object to dict
+                result_dict = dict(scrape_result) if hasattr(scrape_result, '__dict__') else {}
+                markdown_content = result_dict.get('markdown', result_dict.get('data', {}).get('markdown', ''))
+            else:
+                raise Exception("No markdown content returned from v2.0 basic scrape")
 
             if markdown_content:
                 # Process with local GPT-4o to extract restaurants
@@ -458,7 +394,7 @@ class FirecrawlWebScraper:
                         restaurants=restaurants,
                         source_url=url,
                         source_name=source_name,
-                        extraction_method="basic_scrape",
+                        extraction_method="v2_basic_scrape",
                         success=True
                     )
 
@@ -468,10 +404,10 @@ class FirecrawlWebScraper:
                 raise Exception("No markdown content returned")
 
         except Exception as e:
-            raise Exception(f"Basic scrape failed: {str(e)}")
+            raise Exception(f"V2.0 basic scrape failed: {str(e)}")
 
     def _extract_source_name(self, url: str) -> str:
-        """Extract source name from URL - updated with more domains"""
+        """Extract source name from URL - updated with more 2025 domains"""
         try:
             from urllib.parse import urlparse
             domain = urlparse(url).netloc.lower()
@@ -480,7 +416,7 @@ class FirecrawlWebScraper:
             if domain.startswith('www.'):
                 domain = domain[4:]
 
-            # Updated mapping with more domains
+            # Updated mapping with more domains for 2025
             domain_mapping = {
                 'timeout.com': 'Time Out',
                 'eater.com': 'Eater',
@@ -506,7 +442,10 @@ class FirecrawlWebScraper:
                 'thrillist.com': 'Thrillist',
                 'delish.com': 'Delish',
                 'bonappetit.com': 'Bon Appétit',
-                'epicurious.com': 'Epicurious'
+                'epicurious.com': 'Epicurious',
+                'seriouseats.com': 'Serious Eats',
+                'resy.com': 'Resy',
+                'tasting-table.com': 'Tasting Table'
             }
 
             # Check for exact matches first
@@ -565,7 +504,7 @@ class FirecrawlWebScraper:
 
     def _log_scraping_stats(self):
         """Log scraping statistics"""
-        logger.info(f"Scraping Statistics:")
+        logger.info(f"Firecrawl v2.0 Scraping Statistics:")
         logger.info(f"  Total URLs scraped: {self.stats['total_scraped']}")
         logger.info(f"  Successful extractions: {self.stats['successful_extractions']}")
         logger.info(f"  Failed extractions: {self.stats['failed_extractions']}")
