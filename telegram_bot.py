@@ -20,6 +20,9 @@ from telebot.async_telebot import AsyncTeleBot
 from sqlalchemy import create_engine, MetaData, Table, Column, String, JSON as SqlJSON, Float, select, text
 from sqlalchemy.dialects.sqlite import insert
 from openai import AsyncOpenAI
+import zipfile
+import tempfile
+from datetime import datetime
 
 # Fix the import path - use the correct path with agents prefix
 from agents.langchain_orchestrator import LangChainOrchestrator
@@ -616,16 +619,26 @@ async def handle_admin(msg):
     user_id = msg.from_user.id
 
     if not is_admin(user_id):
-        # Reply as if this was a normal message (don't reveal admin features)
         await handle_normal_text(msg)
         return
 
     menu_text = """
 <b>Admin Commands:</b>
 
+<b>🔧 System Management:</b>
 /sources [city] - Manage sources for a specific city
 /add_admin [user_id] - Add a new admin (Super admin only)
 /stats - View system statistics
+
+<b>🧪 Scraper Testing:</b>
+/test_scrapers [query] - Compare both scrapers with search query
+/test_single_url [url] - Test both scrapers on a single URL
+/fetch_test [url] - Basic URL fetch test
+/scrape_test [query] - Full scrape pipeline test
+
+<b>Example:</b>
+/test_scrapers best restaurants in Tokyo
+/test_single_url https://timeout.com/paris/restaurants
     """
 
     await bot.reply_to(msg, menu_text, parse_mode="HTML")
@@ -1036,6 +1049,542 @@ async def handle_stats(msg):
         logger.error(f"Error getting stats: {e}")
         await bot.reply_to(msg, f"❌ Error getting statistics: {str(e)}")
 
+# ----------------------------------------------------------------------
+# SCRAPER TESTING COMMANDS
+# ----------------------------------------------------------------------
+
+
+@bot.message_handler(commands=['test_scrapers'])
+async def test_scrapers_command(message):
+    """
+    Comprehensive scraper comparison test with downloadable results
+    Usage: /test_scrapers [search_query]
+    """
+    user_id = message.from_user.id
+
+    if not is_admin(user_id):
+        await bot.reply_to(message, "This command is only available to administrators.")
+        return
+
+    # Get search query from command
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await bot.send_message(
+            message.chat.id,
+            "Please provide a search query. Example:\n`/test_scrapers best restaurants in Paris`",
+            parse_mode="Markdown"
+        )
+        return
+
+    search_query = parts[1].strip()
+
+    processing_msg = await bot.send_message(
+        message.chat.id,
+        f"🔍 Running comprehensive scraper test for:\n*{search_query}*\n\n"
+        f"This will:\n"
+        f"• Search for restaurant guides\n"
+        f"• Test both default and enhanced scrapers\n"
+        f"• Generate detailed comparison files\n"
+        f"• Create downloadable ZIP archive\n\n"
+        f"⏱️ This may take 3-5 minutes...",
+        parse_mode="Markdown"
+    )
+
+    try:
+        # Import required modules
+        from agents.search_agent import BraveSearchAgent
+        from agents.scraper import WebScraper
+        from agents.enhanced_scraper import EnhancedWebScraper
+        import time
+        import json
+
+        # Initialize components
+        search_agent = BraveSearchAgent(config)
+        default_scraper = WebScraper(config)
+        enhanced_scraper = EnhancedWebScraper(config)
+
+        # Step 1: Search for URLs
+        await bot.edit_message_text(
+            f"🔍 Step 1/4: Searching for URLs...\nQuery: {search_query}",
+            message.chat.id,
+            processing_msg.message_id
+        )
+
+        search_results = search_agent.search([search_query])
+        logger.info(f"Found {len(search_results)} search results")
+
+        # Limit to manageable number for testing
+        max_urls = 10
+        if len(search_results) > max_urls:
+            search_results = search_results[:max_urls]
+
+        # Step 2: Test default scraper
+        await bot.edit_message_text(
+            f"🔍 Step 2/4: Testing default scraper...\n"
+            f"Processing {len(search_results)} URLs",
+            message.chat.id,
+            processing_msg.message_id
+        )
+
+        start_time = time.time()
+        default_results = await default_scraper.filter_and_scrape_results(search_results)
+        default_time = time.time() - start_time
+
+        # Step 3: Test enhanced scraper
+        await bot.edit_message_text(
+            f"🔍 Step 3/4: Testing enhanced scraper...\n"
+            f"Default scraper: {len(default_results)} results in {default_time:.1f}s",
+            message.chat.id,
+            processing_msg.message_id
+        )
+
+        start_time = time.time()
+        enhanced_results = await enhanced_scraper.filter_and_scrape_results(search_results)
+        enhanced_time = time.time() - start_time
+
+        # Step 4: Generate comprehensive analysis
+        await bot.edit_message_text(
+            f"🔍 Step 4/4: Generating analysis files...\n"
+            f"Default: {len(default_results)} results in {default_time:.1f}s\n"
+            f"Enhanced: {len(enhanced_results)} results in {enhanced_time:.1f}s",
+            message.chat.id,
+            processing_msg.message_id
+        )
+
+        # Generate comprehensive test results
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        test_results = await generate_comprehensive_test_results(
+            search_query, 
+            search_results,
+            default_results, 
+            enhanced_results,
+            default_time,
+            enhanced_time,
+            timestamp
+        )
+
+        # Create downloadable ZIP file
+        zip_path = await create_test_results_zip(test_results, timestamp, search_query)
+
+        # Send results summary
+        summary_text = f"""
+🎯 <b>Scraper Test Complete!</b>
+
+<b>Query:</b> {search_query}
+<b>URLs Found:</b> {len(search_results)}
+<b>Test Date:</b> {datetime.now().strftime('%Y-%m-%d %H:%M')}
+
+<b>📊 Results Summary:</b>
+• Default Scraper: {len(default_results)} pages ({default_time:.1f}s)
+• Enhanced Scraper: {len(enhanced_results)} pages ({enhanced_time:.1f}s)
+
+<b>📈 Content Analysis:</b>
+• Default Total: {sum(len(r.get('scraped_content', '')) for r in default_results):,} chars
+• Enhanced Total: {sum(len(r.get('scraped_content', '')) for r in enhanced_results):,} chars
+
+<b>✅ Success Rates:</b>
+• Default Success: {len(getattr(default_scraper, 'successful_urls', []))}
+• Enhanced Success: {len(getattr(enhanced_scraper, 'successful_urls', []))}
+
+<b>📁 Files Generated:</b>
+• Detailed comparison report
+• Raw scraping results (both scrapers)
+• URL analysis and success rates
+• Content samples and quality metrics
+        """
+
+        await bot.edit_message_text(
+            summary_text,
+            message.chat.id,
+            processing_msg.message_id,
+            parse_mode="HTML"
+        )
+
+        # Send the ZIP file
+        with open(zip_path, 'rb') as zip_file:
+            await bot.send_document(
+                message.chat.id,
+                zip_file,
+                caption=f"📊 Complete scraper test results for: {search_query}",
+                visible_file_name=f"scraper_test_{timestamp}.zip"
+            )
+
+        # Clean up temporary file
+        os.remove(zip_path)
+
+    except Exception as e:
+        error_details = traceback.format_exc()
+        logger.error(f"Error in scraper test: {error_details}")
+        await bot.edit_message_text(
+            f"❌ Error during scraper test:\n`{str(e)}`\n\nCheck logs for details.",
+            message.chat.id,
+            processing_msg.message_id,
+            parse_mode="Markdown"
+        )
+
+@bot.message_handler(commands=['test_single_url'])
+async def test_single_url_command(message):
+    """
+    Test both scrapers on a single URL with detailed analysis
+    Usage: /test_single_url https://example.com
+    """
+    user_id = message.from_user.id
+
+    if not is_admin(user_id):
+        await bot.reply_to(message, "This command is only available to administrators.")
+        return
+
+    # Get URL from command
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await bot.send_message(
+            message.chat.id,
+            "Please provide a URL to test. Example:\n`/test_single_url https://timeout.com/paris/restaurants`",
+            parse_mode="Markdown"
+        )
+        return
+
+    url = parts[1].strip()
+
+    processing_msg = await bot.send_message(
+        message.chat.id,
+        f"🔍 Testing single URL with both scrapers:\n`{url}`\n\n⏱️ This may take 1-2 minutes...",
+        parse_mode="Markdown"
+    )
+
+    try:
+        from agents.scraper import WebScraper
+        from agents.enhanced_scraper import EnhancedWebScraper
+        import time
+
+        # Test URL structure
+        test_url = [{"url": url, "title": "Test URL", "description": "Single URL test"}]
+
+        # Initialize scrapers
+        default_scraper = WebScraper(config)
+        enhanced_scraper = EnhancedWebScraper(config)
+
+        # Test default scraper
+        await bot.edit_message_text(
+            f"🔍 Testing default scraper...\nURL: `{url}`",
+            message.chat.id,
+            processing_msg.message_id,
+            parse_mode="Markdown"
+        )
+
+        start_time = time.time()
+        default_results = await default_scraper.filter_and_scrape_results(test_url)
+        default_time = time.time() - start_time
+
+        # Test enhanced scraper
+        await bot.edit_message_text(
+            f"🔍 Testing enhanced scraper...\nURL: `{url}`",
+            message.chat.id,
+            processing_msg.message_id,
+            parse_mode="Markdown"
+        )
+
+        start_time = time.time()
+        enhanced_results = await enhanced_scraper.filter_and_scrape_results(test_url)
+        enhanced_time = time.time() - start_time
+
+        # Generate single URL analysis
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        analysis = await generate_single_url_analysis(
+            url, 
+            default_results, 
+            enhanced_results, 
+            default_time, 
+            enhanced_time,
+            timestamp
+        )
+
+        # Create analysis file
+        analysis_path = await create_single_url_analysis_file(analysis, timestamp, url)
+
+        # Send results
+        default_content_len = len(default_results[0].get('scraped_content', '')) if default_results else 0
+        enhanced_content_len = len(enhanced_results[0].get('scraped_content', '')) if enhanced_results else 0
+
+        summary_text = f"""
+🔍 <b>Single URL Test Complete!</b>
+
+<b>URL:</b> {url[:50]}{"..." if len(url) > 50 else ""}
+
+<b>⏱️ Performance:</b>
+• Default: {default_time:.2f}s
+• Enhanced: {enhanced_time:.2f}s
+
+<b>📊 Content Extracted:</b>
+• Default: {default_content_len:,} characters
+• Enhanced: {enhanced_content_len:,} characters
+
+<b>✅ Success:</b>
+• Default: {"✅" if default_results else "❌"}
+• Enhanced: {"✅" if enhanced_results else "❌"}
+
+<b>🎯 Winner:</b> {"Enhanced" if enhanced_content_len > default_content_len else "Default" if default_content_len > enhanced_content_len else "Tie"}
+        """
+
+        await bot.edit_message_text(
+            summary_text,
+            message.chat.id,
+            processing_msg.message_id,
+            parse_mode="HTML"
+        )
+
+        # Send the analysis file
+        with open(analysis_path, 'rb') as analysis_file:
+            await bot.send_document(
+                message.chat.id,
+                analysis_file,
+                caption=f"📊 Detailed analysis for: {url[:30]}...",
+                visible_file_name=f"url_analysis_{timestamp}.json"
+            )
+
+        # Clean up
+        os.remove(analysis_path)
+
+    except Exception as e:
+        error_details = traceback.format_exc()
+        logger.error(f"Error in single URL test: {error_details}")
+        await bot.edit_message_text(
+            f"❌ Error testing URL:\n`{str(e)}`",
+            message.chat.id,
+            processing_msg.message_id,
+            parse_mode="Markdown"
+        )
+
+async def generate_comprehensive_test_results(query, search_results, default_results, enhanced_results, default_time, enhanced_time, timestamp):
+    """Generate comprehensive test analysis"""
+
+    # URL analysis
+    searched_urls = [r.get('url') for r in search_results]
+    default_successful = getattr(WebScraper(config), 'successful_urls', [])
+    enhanced_successful = getattr(EnhancedWebScraper(config), 'successful_urls', [])
+
+    analysis = {
+        "test_metadata": {
+            "timestamp": timestamp,
+            "query": query,
+            "test_date": datetime.now().isoformat(),
+            "total_urls_found": len(search_results),
+            "urls_tested": len(search_results)
+        },
+        "performance_metrics": {
+            "default_scraper": {
+                "processing_time_seconds": default_time,
+                "results_count": len(default_results),
+                "success_rate": len(default_results) / len(search_results) if search_results else 0,
+                "avg_time_per_url": default_time / len(search_results) if search_results else 0
+            },
+            "enhanced_scraper": {
+                "processing_time_seconds": enhanced_time,
+                "results_count": len(enhanced_results),
+                "success_rate": len(enhanced_results) / len(search_results) if search_results else 0,
+                "avg_time_per_url": enhanced_time / len(search_results) if search_results else 0
+            }
+        },
+        "content_analysis": {
+            "default_scraper": {
+                "total_content_length": sum(len(r.get('scraped_content', '')) for r in default_results),
+                "avg_content_per_page": sum(len(r.get('scraped_content', '')) for r in default_results) / max(len(default_results), 1),
+                "pages_with_content": sum(1 for r in default_results if len(r.get('scraped_content', '')) > 100)
+            },
+            "enhanced_scraper": {
+                "total_content_length": sum(len(r.get('scraped_content', '')) for r in enhanced_results),
+                "avg_content_per_page": sum(len(r.get('scraped_content', '')) for r in enhanced_results) / max(len(enhanced_results), 1),
+                "pages_with_content": sum(1 for r in enhanced_results if len(r.get('scraped_content', '')) > 100),
+                "structured_data_available": sum(1 for r in enhanced_results if r.get('structured_data'))
+            }
+        },
+        "url_analysis": {
+            "searched_urls": searched_urls,
+            "domains_tested": list(set([r.get('source_domain', 'unknown') for r in search_results])),
+            "default_successful_urls": default_successful,
+            "enhanced_successful_urls": enhanced_successful
+        },
+        "quality_comparison": {
+            "default_avg_quality": sum(r.get('quality_score', 0) for r in default_results) / max(len(default_results), 1),
+            "enhanced_avg_quality": sum(r.get('quality_score', 0) for r in enhanced_results) / max(len(enhanced_results), 1),
+            "high_quality_pages_default": sum(1 for r in default_results if r.get('quality_score', 0) > 0.7),
+            "high_quality_pages_enhanced": sum(1 for r in enhanced_results if r.get('quality_score', 0) > 0.7)
+        },
+        "content_samples": {
+            "default_samples": [
+                {
+                    "url": r.get('url'),
+                    "content_length": len(r.get('scraped_content', '')),
+                    "content_preview": r.get('scraped_content', '')[:300],
+                    "quality_score": r.get('quality_score', 0)
+                }
+                for r in default_results[:3]  # First 3 samples
+            ],
+            "enhanced_samples": [
+                {
+                    "url": r.get('url'),
+                    "content_length": len(r.get('scraped_content', '')),
+                    "content_preview": r.get('scraped_content', '')[:300],
+                    "quality_score": r.get('quality_score', 0),
+                    "structured_data_summary": {
+                        "restaurant_names_found": len(r.get('structured_data', {}).get('restaurant_names', [])),
+                        "addresses_found": len(r.get('structured_data', {}).get('addresses', [])),
+                        "descriptions_found": len(r.get('structured_data', {}).get('descriptions', []))
+                    } if r.get('structured_data') else None
+                }
+                for r in enhanced_results[:3]  # First 3 samples
+            ]
+        },
+        "raw_results": {
+            "default_scraper_full": default_results,
+            "enhanced_scraper_full": enhanced_results,
+            "original_search_results": search_results
+        }
+    }
+
+    return analysis
+
+async def generate_single_url_analysis(url, default_results, enhanced_results, default_time, enhanced_time, timestamp):
+    """Generate detailed analysis for single URL test"""
+
+    default_result = default_results[0] if default_results else {}
+    enhanced_result = enhanced_results[0] if enhanced_results else {}
+
+    analysis = {
+        "test_metadata": {
+            "timestamp": timestamp,
+            "url": url,
+            "test_date": datetime.now().isoformat()
+        },
+        "performance_comparison": {
+            "default_time": default_time,
+            "enhanced_time": enhanced_time,
+            "speed_improvement": ((default_time - enhanced_time) / default_time * 100) if default_time > 0 else 0
+        },
+        "content_comparison": {
+            "default": {
+                "content_length": len(default_result.get('scraped_content', '')),
+                "quality_score": default_result.get('quality_score', 0),
+                "success": bool(default_results),
+                "content_preview": default_result.get('scraped_content', '')[:500]
+            },
+            "enhanced": {
+                "content_length": len(enhanced_result.get('scraped_content', '')),
+                "quality_score": enhanced_result.get('quality_score', 0),
+                "success": bool(enhanced_results),
+                "content_preview": enhanced_result.get('scraped_content', '')[:500],
+                "structured_data": enhanced_result.get('structured_data', {})
+            }
+        },
+        "detailed_results": {
+            "default_full": default_result,
+            "enhanced_full": enhanced_result
+        }
+    }
+
+    return analysis
+
+async def create_test_results_zip(test_results, timestamp, query):
+    """Create a ZIP file with all test results"""
+
+    # Create temporary directory
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Generate individual files
+        files_to_zip = []
+
+        # 1. Summary report
+        summary_path = os.path.join(temp_dir, "summary_report.txt")
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            f.write(f"COMPREHENSIVE SCRAPER TEST REPORT\n")
+            f.write(f"{'='*50}\n\n")
+            f.write(f"Query: {query}\n")
+            f.write(f"Test Date: {test_results['test_metadata']['test_date']}\n")
+            f.write(f"URLs Tested: {test_results['test_metadata']['urls_tested']}\n\n")
+
+            f.write(f"PERFORMANCE METRICS:\n")
+            f.write(f"Default Scraper: {test_results['performance_metrics']['default_scraper']['processing_time_seconds']:.2f}s\n")
+            f.write(f"Enhanced Scraper: {test_results['performance_metrics']['enhanced_scraper']['processing_time_seconds']:.2f}s\n\n")
+
+            f.write(f"CONTENT ANALYSIS:\n")
+            f.write(f"Default Total Content: {test_results['content_analysis']['default_scraper']['total_content_length']:,} characters\n")
+            f.write(f"Enhanced Total Content: {test_results['content_analysis']['enhanced_scraper']['total_content_length']:,} characters\n\n")
+
+            f.write(f"QUALITY SCORES:\n")
+            f.write(f"Default Avg Quality: {test_results['quality_comparison']['default_avg_quality']:.2f}\n")
+            f.write(f"Enhanced Avg Quality: {test_results['quality_comparison']['enhanced_avg_quality']:.2f}\n")
+
+        files_to_zip.append(("summary_report.txt", summary_path))
+
+        # 2. Full analysis JSON
+        analysis_path = os.path.join(temp_dir, "full_analysis.json")
+        with open(analysis_path, 'w', encoding='utf-8') as f:
+            json.dump(test_results, f, indent=2, ensure_ascii=False, default=str)
+        files_to_zip.append(("full_analysis.json", analysis_path))
+
+        # 3. Default scraper results
+        default_path = os.path.join(temp_dir, "default_scraper_results.json")
+        with open(default_path, 'w', encoding='utf-8') as f:
+            json.dump(test_results['raw_results']['default_scraper_full'], f, indent=2, ensure_ascii=False, default=str)
+        files_to_zip.append(("default_scraper_results.json", default_path))
+
+        # 4. Enhanced scraper results
+        enhanced_path = os.path.join(temp_dir, "enhanced_scraper_results.json")
+        with open(enhanced_path, 'w', encoding='utf-8') as f:
+            json.dump(test_results['raw_results']['enhanced_scraper_full'], f, indent=2, ensure_ascii=False, default=str)
+        files_to_zip.append(("enhanced_scraper_results.json", enhanced_path))
+
+        # 5. Content samples
+        samples_path = os.path.join(temp_dir, "content_samples.txt")
+        with open(samples_path, 'w', encoding='utf-8') as f:
+            f.write("CONTENT SAMPLES COMPARISON\n")
+            f.write("="*50 + "\n\n")
+
+            f.write("DEFAULT SCRAPER SAMPLES:\n")
+            f.write("-"*30 + "\n")
+            for i, sample in enumerate(test_results['content_samples']['default_samples']):
+                f.write(f"\nSample {i+1}: {sample['url']}\n")
+                f.write(f"Length: {sample['content_length']} chars\n")
+                f.write(f"Quality: {sample['quality_score']}\n")
+                f.write(f"Preview: {sample['content_preview']}\n")
+                f.write("-"*20 + "\n")
+
+            f.write("\n\nENHANCED SCRAPER SAMPLES:\n")
+            f.write("-"*30 + "\n")
+            for i, sample in enumerate(test_results['content_samples']['enhanced_samples']):
+                f.write(f"\nSample {i+1}: {sample['url']}\n")
+                f.write(f"Length: {sample['content_length']} chars\n")
+                f.write(f"Quality: {sample['quality_score']}\n")
+                if sample.get('structured_data_summary'):
+                    struct = sample['structured_data_summary']
+                    f.write(f"Restaurant Names: {struct['restaurant_names_found']}\n")
+                    f.write(f"Addresses: {struct['addresses_found']}\n")
+                    f.write(f"Descriptions: {struct['descriptions_found']}\n")
+                f.write(f"Preview: {sample['content_preview']}\n")
+                f.write("-"*20 + "\n")
+
+        files_to_zip.append(("content_samples.txt", samples_path))
+
+        # Create ZIP file
+        zip_path = os.path.join(temp_dir, f"scraper_test_{timestamp}.zip")
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for filename, filepath in files_to_zip:
+                zipf.write(filepath, filename)
+
+        # Move ZIP to a permanent location
+        final_zip_path = f"/tmp/scraper_test_{timestamp}.zip"
+        import shutil
+        shutil.move(zip_path, final_zip_path)
+
+        return final_zip_path
+
+async def create_single_url_analysis_file(analysis, timestamp, url):
+    """Create analysis file for single URL test"""
+
+    filename = f"/tmp/url_analysis_{timestamp}.json"
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(analysis, f, indent=2, ensure_ascii=False, default=str)
+
+    return filename
 
 # ---------------------------------------------------------------------------
 # MAIN MESSAGE HANDLER
@@ -1140,6 +1689,7 @@ async def handle_normal_text(msg):
         logger.error(f"Error in handle_text: {exc}", exc_info=True)
         traceback.print_exc()
         await bot.reply_to(msg, "Sorry, an error occurred, please try again later.")
+
 
 
 # ---------------------------------------------------------------------------
