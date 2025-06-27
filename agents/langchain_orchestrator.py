@@ -445,10 +445,106 @@ class LangChainOrchestrator:
         # No preferences found
         return query, []
 
+    def _check_usage_limits(self):
+        """Check if approaching usage limits and return whether to continue"""
+        try:
+            stats = self.scraper.get_stats()
+
+            # Configuration - you can adjust these limits
+            DAILY_CREDIT_LIMIT = 400  # Leave some buffer from 500 free credits
+            HIGH_USAGE_THRESHOLD = 300  # Warn at 300 credits
+            COST_ALERT_THRESHOLD = 5.0  # Alert if estimated cost > $5
+
+            # Check credit limits
+            if stats['credits_used'] > DAILY_CREDIT_LIMIT:
+                logger.error(f"🚨 DAILY CREDIT LIMIT EXCEEDED: {stats['credits_used']}/{DAILY_CREDIT_LIMIT}")
+                self._send_alert_to_admin(
+                    f"🚨 Credit limit exceeded! Used {stats['credits_used']} credits today."
+                )
+                return False  # Stop processing
+
+            elif stats['credits_used'] > HIGH_USAGE_THRESHOLD:
+                logger.warning(f"⚠️ HIGH USAGE WARNING: {stats['credits_used']}/{DAILY_CREDIT_LIMIT} credits used")
+                self._send_alert_to_admin(
+                    f"⚠️ High usage alert: {stats['credits_used']} credits used today."
+                )
+
+            # Check cost estimates
+            estimated_cost = (stats['credits_used'] / 500) * 16  # Free tier equivalent cost
+            if estimated_cost > COST_ALERT_THRESHOLD:
+                logger.warning(f"💰 HIGH COST ALERT: Estimated ${estimated_cost:.2f}")
+                self._send_alert_to_admin(
+                    f"💰 Cost alert: Estimated ${estimated_cost:.2f} in usage today."
+                )
+
+            return True  # Continue processing
+
+        except Exception as e:
+            logger.error(f"Error checking usage limits: {e}")
+            return True  # Continue on error
+
+    def _send_alert_to_admin(self, message):
+        """Send alert message to admin (you can customize this)"""
+        try:
+            # Option 1: Log to console (always works)
+            logger.critical(f"ADMIN ALERT: {message}")
+
+            # Option 2: Send to admin Telegram chat (add your admin chat ID)
+            ADMIN_CHAT_ID = getattr(self.config, 'ADMIN_CHAT_ID', None)
+            if ADMIN_CHAT_ID:
+                try:
+                    import telebot
+                    bot = telebot.TeleBot(self.config.TELEGRAM_BOT_TOKEN)
+                    bot.send_message(ADMIN_CHAT_ID, f"🤖 Restaurant Bot Alert\n\n{message}")
+                    logger.info("Alert sent to admin Telegram")
+                except Exception as telegram_error:
+                    logger.error(f"Failed to send Telegram alert: {telegram_error}")
+
+            # Option 3: Save to database as urgent record
+            alert_record = {
+                "alert_type": "usage_limit",
+                "message": message,
+                "timestamp": time.time(),
+                "urgency": "high"
+            }
+
+            try:
+                save_data(self.config.DB_TABLE_PROCESSES, alert_record, self.config)
+                logger.info("Alert saved to database")
+            except Exception as db_error:
+                logger.error(f"Failed to save alert to database: {db_error}")
+
+        except Exception as e:
+            logger.error(f"Error sending admin alert: {e}")
+
+    def _log_user_usage(self, user_id, stats):
+        """Track usage per Telegram user"""
+        try:
+            user_usage = {
+                "user_id": str(user_id),
+                "credits_used": stats['credits_used'],
+                "restaurants_found": stats['total_restaurants_found'],
+                "success_rate": (stats['successful_extractions'] / max(stats['total_scraped'], 1)) * 100,
+                "timestamp": time.time(),
+                "session_id": f"user_{user_id}_{int(time.time())}"
+            }
+
+            # Save to database
+            save_data(self.config.DB_TABLE_PROCESSES, user_usage, self.config)
+            logger.info(f"User {user_id} usage logged: {stats['credits_used']} credits")
+
+        except Exception as e:
+            logger.error(f"Error logging user usage: {e}")
+
     def _log_firecrawl_usage(self):
         """Log Firecrawl usage statistics and cost estimates"""
         try:
             stats = self.scraper.get_stats()
+
+            # Check usage limits first
+            can_continue = self._check_usage_limits()
+            if not can_continue:
+                logger.error("Usage limits exceeded - consider upgrading plan")
 
             # Log usage details
             logger.info("=" * 50)
@@ -465,24 +561,29 @@ class LangChainOrchestrator:
                 success_rate = (stats['successful_extractions'] / stats['total_scraped']) * 100
                 logger.info(f"Success rate: {success_rate:.1f}%")
 
-            # Cost estimation
+            # Cost estimation with free tier consideration
             if stats['credits_used'] > 0:
                 # Firecrawl pricing tiers
                 cost_estimates = {
-                    "Starter": {"credits": 2000, "price": 20},  # $20 for 2000 credits
-                    "Standard": {"credits": 12000, "price": 100},  # $100 for 12000 credits
-                    "Scale": {"credits": 75000, "price": 500}  # $500 for 75000 credits
+                    "Free Tier": {"credits": 500, "price": 0},  # Free tier
+                    "Hobby": {"credits": 3000, "price": 16},  # Updated pricing
+                    "Standard": {"credits": 100000, "price": 83},  # Updated pricing
+                    "Growth": {"credits": 500000, "price": 333}  # Updated pricing
                 }
 
                 # Calculate cost for each tier
                 for tier, info in cost_estimates.items():
-                    cost_per_credit = info["price"] / info["credits"]
-                    estimated_cost = stats['credits_used'] * cost_per_credit
-                    logger.info(f"Estimated cost ({tier} plan): ${estimated_cost:.3f}")
+                    if info["price"] == 0:  # Free tier
+                        remaining = max(0, info["credits"] - stats['credits_used'])
+                        logger.info(f"Free tier: {remaining} credits remaining")
+                    else:
+                        cost_per_credit = info["price"] / info["credits"]
+                        estimated_cost = stats['credits_used'] * cost_per_credit
+                        logger.info(f"Estimated cost ({tier} plan): ${estimated_cost:.3f}")
 
                 # Show average cost per restaurant found
                 if stats['total_restaurants_found'] > 0:
-                    cost_per_restaurant = (stats['credits_used'] * 0.01)  # Rough $0.01 per credit
+                    cost_per_restaurant = (stats['credits_used'] * 0.032)  # Hobby plan rate
                     cost_per_restaurant = cost_per_restaurant / stats['total_restaurants_found']
                     logger.info(f"Average cost per restaurant: ${cost_per_restaurant:.3f}")
 
@@ -492,7 +593,8 @@ class LangChainOrchestrator:
             usage_record = {
                 "timestamp": time.time(),
                 "firecrawl_stats": stats,
-                "session_id": f"session_{int(time.time())}"
+                "session_id": f"session_{int(time.time())}",
+                "can_continue": can_continue
             }
 
             # Save to database if possible

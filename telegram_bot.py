@@ -184,7 +184,7 @@ def process_restaurant_search(message, user_query):
 
         # Process the query through your existing orchestrator
         orch = get_orchestrator()
-        result = orch.process_query(user_query)
+        result = orch.process_query(user_query, user_id=user_id)  
 
         # Get the formatted response
         telegram_text = result.get("telegram_text", "Sorry, I couldn't find any restaurants for your request.")
