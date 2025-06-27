@@ -1,4 +1,4 @@
-# agents/optimized_scraper.py Intelligent scraper
+# agents/optimized_scraper.py - Updated with Persistent Domain Intelligence
 import asyncio
 import logging
 import time
@@ -12,6 +12,16 @@ from enum import Enum
 # Import your existing scrapers
 from agents.firecrawl_scraper import FirecrawlWebScraper
 from agents.specialized_scraper import EaterTimeoutSpecializedScraper
+
+# Import domain intelligence utilities
+from utils.domain_intelligence import (
+    initialize_domain_intelligence_db,
+    save_domain_intelligence,
+    load_all_domain_intelligence,
+    get_domain_intelligence,
+    cleanup_old_domain_intelligence,
+    get_domain_intelligence_stats
+)
 
 # For the intelligent scraper components
 import httpx
@@ -42,17 +52,21 @@ class ScrapeStrategy:
 class IntelligentAdaptiveScraper:
     """
     Intelligent scraper that uses AI to analyze each URL dynamically.
-    No hardcoded patterns - adapts to any website through smart analysis.
+    Now with persistent domain intelligence that learns and improves over time.
 
-    Strategy:
+    Features:
     1. Quick HTTP probe to get initial content
     2. AI analysis of HTML structure and content
     3. Dynamic routing to optimal scraper
-    4. Learning from successes/failures to improve over time
+    4. Persistent learning from successes/failures
+    5. Database-backed domain intelligence cache
     """
 
     def __init__(self, config):
         self.config = config
+
+        # Initialize database
+        initialize_domain_intelligence_db(config)
 
         # Initialize all scraper components
         self.firecrawl_scraper = FirecrawlWebScraper(config)
@@ -64,8 +78,9 @@ class IntelligentAdaptiveScraper:
             temperature=0.1  # Low temperature for consistent analysis
         )
 
-        # Dynamic learning system - tracks what works
-        self.domain_intelligence = {}  # Cache successful strategies per domain
+        # Domain intelligence - now backed by database
+        self.domain_intelligence = {}  # In-memory cache for speed
+        self._intelligence_loaded = False
 
         # Cost tracking
         self.stats = {
@@ -78,8 +93,50 @@ class IntelligentAdaptiveScraper:
             "processing_time": 0.0,
             "ai_analysis_calls": 0,
             "cache_hits": 0,
-            "strategy_overrides": 0
+            "database_cache_hits": 0,
+            "strategy_overrides": 0,
+            "domains_learned_this_session": 0,
+            "intelligence_saves": 0
         }
+
+    async def _ensure_domain_intelligence_loaded(self):
+        """Load domain intelligence from database if not already loaded"""
+        if self._intelligence_loaded:
+            return
+
+        try:
+            logger.info("Loading domain intelligence from database...")
+
+            # Load all domain intelligence from database
+            domain_records = load_all_domain_intelligence(self.config)
+
+            # Convert to in-memory format
+            for record in domain_records:
+                domain = record['domain']
+                self.domain_intelligence[domain] = {
+                    'complexity': record['complexity'],
+                    'scraper_type': record['scraper_type'],
+                    'cost': record['cost'],
+                    'confidence': record['confidence'],
+                    'reasoning': record['reasoning'],
+                    'success_count': record.get('success_count', 0),
+                    'failure_count': record.get('failure_count', 0),
+                    'timestamp': record.get('last_updated', time.time()),
+                    'total_restaurants_found': record.get('total_restaurants_found', 0),
+                    'avg_content_length': record.get('avg_content_length', 0),
+                    'metadata': record.get('metadata', {})
+                }
+
+            self._intelligence_loaded = True
+            logger.info(f"Loaded intelligence for {len(self.domain_intelligence)} domains from database")
+
+            # Log some stats about loaded intelligence
+            high_confidence = sum(1 for info in self.domain_intelligence.values() if info['confidence'] > 0.8)
+            logger.info(f"High-confidence domains: {high_confidence}/{len(self.domain_intelligence)}")
+
+        except Exception as e:
+            logger.error(f"Failed to load domain intelligence from database: {e}")
+            self._intelligence_loaded = True  # Don't keep trying
 
     async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -87,6 +144,9 @@ class IntelligentAdaptiveScraper:
         """
         start_time = time.time()
         logger.info(f"🧠 Starting intelligent analysis for {len(search_results)} URLs")
+
+        # Ensure domain intelligence is loaded from database
+        await self._ensure_domain_intelligence_loaded()
 
         # Step 1: Analyze all URLs with AI-powered strategy detection
         analysis_tasks = [
@@ -102,8 +162,11 @@ class IntelligentAdaptiveScraper:
         # Step 3: Process each group with optimal scraper
         all_results = await self._process_url_groups(url_groups)
 
-        # Step 4: Learn from results to improve future decisions
-        self._update_domain_intelligence(all_results)
+        # Step 4: Learn from results and save to database
+        await self._update_domain_intelligence(all_results)
+
+        # Step 5: Periodic cleanup of old intelligence
+        await self._periodic_cleanup()
 
         # Update final stats
         self.stats["total_processed"] = len(search_results)
@@ -115,30 +178,36 @@ class IntelligentAdaptiveScraper:
 
     async def _intelligent_url_analysis(self, result: Dict[str, Any]) -> ScrapeStrategy:
         """
-        Intelligent analysis of URL using AI and quick probing
+        Intelligent analysis of URL using persistent domain intelligence and AI
         """
         url = result.get("url", "")
         title = result.get("title", "")
         description = result.get("description", "")
 
-        # Step 1: Check if we've seen this domain before (learning cache)
+        # Step 1: Check persistent domain intelligence cache
         domain = self._extract_domain(url)
         if domain in self.domain_intelligence:
             cached_strategy = self.domain_intelligence[domain]
-            if cached_strategy['confidence'] > 0.8:  # High confidence cached result
+
+            # Use cached strategy if confidence is high and recent
+            age_hours = (time.time() - cached_strategy['timestamp']) / 3600
+            confidence_threshold = 0.8 if age_hours < 24 else 0.9  # Higher threshold for older cache
+
+            if cached_strategy['confidence'] > confidence_threshold:
                 self.stats["cache_hits"] += 1
-                logger.debug(f"🎯 Using cached strategy for {domain}: {cached_strategy['complexity']}")
+                self.stats["database_cache_hits"] += 1
+                logger.debug(f"🎯 Using cached strategy for {domain}: {cached_strategy['complexity']} (confidence: {cached_strategy['confidence']:.2f})")
                 return ScrapeStrategy(
                     complexity=ScrapeComplexity(cached_strategy['complexity']),
                     scraper_type=cached_strategy['scraper_type'],
                     estimated_cost=cached_strategy['cost'],
                     confidence=cached_strategy['confidence'],
-                    reasoning=f"Cached from previous successful analysis: {cached_strategy['reasoning']}"
+                    reasoning=f"Cached from database: {cached_strategy['reasoning']} (used {cached_strategy['success_count']} times)"
                 )
 
         # Step 2: Check for specialized handlers
         if await self._has_specialized_handler(url):
-            return ScrapeStrategy(
+            strategy = ScrapeStrategy(
                 complexity=ScrapeComplexity.SPECIALIZED,
                 scraper_type="specialized",
                 estimated_cost=0,
@@ -146,12 +215,64 @@ class IntelligentAdaptiveScraper:
                 reasoning="Has dedicated specialized handler"
             )
 
+            # Save this knowledge for future use
+            await self._save_strategy_to_intelligence(domain, strategy, is_new=True)
+            return strategy
+
         # Step 3: AI-powered analysis with quick HTTP probe
         return await self._ai_powered_analysis(url, title, description, domain)
+
+    async def _save_strategy_to_intelligence(self, domain: str, strategy: ScrapeStrategy, is_new: bool = False, 
+                                           success_info: Dict[str, Any] = None):
+        """Save strategy to persistent domain intelligence"""
+
+        # Get existing intelligence or create new
+        existing = self.domain_intelligence.get(domain, {})
+
+        intelligence_data = {
+            'complexity': strategy.complexity.value,
+            'scraper_type': strategy.scraper_type,
+            'cost': strategy.estimated_cost,
+            'confidence': strategy.confidence,
+            'reasoning': strategy.reasoning,
+            'success_count': existing.get('success_count', 0),
+            'failure_count': existing.get('failure_count', 0),
+            'total_restaurants_found': existing.get('total_restaurants_found', 0),
+            'avg_content_length': existing.get('avg_content_length', 0),
+            'timestamp': time.time(),
+            'metadata': existing.get('metadata', {})
+        }
+
+        # Update with success information if provided
+        if success_info:
+            intelligence_data['was_successful'] = success_info.get('success', False)
+            if success_info.get('success'):
+                intelligence_data['success_count'] += 1
+                intelligence_data['total_restaurants_found'] += success_info.get('restaurants_found', 0)
+                intelligence_data['avg_content_length'] = int(
+                    (intelligence_data['avg_content_length'] + success_info.get('content_length', 0)) / 2
+                )
+            else:
+                intelligence_data['failure_count'] += 1
+
+        # Update in-memory cache
+        self.domain_intelligence[domain] = intelligence_data
+
+        # Save to database asynchronously (don't block on database)
+        try:
+            success = save_domain_intelligence(domain, intelligence_data, self.config)
+            if success:
+                self.stats["intelligence_saves"] += 1
+                if is_new:
+                    self.stats["domains_learned_this_session"] += 1
+                logger.debug(f"💾 Saved intelligence for {domain} to database")
+        except Exception as e:
+            logger.warning(f"Failed to save domain intelligence for {domain}: {e}")
 
     async def _ai_powered_analysis(self, url: str, title: str, description: str, domain: str) -> ScrapeStrategy:
         """
         Use AI to analyze website characteristics and determine optimal scraping strategy
+        Results are automatically saved to persistent storage
         """
         self.stats["ai_analysis_calls"] += 1
 
@@ -174,23 +295,27 @@ class IntelligentAdaptiveScraper:
                     html_preview = html_content[:4000]  # First 4k chars for analysis
                 else:
                     # If we can't fetch, default to enhanced method
-                    return ScrapeStrategy(
+                    strategy = ScrapeStrategy(
                         complexity=ScrapeComplexity.MODERATE_JS,
                         scraper_type="enhanced_http",
                         estimated_cost=0.5,
                         confidence=0.4,
                         reasoning=f"HTTP error {response.status_code}, using safe fallback"
                     )
+                    await self._save_strategy_to_intelligence(domain, strategy, is_new=True)
+                    return strategy
 
         except Exception as e:
             logger.warning(f"Failed to probe {url}: {e}")
-            return ScrapeStrategy(
+            strategy = ScrapeStrategy(
                 complexity=ScrapeComplexity.MODERATE_JS,
                 scraper_type="enhanced_http", 
                 estimated_cost=0.5,
                 confidence=0.3,
                 reasoning=f"Network error during probe: {str(e)}"
             )
+            await self._save_strategy_to_intelligence(domain, strategy, is_new=True)
+            return strategy
 
         # AI analysis with comprehensive context
         analysis_prompt = ChatPromptTemplate.from_messages([
@@ -351,28 +476,23 @@ class IntelligentAdaptiveScraper:
                 reasoning=reasoning
             )
 
-            # Cache this analysis for future use
-            self.domain_intelligence[domain] = {
-                'complexity': complexity.value,
-                'scraper_type': scraper_type,
-                'cost': cost,
-                'confidence': confidence,
-                'reasoning': reasoning,
-                'timestamp': time.time()
-            }
+            # Save this analysis to persistent storage for future use
+            await self._save_strategy_to_intelligence(domain, strategy, is_new=True)
 
             return strategy
 
         except Exception as e:
             logger.warning(f"AI analysis failed for {url}: {e}")
             # Safe fallback
-            return ScrapeStrategy(
+            strategy = ScrapeStrategy(
                 complexity=ScrapeComplexity.MODERATE_JS,
                 scraper_type="enhanced_http",
                 estimated_cost=0.5,
                 confidence=0.4,
                 reasoning=f"AI analysis failed: {str(e)}, using safe fallback"
             )
+            await self._save_strategy_to_intelligence(domain, strategy, is_new=True)
+            return strategy
 
     async def _has_specialized_handler(self, url: str) -> bool:
         """Check if URL can be handled by specialized scraper"""
@@ -426,6 +546,7 @@ class IntelligentAdaptiveScraper:
 
         logger.info(f"  💰 Estimated total cost: {total_cost:.1f} credits")
         logger.info(f"  🎯 Cache hits: {self.stats['cache_hits']}")
+        logger.info(f"  💾 Database cache hits: {self.stats['database_cache_hits']}")
         logger.info(f"  🔄 AI analysis calls: {self.stats['ai_analysis_calls']}")
 
     async def _process_url_groups(self, url_groups: Dict) -> List[Dict]:
@@ -690,28 +811,48 @@ class IntelligentAdaptiveScraper:
         except Exception:
             return "Unknown Source"
 
-    def _update_domain_intelligence(self, results: List[Dict]):
-        """Learn from scraping results to improve future decisions"""
+    async def _update_domain_intelligence(self, results: List[Dict]):
+        """Learn from scraping results and update persistent domain intelligence"""
         for result in results:
             domain = self._extract_domain(result.get("url", ""))
             scraping_success = result.get("scraping_success", False)
             restaurants_found = len(result.get("restaurants_found", []))
             method = result.get("scraping_method", "")
+            content_length = len(result.get("scraped_content", ""))
 
             if domain in self.domain_intelligence:
-                cached = self.domain_intelligence[domain]
+                # Update existing intelligence with success/failure data
+                success_info = {
+                    'success': scraping_success,
+                    'restaurants_found': restaurants_found,
+                    'content_length': content_length
+                }
 
-                # Update confidence based on success
-                if scraping_success and restaurants_found > 0:
-                    cached['confidence'] = min(0.95, cached['confidence'] + 0.1)
-                    cached['success_count'] = cached.get('success_count', 0) + 1
-                else:
-                    cached['confidence'] = max(0.3, cached['confidence'] - 0.1)
-                    cached['failure_count'] = cached.get('failure_count', 0) + 1
+                # Create a dummy strategy to trigger the update
+                current_intelligence = self.domain_intelligence[domain]
+                strategy = ScrapeStrategy(
+                    complexity=ScrapeComplexity(current_intelligence['complexity']),
+                    scraper_type=current_intelligence['scraper_type'],
+                    estimated_cost=current_intelligence['cost'],
+                    confidence=current_intelligence['confidence'],
+                    reasoning=current_intelligence['reasoning']
+                )
 
-                cached['last_updated'] = time.time()
+                await self._save_strategy_to_intelligence(domain, strategy, is_new=False, success_info=success_info)
 
-                logger.debug(f"📚 Updated intelligence for {domain}: confidence={cached['confidence']:.2f}")
+                logger.debug(f"📚 Updated intelligence for {domain}: confidence={current_intelligence['confidence']:.2f}")
+
+    async def _periodic_cleanup(self):
+        """Periodically clean up old domain intelligence"""
+        # Only run cleanup occasionally to avoid database overhead
+        import random
+        if random.random() < 0.1:  # 10% chance per scraping session
+            try:
+                deleted_count = cleanup_old_domain_intelligence(self.config, days_old=90, min_confidence=0.3)
+                if deleted_count > 0:
+                    logger.info(f"🧹 Cleaned up {deleted_count} old domain intelligence records")
+            except Exception as e:
+                logger.warning(f"Error during domain intelligence cleanup: {e}")
 
     def _calculate_cost_savings(self):
         """Calculate cost savings vs all-Firecrawl approach"""
@@ -726,7 +867,7 @@ class IntelligentAdaptiveScraper:
             self.stats["total_cost_saved"] = firecrawl_cost_if_all - total_actual_cost
 
     def _log_final_stats(self):
-        """Log comprehensive final statistics"""
+        """Log comprehensive final statistics with persistent intelligence info"""
         stats = self.stats
 
         logger.info("🧠 INTELLIGENT ADAPTIVE SCRAPING RESULTS:")
@@ -738,41 +879,72 @@ class IntelligentAdaptiveScraper:
         logger.info(f"  💰 Cost saved: ~{stats['total_cost_saved']:.1f} Firecrawl credits")
         logger.info(f"  ⏱️ Processing time: {stats['processing_time']:.2f}s")
         logger.info(f"  🎯 Cache hits: {stats['cache_hits']}")
+        logger.info(f"  💾 Database cache hits: {stats['database_cache_hits']}")
         logger.info(f"  🤖 AI analysis calls: {stats['ai_analysis_calls']}")
         logger.info(f"  🔄 Strategy overrides: {stats['strategy_overrides']}")
+        logger.info(f"  🧠 Domains learned this session: {stats['domains_learned_this_session']}")
+        logger.info(f"  💾 Intelligence saves: {stats['intelligence_saves']}")
 
         if stats['total_processed'] > 0:
             firecrawl_percentage = (stats['firecrawl_used'] / stats['total_processed']) * 100
             cache_hit_rate = (stats['cache_hits'] / stats['total_processed']) * 100
+            db_cache_rate = (stats['database_cache_hits'] / stats['total_processed']) * 100
             logger.info(f"  📊 Firecrawl usage: {firecrawl_percentage:.1f}% of total URLs")
-            logger.info(f"  📚 Cache hit rate: {cache_hit_rate:.1f}%")
+            logger.info(f"  📚 Total cache hit rate: {cache_hit_rate:.1f}%")
+            logger.info(f"  💾 Database cache hit rate: {db_cache_rate:.1f}%")
 
             # Learning effectiveness
             domains_learned = len(self.domain_intelligence)
-            logger.info(f"  🧠 Domains learned: {domains_learned}")
+            logger.info(f"  🧠 Total domains in intelligence: {domains_learned}")
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get comprehensive scraping statistics"""
-        return {
+        """Get comprehensive scraping statistics including persistent intelligence"""
+        base_stats = {
             **self.stats,
             "domains_learned": len(self.domain_intelligence),
-            "learning_cache": dict(list(self.domain_intelligence.items())[:5])  # Sample of cache
+            "learning_cache_sample": dict(list(self.domain_intelligence.items())[:5])
         }
 
+        # Add database stats if available
+        try:
+            db_stats = get_domain_intelligence_stats(self.config)
+            base_stats["database_intelligence_stats"] = db_stats
+        except Exception as e:
+            logger.warning(f"Could not get database intelligence stats: {e}")
+
+        return base_stats
+
     def get_domain_intelligence(self) -> Dict[str, Any]:
-        """Get the learned domain intelligence for debugging"""
+        """Get the current domain intelligence cache"""
         return self.domain_intelligence.copy()
 
+    def get_database_intelligence_stats(self) -> Dict[str, Any]:
+        """Get statistics about the persistent domain intelligence"""
+        try:
+            return get_domain_intelligence_stats(self.config)
+        except Exception as e:
+            logger.error(f"Error getting database intelligence stats: {e}")
+            return {}
+
     def clear_domain_cache(self):
-        """Clear the domain intelligence cache (useful for testing)"""
+        """Clear the in-memory domain intelligence cache (useful for testing)"""
         self.domain_intelligence.clear()
-        logger.info("🧠 Domain intelligence cache cleared")
+        logger.info("🧠 In-memory domain intelligence cache cleared")
+
+    async def export_domain_intelligence(self, file_path: str = None) -> str:
+        """Export domain intelligence to file for backup"""
+        try:
+            from utils.domain_intelligence import export_domain_intelligence
+            return export_domain_intelligence(self.config, file_path)
+        except Exception as e:
+            logger.error(f"Error exporting domain intelligence: {e}")
+            raise
 
 
 # Legacy compatibility wrapper  
 class WebScraper:
     """
-    Drop-in replacement for existing WebScraper that uses intelligent analysis
+    Drop-in replacement for existing WebScraper that uses intelligent analysis with persistent learning
     """
 
     def __init__(self, config):
@@ -790,5 +962,11 @@ class WebScraper:
     def get_domain_intelligence(self) -> Dict[str, Any]:
         return self.intelligent_scraper.get_domain_intelligence()
 
+    def get_database_intelligence_stats(self) -> Dict[str, Any]:
+        return self.intelligent_scraper.get_database_intelligence_stats()
+
     def clear_domain_cache(self):
         return self.intelligent_scraper.clear_domain_cache()
+
+    async def export_domain_intelligence(self, file_path: str = None) -> str:
+        return await self.intelligent_scraper.export_domain_intelligence(file_path)
