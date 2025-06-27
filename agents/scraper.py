@@ -60,7 +60,7 @@ class FirecrawlWebScraper:
         # Rate limiting and retry settings
         self.max_retries = 3
         self.retry_delay = 2
-        self.max_concurrent = 3  # Limit concurrent requests to avoid rate limits
+        self.max_concurrent = 2  # Can handle 2 concurrent since we have pre-filtered quality URLs
         self.semaphore = asyncio.Semaphore(self.max_concurrent)
 
         # Statistics tracking
@@ -134,6 +134,9 @@ class FirecrawlWebScraper:
                 return result
 
             logger.info(f"Scraping URL: {url}")
+
+            # Add small delay between requests to respect free tier limits
+            await asyncio.sleep(7)  # 10 requests per minute = 6+ seconds between requests
 
             try:
                 # Extract restaurant data using Firecrawl's AI extraction
@@ -244,69 +247,61 @@ class FirecrawlWebScraper:
         logger.debug(f"Attempting AI schema extraction for {url}")
 
         # Use Firecrawl's extract endpoint with schema
-        extract_result = self.firecrawl.extract_url(
-            url=url,
-            options={
-                "schema": RestaurantListSchema.model_json_schema(),
-                "prompt": """
-                Extract ALL restaurants mentioned on this page. For each restaurant, get:
-                - Exact name as written
-                - Complete description with all details (cuisine, atmosphere, specialties)
-                - Full address if available
-                - City name
-                - Price indicators (€, €€, €€€, $ symbols, price ranges)
-                - Cuisine type
-                - Any recommended dishes or specialties mentioned
-                - Contact info if available
-                - Hours if mentioned
-                - Ratings or review scores
+        extract_result = self.firecrawl.extract(
+            urls=[url],  # Note: urls is now a list
+            schema=RestaurantListSchema.model_json_schema(),
+            prompt="""
+            Extract ALL restaurants mentioned on this page. For each restaurant, get:
+            - Exact name as written
+            - Complete description with all details (cuisine, atmosphere, specialties)
+            - Full address if available
+            - City name
+            - Price indicators (€, €€, €€€, $ symbols, price ranges)
+            - Cuisine type
+            - Any recommended dishes or specialties mentioned
+            - Contact info if available
+            - Hours if mentioned
+            - Ratings or review scores
 
-                Also identify the source publication name (Time Out, Eater, Michelin, etc.).
+            Also identify the source publication name (Time Out, Eater, Michelin, etc.).
 
-                Be thorough - extract every restaurant mentioned, even if briefly.
-                """,
-                "timeout": 30000,  # 30 seconds timeout
-                "formats": ["extract"]
-            }
+            Be thorough - extract every restaurant mentioned, even if briefly.
+            """
         )
 
         if extract_result and extract_result.get("success"):
             extracted_data = extract_result.get("data", {})
 
-            # Parse the structured data
-            if "extract" in extracted_data and extracted_data["extract"]:
-                extract_content = extracted_data["extract"]
+            # Convert to our format
+            restaurants = []
+            if "restaurants" in extracted_data:
+                for rest_data in extracted_data["restaurants"]:
+                    restaurant = {
+                        "name": rest_data.get("name", ""),
+                        "description": rest_data.get("description", ""),
+                        "address": rest_data.get("address", ""),
+                        "city": rest_data.get("city", ""),
+                        "price_range": rest_data.get("price_range", ""),
+                        "cuisine_type": rest_data.get("cuisine_type", ""),
+                        "recommended_dishes": rest_data.get("recommended_dishes", []),
+                        "phone": rest_data.get("phone", ""),
+                        "website": rest_data.get("website", ""),
+                        "rating": rest_data.get("rating", ""),
+                        "opening_hours": rest_data.get("opening_hours", ""),
+                        "source_url": url
+                    }
+                    restaurants.append(restaurant)
 
-                # Convert to our format
-                restaurants = []
-                if "restaurants" in extract_content:
-                    for rest_data in extract_content["restaurants"]:
-                        restaurant = {
-                            "name": rest_data.get("name", ""),
-                            "description": rest_data.get("description", ""),
-                            "address": rest_data.get("address", ""),
-                            "city": rest_data.get("city", ""),
-                            "price_range": rest_data.get("price_range", ""),
-                            "cuisine_type": rest_data.get("cuisine_type", ""),
-                            "recommended_dishes": rest_data.get("recommended_dishes", []),
-                            "phone": rest_data.get("phone", ""),
-                            "website": rest_data.get("website", ""),
-                            "rating": rest_data.get("rating", ""),
-                            "opening_hours": rest_data.get("opening_hours", ""),
-                            "source_url": url
-                        }
-                        restaurants.append(restaurant)
+            source_name = extracted_data.get("source_publication", self._extract_source_name(url))
+            self.stats["credits_used"] += 50  # AI extraction costs 50 credits
 
-                source_name = extract_content.get("source_publication", self._extract_source_name(url))
-                self.stats["credits_used"] += 50  # AI extraction costs 50 credits
-
-                return RestaurantExtractionResult(
-                    restaurants=restaurants,
-                    source_url=url,
-                    source_name=source_name,
-                    extraction_method="ai_schema",
-                    success=True
-                )
+            return RestaurantExtractionResult(
+                restaurants=restaurants,
+                source_url=url,
+                source_name=source_name,
+                extraction_method="ai_schema",
+                success=True
+            )
 
         raise Exception("AI schema extraction returned no valid data")
 
@@ -317,64 +312,55 @@ class FirecrawlWebScraper:
         """
         logger.debug(f"Attempting prompt-based extraction for {url}")
 
-        extract_result = self.firecrawl.extract_url(
-            url=url,
-            options={
-                "prompt": """
-                Find and extract ALL restaurants mentioned on this page. Return as JSON:
+        extract_result = self.firecrawl.extract(
+            urls=[url],  # Note: urls is now a list
+            prompt="""
+            Find and extract ALL restaurants mentioned on this page. Return as JSON:
 
+            {
+              "restaurants": [
                 {
-                  "restaurants": [
-                    {
-                      "name": "Restaurant Name",
-                      "description": "Full description with cuisine, atmosphere, and specialties",
-                      "address": "Street address",
-                      "city": "City name", 
-                      "price_range": "Price indicators (€, €€, etc.)",
-                      "cuisine_type": "Cuisine type",
-                      "recommended_dishes": ["dish1", "dish2"],
-                      "source_url": "current_page_url"
-                    }
-                  ],
-                  "source_publication": "Publication name (Time Out, Eater, etc.)"
+                  "name": "Restaurant Name",
+                  "description": "Full description with cuisine, atmosphere, and specialties",
+                  "address": "Street address",
+                  "city": "City name", 
+                  "price_range": "Price indicators (€, €€, etc.)",
+                  "cuisine_type": "Cuisine type",
+                  "recommended_dishes": ["dish1", "dish2"],
+                  "source_url": "current_page_url"
                 }
-
-                Extract every restaurant mentioned, even if information is incomplete.
-                """,
-                "timeout": 30000,
-                "formats": ["extract"]
+              ],
+              "source_publication": "Publication name (Time Out, Eater, etc.)"
             }
+
+            Extract every restaurant mentioned, even if information is incomplete.
+            """
         )
 
         if extract_result and extract_result.get("success"):
             extracted_data = extract_result.get("data", {})
 
-            if "extract" in extracted_data and extracted_data["extract"]:
-                try:
-                    # Parse JSON response
-                    content = extracted_data["extract"]
-                    if isinstance(content, str):
-                        content = json.loads(content)
+            try:
+                # The data structure may be different
+                restaurants = extracted_data.get("restaurants", [])
+                source_name = extracted_data.get("source_publication", self._extract_source_name(url))
 
-                    restaurants = content.get("restaurants", [])
-                    source_name = content.get("source_publication", self._extract_source_name(url))
+                # Ensure all restaurants have source_url
+                for restaurant in restaurants:
+                    restaurant["source_url"] = url
 
-                    # Ensure all restaurants have source_url
-                    for restaurant in restaurants:
-                        restaurant["source_url"] = url
+                self.stats["credits_used"] += 50
 
-                    self.stats["credits_used"] += 50
+                return RestaurantExtractionResult(
+                    restaurants=restaurants,
+                    source_url=url,
+                    source_name=source_name,
+                    extraction_method="ai_prompt",
+                    success=True
+                )
 
-                    return RestaurantExtractionResult(
-                        restaurants=restaurants,
-                        source_url=url,
-                        source_name=source_name,
-                        extraction_method="ai_prompt",
-                        success=True
-                    )
-
-                except json.JSONDecodeError as e:
-                    raise Exception(f"Failed to parse JSON from prompt extraction: {e}")
+            except Exception as e:
+                raise Exception(f"Failed to parse data from prompt extraction: {e}")
 
         raise Exception("Prompt-based extraction returned no valid data")
 
@@ -387,12 +373,8 @@ class FirecrawlWebScraper:
 
         # Use basic scrape endpoint
         scrape_result = self.firecrawl.scrape_url(
-            url=url,
-            options={
-                "formats": ["markdown"],
-                "onlyMainContent": True,
-                "timeout": 30000
-            }
+            url,
+            formats=["markdown"]
         )
 
         if scrape_result and scrape_result.get("success"):
