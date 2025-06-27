@@ -242,9 +242,9 @@ class FirecrawlWebScraper:
                     'prompt': """
                     Find and extract ALL restaurants mentioned on this page. Return as JSON:
 
-                    {
+                    {{
                       "restaurants": [
-                        {
+                        {{
                           "name": "Restaurant Name",
                           "description": "Full description with cuisine, atmosphere, and specialties",
                           "address": "Street address",
@@ -253,10 +253,10 @@ class FirecrawlWebScraper:
                           "cuisine_type": "Cuisine type",
                           "recommended_dishes": ["dish1", "dish2"],
                           "source_url": "current_page_url"
-                        }
+                        }}
                       ],
                       "source_publication": "Publication name (Time Out, Eater, etc.)"
-                    }
+                    }}
 
                     Extract every restaurant mentioned, even if information is incomplete.
                     """,
@@ -350,9 +350,9 @@ class FirecrawlWebScraper:
                     Extract ALL restaurants mentioned in the content.
 
                     Return JSON format:
-                    {
+                    {{
                       "restaurants": [
-                        {
+                        {{
                           "name": "Restaurant Name",
                           "description": "Description with key details",
                           "address": "Address if available",
@@ -360,10 +360,10 @@ class FirecrawlWebScraper:
                           "price_range": "Price range",
                           "cuisine_type": "Cuisine type",
                           "recommended_dishes": ["dish1", "dish2"]
-                        }
+                        }}
                       ],
                       "source_publication": "Publication name"
-                    }
+                    }}
                     """),
                     ("human", "Content from {url}:\n\n{content}")
                 ])

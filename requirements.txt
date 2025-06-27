@@ -1,43 +1,35 @@
-# Web scraping & browsing
-requests
-
-# Core dependencies
-langchain
-langchain-openai
-langchain-core
-langchain-community
+# Core LangChain and AI
+langchain>=0.1.0
+langchain-openai>=0.1.0
+langchain-core>=0.1.0
 langchain-mistralai>=0.1.0
 openai>=1.0.0
-langchain-mistralai
 
 # Database
 psycopg2-binary>=2.9.5
 sqlalchemy>=2.0.0
 
-# HTTP handling & optimization
-httpx[http2]>=0.24.0
-brotli>=1.0.9
-diskcache>=5.6.1
+# Web scraping with Firecrawl
+firecrawl-py>=0.0.20
+requests>=2.31.0
 
 # Telegram bot
 pyTelegramBotAPI>=4.20.0
 
-# Utilities & config
-python-dotenv
-tiktoken>=0.5.2
+# Google Maps integration
 googlemaps>=4.10.0
 
-# Tracing & observability
+# Observability
 langsmith
 
 # Schema validation
 pydantic>=2.0
 
-# Async HTTP
+# Async support
 aiohttp>=3.8.5
 
-# Firecrawl SDK (NEW)
-firecrawl-py>=2.9.0
+# Environment configuration
+python-dotenv
 
-# Parsing in search agent
+# JSON parsing for web content
 beautifulsoup4
