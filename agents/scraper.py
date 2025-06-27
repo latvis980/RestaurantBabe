@@ -77,7 +77,7 @@ class FirecrawlWebScraper:
     async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Main entry point for scraping search results.
-        Now includes specialized handling for Eater and Timeout.
+        Automatically detects specialized URLs and routes them appropriately to save Firecrawl credits.
 
         Args:
             search_results: List of search results from BraveSearchAgent
@@ -86,26 +86,38 @@ class FirecrawlWebScraper:
             List of enriched results with scraped restaurant data
         """
         with tracing_v2_enabled(project_name="restaurant-recommender"):
-            logger.info(f"Starting Firecrawl v2.0 scraping for {len(search_results)} URLs")
+            logger.info(f"Starting intelligent scraping for {len(search_results)} URLs")
 
-            # First, check for specialized URLs (Eater, Timeout)
+            # Separate URLs based on whether we have specialized handlers
             specialized_urls = []
             regular_urls = []
 
-            for result in search_results:
-                url = result.get('url', '')
-                domain = url.lower()
+            # Import specialized scraper to check which URLs it can handle
+            try:
+                from agents.specialized_scraper import EaterTimeoutSpecializedScraper
 
-                if 'eater.com' in domain or 'timeout.com' in domain:
-                    specialized_urls.append(result)
-                else:
-                    regular_urls.append(result)
+                # Create a temporary instance to check handlers
+                temp_scraper = EaterTimeoutSpecializedScraper(self.config)
+
+                for result in search_results:
+                    url = result.get('url', '')
+
+                    # Check if ANY specialized handler can process this URL
+                    if temp_scraper._find_handler(url):
+                        specialized_urls.append(result)
+                        logger.info(f"Routing to specialized handler: {url}")
+                    else:
+                        regular_urls.append(result)
+
+            except ImportError:
+                logger.warning("Specialized scraper not available, using Firecrawl for all URLs")
+                regular_urls = search_results
 
             enriched_results = []
 
-            # Process specialized URLs with RSS/sitemap approach
+            # Process specialized URLs with RSS/sitemap approach (NO FIRECRAWL CREDITS USED)
             if specialized_urls:
-                logger.info(f"Processing {len(specialized_urls)} specialized URLs (Eater/Timeout)")
+                logger.info(f"💡 Processing {len(specialized_urls)} URLs with specialized handlers (saving Firecrawl credits)")
 
                 try:
                     from agents.specialized_scraper import EaterTimeoutSpecializedScraper
@@ -120,11 +132,12 @@ class FirecrawlWebScraper:
                 except Exception as e:
                     logger.error(f"Error in specialized scraping: {e}")
                     # Fall back to regular scraping for these URLs
+                    logger.warning(f"Falling back to Firecrawl for {len(specialized_urls)} URLs due to specialized scraper error")
                     regular_urls.extend(specialized_urls)
 
-            # Process regular URLs with standard Firecrawl approach
+            # Process regular URLs with standard Firecrawl approach (USES FIRECRAWL CREDITS)
             if regular_urls:
-                logger.info(f"Processing {len(regular_urls)} regular URLs with Firecrawl")
+                logger.info(f"🔥 Processing {len(regular_urls)} URLs with Firecrawl (using credits)")
 
                 # Create async tasks for regular URLs
                 tasks = []
@@ -146,16 +159,19 @@ class FirecrawlWebScraper:
                     else:
                         enriched_results.append(scraped_data)
 
-            # Log final statistics
+            # Log final statistics with credit usage info
             self._log_scraping_stats()
 
-            dump_chain_state("firecrawl_v2_scraping_complete", {
+            dump_chain_state("intelligent_scraping_complete", {
                 "input_count": len(search_results),
                 "specialized_count": len(specialized_urls),
-                "regular_count": len(regular_urls),
+                "firecrawl_count": len(regular_urls),
                 "output_count": len(enriched_results),
+                "firecrawl_credits_saved": len(specialized_urls) * 10,  # Estimated credits saved
                 "stats": self.stats
             })
+
+            logger.info(f"💰 Credit optimization: {len(specialized_urls)} URLs processed without Firecrawl, saving ~{len(specialized_urls) * 10} credits")
 
             return enriched_results
 
