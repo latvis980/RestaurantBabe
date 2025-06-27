@@ -1,8 +1,6 @@
 # agents/langchain_orchestrator.py
 from langchain_core.runnables import RunnableSequence, RunnableLambda
 from langchain_core.tracers.context import tracing_v2_enabled
-from agents.enhanced_scraper import EnhancedWebScraper
-
 import time
 import json
 import re
@@ -12,7 +10,6 @@ from utils.debug_utils import dump_chain_state, log_function_call
 from utils.async_utils import sync_to_async
 import asyncio
 import logging
-
 
 # Create logger. 
 logger = logging.getLogger("restaurant-recommender.orchestrator")
@@ -111,15 +108,7 @@ class LangChainOrchestrator:
         # Initialize agents
         self.query_analyzer = QueryAnalyzer(config)
         self.search_agent = BraveSearchAgent(config)
-
-        scraper_type = getattr(config, "SCRAPER_TYPE", "default")
-        if scraper_type == "enhanced":
-            self.scraper = EnhancedWebScraper(config)
-            logger.info("Using Enhanced WebScraper")
-        else:
-            self.scraper = WebScraper(config)
-            logger.info("Using Default WebScraper")
-            
+        self.scraper = WebScraper(config)
         self.list_analyzer = ListAnalyzer(config)
         self.editor_agent = EditorAgent(config)
         self.follow_up_search_agent = FollowUpSearchAgent(config)
@@ -203,23 +192,34 @@ class LangChainOrchestrator:
                     "recommendations": recommendations
                 })
 
-                # Explicitly standardize the structure
+                # Convert to single list structure - combine all restaurants into main_list
                 if isinstance(recommendations, dict):
-                    # Check if we have the old format (recommended/hidden_gems)
-                    if "recommended" in recommendations:
-                        # Convert to new format
-                        standardized = {
-                            "main_list": recommendations.get("recommended", []),
-                            "hidden_gems": recommendations.get("hidden_gems", [])
-                        }
-                    else:
-                        # Already in the right format or needs to be initialized
-                        standardized = recommendations
+                    all_restaurants = []
+
+                    # Get restaurants from main_list
+                    main_list = recommendations.get("main_list", [])
+                    if isinstance(main_list, list):
+                        all_restaurants.extend(main_list)
+
+                    # Get restaurants from hidden_gems and add to main list
+                    hidden_gems = recommendations.get("hidden_gems", [])
+                    if isinstance(hidden_gems, list):
+                        all_restaurants.extend(hidden_gems)
+
+                    # Handle legacy format
+                    if "recommended" in recommendations and not all_restaurants:
+                        recommended = recommendations.get("recommended", [])
+                        if isinstance(recommended, list):
+                            all_restaurants.extend(recommended)
+
+                    # Return standardized structure with only main_list
+                    standardized = {
+                        "main_list": all_restaurants
+                    }
                 else:
                     # Initialize empty structure
                     standardized = {
-                        "main_list": [],
-                        "hidden_gems": []
+                        "main_list": []
                     }
 
                 # Return the result
@@ -231,8 +231,7 @@ class LangChainOrchestrator:
                 return {
                     **x,
                     "recommendations": {
-                        "main_list": [],
-                        "hidden_gems": []
+                        "main_list": []
                     }
                 }
 
@@ -356,7 +355,7 @@ class LangChainOrchestrator:
             name="follow_up_search"
         )
 
-        # HTML extraction
+        # HTML extraction - updated to handle single list
         def extract_html_step(x):
             try:
                 # Debug before html extraction
@@ -370,7 +369,6 @@ class LangChainOrchestrator:
                 # Log what we're actually getting
                 logger.info(f"Enhanced recommendations structure: {list(enhanced_recommendations.keys())}")
                 logger.info(f"Main list count: {len(enhanced_recommendations.get('main_list', []))}")
-                logger.info(f"Hidden gems count: {len(enhanced_recommendations.get('hidden_gems', []))}")
 
                 # Create HTML output with the correct structure
                 telegram_text = self._create_detailed_html(enhanced_recommendations)
@@ -446,25 +444,23 @@ class LangChainOrchestrator:
 
     @log_function_call
     def _create_detailed_html(self, recommendations):
-        """Create elegant, emoji-light HTML output for Telegram."""
+        """Create elegant, emoji-light HTML output for Telegram - single list only."""
         try:
             # ――― Debug input ―――
             logger.info(f"Creating HTML for recommendations: {list(recommendations.keys()) if isinstance(recommendations, dict) else type(recommendations)}")
 
-            # ――― Get restaurant lists ―――
+            # ――― Get restaurant list ―――
             main_list = recommendations.get("main_list", [])
-            hidden_gems = recommendations.get("hidden_gems", [])
 
             # Check for legacy format
             if not main_list and "recommended" in recommendations:
                 main_list = recommendations.get("recommended", [])
 
-            # Debug log counts
+            # Debug log count
             logger.info(f"Main list count: {len(main_list)}")
-            logger.info(f"Hidden gems count: {len(hidden_gems)}")
 
             # ――― If no restaurants found, return early ―――
-            if not main_list and not hidden_gems:
+            if not main_list:
                 logger.warning("No restaurants found in recommendations")
                 return "<b>No restaurants found for your query.</b>"
 
@@ -472,12 +468,9 @@ class LangChainOrchestrator:
             html_parts = []
             html_parts.append("<b>Recommended Restaurants</b>\n\n")
 
-            def format_restaurant_block(restaurants, title=None):
+            def format_restaurant_block(restaurants):
                 """Format a block of restaurants for HTML output"""
                 block_parts = []
-
-                if title:
-                    block_parts.append(f"<b>{title}</b>\n\n")
 
                 for i, restaurant in enumerate(restaurants, 1):
                     # Safely get restaurant details
@@ -554,15 +547,10 @@ class LangChainOrchestrator:
 
                 return ''.join(block_parts)
 
-            # Add main list
+            # Add all restaurants in main list
             if main_list:
-                logger.info(f"Formatting {len(main_list)} main restaurants")
+                logger.info(f"Formatting {len(main_list)} restaurants")
                 html_parts.append(format_restaurant_block(main_list))
-
-            # Add hidden gems if they exist
-            if hidden_gems:
-                logger.info(f"Formatting {len(hidden_gems)} hidden gems")
-                html_parts.append(format_restaurant_block(hidden_gems, title="Hidden Gems"))
 
             # Add footer
             html_parts.append("<i>Recommendations compiled from reputable critic and guide sources.</i>")
@@ -579,7 +567,7 @@ class LangChainOrchestrator:
                 logger.info(f"Truncated HTML to {len(html)} characters")
 
             logger.info(f"Final HTML length: {len(html)}")
-            logger.info(f"Successfully created HTML for {len(main_list)} main + {len(hidden_gems)} hidden gems")
+            logger.info(f"Successfully created HTML for {len(main_list)} restaurants")
 
             return html
 
@@ -652,19 +640,17 @@ class LangChainOrchestrator:
                 # Get the enhanced recommendations
                 enhanced_recommendations = result.get("enhanced_recommendations", {})
 
-                # Extract main_list and hidden_gems from enhanced_recommendations
+                # Extract main_list from enhanced_recommendations
                 main_list = enhanced_recommendations.get("main_list", [])
-                hidden_gems = enhanced_recommendations.get("hidden_gems", [])
 
                 # ADD THIS DEBUG LOG
-                logger.info(f"Final result - Main list: {len(main_list)}, Hidden gems: {len(hidden_gems)}")
+                logger.info(f"Final result - Main list: {len(main_list)} restaurants")
 
-                # Return the complete data structure
+                # Return the complete data structure (no hidden_gems)
                 return {
                     "telegram_text": telegram_text,
                     "enhanced_recommendations": enhanced_recommendations,  # Include the full structure
                     "main_list": main_list,
-                    "hidden_gems": hidden_gems,
                     "destination": result.get("destination")
                 }
 
@@ -681,6 +667,5 @@ class LangChainOrchestrator:
                             "description": "Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз позже."
                         }
                     ],
-                    "hidden_gems": [],
                     "telegram_text": "<b>Извините, произошла ошибка при обработке вашего запроса.</b>"
                 }

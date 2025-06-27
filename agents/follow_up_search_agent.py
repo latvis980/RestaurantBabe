@@ -14,15 +14,7 @@ traditional Web follow‑up search. The Maps look‑up supplies:
 Everything else – Brave search look‑ups, scraping, global‑guide checks – remains exactly
 as before.
 
-Usage ‑‑­­ add your key to the ``config`` object passed to the agent::
-
-    cfg = {
-        "GOOGLE_MAPS_API_KEY": "YOUR‑KEY‑HERE",
-        ...
-    }
-
-Any missing or invalid key raises immediately so that the calling code never moves on
-with half‑configured settings.
+Updated to return only main_list, no hidden_gems.
 """
 
 import time
@@ -57,10 +49,6 @@ class FollowUpSearchAgent:
     ``GOOGLE_MAPS_API_KEY`` attribute.
     """
 
-    # ---------------------------------------------------------------------
-    # Construction helpers
-    # ---------------------------------------------------------------------
-
     def __init__(self, config: Any):
         self.config = config
         self.search_agent = BraveSearchAgent(config)
@@ -72,10 +60,6 @@ class FollowUpSearchAgent:
             raise ValueError("GOOGLE_MAPS_API_KEY missing in config – please supply it.")
         self.gmaps = googlemaps.Client(key=api_key)
 
-    # ------------------------------------------------------------------
-    # Public entry point – orchestrates follow‑up searches for a batch
-    # ------------------------------------------------------------------
-
     def perform_follow_up_searches(
         self,
         formatted_recommendations: Dict[str, List[Dict[str, Any]]],
@@ -84,16 +68,29 @@ class FollowUpSearchAgent:
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Enrich every restaurant in *formatted_recommendations*.
 
+        Returns only main_list, no hidden_gems.
         Restaurants that do not meet the minimum Google rating are silently
         excluded from the output.
         """
 
         with tracing_v2_enabled(project_name="restaurant-recommender"):
+            # Collect all restaurants from both main_list and hidden_gems
+            all_restaurants = []
+
+            # Add main_list restaurants
+            main_list = formatted_recommendations.get("main_list", [])
+            if isinstance(main_list, list):
+                all_restaurants.extend(main_list)
+
+            # Add hidden_gems restaurants to the main list
+            hidden_gems = formatted_recommendations.get("hidden_gems", [])
+            if isinstance(hidden_gems, list):
+                all_restaurants.extend(hidden_gems)
+
             dump_chain_state(
                 "follow_up_search_start",
                 {
-                    "restaurant_count": len(formatted_recommendations.get("main_list", []))
-                    + len(formatted_recommendations.get("hidden_gems", [])),
+                    "total_restaurant_count": len(all_restaurants),
                     "follow_up_queries_count": len(follow_up_queries),
                     "secondary_parameters": secondary_filter_parameters,
                 },
@@ -101,40 +98,24 @@ class FollowUpSearchAgent:
 
             enhanced_recommendations: Dict[str, List[Dict[str, Any]]] = {
                 "main_list": [],
-                "hidden_gems": [],
             }
 
-            # First pass – enrich core list
-            for restaurant in formatted_recommendations.get("main_list", []):
+            # Process all restaurants and put them in main_list
+            for restaurant in all_restaurants:
                 restaurant = self._enhance_restaurant(
                     restaurant, follow_up_queries, secondary_filter_parameters
                 )
                 if restaurant:  # None == rejected (rating < MIN_ACCEPTABLE_RATING)
                     enhanced_recommendations["main_list"].append(restaurant)
 
-            # Second pass – enrich hidden gems
-            for restaurant in formatted_recommendations.get("hidden_gems", []):
-                restaurant = self._enhance_restaurant(
-                    restaurant, follow_up_queries, secondary_filter_parameters
-                )
-                if restaurant:
-                    enhanced_recommendations["hidden_gems"].append(restaurant)
-
             dump_chain_state(
                 "follow_up_search_complete",
                 {
                     "enhanced_main_list_count": len(enhanced_recommendations["main_list"]),
-                    "enhanced_hidden_gems_count": len(
-                        enhanced_recommendations["hidden_gems"]
-                    ),
                 },
             )
 
             return enhanced_recommendations
-
-    # ------------------------------------------------------------------
-    # Google Maps integration helpers
-    # ------------------------------------------------------------------
 
     def _extract_restaurant_genre(self, restaurant: Dict[str, Any]) -> str:
         """Extract restaurant genre/type from available data to improve Maps search.
@@ -232,10 +213,6 @@ class FollowUpSearchAgent:
                 error=exc,
             )
             return None
-
-    # ------------------------------------------------------------------
-    # Core enrichment routine for a single restaurant
-    # ------------------------------------------------------------------
 
     def _enhance_restaurant(
         self,
@@ -392,10 +369,6 @@ class FollowUpSearchAgent:
 
         return enhanced
 
-    # ------------------------------------------------------------------
-    # Helpers – default query builder
-    # ------------------------------------------------------------------
-
     def _default_queries_for(self, restaurant: Dict[str, Any], name: str, location: str) -> List[str]:
         """Return a minimal set of follow‑up queries based on missing fields."""
         queries: List[str] = []
@@ -414,10 +387,6 @@ class FollowUpSearchAgent:
         # Always check major guides even if everything else is complete
         queries.append(f"{name} {genre} {location} michelin guide awards")
         return queries[:4]  # keep it short – we do a lot of calls already
-
-    # ------------------------------------------------------------------
-    # Helpers – clean additional details from scraped pages
-    # ------------------------------------------------------------------
 
     def _extract_additional_details(self, search_results: List[Dict[str, Any]]) -> Dict[str, str]:
         additional: Dict[str, str] = {}
@@ -446,10 +415,6 @@ class FollowUpSearchAgent:
                 break
 
         return additional
-
-    # ------------------------------------------------------------------
-    # Helpers – source extraction (unchanged apart from minor cleanup)
-    # ------------------------------------------------------------------
 
     def _extract_sources(self, source_results: List[Dict[str, Any]]) -> List[str]:
         sources: List[str] = []
@@ -509,10 +474,6 @@ class FollowUpSearchAgent:
                     sources.append(guide_name)
 
         return sources
-
-    # ------------------------------------------------------------------
-    # Global guide look‑ups (unchanged)
-    # ------------------------------------------------------------------
 
     def _check_global_guides(self, restaurant_name: str, location: str) -> List[Dict[str, Any]]:
         guides = [
