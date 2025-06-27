@@ -295,22 +295,18 @@ def main():
         logger.error(f"Failed to start bot: {e}")
         return
 
-    # Initialize orchestrator and add admin commands
+    # ADD THIS SECTION - Connect the debug command
     try:
-        logger.info("Setting up admin commands...")
-        orchestrator_instance = get_orchestrator()
+        # Get the orchestrator instance
+        orch = get_orchestrator()
 
-        # Add both admin commands
-        add_test_scraping_command(bot, config, orchestrator_instance)
-        add_debug_query_command(bot, config, orchestrator_instance)
-
-        logger.info("Admin commands added successfully")
-        logger.info("Available admin commands: /test_scraping, /debug_query")
+        # Add the debug query command to the bot
+        add_debug_query_command(bot, config, orch)
+        logger.info("Debug query command added successfully")
     except Exception as e:
-        logger.error(f"Failed to add admin commands: {e}")
-        # Continue anyway, regular bot functionality should still work
+        logger.error(f"Failed to add debug command: {e}")
 
-    # Start polling with better error handling (existing code continues...)
+    # Start polling with better error handling
     while True:
         try:
             logger.info("Starting bot polling...")
