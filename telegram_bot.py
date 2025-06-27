@@ -1,4 +1,4 @@
-# telegram_bot.py
+# telegram_bot.py - AI-Powered Restaurant Bot
 import telebot
 import logging
 import time
@@ -20,14 +20,14 @@ logger = logging.getLogger(__name__)
 # Initialize bot
 bot = telebot.TeleBot(config.TELEGRAM_BOT_TOKEN)
 
-# Initialize OpenAI for request analysis
-request_analyzer = ChatOpenAI(
-    model=config.OPENAI_MODEL,
+# Initialize AI conversation handler
+conversation_ai = ChatOpenAI(
+    model=config.OPENAI_MODEL,  # GPT-4o as specified
     temperature=0.3
 )
 
-# Session storage for user contexts
-user_sessions = {}
+# Simple conversation history storage (last 5 messages per user)
+user_conversations = {}
 
 # Welcome message
 WELCOME_MESSAGE = (
@@ -42,101 +42,80 @@ WELCOME_MESSAGE = (
     """Shall we begin?"""
 )
 
-# Request analysis prompt with session awareness
-REQUEST_ANALYSIS_PROMPT = """
-You are an AI assistant for restaurant search. Analyze the user's message and conversation context.
+# AI Conversation Prompt
+CONVERSATION_PROMPT = """
+You are Restaurant Babe, an expert AI assistant for restaurant recommendations worldwide. You help users find amazing restaurants, cafes, bars, bakeries, and coffee shops.
 
-CONVERSATION CONTEXT:
-- Previous location: {previous_location}
-- Previous cuisine: {previous_cuisine}
-- Previous dining style: {previous_dining_style}
-- Previous preferences: {previous_preferences}
+CONVERSATION HISTORY (last few messages):
+{conversation_history}
+
+CURRENT USER MESSAGE: {user_message}
+
+YOUR TASK:
+Analyze the conversation and decide what to do next. You need TWO pieces of information to search:
+1. LOCATION (city/neighborhood/area)
+2. DINING PREFERENCE (cuisine type, restaurant style, or specific request like "brunch", "cocktails", "romantic dinner")
 
 DECISION RULES:
-1. If we have BOTH location AND any restaurant preference (cuisine/style) → "process" 
-2. If missing location but have restaurant preference → ask for location only
-3. If have location but missing restaurant preference → ask for cuisine/preference only
-4. If completely off-topic → "remind_purpose"
+- If you have BOTH location AND dining preference → Action: "SEARCH"
+- If missing one or both pieces → Action: "CLARIFY" 
+- If completely off-topic → Action: "REDIRECT"
 
-Return JSON:
+RESPONSE FORMAT:
+Return JSON only:
 {{
-    "action": "process" | "ask_clarification" | "remind_purpose",
-    "response": "your response to user",
-    "session_updates": {{"location": "", "cuisine_type": "", "dining_style": "", "other_preferences": ""}}
+    "action": "SEARCH" | "CLARIFY" | "REDIRECT",
+    "search_query": "complete restaurant search query (only if action is SEARCH)",
+    "bot_response": "what to say to the user",
+    "reasoning": "brief explanation of your decision"
 }}
 
 EXAMPLES:
 
-Context: location="", cuisine="ramen", style="", preferences=""
-User: "Lisbon"
-→ {{"action": "process", "response": "Perfect! I'll search for the best ramen restaurants in Lisbon. Let me check with my critic friends - this will take a couple of minutes.", "session_updates": {{"location": "Lisbon"}}}}
+User: "ramen in tokyo"
+→ {{"action": "SEARCH", "search_query": "best ramen restaurants in Tokyo", "bot_response": "Perfect! I'll search for the best ramen restaurants in Tokyo. Let me check with my critic friends - this will take a couple of minutes.", "reasoning": "Have both location (Tokyo) and preference (ramen)"}}
 
-Context: location="Lisbon", cuisine="", style="", preferences=""
-User: "ramen restaurants"  
-→ {{"action": "process", "response": "Excellent! I'll find the best ramen restaurants in Lisbon for you. This will take a few minutes.", "session_updates": {{"cuisine_type": "ramen"}}}}
+User: "I want Italian food"
+→ {{"action": "CLARIFY", "search_query": "", "bot_response": "Great choice! Italian cuisine is amazing. Which city are you looking for Italian restaurants in?", "reasoning": "Have preference (Italian) but missing location"}}
 
-Context: location="Lisbon", cuisine="ramen", style="", preferences=""
-User: "actually make it traditional Portuguese instead"
-→ {{"action": "process", "response": "Great choice! I'll search for traditional Portuguese restaurants in Lisbon instead.", "session_updates": {{"cuisine_type": "traditional Portuguese"}}}}
+User: "Paris"
+→ {{"action": "CLARIFY", "search_query": "", "bot_response": "Ah, Paris! Wonderful city for dining. What type of restaurants are you interested in? Perhaps traditional French, modern bistros, international cuisine, or something specific?", "reasoning": "Have location (Paris) but missing dining preference"}}
 
-Be conversational and reference what they already told you. Once you have location + any food preference, always choose "process".
+User: "what's the weather like?"
+→ {{"action": "REDIRECT", "search_query": "", "bot_response": "I'm your restaurant expert! I can help you find amazing places to eat and drink around the world. What city are you interested in dining in?", "reasoning": "Off-topic, not about restaurants"}}
+
+CONVERSATION STYLE:
+- Be warm, enthusiastic, and knowledgeable about food
+- Reference previous messages naturally 
+- Once you have location + preference, always choose "SEARCH"
+- Keep responses concise but friendly
+- Show expertise about restaurants and dining
 """
 
-def get_user_session(user_id):
-    """Get or create user session"""
-    if user_id not in user_sessions:
-        user_sessions[user_id] = {
-            "location": "",
-            "cuisine_type": "",
-            "dining_style": "",
-            "other_preferences": "",
-            "last_activity": time.time()
-        }
-    return user_sessions[user_id]
+def get_conversation_history(user_id):
+    """Get recent conversation history for user"""
+    if user_id not in user_conversations:
+        user_conversations[user_id] = []
+    return user_conversations[user_id]
 
-def update_user_session(user_id, updates):
-    """Update user session with new information"""
-    session = get_user_session(user_id)
-    for key, value in updates.items():
-        if value and value.strip():  # Only update if value is not empty
-            session[key] = value.strip()
-    session["last_activity"] = time.time()
-    return session
+def add_to_conversation(user_id, message, is_user=True):
+    """Add message to conversation history"""
+    if user_id not in user_conversations:
+        user_conversations[user_id] = []
 
-def build_query_from_session(session):
-    """Build a complete query from session data"""
-    parts = []
+    # Keep only last 8 messages (4 exchanges)
+    if len(user_conversations[user_id]) >= 8:
+        user_conversations[user_id] = user_conversations[user_id][-6:]
 
-    if session.get("cuisine_type"):
-        parts.append(session["cuisine_type"])
-    if session.get("dining_style"):
-        parts.append(session["dining_style"])
-    if session.get("other_preferences"):
-        parts.append(session["other_preferences"])
+    sender = "User" if is_user else "Bot"
+    user_conversations[user_id].append(f"{sender}: {message}")
 
-    if parts and session.get("location"):
-        query = f"{' '.join(parts)} restaurants in {session['location']}"
-        return query
-
-    return None
-
-def session_has_enough_info(session):
-    """Check if session has enough info to process query"""
-    has_location = bool(session.get("location", "").strip())
-    has_preferences = any([
-        session.get("cuisine_type", "").strip(),
-        session.get("dining_style", "").strip(), 
-        session.get("other_preferences", "").strip()
-    ])
-    return has_location and has_preferences
-
-# Create the analysis chain with session context
-def create_analysis_chain():
-    analysis_prompt = ChatPromptTemplate.from_messages([
-        ("system", REQUEST_ANALYSIS_PROMPT),
-        ("human", "User message: {user_message}\n\nPrevious context:\nLocation: {previous_location}\nCuisine: {previous_cuisine}\nDining style: {previous_dining_style}\nOther preferences: {previous_preferences}")
-    ])
-    return analysis_prompt | request_analyzer
+def format_conversation_history(user_id):
+    """Format conversation history for AI prompt"""
+    history = get_conversation_history(user_id)
+    if not history:
+        return "No previous conversation."
+    return "\n".join(history)
 
 # Initialize orchestrator (will be set up when first needed)
 orchestrator = None
@@ -152,10 +131,11 @@ def get_orchestrator():
 def send_welcome(message):
     """Handle /start and /help commands"""
     try:
-        # Clear user session on start
         user_id = message.from_user.id
-        if user_id in user_sessions:
-            del user_sessions[user_id]
+
+        # Clear conversation history on start
+        if user_id in user_conversations:
+            del user_conversations[user_id]
 
         bot.reply_to(
             message, 
@@ -169,84 +149,75 @@ def send_welcome(message):
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
-    """Handle all text messages with session awareness"""
+    """Handle all text messages with AI conversation management"""
     try:
         user_id = message.from_user.id
         user_message = message.text.strip()
 
         logger.info(f"Received message from user {user_id}: {user_message}")
 
-        # Get user session
-        session = get_user_session(user_id)
+        # Add user message to conversation history
+        add_to_conversation(user_id, user_message, is_user=True)
 
         # Send typing indicator
         bot.send_chat_action(message.chat.id, 'typing')
 
-        # Create analysis chain with session context
-        analysis_chain = create_analysis_chain()
+        # Create conversation analysis prompt
+        conversation_prompt = ChatPromptTemplate.from_messages([
+            ("system", CONVERSATION_PROMPT),
+            ("human", "Conversation history:\n{conversation_history}\n\nCurrent message: {user_message}")
+        ])
 
-        # Analyze the request using OpenAI with session context
-        response = analysis_chain.invoke({
-            "user_message": user_message,
-            "previous_location": session.get("location", ""),
-            "previous_preferences": session.get("other_preferences", ""),
-            "previous_cuisine": session.get("cuisine_type", ""),
-            "previous_dining_style": session.get("dining_style", "")
+        # Get AI decision
+        conversation_chain = conversation_prompt | conversation_ai
+
+        response = conversation_chain.invoke({
+            "conversation_history": format_conversation_history(user_id),
+            "user_message": user_message
         })
 
-        # Parse the response
-        content = response.content
+        # Parse AI response
+        content = response.content.strip()
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0].strip()
         elif "```" in content:
             content = content.split("```")[1].split("```")[0].strip()
 
         try:
-            analysis_result = json.loads(content)
+            ai_decision = json.loads(content)
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse analysis result: {e}")
-            # Fallback to a generic response
-            analysis_result = {
-                "action": "ask_clarification",
-                "response": "I'd love to help you find restaurants! Could you tell me what city you're interested in and what type of dining experience you're looking for?"
+            logger.error(f"Failed to parse AI decision: {e}")
+            logger.error(f"Raw content: {content}")
+            # Fallback response
+            ai_decision = {
+                "action": "CLARIFY",
+                "bot_response": "I'd love to help you find restaurants! Could you tell me what city you're interested in and what type of dining you're looking for?"
             }
 
-        action = analysis_result.get("action")
-        response_text = analysis_result.get("response", "I'm not sure how to help with that. Could you ask about restaurants in a specific city?")
-        session_updates = analysis_result.get("session_updates", {})
+        action = ai_decision.get("action")
+        bot_response = ai_decision.get("bot_response", "How can I help you find restaurants?")
+        search_query = ai_decision.get("search_query", "")
+        reasoning = ai_decision.get("reasoning", "")
 
-        # Update session with new information
-        if session_updates:
-            update_user_session(user_id, session_updates)
-            session = get_user_session(user_id)  # Get updated session
+        logger.info(f"AI Decision - Action: {action}, Reasoning: {reasoning}")
 
-        logger.info(f"Analysis result for user {user_id}: action={action}")
-        logger.info(f"Session state: {session}")
-        logger.info(f"Has enough info: {session_has_enough_info(session)}")
+        # Add bot response to conversation history
+        add_to_conversation(user_id, bot_response, is_user=False)
 
-        if action == "process":
-            # Build complete query from session
-            complete_query = build_query_from_session(session)
-            logger.info(f"Built query: {complete_query}")
+        if action == "SEARCH" and search_query:
+            # Send immediate response
+            bot.reply_to(message, bot_response, parse_mode='HTML')
 
-            if complete_query:
-                # Send immediate response
-                bot.reply_to(message, response_text, parse_mode='HTML')
-
-                # Process the restaurant search in a separate thread
-                threading.Thread(
-                    target=process_restaurant_search,
-                    args=(message, complete_query, user_id),
-                    daemon=True
-                ).start()
-            else:
-                # Fallback if query building fails
-                logger.error(f"Failed to build query from session: {session}")
-                bot.reply_to(message, "I have some information but need a bit more. What type of restaurants are you looking for?", parse_mode='HTML')
+            # Process restaurant search in background
+            threading.Thread(
+                target=process_restaurant_search,
+                args=(message, search_query, user_id),
+                daemon=True
+            ).start()
 
         else:
-            # Send clarification or reminder
-            bot.reply_to(message, response_text, parse_mode='HTML')
+            # Send clarification or redirect response
+            bot.reply_to(message, bot_response, parse_mode='HTML')
 
     except Exception as e:
         logger.error(f"Error handling message: {e}")
@@ -255,12 +226,12 @@ def handle_message(message):
             "Sorry, I encountered an error. Please try asking about restaurants in a specific city!"
         )
 
-def process_restaurant_search(message, complete_query, user_id):
+def process_restaurant_search(message, search_query, user_id):
     """Process restaurant search request in background"""
     try:
         chat_id = message.chat.id
 
-        logger.info(f"Starting restaurant search for user {user_id}: {complete_query}")
+        logger.info(f"Starting restaurant search for user {user_id}: {search_query}")
 
         # Send processing message
         processing_msg = bot.send_message(
@@ -269,9 +240,9 @@ def process_restaurant_search(message, complete_query, user_id):
             parse_mode='HTML'
         )
 
-        # Process the query through your existing orchestrator
+        # Process the query through orchestrator
         orch = get_orchestrator()
-        result = orch.process_query(complete_query)
+        result = orch.process_query(search_query)
 
         # Get the formatted response
         telegram_text = result.get("telegram_text", "Sorry, I couldn't find any restaurants for your request.")
@@ -290,11 +261,10 @@ def process_restaurant_search(message, complete_query, user_id):
             disable_web_page_preview=True
         )
 
-        # Clear user session after successful search
-        if user_id in user_sessions:
-            del user_sessions[user_id]
-
         logger.info(f"Successfully sent restaurant recommendations to user {user_id}")
+
+        # Add search completion to conversation history
+        add_to_conversation(user_id, "Restaurant recommendations delivered!", is_user=False)
 
     except Exception as e:
         logger.error(f"Error in restaurant search process: {e}")
@@ -313,7 +283,7 @@ def process_restaurant_search(message, complete_query, user_id):
 
 def main():
     """Main function to start the bot"""
-    logger.info("Starting Restaurant Babe Telegram Bot...")
+    logger.info("Starting AI-Powered Restaurant Babe Telegram Bot...")
 
     # Verify bot token works
     try:
@@ -323,7 +293,7 @@ def main():
         logger.error(f"Failed to start bot: {e}")
         return
 
-    # Start polling with better error handling
+    # Start polling with error handling
     while True:
         try:
             logger.info("Starting bot polling...")
@@ -335,8 +305,8 @@ def main():
             )
         except telebot.apihelper.ApiTelegramException as e:
             if "409" in str(e):
-                logger.error("Another bot instance is running. Waiting 30 seconds before retry...")
-                time.sleep(30)  # Wait longer for other instance to stop
+                logger.error("Another bot instance is running. Waiting 30 seconds...")
+                time.sleep(30)
                 continue
             else:
                 logger.error(f"Telegram API error: {e}")
