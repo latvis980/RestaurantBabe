@@ -38,11 +38,11 @@ class BraveSearchAgent:
         - Curated lists of multiple restaurants (e.g., "Top 10 restaurants in Paris")
         - Collections of restaurants in professional restaurant guides
         - Food critic reviews covering multiple restaurants
-        - Articles in reputable media discussing various dining options in an area
+        - Articles in reputable local media discussing various dining options in an area
 
         NOT VALID CONTENT (score < 0.3):
         - Official website of a single restaurant
-        - Collections of restaurants in booking and delivery websites like Uber Eats, The Fork, Glovo, etc.
+        - Collections of restaurants in booking and delivery websites like Uber Eats, The Fork, Glovo, Bolt, etc.
         - Wanderlog content
         - Individual restaurant menus
         - Single restaurant reviews

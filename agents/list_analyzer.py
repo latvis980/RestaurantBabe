@@ -22,7 +22,8 @@ from typing import Any, Dict, List, Sequence
 from langchain_mistralai import ChatMistralAI
 from langchain_core.output_parsers import PydanticOutputParser, StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
+from pydantic import field_validator
 from tenacity import retry, stop_after_attempt, wait_exponential
 import config
 
@@ -52,11 +53,34 @@ class Restaurant(BaseModel):
     location: str
     city: str = Field(default="", description="City name from the query")
 
-    @validator("description")
+    @field_validator("description")
+    @classmethod
     def ensure_len(cls, v):
-        if v == "Description unavailable":
-            return v
-        # Simply return the description as-is, don't append any text
+        # Handle the case where v is not a string
+        if v is None:
+            return "Description unavailable"
+
+        # Convert non-strings to string, but handle common problematic values
+        if not isinstance(v, str):
+            if isinstance(v, bool):
+                return "Description unavailable"
+            elif isinstance(v, (int, float)):
+                return "Description unavailable"
+            else:
+                # Try to convert to string as last resort
+                try:
+                    v = str(v)
+                except:
+                    return "Description unavailable"
+
+        # Clean up the string
+        v = v.strip()
+
+        # If empty or just whitespace, return default
+        if not v or v == "Description unavailable":
+            return "Description unavailable"
+
+        # Return the cleaned description
         return v
 
 class ListResponse(BaseModel):
@@ -320,7 +344,7 @@ class ListAnalyzer:
 
         # -------------- Parse & validate ---------- #
         try:
-            response_model = PARSER.parse(content)
+            response_model = ListResponse.model_validate_json(content)
         except Exception as exc:
             logger.error("Pydantic parse failed: %s", exc)
             # Propagate for upstream error handling
