@@ -5,7 +5,7 @@ import time
 from typing import Dict, List, Any, Optional
 import json
 from dataclasses import dataclass
-from firecrawl import FirecrawlApp
+from firecrawl import FirecrawlApp, AsyncFirecrawlApp
 from langchain_core.tracers.context import tracing_v2_enabled
 from utils.debug_utils import dump_chain_state
 from pydantic import BaseModel, Field
@@ -45,7 +45,7 @@ class RestaurantListSchema(BaseModel):
 class FirecrawlWebScraper:
     """
     AI-powered web scraper using Firecrawl for restaurant content extraction.
-    Designed to extract comprehensive restaurant data from complex, JavaScript-heavy pages.
+    Updated to follow latest Firecrawl SDK patterns and best practices.
     """
 
     def __init__(self, config):
@@ -55,12 +55,14 @@ class FirecrawlWebScraper:
         if not hasattr(config, 'FIRECRAWL_API_KEY') or not config.FIRECRAWL_API_KEY:
             raise ValueError("FIRECRAWL_API_KEY is required in config")
 
+        # Use both sync and async clients
         self.firecrawl = FirecrawlApp(api_key=config.FIRECRAWL_API_KEY)
+        self.async_firecrawl = AsyncFirecrawlApp(api_key=config.FIRECRAWL_API_KEY)
 
-        # Rate limiting and retry settings
+        # Rate limiting and retry settings - updated for current limits
         self.max_retries = 3
         self.retry_delay = 2
-        self.max_concurrent = 2  # Can handle 2 concurrent since we have pre-filtered quality URLs
+        self.max_concurrent = 3  # Updated based on current rate limits
         self.semaphore = asyncio.Semaphore(self.max_concurrent)
 
         # Statistics tracking
@@ -135,8 +137,8 @@ class FirecrawlWebScraper:
 
             logger.info(f"Scraping URL: {url}")
 
-            # Add small delay between requests to respect free tier limits
-            await asyncio.sleep(7)  # 10 requests per minute = 6+ seconds between requests
+            # Updated rate limiting based on current Firecrawl limits
+            await asyncio.sleep(3)  # More reasonable delay for current rate limits
 
             try:
                 # Extract restaurant data using Firecrawl's AI extraction
@@ -186,31 +188,26 @@ class FirecrawlWebScraper:
     async def _extract_restaurants_with_retry(self, url: str) -> RestaurantExtractionResult:
         """
         Extract restaurants with retry logic and multiple extraction methods.
-
-        Args:
-            url: URL to scrape
-
-        Returns:
-            RestaurantExtractionResult with extracted data
+        Updated to use latest Firecrawl SDK patterns.
         """
 
         for attempt in range(self.max_retries):
             try:
-                # Method 1: Try AI extraction with schema first (most precise)
+                # Method 1: Try new extract endpoint with schema (most precise)
                 try:
-                    result = await self._extract_with_ai_schema(url)
+                    result = await self._extract_with_new_extract_api(url)
                     if result.success and result.restaurants:
                         return result
                 except Exception as e:
-                    logger.warning(f"AI schema extraction failed for {url} (attempt {attempt + 1}): {e}")
+                    logger.warning(f"New extract API failed for {url} (attempt {attempt + 1}): {e}")
 
-                # Method 2: Fallback to prompt-based extraction
+                # Method 2: Fallback to scrape with extract format
                 try:
-                    result = await self._extract_with_prompt(url)
+                    result = await self._extract_with_scrape_extract(url)
                     if result.success and result.restaurants:
                         return result
                 except Exception as e:
-                    logger.warning(f"Prompt extraction failed for {url} (attempt {attempt + 1}): {e}")
+                    logger.warning(f"Scrape extract failed for {url} (attempt {attempt + 1}): {e}")
 
                 # Method 3: Last resort - basic scrape + GPT processing
                 try:
@@ -239,38 +236,44 @@ class FirecrawlWebScraper:
             error_message="All extraction methods failed after retries"
         )
 
-    async def _extract_with_ai_schema(self, url: str) -> RestaurantExtractionResult:
+    async def _extract_with_new_extract_api(self, url: str) -> RestaurantExtractionResult:
         """
-        Extract using Firecrawl's AI extraction with Pydantic schema.
-        This is the most precise method.
+        Extract using Firecrawl's new dedicated Extract API endpoint.
+        This is the recommended method for structured data extraction.
         """
-        logger.debug(f"Attempting AI schema extraction for {url}")
+        logger.debug(f"Attempting new Extract API for {url}")
 
-        # Use Firecrawl's extract endpoint with schema
-        extract_result = self.firecrawl.extract(
-            urls=[url],  # Note: urls is now a list
-            schema=RestaurantListSchema.model_json_schema(),
-            prompt="""
-            Extract ALL restaurants mentioned on this page. For each restaurant, get:
-            - Exact name as written
-            - Complete description with all details (cuisine, atmosphere, specialties)
-            - Full address if available
-            - City name
-            - Price indicators (€, €€, €€€, $ symbols, price ranges)
-            - Cuisine type
-            - Any recommended dishes or specialties mentioned
-            - Contact info if available
-            - Hours if mentioned
-            - Ratings or review scores
+        try:
+            # Use the new extract method with proper parameters
+            extract_result = await self.async_firecrawl.extract(
+                urls=[url],
+                schema=RestaurantListSchema.model_json_schema(),
+                prompt="""
+                Extract ALL restaurants mentioned on this page. For each restaurant, get:
+                - Exact name as written
+                - Complete description with all details (cuisine, atmosphere, specialties)
+                - Full address if available
+                - City name
+                - Price indicators (€, €€, €€€, $ symbols, price ranges)
+                - Cuisine type
+                - Any recommended dishes or specialties mentioned
+                - Contact info if available
+                - Hours if mentioned
+                - Ratings or review scores
 
-            Also identify the source publication name (Time Out, Eater, Michelin, etc.).
+                Also identify the source publication name (Time Out, Eater, Michelin, etc.).
 
-            Be thorough - extract every restaurant mentioned, even if briefly.
-            """
-        )
+                Be thorough - extract every restaurant mentioned, even if briefly.
+                """
+            )
 
-        if extract_result and extract_result.get("success"):
-            extracted_data = extract_result.get("data", {})
+            # Handle the response format
+            if hasattr(extract_result, 'success') and extract_result.success:
+                extracted_data = extract_result.data
+            elif hasattr(extract_result, 'data'):
+                extracted_data = extract_result.data
+            else:
+                raise Exception("No data returned from extract API")
 
             # Convert to our format
             restaurants = []
@@ -293,92 +296,109 @@ class FirecrawlWebScraper:
                     restaurants.append(restaurant)
 
             source_name = extracted_data.get("source_publication", self._extract_source_name(url))
-            self.stats["credits_used"] += 50  # AI extraction costs 50 credits
+            self.stats["credits_used"] += 50  # Extract API cost
 
             return RestaurantExtractionResult(
                 restaurants=restaurants,
                 source_url=url,
                 source_name=source_name,
-                extraction_method="ai_schema",
+                extraction_method="new_extract_api",
                 success=True
             )
 
-        raise Exception("AI schema extraction returned no valid data")
+        except Exception as e:
+            raise Exception(f"New Extract API failed: {str(e)}")
 
-    async def _extract_with_prompt(self, url: str) -> RestaurantExtractionResult:
+    async def _extract_with_scrape_extract(self, url: str) -> RestaurantExtractionResult:
         """
-        Extract using Firecrawl's AI extraction with natural language prompt.
-        Fallback method when schema extraction fails.
+        Extract using scrape_url with extract format.
+        Updated method using current SDK patterns.
         """
-        logger.debug(f"Attempting prompt-based extraction for {url}")
+        logger.debug(f"Attempting scrape with extract for {url}")
 
-        extract_result = self.firecrawl.extract(
-            urls=[url],  # Note: urls is now a list
-            prompt="""
-            Find and extract ALL restaurants mentioned on this page. Return as JSON:
+        try:
+            # Use scrape_url with extract format
+            scrape_result = await self.async_firecrawl.scrape_url(
+                url,
+                formats=['markdown', 'extract'],
+                extract={
+                    'prompt': """
+                    Find and extract ALL restaurants mentioned on this page. Return as JSON:
 
-            {
-              "restaurants": [
-                {
-                  "name": "Restaurant Name",
-                  "description": "Full description with cuisine, atmosphere, and specialties",
-                  "address": "Street address",
-                  "city": "City name", 
-                  "price_range": "Price indicators (€, €€, etc.)",
-                  "cuisine_type": "Cuisine type",
-                  "recommended_dishes": ["dish1", "dish2"],
-                  "source_url": "current_page_url"
+                    {
+                      "restaurants": [
+                        {
+                          "name": "Restaurant Name",
+                          "description": "Full description with cuisine, atmosphere, and specialties",
+                          "address": "Street address",
+                          "city": "City name", 
+                          "price_range": "Price indicators (€, €€, etc.)",
+                          "cuisine_type": "Cuisine type",
+                          "recommended_dishes": ["dish1", "dish2"],
+                          "source_url": "current_page_url"
+                        }
+                      ],
+                      "source_publication": "Publication name (Time Out, Eater, etc.)"
+                    }
+
+                    Extract every restaurant mentioned, even if information is incomplete.
+                    """,
+                    'schema': RestaurantListSchema.model_json_schema()
                 }
-              ],
-              "source_publication": "Publication name (Time Out, Eater, etc.)"
-            }
+            )
 
-            Extract every restaurant mentioned, even if information is incomplete.
-            """
-        )
+            # Handle the response format
+            if hasattr(scrape_result, 'success') and scrape_result.success:
+                data = scrape_result.data
+            elif hasattr(scrape_result, 'data'):
+                data = scrape_result.data
+            else:
+                raise Exception("No data returned from scrape")
 
-        if extract_result and extract_result.get("success"):
-            extracted_data = extract_result.get("data", {})
+            # Get extracted data
+            extracted_data = data.get('extract', {})
+            restaurants = extracted_data.get("restaurants", [])
+            source_name = extracted_data.get("source_publication", self._extract_source_name(url))
 
-            try:
-                # The data structure may be different
-                restaurants = extracted_data.get("restaurants", [])
-                source_name = extracted_data.get("source_publication", self._extract_source_name(url))
+            # Ensure all restaurants have source_url
+            for restaurant in restaurants:
+                restaurant["source_url"] = url
 
-                # Ensure all restaurants have source_url
-                for restaurant in restaurants:
-                    restaurant["source_url"] = url
+            self.stats["credits_used"] += 10  # Scrape with extract cost
 
-                self.stats["credits_used"] += 50
+            return RestaurantExtractionResult(
+                restaurants=restaurants,
+                source_url=url,
+                source_name=source_name,
+                extraction_method="scrape_extract",
+                success=True
+            )
 
-                return RestaurantExtractionResult(
-                    restaurants=restaurants,
-                    source_url=url,
-                    source_name=source_name,
-                    extraction_method="ai_prompt",
-                    success=True
-                )
-
-            except Exception as e:
-                raise Exception(f"Failed to parse data from prompt extraction: {e}")
-
-        raise Exception("Prompt-based extraction returned no valid data")
+        except Exception as e:
+            raise Exception(f"Scrape extract failed: {str(e)}")
 
     async def _extract_with_basic_scrape(self, url: str) -> RestaurantExtractionResult:
         """
-        Last resort: Basic scrape + manual processing.
-        Uses regular scrape endpoint and processes content.
+        Last resort: Basic scrape + GPT processing.
+        Updated to use current SDK patterns.
         """
         logger.debug(f"Attempting basic scrape for {url}")
 
-        # Use basic scrape endpoint
-        scrape_result = self.firecrawl.scrape_url(
-            url,
-            formats=["markdown"]
-        )
+        try:
+            # Use basic scrape endpoint
+            scrape_result = await self.async_firecrawl.scrape_url(
+                url,
+                formats=["markdown"]
+            )
 
-        if scrape_result and scrape_result.get("success"):
-            data = scrape_result.get("data", {})
+            # Handle the response format
+            if hasattr(scrape_result, 'success') and scrape_result.success:
+                data = scrape_result.data
+            elif hasattr(scrape_result, 'data'):
+                data = scrape_result.data
+            else:
+                raise Exception("No data returned from basic scrape")
+
             markdown_content = data.get("markdown", "")
 
             if markdown_content:
@@ -432,7 +452,7 @@ class FirecrawlWebScraper:
                     for restaurant in restaurants:
                         restaurant["source_url"] = url
 
-                    self.stats["credits_used"] += 1  # Basic scrape costs 1 credit
+                    self.stats["credits_used"] += 1  # Basic scrape cost
 
                     return RestaurantExtractionResult(
                         restaurants=restaurants,
@@ -444,11 +464,14 @@ class FirecrawlWebScraper:
 
                 except json.JSONDecodeError as e:
                     raise Exception(f"Failed to parse GPT response: {e}")
+            else:
+                raise Exception("No markdown content returned")
 
-        raise Exception("Basic scrape returned no content")
+        except Exception as e:
+            raise Exception(f"Basic scrape failed: {str(e)}")
 
     def _extract_source_name(self, url: str) -> str:
-        """Extract source name from URL"""
+        """Extract source name from URL - updated with more domains"""
         try:
             from urllib.parse import urlparse
             domain = urlparse(url).netloc.lower()
@@ -457,7 +480,7 @@ class FirecrawlWebScraper:
             if domain.startswith('www.'):
                 domain = domain[4:]
 
-            # Map known domains to proper names
+            # Updated mapping with more domains
             domain_mapping = {
                 'timeout.com': 'Time Out',
                 'eater.com': 'Eater',
@@ -469,6 +492,7 @@ class FirecrawlWebScraper:
                 'nytimes.com': 'New York Times',
                 'forbes.com': 'Forbes',
                 'guardian.co.uk': 'The Guardian',
+                'guardian.com': 'The Guardian',
                 'telegraph.co.uk': 'The Telegraph',
                 'cntraveler.com': 'Condé Nast Traveler',
                 'laliste.com': 'La Liste',
@@ -478,7 +502,11 @@ class FirecrawlWebScraper:
                 'zagat.com': 'Zagat',
                 'opentable.com': 'OpenTable',
                 'saveur.com': 'Saveur',
-                'foodandwine.com': 'Food & Wine'
+                'foodandwine.com': 'Food & Wine',
+                'thrillist.com': 'Thrillist',
+                'delish.com': 'Delish',
+                'bonappetit.com': 'Bon Appétit',
+                'epicurious.com': 'Epicurious'
             }
 
             # Check for exact matches first
