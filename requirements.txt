@@ -38,3 +38,6 @@ aiohttp>=3.8.5
 
 # Firecrawl SDK (NEW)
 firecrawl-py>=0.0.20
+
+# Parsing in search agent
+beautifulsoup4
