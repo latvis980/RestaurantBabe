@@ -1,4 +1,4 @@
-# agents/optimized_scraper.py
+# agents/intelligent_scraper.py
 import asyncio
 import logging
 import time
@@ -10,10 +10,10 @@ from dataclasses import dataclass
 from enum import Enum
 
 # Import your existing scrapers
-from agents.scraper import FirecrawlWebScraper
+from agents.firecrawl_scraper import FirecrawlWebScraper
 from agents.specialized_scraper import EaterTimeoutSpecializedScraper
 
-# For the hybrid scraper components
+# For the intelligent scraper components
 import httpx
 from bs4 import BeautifulSoup
 from readability import Document
@@ -37,15 +37,18 @@ class ScrapeStrategy:
     scraper_type: str
     estimated_cost: int  # In "firecrawl credit units"
     confidence: float    # 0.0-1.0
+    reasoning: str       # Why this strategy was chosen
 
-class OptimizedHybridScraper:
+class IntelligentAdaptiveScraper:
     """
-    Intelligent hybrid scraper that routes URLs to the most cost-effective method:
+    Intelligent scraper that uses AI to analyze each URL dynamically.
+    No hardcoded patterns - adapts to any website through smart analysis.
 
-    1. Specialized handlers (FREE) - RSS/sitemaps for Eater, Timeout, etc.
-    2. Simple HTTP + BeautifulSoup (VERY CHEAP) - Static HTML sites
-    3. Enhanced HTTP with readability (CHEAP) - Moderate complexity sites  
-    4. Firecrawl (EXPENSIVE) - Only for heavy JS sites that absolutely need it
+    Strategy:
+    1. Quick HTTP probe to get initial content
+    2. AI analysis of HTML structure and content
+    3. Dynamic routing to optimal scraper
+    4. Learning from successes/failures to improve over time
     """
 
     def __init__(self, config):
@@ -55,35 +58,14 @@ class OptimizedHybridScraper:
         self.firecrawl_scraper = FirecrawlWebScraper(config)
         self.specialized_scraper = None  # Will initialize as needed
 
-        # For strategy analysis
+        # AI analyzer with enhanced prompts
         self.analyzer = ChatOpenAI(
             model=config.OPENAI_MODEL,
-            temperature=0.1
+            temperature=0.1  # Low temperature for consistent analysis
         )
 
-        # Website categorization patterns
-        self.simple_html_patterns = [
-            # News sites with good HTML structure
-            r'.*guardian\.com.*', r'.*telegraph\.co\.uk.*', r'.*bbc\.com.*',
-            r'.*nytimes\.com.*', r'.*washingtonpost\.com.*',
-            # Food blogs and simple sites
-            r'.*serious-?eats\.com.*', r'.*food52\.com.*',
-            # Government and institutional sites
-            r'.*\.gov.*', r'.*\.edu.*', r'.*wikipedia\.org.*',
-            # Simple review/guide sites
-            r'.*zagat\.com.*', r'.*michelin\.com.*'
-        ]
-
-        self.heavy_js_patterns = [
-            # Known problematic sites
-            r'.*timeout\.com.*', r'.*eater\.com.*',  # But these have specialized handlers
-            r'.*thrillist\.com.*', r'.*bonappetit\.com.*',
-            r'.*foodandwine\.com.*', r'.*epicurious\.com.*',
-            # Social and dynamic sites
-            r'.*instagram\.com.*', r'.*facebook\.com.*', r'.*twitter\.com.*',
-            # SPA frameworks
-            r'.*angular\..*', r'.*react\..*', r'.*vue\..*'
-        ]
+        # Dynamic learning system - tracks what works
+        self.domain_intelligence = {}  # Cache successful strategies per domain
 
         # Cost tracking
         self.stats = {
@@ -92,223 +74,305 @@ class OptimizedHybridScraper:
             "specialized_used": 0,
             "simple_http_used": 0,
             "enhanced_http_used": 0,
-            "total_cost_saved": 0,  # Estimated firecrawl credits saved
-            "processing_time": 0.0
+            "total_cost_saved": 0,
+            "processing_time": 0.0,
+            "ai_analysis_calls": 0,
+            "cache_hits": 0,
+            "strategy_overrides": 0
         }
 
     async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Main entry point - intelligently route URLs to optimal scrapers
-
-        Args:
-            search_results: List of search result dictionaries
-
-        Returns:
-            List of enriched results with scraped content
+        Main entry point - intelligently analyze each URL and route to optimal scraper
         """
         start_time = time.time()
-        logger.info(f"🔍 Starting intelligent scraping for {len(search_results)} URLs")
+        logger.info(f"🧠 Starting intelligent analysis for {len(search_results)} URLs")
 
-        # Step 1: Analyze and categorize all URLs
-        categorization_tasks = [
-            self._analyze_url_strategy(result) 
+        # Step 1: Analyze all URLs with AI-powered strategy detection
+        analysis_tasks = [
+            self._intelligent_url_analysis(result) 
             for result in search_results
         ]
-        strategies = await asyncio.gather(*categorization_tasks)
+        strategies = await asyncio.gather(*analysis_tasks)
 
-        # Step 2: Group URLs by scraping strategy
+        # Step 2: Group URLs by strategy and log distribution
         url_groups = self._group_by_strategy(search_results, strategies)
-
-        # Step 3: Log the strategy distribution
         self._log_strategy_distribution(url_groups)
 
-        # Step 4: Process each group with optimal scraper
-        all_results = []
+        # Step 3: Process each group with optimal scraper
+        all_results = await self._process_url_groups(url_groups)
 
-        # Process specialized URLs first (FREE)
-        if url_groups.get(ScrapeComplexity.SPECIALIZED):
-            logger.info(f"📡 Processing {len(url_groups[ScrapeComplexity.SPECIALIZED])} URLs with specialized handlers (FREE)")
-            specialized_results = await self._process_specialized_urls(
-                url_groups[ScrapeComplexity.SPECIALIZED]
-            )
-            all_results.extend(specialized_results)
-            self.stats["specialized_used"] += len(url_groups[ScrapeComplexity.SPECIALIZED])
-
-        # Process simple HTML URLs (VERY CHEAP)
-        if url_groups.get(ScrapeComplexity.SIMPLE_HTML):
-            logger.info(f"🌐 Processing {len(url_groups[ScrapeComplexity.SIMPLE_HTML])} URLs with simple HTTP (VERY CHEAP)")
-            simple_results = await self._process_simple_http_urls(
-                url_groups[ScrapeComplexity.SIMPLE_HTML]
-            )
-            all_results.extend(simple_results)
-            self.stats["simple_http_used"] += len(url_groups[ScrapeComplexity.SIMPLE_HTML])
-
-        # Process moderate JS URLs (CHEAP)
-        if url_groups.get(ScrapeComplexity.MODERATE_JS):
-            logger.info(f"📄 Processing {len(url_groups[ScrapeComplexity.MODERATE_JS])} URLs with enhanced HTTP (CHEAP)")
-            enhanced_results = await self._process_enhanced_http_urls(
-                url_groups[ScrapeComplexity.MODERATE_JS]
-            )
-            all_results.extend(enhanced_results)
-            self.stats["enhanced_http_used"] += len(url_groups[ScrapeComplexity.MODERATE_JS])
-
-        # Process heavy JS URLs with Firecrawl (EXPENSIVE) - only as last resort
-        if url_groups.get(ScrapeComplexity.HEAVY_JS):
-            logger.warning(f"🔥 Processing {len(url_groups[ScrapeComplexity.HEAVY_JS])} URLs with Firecrawl (EXPENSIVE)")
-            firecrawl_results = await self._process_firecrawl_urls(
-                url_groups[ScrapeComplexity.HEAVY_JS]
-            )
-            all_results.extend(firecrawl_results)
-            self.stats["firecrawl_used"] += len(url_groups[ScrapeComplexity.HEAVY_JS])
-
-        # Process unknown URLs with fallback strategy
-        if url_groups.get(ScrapeComplexity.UNKNOWN):
-            logger.info(f"❓ Processing {len(url_groups[ScrapeComplexity.UNKNOWN])} unknown URLs with fallback")
-            unknown_results = await self._process_unknown_urls(
-                url_groups[ScrapeComplexity.UNKNOWN]
-            )
-            all_results.extend(unknown_results)
+        # Step 4: Learn from results to improve future decisions
+        self._update_domain_intelligence(all_results)
 
         # Update final stats
         self.stats["total_processed"] = len(search_results)
         self.stats["processing_time"] = time.time() - start_time
-
-        # Calculate cost savings
-        total_urls = len(search_results)
-        firecrawl_cost_if_all = total_urls * 10  # 10 credits per URL with Firecrawl
-        actual_firecrawl_cost = self.stats["firecrawl_used"] * 10
-        self.stats["total_cost_saved"] = firecrawl_cost_if_all - actual_firecrawl_cost
-
+        self._calculate_cost_savings()
         self._log_final_stats()
 
         return all_results
 
-    async def _analyze_url_strategy(self, result: Dict[str, Any]) -> ScrapeStrategy:
-        """Analyze a URL to determine the optimal scraping strategy"""
+    async def _intelligent_url_analysis(self, result: Dict[str, Any]) -> ScrapeStrategy:
+        """
+        Intelligent analysis of URL using AI and quick probing
+        """
         url = result.get("url", "")
         title = result.get("title", "")
         description = result.get("description", "")
 
-        # Check for specialized handlers first
+        # Step 1: Check if we've seen this domain before (learning cache)
+        domain = self._extract_domain(url)
+        if domain in self.domain_intelligence:
+            cached_strategy = self.domain_intelligence[domain]
+            if cached_strategy['confidence'] > 0.8:  # High confidence cached result
+                self.stats["cache_hits"] += 1
+                logger.debug(f"🎯 Using cached strategy for {domain}: {cached_strategy['complexity']}")
+                return ScrapeStrategy(
+                    complexity=ScrapeComplexity(cached_strategy['complexity']),
+                    scraper_type=cached_strategy['scraper_type'],
+                    estimated_cost=cached_strategy['cost'],
+                    confidence=cached_strategy['confidence'],
+                    reasoning=f"Cached from previous successful analysis: {cached_strategy['reasoning']}"
+                )
+
+        # Step 2: Check for specialized handlers
         if await self._has_specialized_handler(url):
             return ScrapeStrategy(
                 complexity=ScrapeComplexity.SPECIALIZED,
                 scraper_type="specialized",
                 estimated_cost=0,
-                confidence=0.9
+                confidence=0.95,
+                reasoning="Has dedicated specialized handler"
             )
 
-        # Check simple HTML patterns
-        if self._matches_patterns(url, self.simple_html_patterns):
-            return ScrapeStrategy(
-                complexity=ScrapeComplexity.SIMPLE_HTML,
-                scraper_type="simple_http",
-                estimated_cost=0.1,  # Minimal cost for HTTP request
-                confidence=0.8
-            )
+        # Step 3: AI-powered analysis with quick HTTP probe
+        return await self._ai_powered_analysis(url, title, description, domain)
 
-        # Check heavy JS patterns
-        if self._matches_patterns(url, self.heavy_js_patterns):
-            return ScrapeStrategy(
-                complexity=ScrapeComplexity.HEAVY_JS,
-                scraper_type="firecrawl",
-                estimated_cost=10,
-                confidence=0.8
-            )
+    async def _ai_powered_analysis(self, url: str, title: str, description: str, domain: str) -> ScrapeStrategy:
+        """
+        Use AI to analyze website characteristics and determine optimal scraping strategy
+        """
+        self.stats["ai_analysis_calls"] += 1
 
-        # For unknown URLs, use AI analysis with quick HTTP probe
-        return await self._ai_analyze_url_complexity(url, title, description)
+        # Quick HTTP probe to get website characteristics
+        html_preview = ""
+        response_time = 0
+        status_code = 0
 
-    async def _ai_analyze_url_complexity(self, url: str, title: str, description: str) -> ScrapeStrategy:
-        """Use AI to analyze URL complexity when patterns don't match"""
-
-        # Quick HTTP probe to check initial content
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            start_time = time.time()
+            async with httpx.AsyncClient(timeout=8.0) as client:
                 response = await client.get(url, headers={
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                 })
+                response_time = time.time() - start_time
+                status_code = response.status_code
 
                 if response.status_code == 200:
-                    html_content = response.text[:3000]  # First 3k chars
-
-                    # AI analysis prompt
-                    analysis_prompt = ChatPromptTemplate.from_messages([
-                        ("system", """
-                        Analyze this website to determine scraping complexity:
-
-                        SIMPLE_HTML: Static content, minimal JavaScript, content in initial HTML
-                        - News sites, blogs, government sites, simple restaurant pages
-
-                        MODERATE_JS: Some JavaScript but main content in HTML with readability
-                        - Magazine sites, food blogs with some interactive elements
-
-                        HEAVY_JS: Content loaded dynamically via JavaScript/AJAX  
-                        - Single Page Apps, heavy media sites, complex restaurant platforms
-
-                        Return JSON: {{"complexity": "SIMPLE_HTML|MODERATE_JS|HEAVY_JS", "confidence": 0.0-1.0, "reasoning": "brief explanation"}}
-                        """),
-                        ("human", """
-                        URL: {url}
-                        Title: {title}
-                        Description: {description}
-
-                        HTML Preview (first 3000 chars):
-                        {html_preview}
-                        """)
-                    ])
-
-                    chain = analysis_prompt | self.analyzer
-                    response = await chain.ainvoke({
-                        "url": url,
-                        "title": title,
-                        "description": description,
-                        "html_preview": html_content
-                    })
-
-                    # Parse AI response
-                    content = response.content
-                    if "```json" in content:
-                        content = content.split("```json")[1].split("```")[0]
-
-                    analysis = json.loads(content.strip())
-                    complexity_str = analysis.get("complexity", "MODERATE_JS")
-                    confidence = analysis.get("confidence", 0.5)
-
-                    # Map to enum
-                    complexity_map = {
-                        "SIMPLE_HTML": ScrapeComplexity.SIMPLE_HTML,
-                        "MODERATE_JS": ScrapeComplexity.MODERATE_JS,
-                        "HEAVY_JS": ScrapeComplexity.HEAVY_JS
-                    }
-
-                    complexity = complexity_map.get(complexity_str, ScrapeComplexity.MODERATE_JS)
-
-                    # Determine scraper type and cost
-                    if complexity == ScrapeComplexity.SIMPLE_HTML:
-                        scraper_type, cost = "simple_http", 0.1
-                    elif complexity == ScrapeComplexity.MODERATE_JS:
-                        scraper_type, cost = "enhanced_http", 0.5
-                    else:
-                        scraper_type, cost = "firecrawl", 10
-
+                    html_content = response.text
+                    html_preview = html_content[:4000]  # First 4k chars for analysis
+                else:
+                    # If we can't fetch, default to enhanced method
                     return ScrapeStrategy(
-                        complexity=complexity,
-                        scraper_type=scraper_type,
-                        estimated_cost=cost,
-                        confidence=confidence
+                        complexity=ScrapeComplexity.MODERATE_JS,
+                        scraper_type="enhanced_http",
+                        estimated_cost=0.5,
+                        confidence=0.4,
+                        reasoning=f"HTTP error {response.status_code}, using safe fallback"
                     )
 
         except Exception as e:
-            logger.warning(f"Failed to analyze URL {url}: {e}")
+            logger.warning(f"Failed to probe {url}: {e}")
+            return ScrapeStrategy(
+                complexity=ScrapeComplexity.MODERATE_JS,
+                scraper_type="enhanced_http", 
+                estimated_cost=0.5,
+                confidence=0.3,
+                reasoning=f"Network error during probe: {str(e)}"
+            )
 
-        # Default fallback
-        return ScrapeStrategy(
-            complexity=ScrapeComplexity.UNKNOWN,
-            scraper_type="enhanced_http",
-            estimated_cost=0.5,
-            confidence=0.3
-        )
+        # AI analysis with comprehensive context
+        analysis_prompt = ChatPromptTemplate.from_messages([
+            ("system", """
+            You are an expert web scraping analyst. Analyze websites to determine the optimal scraping strategy.
+
+            ANALYSIS CRITERIA:
+
+            🟢 SIMPLE_HTML (use basic HTTP + BeautifulSoup):
+            - Static HTML sites where main content is in initial response
+            - News sites, blogs, government sites, simple business pages
+            - Minimal JavaScript, content visible in HTML source
+            - Fast loading, server-side rendered content
+
+            🟡 MODERATE_JS (use HTTP + Readability + AI extraction):
+            - Sites with some JavaScript but main content extractable
+            - Magazine-style sites, modern blogs with interactive elements
+            - Content mostly in HTML but may need cleanup/enhancement
+            - Moderate complexity, some client-side rendering
+
+            🔴 HEAVY_JS (use expensive Firecrawl - last resort):
+            - Single Page Applications (SPAs) where content is JavaScript-generated
+            - Sites where content only appears after JS execution
+            - Complex interactive platforms, heavy frameworks (React/Angular/Vue)
+            - Anti-bot protection, complex dynamic loading
+
+            DECISION FACTORS:
+            1. HTML content analysis - Is meaningful content in the initial response?
+            2. JavaScript complexity - How much JS is required for content?
+            3. Site type identification - News vs SPA vs blog vs platform
+            4. Performance indicators - Response time, content size
+            5. Technical stack detection - Framework usage, rendering method
+
+            COST AWARENESS:
+            - SIMPLE_HTML: ~0.1 credits (very cheap)
+            - MODERATE_JS: ~0.5 credits (cheap)  
+            - HEAVY_JS: ~10 credits (expensive - avoid unless necessary)
+
+            OUTPUT FORMAT:
+            {{
+              "complexity": "SIMPLE_HTML|MODERATE_JS|HEAVY_JS",
+              "confidence": 0.0-1.0,
+              "reasoning": "detailed analysis of why this complexity was chosen",
+              "content_in_html": true/false,
+              "javascript_dependency": "low|medium|high",
+              "site_type": "news|blog|magazine|platform|spa|ecommerce|other",
+              "estimated_restaurant_extractability": 0.0-1.0
+            }}
+            """),
+            ("human", """
+            Analyze this website for optimal scraping strategy:
+
+            URL: {url}
+            Domain: {domain}
+            Title: {title}
+            Description: {description}
+
+            HTTP Response:
+            - Status Code: {status_code}
+            - Response Time: {response_time:.2f}s
+            - Content Length: {content_length} chars
+
+            HTML Analysis:
+            - Has <script> tags: {has_scripts}
+            - Script count: {script_count}
+            - Has framework indicators: {has_frameworks}
+            - Content preview: {content_preview}
+
+            Technical Indicators:
+            - Meta viewport: {has_viewport}
+            - JSON-LD structured data: {has_structured_data}
+            - Social media meta tags: {has_social_meta}
+            """)
+        ])
+
+        # Analyze HTML structure
+        soup = BeautifulSoup(html_preview, 'html.parser')
+
+        # Extract technical indicators
+        scripts = soup.find_all('script')
+        has_scripts = len(scripts) > 0
+        script_count = len(scripts)
+
+        # Check for SPA/framework indicators
+        framework_indicators = ['react', 'angular', 'vue', 'ember', 'backbone']
+        has_frameworks = any(indicator in html_preview.lower() for indicator in framework_indicators)
+
+        # Check for structured data
+        has_structured_data = bool(soup.find('script', type='application/ld+json'))
+
+        # Check for responsive design (often indicates modern sites)
+        has_viewport = bool(soup.find('meta', attrs={'name': 'viewport'}))
+
+        # Check for social media meta tags
+        has_social_meta = bool(soup.find('meta', attrs={'property': 'og:title'}) or 
+                              soup.find('meta', attrs={'name': 'twitter:title'}))
+
+        # Get clean content preview
+        content_preview = soup.get_text(separator=' ', strip=True)[:500]
+
+        try:
+            chain = analysis_prompt | self.analyzer
+            response = await chain.ainvoke({
+                "url": url,
+                "domain": domain,
+                "title": title,
+                "description": description,
+                "status_code": status_code,
+                "response_time": response_time,
+                "content_length": len(html_preview),
+                "has_scripts": has_scripts,
+                "script_count": script_count,
+                "has_frameworks": has_frameworks,
+                "content_preview": content_preview,
+                "has_viewport": has_viewport,
+                "has_structured_data": has_structured_data,
+                "has_social_meta": has_social_meta
+            })
+
+            # Parse AI response
+            content = response.content
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0]
+
+            analysis = json.loads(content.strip())
+
+            # Map AI response to strategy
+            complexity_str = analysis.get("complexity", "MODERATE_JS")
+            confidence = analysis.get("confidence", 0.5)
+            reasoning = analysis.get("reasoning", "AI analysis")
+
+            # Additional confidence adjustment based on technical factors
+            if analysis.get("content_in_html", True) and script_count < 5:
+                if complexity_str == "HEAVY_JS":
+                    # Override AI if content is clearly in HTML
+                    complexity_str = "MODERATE_JS"
+                    confidence = max(0.7, confidence)
+                    reasoning += " [Override: Content found in HTML]"
+                    self.stats["strategy_overrides"] += 1
+
+            # Map to enum and determine scraper
+            complexity_map = {
+                "SIMPLE_HTML": (ScrapeComplexity.SIMPLE_HTML, "simple_http", 0.1),
+                "MODERATE_JS": (ScrapeComplexity.MODERATE_JS, "enhanced_http", 0.5),
+                "HEAVY_JS": (ScrapeComplexity.HEAVY_JS, "firecrawl", 10)
+            }
+
+            complexity, scraper_type, cost = complexity_map.get(
+                complexity_str, 
+                (ScrapeComplexity.MODERATE_JS, "enhanced_http", 0.5)
+            )
+
+            strategy = ScrapeStrategy(
+                complexity=complexity,
+                scraper_type=scraper_type,
+                estimated_cost=cost,
+                confidence=confidence,
+                reasoning=reasoning
+            )
+
+            # Cache this analysis for future use
+            self.domain_intelligence[domain] = {
+                'complexity': complexity.value,
+                'scraper_type': scraper_type,
+                'cost': cost,
+                'confidence': confidence,
+                'reasoning': reasoning,
+                'timestamp': time.time()
+            }
+
+            return strategy
+
+        except Exception as e:
+            logger.warning(f"AI analysis failed for {url}: {e}")
+            # Safe fallback
+            return ScrapeStrategy(
+                complexity=ScrapeComplexity.MODERATE_JS,
+                scraper_type="enhanced_http",
+                estimated_cost=0.5,
+                confidence=0.4,
+                reasoning=f"AI analysis failed: {str(e)}, using safe fallback"
+            )
 
     async def _has_specialized_handler(self, url: str) -> bool:
         """Check if URL can be handled by specialized scraper"""
@@ -320,10 +384,16 @@ class OptimizedHybridScraper:
         except Exception:
             return False
 
-    def _matches_patterns(self, url: str, patterns: List[str]) -> bool:
-        """Check if URL matches any of the given regex patterns"""
-        url_lower = url.lower()
-        return any(re.search(pattern, url_lower) for pattern in patterns)
+    def _extract_domain(self, url: str) -> str:
+        """Extract clean domain from URL"""
+        try:
+            parsed = urlparse(url)
+            domain = parsed.netloc.lower()
+            if domain.startswith('www.'):
+                domain = domain[4:]
+            return domain
+        except Exception:
+            return url
 
     def _group_by_strategy(self, search_results: List[Dict], strategies: List[ScrapeStrategy]) -> Dict:
         """Group URLs by their optimal scraping strategy"""
@@ -341,7 +411,7 @@ class OptimizedHybridScraper:
 
     def _log_strategy_distribution(self, url_groups: Dict):
         """Log how URLs were distributed across strategies"""
-        logger.info("📊 URL Distribution by Scraping Strategy:")
+        logger.info("🧠 Intelligent URL Analysis Results:")
 
         total_cost = 0
         for complexity, urls in url_groups.items():
@@ -350,13 +420,62 @@ class OptimizedHybridScraper:
                 avg_cost = sum(url["scrape_strategy"].estimated_cost for url in urls) / count
                 strategy_cost = sum(url["scrape_strategy"].estimated_cost for url in urls)
                 total_cost += strategy_cost
+                avg_confidence = sum(url["scrape_strategy"].confidence for url in urls) / count
 
-                logger.info(f"  {complexity.value}: {count} URLs (avg cost: {avg_cost:.1f}, total: {strategy_cost:.1f})")
+                logger.info(f"  {complexity.value}: {count} URLs (avg cost: {avg_cost:.1f}, confidence: {avg_confidence:.2f})")
 
-        logger.info(f"  💰 Estimated total cost: {total_cost:.1f} Firecrawl credits")
+        logger.info(f"  💰 Estimated total cost: {total_cost:.1f} credits")
+        logger.info(f"  🎯 Cache hits: {self.stats['cache_hits']}")
+        logger.info(f"  🔄 AI analysis calls: {self.stats['ai_analysis_calls']}")
+
+    async def _process_url_groups(self, url_groups: Dict) -> List[Dict]:
+        """Process each group with the appropriate scraper"""
+        all_results = []
+
+        # Process in order of preference (cheapest first)
+        processing_order = [
+            ScrapeComplexity.SPECIALIZED,
+            ScrapeComplexity.SIMPLE_HTML, 
+            ScrapeComplexity.MODERATE_JS,
+            ScrapeComplexity.HEAVY_JS,
+            ScrapeComplexity.UNKNOWN
+        ]
+
+        for complexity in processing_order:
+            if complexity not in url_groups:
+                continue
+
+            urls = url_groups[complexity]
+            if not urls:
+                continue
+
+            logger.info(f"🔄 Processing {len(urls)} URLs with {complexity.value}")
+
+            if complexity == ScrapeComplexity.SPECIALIZED:
+                results = await self._process_specialized_urls(urls)
+                self.stats["specialized_used"] += len(urls)
+
+            elif complexity == ScrapeComplexity.SIMPLE_HTML:
+                results = await self._process_simple_http_urls(urls)
+                self.stats["simple_http_used"] += len(urls)
+
+            elif complexity == ScrapeComplexity.MODERATE_JS:
+                results = await self._process_enhanced_http_urls(urls)
+                self.stats["enhanced_http_used"] += len(urls)
+
+            elif complexity == ScrapeComplexity.HEAVY_JS:
+                results = await self._process_firecrawl_urls(urls)
+                self.stats["firecrawl_used"] += len(urls)
+
+            else:  # UNKNOWN
+                results = await self._process_unknown_urls(urls)
+
+            all_results.extend(results)
+
+        return all_results
 
     async def _process_specialized_urls(self, urls: List[Dict]) -> List[Dict]:
-        """Process URLs using specialized handlers (RSS, sitemaps, etc.)"""
+        """Process URLs using specialized handlers"""
         if not self.specialized_scraper:
             self.specialized_scraper = EaterTimeoutSpecializedScraper(self.config)
 
@@ -366,7 +485,7 @@ class OptimizedHybridScraper:
     async def _process_simple_http_urls(self, urls: List[Dict]) -> List[Dict]:
         """Process URLs using simple HTTP + BeautifulSoup"""
         results = []
-        semaphore = asyncio.Semaphore(5)  # Limit concurrent requests
+        semaphore = asyncio.Semaphore(8)  # Higher concurrency for simple requests
 
         async def process_single_simple(result):
             async with semaphore:
@@ -380,17 +499,18 @@ class OptimizedHybridScraper:
                         if response.status_code == 200:
                             soup = BeautifulSoup(response.text, 'html.parser')
 
-                            # Remove unwanted elements
-                            for tag in soup(['script', 'style', 'nav', 'footer', 'header']):
-                                tag.decompose()
-
-                            # Extract clean text
+                            # Smart content extraction
                             title = soup.title.text.strip() if soup.title else ""
 
-                            # Get main content
+                            # Remove unwanted elements
+                            for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
+                                tag.decompose()
+
+                            # Get main content intelligently
                             main_content = (soup.find('main') or 
                                           soup.find('article') or 
-                                          soup.find(class_='content') or 
+                                          soup.find(class_=re.compile(r'content|article|post', re.I)) or
+                                          soup.find('div', class_=re.compile(r'story|text|body', re.I)) or
                                           soup.body)
 
                             if main_content:
@@ -398,16 +518,16 @@ class OptimizedHybridScraper:
                             else:
                                 content_text = soup.get_text(separator='\n\n', strip=True)
 
-                            # Extract restaurant-related info using patterns
-                            restaurants = self._extract_restaurant_names_simple(content_text)
+                            # AI extraction of restaurants
+                            restaurants = await self._extract_restaurants_ai(content_text[:3000])
 
                             enhanced_result = result.copy()
                             enhanced_result.update({
-                                "scraped_content": content_text[:3000],  # Limit size
+                                "scraped_content": content_text[:4000],
                                 "scraped_title": title,
                                 "restaurants_found": restaurants,
                                 "scraping_method": "simple_http",
-                                "scraping_success": True,
+                                "scraping_success": len(restaurants) > 0,
                                 "source_info": {
                                     "name": self._extract_source_name(url),
                                     "url": url,
@@ -420,21 +540,20 @@ class OptimizedHybridScraper:
                 except Exception as e:
                     logger.warning(f"Simple HTTP scraping failed for {url}: {e}")
 
-                # Return original result if scraping failed
+                # Return failed result
                 result["scraping_failed"] = True
                 result["scraping_method"] = "simple_http"
                 return result
 
-        # Process all URLs concurrently
         tasks = [process_single_simple(result) for result in urls]
-        results = await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        return [r for r in results if r]
+        return [r for r in results if r and not isinstance(r, Exception)]
 
     async def _process_enhanced_http_urls(self, urls: List[Dict]) -> List[Dict]:
         """Process URLs using HTTP + Readability + AI extraction"""
         results = []
-        semaphore = asyncio.Semaphore(3)  # Lower concurrency for enhanced processing
+        semaphore = asyncio.Semaphore(5)  # Moderate concurrency
 
         async def process_single_enhanced(result):
             async with semaphore:
@@ -446,25 +565,25 @@ class OptimizedHybridScraper:
                         })
 
                         if response.status_code == 200:
-                            # Use readability to extract main content
+                            # Use readability for content extraction
                             doc = Document(response.text)
                             readable_html = doc.summary()
                             title = doc.title()
 
-                            # Parse with BeautifulSoup
+                            # Parse and clean
                             soup = BeautifulSoup(readable_html, 'html.parser')
                             content_text = soup.get_text(separator='\n\n', strip=True)
 
-                            # Use AI to extract restaurants from content
-                            restaurants = await self._ai_extract_restaurants(content_text[:2000])
+                            # AI extraction
+                            restaurants = await self._extract_restaurants_ai(content_text[:4000])
 
                             enhanced_result = result.copy()
                             enhanced_result.update({
-                                "scraped_content": content_text[:4000],
+                                "scraped_content": content_text[:5000],
                                 "scraped_title": title or "",
                                 "restaurants_found": restaurants,
                                 "scraping_method": "enhanced_http",
-                                "scraping_success": True,
+                                "scraping_success": len(restaurants) > 0,
                                 "source_info": {
                                     "name": self._extract_source_name(url),
                                     "url": url,
@@ -482,72 +601,75 @@ class OptimizedHybridScraper:
                 return result
 
         tasks = [process_single_enhanced(result) for result in urls]
-        results = await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        return [r for r in results if r]
+        return [r for r in results if r and not isinstance(r, Exception)]
 
     async def _process_firecrawl_urls(self, urls: List[Dict]) -> List[Dict]:
-        """Process URLs using Firecrawl (expensive, last resort)"""
-        logger.warning(f"🚨 Using expensive Firecrawl for {len(urls)} URLs")
+        """Process URLs using expensive Firecrawl"""
+        logger.warning(f"💸 Using expensive Firecrawl for {len(urls)} URLs")
+        for url_info in urls:
+            logger.warning(f"  🔥 Firecrawl: {url_info.get('url', 'unknown')} - {url_info.get('scrape_strategy', {}).get('reasoning', 'no reason')}")
+
         return await self.firecrawl_scraper.scrape_search_results(urls)
 
     async def _process_unknown_urls(self, urls: List[Dict]) -> List[Dict]:
-        """Process unknown URLs with fallback strategy"""
+        """Process unknown URLs with adaptive fallback"""
         # Try enhanced HTTP first, fall back to Firecrawl if needed
         enhanced_results = await self._process_enhanced_http_urls(urls)
 
-        # Check which ones failed and might need Firecrawl
-        failed_urls = [r for r in enhanced_results if r.get("scraping_failed")]
-        successful_urls = [r for r in enhanced_results if not r.get("scraping_failed")]
+        # Check success rates and retry failures with Firecrawl if needed
+        failed_urls = []
+        successful_urls = []
 
-        if failed_urls:
-            logger.info(f"🔄 Retrying {len(failed_urls)} failed URLs with Firecrawl")
+        for result in enhanced_results:
+            if (result.get("scraping_failed") or 
+                len(result.get("restaurants_found", [])) == 0):
+                failed_urls.append(result)
+            else:
+                successful_urls.append(result)
+
+        if failed_urls and len(failed_urls) / len(urls) > 0.5:  # More than 50% failed
+            logger.info(f"🔄 High failure rate, retrying {len(failed_urls)} URLs with Firecrawl")
             firecrawl_results = await self._process_firecrawl_urls(failed_urls)
             successful_urls.extend(firecrawl_results)
             self.stats["firecrawl_used"] += len(failed_urls)
+        else:
+            successful_urls.extend(failed_urls)  # Keep the failed attempts
 
         return successful_urls
 
-    def _extract_restaurant_names_simple(self, text: str) -> List[str]:
-        """Extract potential restaurant names using simple patterns"""
-        # Look for common restaurant name patterns
-        patterns = [
-            r'\b[A-Z][a-z]+ [A-Z][a-z]+\b',  # Two capitalized words
-            r'\b[A-Z][a-z]+\'s\b',           # Possessive names
-            r'\bCafe [A-Z][a-z]+\b',         # Cafe + name
-            r'\bRestaurant [A-Z][a-z]+\b',   # Restaurant + name
-        ]
-
-        restaurants = []
-        for pattern in patterns:
-            matches = re.findall(pattern, text)
-            restaurants.extend(matches)
-
-        # Remove duplicates and filter
-        unique_restaurants = list(set(restaurants))
-        return [r for r in unique_restaurants if len(r) > 3 and len(r) < 50][:10]
-
-    async def _ai_extract_restaurants(self, content: str) -> List[str]:
-        """Use AI to extract restaurant names from content"""
+    async def _extract_restaurants_ai(self, content: str) -> List[str]:
+        """AI-powered restaurant extraction"""
         try:
             extraction_prompt = ChatPromptTemplate.from_messages([
-                ("system", "Extract restaurant, cafe, bar, and food venue names from the text. Return as JSON array: [\"Restaurant 1\", \"Restaurant 2\"]"),
+                ("system", """
+                Extract restaurant, cafe, bar, bistro, and food venue names from the content.
+                Look for:
+                - Restaurant names (proper nouns)
+                - Cafe and coffee shop names  
+                - Bar and pub names
+                - Food venue names
+                - Chef-owned establishments
+
+                Return ONLY the names as a JSON array: ["Restaurant 1", "Restaurant 2"]
+                Maximum 20 names. Focus on quality over quantity.
+                """),
                 ("human", "Content:\n{content}")
             ])
 
             chain = extraction_prompt | self.analyzer
             response = await chain.ainvoke({"content": content})
 
-            # Parse response
             content = response.content
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0]
 
             restaurants = json.loads(content.strip())
-            return restaurants[:15] if isinstance(restaurants, list) else []
+            return restaurants[:20] if isinstance(restaurants, list) else []
 
         except Exception as e:
-            logger.warning(f"AI extraction failed: {e}")
+            logger.warning(f"AI restaurant extraction failed: {e}")
             return []
 
     def _extract_source_name(self, url: str) -> str:
@@ -557,55 +679,116 @@ class OptimizedHybridScraper:
             if domain.startswith('www.'):
                 domain = domain[4:]
 
-            # Simple domain to name mapping
-            domain_map = {
-                'timeout.com': 'Time Out',
-                'eater.com': 'Eater',
-                'theguardian.com': 'The Guardian',
-                'nytimes.com': 'New York Times',
-                'seriouseats.com': 'Serious Eats',
-                'food52.com': 'Food52',
-            }
+            # Convert domain to readable name
+            parts = domain.split('.')
+            if len(parts) >= 2:
+                name = parts[0].replace('-', ' ').replace('_', ' ').title()
+                return name
 
-            return domain_map.get(domain, domain.split('.')[0].title())
+            return domain.title()
 
         except Exception:
             return "Unknown Source"
 
+    def _update_domain_intelligence(self, results: List[Dict]):
+        """Learn from scraping results to improve future decisions"""
+        for result in results:
+            domain = self._extract_domain(result.get("url", ""))
+            scraping_success = result.get("scraping_success", False)
+            restaurants_found = len(result.get("restaurants_found", []))
+            method = result.get("scraping_method", "")
+
+            if domain in self.domain_intelligence:
+                cached = self.domain_intelligence[domain]
+
+                # Update confidence based on success
+                if scraping_success and restaurants_found > 0:
+                    cached['confidence'] = min(0.95, cached['confidence'] + 0.1)
+                    cached['success_count'] = cached.get('success_count', 0) + 1
+                else:
+                    cached['confidence'] = max(0.3, cached['confidence'] - 0.1)
+                    cached['failure_count'] = cached.get('failure_count', 0) + 1
+
+                cached['last_updated'] = time.time()
+
+                logger.debug(f"📚 Updated intelligence for {domain}: confidence={cached['confidence']:.2f}")
+
+    def _calculate_cost_savings(self):
+        """Calculate cost savings vs all-Firecrawl approach"""
+        total_urls = self.stats["total_processed"]
+        if total_urls > 0:
+            firecrawl_cost_if_all = total_urls * 10
+            actual_firecrawl_cost = self.stats["firecrawl_used"] * 10
+            other_costs = (self.stats["simple_http_used"] * 0.1 + 
+                          self.stats["enhanced_http_used"] * 0.5)
+
+            total_actual_cost = actual_firecrawl_cost + other_costs
+            self.stats["total_cost_saved"] = firecrawl_cost_if_all - total_actual_cost
+
     def _log_final_stats(self):
-        """Log final scraping statistics with cost analysis"""
+        """Log comprehensive final statistics"""
         stats = self.stats
 
-        logger.info("📈 HYBRID SCRAPING RESULTS:")
-        logger.info(f"  Total URLs processed: {stats['total_processed']}")
-        logger.info(f"  Specialized handlers: {stats['specialized_used']} (FREE)")
-        logger.info(f"  Simple HTTP: {stats['simple_http_used']} (VERY CHEAP)")  
-        logger.info(f"  Enhanced HTTP: {stats['enhanced_http_used']} (CHEAP)")
-        logger.info(f"  Firecrawl: {stats['firecrawl_used']} (EXPENSIVE)")
-        logger.info(f"  💰 Cost saved: ~{stats['total_cost_saved']} Firecrawl credits")
+        logger.info("🧠 INTELLIGENT ADAPTIVE SCRAPING RESULTS:")
+        logger.info(f"  📊 URLs processed: {stats['total_processed']}")
+        logger.info(f"  🆓 Specialized: {stats['specialized_used']} (FREE)")
+        logger.info(f"  🟢 Simple HTTP: {stats['simple_http_used']} (VERY CHEAP)")
+        logger.info(f"  🟡 Enhanced HTTP: {stats['enhanced_http_used']} (CHEAP)")
+        logger.info(f"  🔥 Firecrawl: {stats['firecrawl_used']} (EXPENSIVE)")
+        logger.info(f"  💰 Cost saved: ~{stats['total_cost_saved']:.1f} Firecrawl credits")
         logger.info(f"  ⏱️ Processing time: {stats['processing_time']:.2f}s")
+        logger.info(f"  🎯 Cache hits: {stats['cache_hits']}")
+        logger.info(f"  🤖 AI analysis calls: {stats['ai_analysis_calls']}")
+        logger.info(f"  🔄 Strategy overrides: {stats['strategy_overrides']}")
 
         if stats['total_processed'] > 0:
             firecrawl_percentage = (stats['firecrawl_used'] / stats['total_processed']) * 100
+            cache_hit_rate = (stats['cache_hits'] / stats['total_processed']) * 100
             logger.info(f"  📊 Firecrawl usage: {firecrawl_percentage:.1f}% of total URLs")
+            logger.info(f"  📚 Cache hit rate: {cache_hit_rate:.1f}%")
+
+            # Learning effectiveness
+            domains_learned = len(self.domain_intelligence)
+            logger.info(f"  🧠 Domains learned: {domains_learned}")
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get current scraping statistics"""
-        return self.stats.copy()
+        """Get comprehensive scraping statistics"""
+        return {
+            **self.stats,
+            "domains_learned": len(self.domain_intelligence),
+            "learning_cache": dict(list(self.domain_intelligence.items())[:5])  # Sample of cache
+        }
+
+    def get_domain_intelligence(self) -> Dict[str, Any]:
+        """Get the learned domain intelligence for debugging"""
+        return self.domain_intelligence.copy()
+
+    def clear_domain_cache(self):
+        """Clear the domain intelligence cache (useful for testing)"""
+        self.domain_intelligence.clear()
+        logger.info("🧠 Domain intelligence cache cleared")
 
 
-# Legacy compatibility wrapper
+# Legacy compatibility wrapper  
 class WebScraper:
-    """Compatibility wrapper for existing code"""
+    """
+    Drop-in replacement for existing WebScraper that uses intelligent analysis
+    """
 
     def __init__(self, config):
-        self.hybrid_scraper = OptimizedHybridScraper(config)
+        self.intelligent_scraper = IntelligentAdaptiveScraper(config)
 
     async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return await self.hybrid_scraper.scrape_search_results(search_results)
+        return await self.intelligent_scraper.scrape_search_results(search_results)
 
     async def filter_and_scrape_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return await self.hybrid_scraper.scrape_search_results(search_results)
+        return await self.intelligent_scraper.scrape_search_results(search_results)
 
     def get_stats(self) -> Dict[str, Any]:
-        return self.hybrid_scraper.get_stats()
+        return self.intelligent_scraper.get_stats()
+
+    def get_domain_intelligence(self) -> Dict[str, Any]:
+        return self.intelligent_scraper.get_domain_intelligence()
+
+    def clear_domain_cache(self):
+        return self.intelligent_scraper.clear_domain_cache()
