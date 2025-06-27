@@ -1,6 +1,8 @@
 # agents/langchain_orchestrator.py
 from langchain_core.runnables import RunnableSequence, RunnableLambda
 from langchain_core.tracers.context import tracing_v2_enabled
+from agents.enhanced_scraper import EnhancedWebScraper
+
 import time
 import json
 import re
@@ -10,6 +12,7 @@ from utils.debug_utils import dump_chain_state, log_function_call
 from utils.async_utils import sync_to_async
 import asyncio
 import logging
+
 
 # Create logger. 
 logger = logging.getLogger("restaurant-recommender.orchestrator")
@@ -108,7 +111,15 @@ class LangChainOrchestrator:
         # Initialize agents
         self.query_analyzer = QueryAnalyzer(config)
         self.search_agent = BraveSearchAgent(config)
-        self.scraper = WebScraper(config)
+
+        scraper_type = getattr(config, "SCRAPER_TYPE", "default")
+        if scraper_type == "enhanced":
+            self.scraper = EnhancedWebScraper(config)
+            logger.info("Using Enhanced WebScraper")
+        else:
+            self.scraper = WebScraper(config)
+            logger.info("Using Default WebScraper")
+            
         self.list_analyzer = ListAnalyzer(config)
         self.editor_agent = EditorAgent(config)
         self.follow_up_search_agent = FollowUpSearchAgent(config)

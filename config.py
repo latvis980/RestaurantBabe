@@ -26,3 +26,9 @@ EXCLUDED_RESTAURANT_SOURCES = ["tripadvisor.com", "yelp.com", "google.com/maps"]
 
 # Brave search settings
 BRAVE_SEARCH_COUNT = 15
+
+SCRAPER_TYPE = os.environ.get("SCRAPER_TYPE", "default")  # "default" or "enhanced"
+SCRAPER_MAX_RETRIES = int(os.environ.get("SCRAPER_MAX_RETRIES", "3"))
+SCRAPER_BASE_DELAY = int(os.environ.get("SCRAPER_BASE_DELAY", "1"))
+SCRAPER_MAX_DELAY = int(os.environ.get("SCRAPER_MAX_DELAY", "10"))
+SCRAPER_CONCURRENCY = int(os.environ.get("SCRAPER_CONCURRENCY", "3"))
