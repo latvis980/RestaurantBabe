@@ -1,4 +1,4 @@
-# agents/intelligent_scraper.py
+# agents/optimized_scraper.py Intelligent scraper
 import asyncio
 import logging
 import time

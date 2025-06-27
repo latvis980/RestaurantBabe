@@ -99,7 +99,7 @@ class LangChainOrchestrator:
         # Import agents
         from agents.query_analyzer import QueryAnalyzer
         from agents.search_agent import BraveSearchAgent
-        from agents.optimized_scraper import OptimizedHybridScraper as WebScraper
+        from agents.optimized_scraper import WebScraper
         from agents.list_analyzer import ListAnalyzer
         from agents.editor_agent import EditorAgent
         from agents.follow_up_search_agent import FollowUpSearchAgent
