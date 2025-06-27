@@ -9,6 +9,7 @@ from langchain_core.prompts import ChatPromptTemplate
 import config
 from main import setup_orchestrator
 import json
+from scraping_test_command import add_test_scraping_command
 
 # Configure logging
 logging.basicConfig(
@@ -283,7 +284,7 @@ def process_restaurant_search(message, search_query, user_id):
 
 def main():
     """Main function to start the bot"""
-    logger.info("Starting AI-Powered Restaurant Babe Telegram Bot...")
+    logger.info("Starting Restaurant Babe Telegram Bot...")
 
     # Verify bot token works
     try:
@@ -293,7 +294,17 @@ def main():
         logger.error(f"Failed to start bot: {e}")
         return
 
-    # Start polling with error handling
+    # ADD THIS SECTION - Initialize orchestrator and add admin commands
+    try:
+        logger.info("Setting up admin commands...")
+        orchestrator_instance = get_orchestrator()
+        add_test_scraping_command(bot, config, orchestrator_instance)
+        logger.info("Admin commands added successfully")
+    except Exception as e:
+        logger.error(f"Failed to add admin commands: {e}")
+        # Continue anyway, regular bot functionality should still work
+
+    # Start polling with better error handling (existing code)
     while True:
         try:
             logger.info("Starting bot polling...")
@@ -305,7 +316,7 @@ def main():
             )
         except telebot.apihelper.ApiTelegramException as e:
             if "409" in str(e):
-                logger.error("Another bot instance is running. Waiting 30 seconds...")
+                logger.error("Another bot instance is running. Waiting 30 seconds before retry...")
                 time.sleep(30)
                 continue
             else:

@@ -49,6 +49,7 @@ class BraveSearchAgent:
         - Social media posts about individual dining experiences
         - Forum/Reddit discussions without professional curation
         - Hotel booking sites
+        - Video content (YouTube, TikTok, etc.)
 
         SCORING CRITERIA:
         - Multiple restaurants mentioned (essential)
@@ -80,7 +81,24 @@ class BraveSearchAgent:
             "total_evaluated": 0,
             "passed_filter": 0,
             "failed_filter": 0,
-            "evaluation_errors": 0
+            "evaluation_errors": 0,
+            "domain_filtered": 0  # New stat for domain filtering
+        }
+
+        # Define video/streaming platforms to exclude
+        self.video_platforms = {
+            'youtube.com',
+            'youtu.be', 
+            'tiktok.com',
+            'instagram.com',
+            'facebook.com',
+            'twitter.com',
+            'x.com',
+            'vimeo.com',
+            'dailymotion.com',
+            'twitch.tv',
+            'pinterest.com',
+            'snapchat.com'
         }
 
     def search(self, queries, max_retries=3, retry_delay=2, enable_ai_filtering=True):
@@ -158,7 +176,7 @@ class BraveSearchAgent:
 
     async def _apply_ai_filtering(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Apply AI-based content filtering to search results
+        Apply AI-based content filtering to search results with domain pre-filtering
 
         Args:
             search_results: List of search result dictionaries
@@ -166,6 +184,22 @@ class BraveSearchAgent:
         Returns:
             List of filtered search results that pass AI evaluation
         """
+        # First, apply domain-based filtering to remove obvious video platforms
+        domain_filtered_results = []
+
+        for result in search_results:
+            url = result.get('url', '')
+            if self._is_video_platform(url):
+                logger.info(f"Domain-filtered video platform: {url}")
+                self.evaluation_stats["domain_filtered"] += 1
+                self.filtered_urls.append(url)
+                continue
+
+            domain_filtered_results.append(result)
+
+        logger.info(f"[SearchAgent] After domain filtering: {len(domain_filtered_results)} results (filtered {len(search_results) - len(domain_filtered_results)} video platforms)")
+
+        # Now apply AI filtering to remaining results
         filtered_results = []
         semaphore = asyncio.Semaphore(3)  # Limit concurrent AI evaluations
 
@@ -174,13 +208,13 @@ class BraveSearchAgent:
                 return await self._evaluate_search_result(result)
 
         # Create tasks for all evaluations
-        tasks = [evaluate_single_result(result) for result in search_results]
+        tasks = [evaluate_single_result(result) for result in domain_filtered_results]
 
         # Wait for all evaluations to complete
         evaluation_results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Process results
-        for result, evaluation in zip(search_results, evaluation_results):
+        for result, evaluation in zip(domain_filtered_results, evaluation_results):
             if isinstance(evaluation, Exception):
                 logger.error(f"Error evaluating {result.get('url', 'unknown')}: {evaluation}")
                 self.evaluation_stats["evaluation_errors"] += 1
@@ -195,6 +229,31 @@ class BraveSearchAgent:
                 self.filtered_urls.append(result.get("url", "unknown"))
 
         return filtered_results
+
+    def _is_video_platform(self, url: str) -> bool:
+        """
+        Check if URL is from a video/social media platform that should be excluded
+
+        Args:
+            url: URL to check
+
+        Returns:
+            bool: True if URL is from a video platform
+        """
+        try:
+            parsed_url = urlparse(url)
+            domain = parsed_url.netloc.lower()
+
+            # Remove www. prefix for comparison
+            if domain.startswith('www.'):
+                domain = domain[4:]
+
+            # Check if domain matches any video platform
+            return domain in self.video_platforms
+
+        except Exception as e:
+            logger.warning(f"Error parsing URL for video platform check: {url}, error: {e}")
+            return False
 
     async def _evaluate_search_result(self, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
