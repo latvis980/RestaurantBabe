@@ -99,7 +99,7 @@ class LangChainOrchestrator:
         # Import agents
         from agents.query_analyzer import QueryAnalyzer
         from agents.search_agent import BraveSearchAgent
-        from agents.scraper import FirecrawlWebScraper  # Import the new Firecrawl scraper
+        from agents.optimized_scraper import OptimizedHybridScraper as WebScraper
         from agents.list_analyzer import ListAnalyzer
         from agents.editor_agent import EditorAgent
         from agents.follow_up_search_agent import FollowUpSearchAgent
@@ -108,7 +108,7 @@ class LangChainOrchestrator:
         # Initialize agents
         self.query_analyzer = QueryAnalyzer(config)
         self.search_agent = BraveSearchAgent(config)
-        self.scraper = FirecrawlWebScraper(config)  # Use Firecrawl scraper directly
+        self.scraper = WebScraper(config)  # Use Firecrawl scraper directly
         self.list_analyzer = ListAnalyzer(config)
         self.editor_agent = EditorAgent(config)
         self.follow_up_search_agent = FollowUpSearchAgent(config)

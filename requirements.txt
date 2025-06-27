@@ -9,9 +9,11 @@ openai>=1.0.0
 psycopg2-binary>=2.9.5
 sqlalchemy>=2.0.0
 
-# Web scraping with Firecrawl
+# Web scraping with Firecrawl and Readability
 firecrawl-py>=0.0.20
 requests>=2.31.0
+httpx[http2]>=0.24.0
+readability-lxml>=0.8.1
 
 # Telegram bot
 pyTelegramBotAPI>=4.20.0
