@@ -26,3 +26,6 @@ EXCLUDED_RESTAURANT_SOURCES = ["tripadvisor.com", "yelp.com", "google.com/maps"]
 
 # Brave search settings
 BRAVE_SEARCH_COUNT = 15
+
+# Firecrawl AI scraping
+FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY")

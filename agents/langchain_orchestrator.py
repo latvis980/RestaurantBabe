@@ -99,7 +99,7 @@ class LangChainOrchestrator:
         # Import agents
         from agents.query_analyzer import QueryAnalyzer
         from agents.search_agent import BraveSearchAgent
-        from agents.scraper import WebScraper
+        from agents.scraper import FirecrawlWebScraper  # Import the new Firecrawl scraper
         from agents.list_analyzer import ListAnalyzer
         from agents.editor_agent import EditorAgent
         from agents.follow_up_search_agent import FollowUpSearchAgent
@@ -108,7 +108,7 @@ class LangChainOrchestrator:
         # Initialize agents
         self.query_analyzer = QueryAnalyzer(config)
         self.search_agent = BraveSearchAgent(config)
-        self.scraper = WebScraper(config)
+        self.scraper = FirecrawlWebScraper(config)  # Use Firecrawl scraper directly
         self.list_analyzer = ListAnalyzer(config)
         self.editor_agent = EditorAgent(config)
         self.follow_up_search_agent = FollowUpSearchAgent(config)
@@ -151,13 +151,16 @@ class LangChainOrchestrator:
 
                 # Run the async function in this new loop
                 try:
-                    return loop.run_until_complete(self.scraper.filter_and_scrape_results(search_results))
+                    return loop.run_until_complete(self.scraper.scrape_search_results(search_results))
                 finally:
                     loop.close()
 
             # Execute the function in a thread
             with concurrent.futures.ThreadPoolExecutor() as pool:
                 enriched_results = pool.submit(run_in_new_event_loop).result()
+
+            # Log Firecrawl usage after scraping
+            self._log_firecrawl_usage()
 
             # Return the results with the original data
             logger.info(f"Scrape completed with {len(enriched_results)} enriched results")
@@ -442,6 +445,70 @@ class LangChainOrchestrator:
         # No preferences found
         return query, []
 
+    def _log_firecrawl_usage(self):
+        """Log Firecrawl usage statistics and cost estimates"""
+        try:
+            stats = self.scraper.get_stats()
+
+            # Log usage details
+            logger.info("=" * 50)
+            logger.info("FIRECRAWL USAGE REPORT")
+            logger.info("=" * 50)
+            logger.info(f"URLs scraped: {stats['total_scraped']}")
+            logger.info(f"Successful extractions: {stats['successful_extractions']}")
+            logger.info(f"Failed extractions: {stats['failed_extractions']}")
+            logger.info(f"Total restaurants found: {stats['total_restaurants_found']}")
+            logger.info(f"Credits used: {stats['credits_used']}")
+
+            # Calculate success rate
+            if stats['total_scraped'] > 0:
+                success_rate = (stats['successful_extractions'] / stats['total_scraped']) * 100
+                logger.info(f"Success rate: {success_rate:.1f}%")
+
+            # Cost estimation
+            if stats['credits_used'] > 0:
+                # Firecrawl pricing tiers
+                cost_estimates = {
+                    "Starter": {"credits": 2000, "price": 20},  # $20 for 2000 credits
+                    "Standard": {"credits": 12000, "price": 100},  # $100 for 12000 credits
+                    "Scale": {"credits": 75000, "price": 500}  # $500 for 75000 credits
+                }
+
+                # Calculate cost for each tier
+                for tier, info in cost_estimates.items():
+                    cost_per_credit = info["price"] / info["credits"]
+                    estimated_cost = stats['credits_used'] * cost_per_credit
+                    logger.info(f"Estimated cost ({tier} plan): ${estimated_cost:.3f}")
+
+                # Show average cost per restaurant found
+                if stats['total_restaurants_found'] > 0:
+                    cost_per_restaurant = (stats['credits_used'] * 0.01)  # Rough $0.01 per credit
+                    cost_per_restaurant = cost_per_restaurant / stats['total_restaurants_found']
+                    logger.info(f"Average cost per restaurant: ${cost_per_restaurant:.3f}")
+
+            logger.info("=" * 50)
+
+            # Store usage for database tracking
+            usage_record = {
+                "timestamp": time.time(),
+                "firecrawl_stats": stats,
+                "session_id": f"session_{int(time.time())}"
+            }
+
+            # Save to database if possible
+            try:
+                save_data(
+                    self.config.DB_TABLE_PROCESSES,
+                    usage_record,
+                    self.config
+                )
+                logger.info("Usage statistics saved to database")
+            except Exception as db_error:
+                logger.warning(f"Could not save usage to database: {db_error}")
+
+        except Exception as e:
+            logger.error(f"Error logging Firecrawl usage: {e}")
+
     @log_function_call
     def _create_detailed_html(self, recommendations):
         """Create elegant, emoji-light HTML output for Telegram - single list only."""
@@ -604,6 +671,10 @@ class LangChainOrchestrator:
         # Use LangSmith tracing
         with tracing_v2_enabled(project_name="restaurant-recommender"):
             try:
+                # Log query start
+                logger.info(f"Processing query: {clean_query}")
+                logger.info(f"User preferences: {user_preferences}")
+
                 # Create initial input with preferences
                 input_data = {"query": clean_query, "user_preferences": user_preferences}
 
@@ -617,11 +688,15 @@ class LangChainOrchestrator:
                     "has_telegram_text": "telegram_formatted_text" in result
                 })
 
+                # Final Firecrawl usage summary
+                self._log_firecrawl_usage()
+
                 # Save process results to database
                 process_record = {
                     "query": user_query,
                     "trace_id": trace_id,
-                    "timestamp": time.time()
+                    "timestamp": time.time(),
+                    "firecrawl_stats": self.scraper.get_stats()  # Include Firecrawl stats
                 }
 
                 try:
@@ -651,13 +726,17 @@ class LangChainOrchestrator:
                     "telegram_text": telegram_text,
                     "enhanced_recommendations": enhanced_recommendations,  # Include the full structure
                     "main_list": main_list,
-                    "destination": result.get("destination")
+                    "destination": result.get("destination"),
+                    "firecrawl_stats": self.scraper.get_stats()  # Include usage stats in response
                 }
 
             except Exception as e:
                 logger.error(f"Error in chain execution: {e}")
                 # Log the error
                 dump_chain_state("process_query_error", {"query": user_query}, error=e)
+
+                # Log final Firecrawl usage even on error
+                self._log_firecrawl_usage()
 
                 # Return a basic error message
                 return {
@@ -667,5 +746,6 @@ class LangChainOrchestrator:
                             "description": "Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз позже."
                         }
                     ],
-                    "telegram_text": "<b>Извините, произошла ошибка при обработке вашего запроса.</b>"
+                    "telegram_text": "<b>Извините, произошла ошибка при обработке вашего запроса.</b>",
+                    "firecrawl_stats": self.scraper.get_stats()  # Include stats even on error
                 }
