@@ -68,13 +68,13 @@ class FollowUpSearchAgent:
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Enrich every restaurant in *formatted_recommendations*.
 
-        Returns only main_list, no hidden_gems.
+        Returns main_list with enhanced restaurant data.
         Restaurants that do not meet the minimum Google rating are silently
         excluded from the output.
         """
 
         with tracing_v2_enabled(project_name="restaurant-recommender"):
-            # Collect all restaurants from both main_list and hidden_gems
+            # Get all restaurants from main_list
             all_restaurants = []
 
             # Add main_list restaurants
@@ -82,10 +82,6 @@ class FollowUpSearchAgent:
             if isinstance(main_list, list):
                 all_restaurants.extend(main_list)
 
-            # Add hidden_gems restaurants to the main list
-            hidden_gems = formatted_recommendations.get("hidden_gems", [])
-            if isinstance(hidden_gems, list):
-                all_restaurants.extend(hidden_gems)
 
             dump_chain_state(
                 "follow_up_search_start",
