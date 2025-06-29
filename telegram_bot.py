@@ -9,8 +9,6 @@ from langchain_core.prompts import ChatPromptTemplate
 import config
 from main import setup_orchestrator
 import json
-from search_test import add_search_test_command
-
 
 # Configure logging
 logging.basicConfig(
@@ -224,94 +222,7 @@ def handle_test_scrape(message):
     thread = threading.Thread(target=run_test, daemon=True)
     thread.start()
 
-@bot.message_handler(commands=['test_search'])
-def handle_test_search(message):
-    """Handle /test_search command - search and filtering process test"""
-
-    user_id = message.from_user.id
-    admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
-
-    # Check if user is admin
-    if not admin_chat_id or str(user_id) != str(admin_chat_id):
-        bot.reply_to(message, "❌ This command is only available to administrators.")
-        return
-
-    # Parse command
-    command_text = message.text.strip()
-
-    if len(command_text.split(None, 1)) < 2:
-        help_text = (
-            "🔍 <b>Search Process Test</b>\n\n"
-            "<b>Usage:</b>\n"
-            "<code>/test_search [restaurant query]</code>\n\n"
-            "<b>Examples:</b>\n"
-            "<code>/test_search best brunch in Lisbon</code>\n"
-            "<code>/test_search romantic restaurants Paris</code>\n"
-            "<code>/test_search family pizza Rome</code>\n\n"
-            "This tests the complete search and filtering process:\n"
-            "• Raw Brave search results\n"
-            "• Domain filtering (excluded sources)\n"
-            "• AI/content filtering decisions\n"
-            "• Final URLs that pass to scraper\n"
-            "• Detailed filtering statistics\n\n"
-            "📄 Results are saved to a detailed file."
-        )
-        bot.reply_to(message, help_text, parse_mode='HTML')
-        return
-
-    # Extract query
-    restaurant_query = command_text.split(None, 1)[1].strip()
-
-    if not restaurant_query:
-        bot.reply_to(message, "❌ Please provide a restaurant query to test.")
-        return
-
-    # Send confirmation
-    bot.reply_to(
-        message,
-        f"🔍 <b>Starting search process test...</b>\n\n"
-        f"📝 Query: <code>{restaurant_query}</code>\n\n"
-        "This will analyze:\n"
-        "1️⃣ Query analysis and search terms\n"
-        "2️⃣ Raw Brave search results\n"
-        "3️⃣ Domain filtering decisions\n"
-        "4️⃣ AI/content filtering decisions\n"
-        "5️⃣ Final URL list for scraping\n\n"
-        "⏱ Please wait 1-2 minutes...",
-        parse_mode='HTML'
-    )
-
-    # Run test in background
-    def run_test():
-        try:
-            # Import and run the search test
-            from search_test import SearchTest
-            import asyncio
-
-            search_tester = SearchTest(config, get_orchestrator())
-
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            results_path = loop.run_until_complete(
-                search_tester.test_search_process(restaurant_query, bot)
-            )
-
-            loop.close()
-            logger.info(f"Search test completed: {results_path}")
-
-        except Exception as e:
-            logger.error(f"Error in search test: {e}")
-            try:
-                bot.send_message(
-                    admin_chat_id,
-                    f"❌ Search test failed for '{restaurant_query}': {str(e)}"
-                )
-            except:
-                pass
-
-    thread = threading.Thread(target=run_test, daemon=True)
-    thread.start()
+# NOTE: /test_search command will be added via function call in main()
 
 def perform_restaurant_search(search_query, chat_id, user_id):
     """Perform restaurant search using orchestrator"""
@@ -461,8 +372,19 @@ def main():
         logger.error(f"Failed to start bot: {e}")
         return
 
-    # Log that admin command is available
-    logger.info("Admin command available: /test_scrape")
+    # Initialize the orchestrator
+    orchestrator_instance = get_orchestrator()
+
+    # Add admin test commands
+    try:
+        from search_test import add_search_test_command
+        add_search_test_command(bot, config, orchestrator_instance)
+        logger.info("Added /test_search command")
+    except ImportError as e:
+        logger.error(f"Failed to add search test command: {e}")
+
+    # Log that admin commands are available
+    logger.info("Admin commands available: /test_scrape, /test_search")
 
     # Start polling with better error handling
     while True:
