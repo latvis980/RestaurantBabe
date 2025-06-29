@@ -9,7 +9,7 @@ from langchain_core.prompts import ChatPromptTemplate
 import config
 from main import setup_orchestrator
 import json
-from scrape_test import add_scrape_test_command  # NEW: Simple scrape test
+from scrape_test import add_scrape_test_command  # Simple scrape test
 
 # Configure logging
 logging.basicConfig(
@@ -113,6 +113,8 @@ def get_orchestrator():
         orchestrator = setup_orchestrator()
     return orchestrator
 
+# COMMAND HANDLERS FIRST (before any other handlers)
+
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     """Handle /start and /help commands"""
@@ -150,7 +152,7 @@ def perform_restaurant_search(search_query, chat_id, user_id):
         result = orchestrator_instance.process_query(search_query)
 
         # Format for Telegram (ensure proper formatting)
-        telegram_text = result.get('telegram_text', result.get('telegram_formatted_text', 'Sorry, no recommendations found.'))
+        telegram_text = result.get('telegram_formatted_text', 'Sorry, no recommendations found.')
 
         # Delete the processing message
         try:
@@ -281,12 +283,12 @@ def main():
         logger.error(f"Failed to start bot: {e}")
         return
 
-    # Initialize orchestrator and add admin commands
+    # CRITICAL: Add admin commands BEFORE starting polling
     try:
         logger.info("Setting up admin commands...")
         orchestrator_instance = get_orchestrator()
 
-        # Add the simple scrape test command
+        # Add the scrape test command
         add_scrape_test_command(bot, config, orchestrator_instance)
 
         logger.info("Admin commands added successfully")
