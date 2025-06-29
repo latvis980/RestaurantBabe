@@ -714,3 +714,52 @@ class EnhancedOptimizedScraper:
             "sectioning_time": 0.0
         }
         self.content_sectioner.reset_stats()
+
+
+
+
+# Add this to the END of your optimized_scraper.py file
+# This replaces the existing WebScraper class at the bottom
+
+# Enhanced WebScraper wrapper with content sectioning
+class WebScraper:
+    """
+    Drop-in replacement for existing WebScraper that uses enhanced scraping with content sectioning.
+    Maintains full compatibility with existing code.
+    """
+
+    def __init__(self, config):
+        self.enhanced_scraper = EnhancedOptimizedScraper(config)
+
+    async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Main scraping method with enhanced content sectioning"""
+        return await self.enhanced_scraper.scrape_search_results(search_results)
+
+    async def filter_and_scrape_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Alternative method name for compatibility"""
+        return await self.enhanced_scraper.scrape_search_results(search_results)
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get scraping statistics"""
+        return self.enhanced_scraper.get_stats()
+
+    def get_sectioning_stats(self) -> Dict[str, Any]:
+        """Get content sectioning specific statistics"""
+        return self.enhanced_scraper.get_sectioning_stats()
+
+    # Legacy compatibility methods (if they exist in your original)
+    def get_domain_intelligence(self) -> Dict[str, Any]:
+        """Legacy compatibility - return empty dict"""
+        return {}
+
+    def get_database_intelligence_stats(self) -> Dict[str, Any]:
+        """Legacy compatibility - return empty dict"""
+        return {}
+
+    def clear_domain_cache(self):
+        """Legacy compatibility - no-op"""
+        pass
+
+    async def export_domain_intelligence(self, file_path: str = None) -> str:
+        """Legacy compatibility - return empty string"""
+        return ""
