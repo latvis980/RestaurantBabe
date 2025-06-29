@@ -549,53 +549,290 @@ class EnhancedOptimizedScraper:
         specialized_domains = ['timeout.com', 'eater.com']
         return any(domain in url.lower() for domain in specialized_domains)
 
+    # Enhanced AI Analysis System for Restaurant Sites
+
     async def _analyze_url_complexity(self, result: Dict) -> ScrapeStrategy:
-        """Existing URL complexity analysis (simplified without database)"""
+        """
+        Enhanced URL complexity analysis that focuses on content quality, not just technical indicators.
+        Specifically designed for restaurant guide websites.
+        """
         url = result.get("url", "")
-        domain = urlparse(url).netloc.lower()
+        domain = self._extract_domain(url)
 
-        # Simple heuristic classification - can be enhanced later
-        simple_domains = [
-            'cntraveller.com', 'nomadicfoodist.com', 'samiraholma.com',
-            'lisbonlux.com', 'queroviajarmais.com'
-        ]
+        try:
+            # First, do a quick HTTP probe to analyze the actual content
+            probe_result = await self._probe_url_content(url)
 
-        moderate_domains = [
-            'timeout.com', 'theinfatuation.com', 'bestguide.pt'
-        ]
+            if not probe_result:
+                return ScrapeStrategy(
+                    complexity=ScrapeComplexity.MODERATE_JS,
+                    scraper_type="enhanced_http",
+                    estimated_cost=0.5,
+                    confidence=0.4,
+                    reasoning=f"Failed to probe {domain}, using safe fallback"
+                )
 
-        heavy_js_domains = [
-            'oladaniela.com'  # This one failed in your test
-        ]
+            # Analyze both technical indicators AND content quality
+            analysis_data = {
+                "url": url,
+                "domain": domain,
+                "title": probe_result.get("title", ""),
+                "description": result.get("description", ""),
+                "status_code": probe_result.get("status_code", 0),
+                "response_time": probe_result.get("response_time", 0),
+                "content_length": probe_result.get("content_length", 0),
+                "has_scripts": probe_result.get("has_scripts", False),
+                "script_count": probe_result.get("script_count", 0),
+                "has_frameworks": probe_result.get("has_frameworks", False),
+                "content_preview": probe_result.get("content_preview", ""),
+                "has_viewport": probe_result.get("has_viewport", False),
+                "has_structured_data": probe_result.get("has_structured_data", False),
+                "has_social_meta": probe_result.get("has_social_meta", False),
+                # NEW: Content quality indicators
+                "restaurant_indicators_found": probe_result.get("restaurant_indicators", 0),
+                "list_structure_detected": probe_result.get("has_list_structure", False),
+                "navigation_heavy": probe_result.get("navigation_heavy", False),
+                "content_to_navigation_ratio": probe_result.get("content_ratio", 0.0)
+            }
 
-        if any(simple_domain in domain for simple_domain in simple_domains):
-            return ScrapeStrategy(
-                complexity=ScrapeComplexity.SIMPLE_HTML,
-                confidence=0.8,
-                reasoning=f"Known simple HTML site: {domain}",
-                estimated_cost=0.1
+            # Use enhanced AI prompt that considers content quality
+            chain = self.enhanced_analysis_prompt | self.analyzer
+            response = await chain.ainvoke(analysis_data)
+
+            # Parse AI response
+            result_text = response.content
+            if "```json" in result_text:
+                result_text = result_text.split("```json")[1].split("```")[0]
+
+            analysis = json.loads(result_text.strip())
+
+            # Convert to ScrapeStrategy
+            complexity_map = {
+                "SIMPLE_HTML": ScrapeComplexity.SIMPLE_HTML,
+                "MODERATE_JS": ScrapeComplexity.MODERATE_JS, 
+                "HEAVY_JS": ScrapeComplexity.HEAVY_JS
+            }
+
+            complexity = complexity_map.get(analysis.get("complexity", "MODERATE_JS"), ScrapeComplexity.MODERATE_JS)
+
+            # Override low restaurant count sites to use Firecrawl
+            if (probe_result.get("restaurant_indicators", 0) < 3 and 
+                complexity != ScrapeComplexity.HEAVY_JS and
+                "restaurant" in url.lower()):
+
+                complexity = ScrapeComplexity.HEAVY_JS
+                reasoning = f"OVERRIDE: {analysis.get('reasoning', '')} However, only {probe_result.get('restaurant_indicators', 0)} restaurant indicators found in initial probe, suggesting content may be dynamically loaded. Upgrading to Firecrawl."
+            else:
+                reasoning = analysis.get("reasoning", "AI analysis completed")
+
+            scraper_type_map = {
+                ScrapeComplexity.SIMPLE_HTML: "simple_http",
+                ScrapeComplexity.MODERATE_JS: "enhanced_http",
+                ScrapeComplexity.HEAVY_JS: "firecrawl"
+            }
+
+            cost_map = {
+                ScrapeComplexity.SIMPLE_HTML: 0.1,
+                ScrapeComplexity.MODERATE_JS: 0.5,
+                ScrapeComplexity.HEAVY_JS: 10.0
+            }
+
+            strategy = ScrapeStrategy(
+                complexity=complexity,
+                scraper_type=scraper_type_map[complexity],
+                estimated_cost=cost_map[complexity],
+                confidence=analysis.get("confidence", 0.7),
+                reasoning=reasoning
             )
-        elif any(moderate_domain in domain for moderate_domain in moderate_domains):
+
+            # Save this analysis to persistent storage
+            await self._save_strategy_to_intelligence(domain, strategy, is_new=True)
+
+            self.stats["ai_analysis_calls"] += 1
+
+            return strategy
+
+        except Exception as e:
+            logger.warning(f"Enhanced AI analysis failed for {url}: {e}")
+            # Safe fallback
             return ScrapeStrategy(
                 complexity=ScrapeComplexity.MODERATE_JS,
-                confidence=0.7,
-                reasoning=f"Known moderate complexity site: {domain}",
-                estimated_cost=0.5
+                scraper_type="enhanced_http", 
+                estimated_cost=0.5,
+                confidence=0.4,
+                reasoning=f"Enhanced AI analysis failed: {str(e)}, using safe fallback"
             )
-        elif any(heavy_domain in domain for heavy_domain in heavy_js_domains):
-            return ScrapeStrategy(
-                complexity=ScrapeComplexity.HEAVY_JS,
-                confidence=0.9,
-                reasoning=f"Known JavaScript-heavy site: {domain}",
-                estimated_cost=10.0
-            )
-        else:
-            return ScrapeStrategy(
-                complexity=ScrapeComplexity.MODERATE_JS,
-                confidence=0.6,
-                reasoning=f"Unknown site, using moderate approach: {domain}",
-                estimated_cost=0.5
-            )
+
+    async def _probe_url_content(self, url: str) -> Optional[Dict]:
+        """
+        Probe URL to analyze actual content quality, not just technical indicators.
+        This is key for detecting restaurant sites that load content dynamically.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                start_time = time.time()
+                response = await client.get(url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                })
+                response_time = time.time() - start_time
+
+                if response.status_code != 200:
+                    return None
+
+                soup = BeautifulSoup(response.text, 'html.parser')
+
+                # Extract basic info
+                title = soup.title.text.strip() if soup.title else ""
+
+                # Technical indicators
+                scripts = soup.find_all('script')
+                has_scripts = len(scripts) > 0
+                script_count = len(scripts)
+
+                # Check for frameworks
+                html_text = response.text.lower()
+                frameworks = ['react', 'angular', 'vue', 'ember', 'backbone']
+                has_frameworks = any(fw in html_text for fw in frameworks)
+
+                # Meta indicators
+                has_viewport = bool(soup.find('meta', attrs={'name': 'viewport'}))
+                has_structured_data = bool(soup.find('script', attrs={'type': 'application/ld+json'}))
+                has_social_meta = bool(soup.find('meta', attrs={'property': 'og:title'}))
+
+                # NEW: Content quality analysis
+                text_content = soup.get_text(separator=' ', strip=True)
+                content_preview = text_content[:500]
+
+                # Count restaurant indicators in the visible content
+                restaurant_keywords = [
+                    'restaurant', 'menu', 'cuisine', 'chef', 'dining', 'food', 
+                    'dish', 'meal', 'bistro', 'cafe', 'bar', 'eatery',
+                    'address:', 'price:', '$', '€', 'rating', 'review'
+                ]
+
+                restaurant_indicators = sum(1 for keyword in restaurant_keywords 
+                                          if keyword.lower() in text_content.lower())
+
+                # Detect list structures (important for restaurant guides)
+                list_elements = soup.find_all(['ol', 'ul']) + soup.find_all(class_=re.compile(r'list|item|entry'))
+                has_list_structure = len(list_elements) > 2
+
+                # Check if page is navigation-heavy (bad sign for content extraction)
+                nav_elements = soup.find_all(['nav', 'header', 'footer']) + soup.find_all(class_=re.compile(r'nav|menu|header|footer'))
+                nav_text_length = sum(len(elem.get_text(strip=True)) for elem in nav_elements)
+                content_text_length = len(text_content)
+
+                navigation_heavy = nav_text_length > (content_text_length * 0.3) if content_text_length > 0 else True
+                content_ratio = (content_text_length - nav_text_length) / max(content_text_length, 1)
+
+                return {
+                    "title": title,
+                    "status_code": response.status_code,
+                    "response_time": response_time,
+                    "content_length": len(response.text),
+                    "has_scripts": has_scripts,
+                    "script_count": script_count,
+                    "has_frameworks": has_frameworks,
+                    "content_preview": content_preview,
+                    "has_viewport": has_viewport,
+                    "has_structured_data": has_structured_data,
+                    "has_social_meta": has_social_meta,
+                    # NEW: Content quality metrics
+                    "restaurant_indicators": restaurant_indicators,
+                    "has_list_structure": has_list_structure,
+                    "navigation_heavy": navigation_heavy,
+                    "content_ratio": content_ratio
+                }
+
+        except Exception as e:
+            logger.warning(f"URL probe failed for {url}: {e}")
+            return None
+
+    # Enhanced AI prompt that considers content quality
+    @property
+    def enhanced_analysis_prompt(self):
+        """Enhanced analysis prompt that focuses on content quality for restaurant sites"""
+        return ChatPromptTemplate.from_messages([
+            ("system", """
+            You are an expert at analyzing restaurant guide websites for optimal scraping strategies.
+            Your goal is to determine if a site can extract restaurant information effectively.
+
+            CRITICAL ANALYSIS FACTORS:
+
+            🎯 CONTENT QUALITY INDICATORS (MOST IMPORTANT):
+            - Restaurant indicators found: How many restaurant-related terms appear?
+            - List structure detected: Are restaurants organized in lists/grids?
+            - Content-to-navigation ratio: Is the page mostly content or navigation?
+            - Content preview: Does the preview show actual restaurant information?
+
+            🔧 TECHNICAL INDICATORS (SECONDARY):
+            - JavaScript complexity and framework usage
+            - Response time and content length
+            - Meta tags and structured data
+
+            CLASSIFICATION RULES:
+
+            🟢 SIMPLE_HTML: Use ONLY if:
+            - Restaurant indicators > 5 AND
+            - List structure detected AND
+            - Content preview shows restaurant names/details AND
+            - Low JavaScript dependency
+
+            🟡 MODERATE_JS: Use if:
+            - Some restaurant indicators (3-5) AND
+            - Mixed content quality AND
+            - Moderate JavaScript but content visible in HTML
+
+            🔴 HEAVY_JS: Use if:
+            - Few restaurant indicators (< 3) OR
+            - Navigation-heavy page OR
+            - Content preview lacks restaurant details OR
+            - Heavy JavaScript frameworks detected
+
+            RESTAURANT SITE RED FLAGS:
+            - Content preview is mostly intro text without restaurant names
+            - High navigation-to-content ratio
+            - Few restaurant indicators despite being a restaurant guide
+            - Dynamic loading indicators
+
+            OUTPUT FORMAT:
+            {{
+              "complexity": "SIMPLE_HTML|MODERATE_JS|HEAVY_JS",
+              "confidence": 0.0-1.0,
+              "reasoning": "Focus on WHY this choice will succeed/fail for restaurant extraction",
+              "content_in_html": true/false,
+              "javascript_dependency": "low|medium|high",
+              "site_type": "restaurant_guide|single_review|magazine|platform|other",
+              "estimated_restaurant_extractability": 0.0-1.0
+            }}
+            """),
+            ("human", """
+            Analyze this restaurant website for optimal scraping strategy:
+
+            URL: {url}
+            Domain: {domain}
+            Title: {title}
+            Description: {description}
+
+            TECHNICAL METRICS:
+            - Status: {status_code}
+            - Response Time: {response_time:.2f}s
+            - Content Length: {content_length} chars
+            - Scripts: {script_count} (has frameworks: {has_frameworks})
+            - Meta: viewport={has_viewport}, structured_data={has_structured_data}, social={has_social_meta}
+
+            CONTENT QUALITY METRICS:
+            - Restaurant indicators found: {restaurant_indicators_found}
+            - List structure detected: {list_structure_detected}
+            - Navigation heavy: {navigation_heavy}
+            - Content ratio: {content_to_navigation_ratio:.2f}
+
+            CONTENT PREVIEW:
+            {content_preview}
+
+            Focus your analysis on: Will this approach successfully extract restaurant information?
+            """)
+        ])
 
     async def _process_specialized_urls(self, urls: List[Dict]) -> List[Dict]:
         """Existing specialized URL processing (unchanged)"""
@@ -638,6 +875,22 @@ class EnhancedOptimizedScraper:
         except Exception as e:
             logger.warning(f"AI restaurant extraction failed: {e}")
             return []
+
+    def _extract_domain(self, url: str) -> str:
+        """Extract clean domain from URL"""
+        try:
+            parsed = urlparse(url)
+            domain = parsed.netloc.lower()
+            if domain.startswith('www.'):
+                domain = domain[4:]
+            return domain
+        except Exception:
+            return url
+
+    async def _save_strategy_to_intelligence(self, domain: str, strategy: ScrapeStrategy, is_new: bool = False):
+        """Save strategy to intelligence (placeholder)"""
+        logger.info(f"📝 Domain analysis: {domain} → {strategy.complexity.value}")
+        pass
 
     def _extract_source_name(self, url: str) -> str:
         """Existing source name extraction (unchanged)"""
@@ -716,11 +969,6 @@ class EnhancedOptimizedScraper:
         self.content_sectioner.reset_stats()
 
 
-
-
-# Add this to the END of your optimized_scraper.py file
-# This replaces the existing WebScraper class at the bottom
-
 # Enhanced WebScraper wrapper with content sectioning
 class WebScraper:
     """
@@ -763,3 +1011,5 @@ class WebScraper:
     async def export_domain_intelligence(self, file_path: str = None) -> str:
         """Legacy compatibility - return empty string"""
         return ""
+
+
