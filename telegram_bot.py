@@ -9,8 +9,7 @@ from langchain_core.prompts import ChatPromptTemplate
 import config
 from main import setup_orchestrator
 import json
-from scraping_test_command import add_test_scraping_command
-from debug_query_command import add_debug_query_command
+from unified_scraping_analyzer import add_unified_scraping_command
 
 # Configure logging
 logging.basicConfig(
@@ -301,8 +300,7 @@ def main():
         orchestrator_instance = get_orchestrator()
 
         # Add both admin commands
-        add_test_scraping_command(bot, config, orchestrator_instance)
-        add_debug_query_command(bot, config, orchestrator_instance)
+        add_unified_scraping_command(bot, config, orchestrator_instance)
 
         logger.info("Admin commands added successfully")
         logger.info("Available admin commands: /test_scraping, /debug_query")
