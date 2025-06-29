@@ -1,4 +1,4 @@
-# telegram_bot.py - AI-Powered Restaurant Bot
+# telegram_bot.py - AI-Powered Restaurant Bot - FIXED VERSION
 import telebot
 import logging
 import time
@@ -112,7 +112,7 @@ def get_orchestrator():
         orchestrator = setup_orchestrator()
     return orchestrator
 
-# COMMAND HANDLERS
+# BASIC COMMAND HANDLERS - Define these FIRST
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -187,10 +187,44 @@ def perform_restaurant_search(search_query, chat_id, user_id):
             parse_mode='HTML'
         )
 
+# FUNCTION TO ADD EXTERNAL COMMANDS
+def setup_admin_commands():
+    """Setup admin commands from external files"""
+    commands_added = []
+
+    # Add scrape test command
+    try:
+        from scrape_test import add_scrape_test_command
+        add_scrape_test_command(bot, config, get_orchestrator())
+        commands_added.append("/test_scrape")
+        logger.info("✅ Added /test_scrape command from scrape_test.py")
+    except ImportError as e:
+        logger.error(f"❌ Failed to add scrape test command: {e}")
+        logger.error("Make sure scrape_test.py exists and has no syntax errors")
+
+    # Add search test command
+    try:
+        from search_test import add_search_test_command
+        add_search_test_command(bot, config, get_orchestrator())
+        commands_added.append("/test_search")
+        logger.info("✅ Added /test_search command from search_test.py")
+    except ImportError as e:
+        logger.error(f"❌ Failed to add search test command: {e}")
+        logger.error("Make sure search_test.py exists and has no syntax errors")
+
+    return commands_added
+
 # IMPORTANT: This must be the LAST message handler (catch-all for non-command messages)
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     """Handle all text messages with AI conversation management"""
+
+    # IMPORTANT: Skip if this is a command that should be handled by external handlers
+    if message.text.startswith('/test_'):
+        logger.warning(f"Command {message.text.split()[0]} not recognized - check if external command loaded properly")
+        bot.reply_to(message, "❌ Command not recognized. Available admin commands: /test_scrape, /test_search")
+        return
+
     try:
         user_id = message.from_user.id
         user_message = message.text.strip()
@@ -285,28 +319,9 @@ def main():
     # Initialize the orchestrator
     orchestrator_instance = get_orchestrator()
 
-    # Add admin test commands using external files
-    commands_added = []
-
-    # Add scrape test command
-    try:
-        from scrape_test import add_scrape_test_command
-        add_scrape_test_command(bot, config, orchestrator_instance)
-        commands_added.append("/test_scrape")
-        logger.info("✅ Added /test_scrape command from scrape_test.py")
-    except ImportError as e:
-        logger.error(f"❌ Failed to add scrape test command: {e}")
-        logger.error("Make sure scrape_test.py exists and has no syntax errors")
-
-    # Add search test command
-    try:
-        from search_test import add_search_test_command
-        add_search_test_command(bot, config, orchestrator_instance)
-        commands_added.append("/test_search")
-        logger.info("✅ Added /test_search command from search_test.py")
-    except ImportError as e:
-        logger.error(f"❌ Failed to add search test command: {e}")
-        logger.error("Make sure search_test.py exists and has no syntax errors")
+    # Setup external admin commands AFTER defining all message handlers
+    logger.info("🔧 Setting up admin commands...")
+    commands_added = setup_admin_commands()
 
     # Log available commands
     if commands_added:
