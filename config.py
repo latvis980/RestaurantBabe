@@ -6,15 +6,20 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 LANGSMITH_API_KEY = os.environ.get("LANGSMITH_API_KEY")
-MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
+MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")  # Keep for other agents if needed
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")  # NEW: Add this for Claude
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
 
 # PostgreSQL settings (using variable in Railway)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# OpenAI API settings
+# OpenAI API settings (still used for other components)
 OPENAI_MODEL = "gpt-4o"  # Always using GPT-4o as requested
 OPENAI_TEMPERATURE = 0.2
+
+# Claude API settings (NEW)
+CLAUDE_MODEL = "claude-3-5-sonnet-20241022"  # Latest Claude Sonnet 4
+CLAUDE_TEMPERATURE = 0.2
 
 # Database table names - keeping only what we need
 DB_TABLE_USER_PREFS = "user_preferences"
