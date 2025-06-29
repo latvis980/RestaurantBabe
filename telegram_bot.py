@@ -27,6 +27,22 @@ conversation_ai = ChatOpenAI(
     temperature=0.3
 )
 
+# Initialize orchestrator (will be set up when first needed)
+orchestrator = None
+
+def get_orchestrator():
+    """Get or create orchestrator instance"""
+    global orchestrator
+    if orchestrator is None:
+        orchestrator = setup_orchestrator()
+    return orchestrator
+
+# ADD TEST COMMAND AFTER ORCHESTRATOR FUNCTIONS ARE DEFINED
+# This ensures orchestrator is available when the command is called
+def initialize_test_commands():
+    """Initialize test commands after orchestrator is ready"""
+    add_test_scraping_command(bot, config, get_orchestrator())
+
 # Simple conversation history storage (last 5 messages per user)
 user_conversations = {}
 
@@ -118,24 +134,14 @@ def format_conversation_history(user_id):
         return "No previous conversation."
     return "\n".join(history)
 
-# Initialize orchestrator (will be set up when first needed)
-orchestrator = None
-
-def get_orchestrator():
-    """Get or create orchestrator instance"""
-    global orchestrator
-    if orchestrator is None:
-        orchestrator = setup_orchestrator()
-    return orchestrator
-
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     """Handle /start and /help commands"""
     try:
         # Clear user session on start
         user_id = message.from_user.id
-        if user_id in user_sessions:
-            del user_sessions[user_id]
+        if user_id in user_conversations:
+            del user_conversations[user_id]
 
         bot.reply_to(
             message, 
@@ -147,11 +153,16 @@ def send_welcome(message):
         logger.error(f"Error sending welcome message: {e}")
         bot.reply_to(message, "Hello! I'm Restaurant Babe, ready to help you find amazing restaurants!")
 
-# ADD THIS NEW COMMAND HANDLER HERE - BEFORE the general message handler
+# ADMIN COMMANDS - These will be processed BEFORE the general message handler
+@bot.message_handler(commands=['test_scrape'])
+def handle_test_scrape_command(message):
+    """Handle /test_scrape command - ADMIN ONLY"""
+    # This ensures the command is handled here and not passed to the general message handler
+    pass  # The actual logic is in scraping_test_command.py
+
 @bot.message_handler(commands=['debug_query'])
 def handle_debug_query(message):
     """Handle /debug_query command - ADMIN ONLY"""
-
     user_id = message.from_user.id
     admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
 
@@ -207,8 +218,6 @@ def handle_debug_query(message):
     )
 
     # Run debug in background thread
-    import threading
-
     def run_debug():
         try:
             # Import the debug handler here to avoid circular imports
@@ -243,6 +252,7 @@ def handle_debug_query(message):
     thread = threading.Thread(target=run_debug, daemon=True)
     thread.start()
 
+# GENERAL MESSAGE HANDLER - This should be LAST to catch all non-command messages
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     """Handle all text messages with AI conversation management"""
@@ -380,6 +390,9 @@ def process_restaurant_search(message, search_query, user_id):
 def main():
     """Main function to start the bot"""
     logger.info("Starting Restaurant Babe Telegram Bot...")
+
+    # Initialize test commands after everything is set up
+    initialize_test_commands()
 
     # Verify bot token works
     try:
