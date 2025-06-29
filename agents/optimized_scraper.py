@@ -23,7 +23,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from agents.firecrawl_scraper import FirecrawlWebScraper
 from agents.specialized_scraper import EaterTimeoutSpecializedScraper
 from agents.content_sectioning_agent import ContentSectioningAgent
-from utils.database_utils import save_domain_intelligence, get_domain_intelligence
+# Removed database utils dependency for now
 
 logger = logging.getLogger(__name__)
 
@@ -550,24 +550,50 @@ class EnhancedOptimizedScraper:
         return any(domain in url.lower() for domain in specialized_domains)
 
     async def _analyze_url_complexity(self, result: Dict) -> ScrapeStrategy:
-        """Existing URL complexity analysis (unchanged)"""
-        # Keep your existing complexity analysis logic
+        """Existing URL complexity analysis (simplified without database)"""
         url = result.get("url", "")
         domain = urlparse(url).netloc.lower()
 
-        # Simple heuristic for now - you can enhance this
-        if any(simple_domain in domain for simple_domain in ['cntraveller.com', 'nomadicfoodist.com']):
+        # Simple heuristic classification - can be enhanced later
+        simple_domains = [
+            'cntraveller.com', 'nomadicfoodist.com', 'samiraholma.com',
+            'lisbonlux.com', 'queroviajarmais.com'
+        ]
+
+        moderate_domains = [
+            'timeout.com', 'theinfatuation.com', 'bestguide.pt'
+        ]
+
+        heavy_js_domains = [
+            'oladaniela.com'  # This one failed in your test
+        ]
+
+        if any(simple_domain in domain for simple_domain in simple_domains):
             return ScrapeStrategy(
                 complexity=ScrapeComplexity.SIMPLE_HTML,
                 confidence=0.8,
-                reasoning="Known simple HTML site",
+                reasoning=f"Known simple HTML site: {domain}",
                 estimated_cost=0.1
+            )
+        elif any(moderate_domain in domain for moderate_domain in moderate_domains):
+            return ScrapeStrategy(
+                complexity=ScrapeComplexity.MODERATE_JS,
+                confidence=0.7,
+                reasoning=f"Known moderate complexity site: {domain}",
+                estimated_cost=0.5
+            )
+        elif any(heavy_domain in domain for heavy_domain in heavy_js_domains):
+            return ScrapeStrategy(
+                complexity=ScrapeComplexity.HEAVY_JS,
+                confidence=0.9,
+                reasoning=f"Known JavaScript-heavy site: {domain}",
+                estimated_cost=10.0
             )
         else:
             return ScrapeStrategy(
                 complexity=ScrapeComplexity.MODERATE_JS,
                 confidence=0.6,
-                reasoning="Unknown site, using moderate approach",
+                reasoning=f"Unknown site, using moderate approach: {domain}",
                 estimated_cost=0.5
             )
 
