@@ -147,10 +147,10 @@ def perform_restaurant_search(search_query, chat_id, user_id):
         orchestrator_instance = get_orchestrator()
 
         # This is where the actual search happens
-        result = orchestrator_instance.process_search(search_query)
+        result = orchestrator_instance.process_query(search_query)
 
         # Format for Telegram (ensure proper formatting)
-        telegram_text = result.get('telegram_text', result.get('answer', 'Sorry, no recommendations found.'))
+        telegram_text = result.get('telegram_text', result.get('telegram_formatted_text', 'Sorry, no recommendations found.'))
 
         # Delete the processing message
         try:
