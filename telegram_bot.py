@@ -222,7 +222,211 @@ def handle_test_scrape(message):
     thread = threading.Thread(target=run_test, daemon=True)
     thread.start()
 
-# NOTE: /test_search command will be added via function call in main()
+# ADMIN COMMAND: /test_search - SEARCH FILTERING TEST
+@bot.message_handler(commands=['test_search'])
+def handle_test_search(message):
+    """Handle /test_search command - test search and filtering"""
+
+    user_id = message.from_user.id
+    admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
+
+    # Check if user is admin
+    if not admin_chat_id or str(user_id) != str(admin_chat_id):
+        bot.reply_to(message, "❌ This command is only available to administrators.")
+        return
+
+    # Parse command
+    command_text = message.text.strip()
+
+    if len(command_text.split(None, 1)) < 2:
+        help_text = (
+            "🔍 <b>Search Filtering Test</b>\n\n"
+            "<b>Usage:</b>\n"
+            "<code>/test_search [restaurant query]</code>\n\n"
+            "<b>Examples:</b>\n"
+            "<code>/test_search best cocktail bars in tel aviv</code>\n"
+            "<code>/test_search romantic restaurants Paris</code>\n"
+            "<code>/test_search family pizza Rome</code>\n\n"
+            "This tests the simplified search and filtering:\n"
+            "• Query analysis and search terms\n"
+            "• Domain filtering decisions\n"
+            "• AI filtering decisions (no more keywords!)\n"
+            "• Final URLs for scraping\n\n"
+            "📄 Results are saved to a detailed file."
+        )
+        bot.reply_to(message, help_text, parse_mode='HTML')
+        return
+
+    # Extract query
+    restaurant_query = command_text.split(None, 1)[1].strip()
+
+    if not restaurant_query:
+        bot.reply_to(message, "❌ Please provide a restaurant query to test.")
+        return
+
+    # Send confirmation
+    bot.reply_to(
+        message,
+        f"🔍 <b>Starting search filtering test...</b>\n\n"
+        f"📝 Query: <code>{restaurant_query}</code>\n\n"
+        "Testing simplified pipeline:\n"
+        "1️⃣ Query analysis\n"
+        "2️⃣ Web search\n"
+        "3️⃣ Domain filtering\n"
+        "4️⃣ AI filtering (no keywords!)\n\n"
+        "⏱ Please wait 1-2 minutes...",
+        parse_mode='HTML'
+    )
+
+    # Run test in background
+    def run_test():
+        try:
+            # Import required components
+            from agents.query_analyzer import QueryAnalyzer
+            from agents.search_agent import BraveSearchAgent
+            import tempfile
+            from datetime import datetime
+            import os
+
+            # Initialize components
+            query_analyzer = QueryAnalyzer(config)
+            search_agent = BraveSearchAgent(config)
+
+            # Step 1: Analyze query
+            query_analysis = query_analyzer.analyze(restaurant_query)
+            search_queries = query_analysis.get('search_queries', [])
+
+            # Step 2: Run search with simplified filtering
+            search_results = search_agent.search(
+                queries=search_queries,
+                enable_ai_filtering=True
+            )
+
+            # Step 3: Create detailed results file
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"search_filtering_test_{timestamp}.txt"
+            filepath = os.path.join(tempfile.gettempdir(), filename)
+
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write("SEARCH FILTERING TEST RESULTS\n")
+                f.write("=" * 50 + "\n\n")
+                f.write(f"Test Date: {datetime.now().isoformat()}\n")
+                f.write(f"Original Query: {restaurant_query}\n\n")
+
+                # Query Analysis Results
+                f.write("STEP 1: QUERY ANALYSIS\n")
+                f.write("-" * 30 + "\n")
+                f.write(f"Search Queries Generated: {len(search_queries)}\n")
+                for i, query in enumerate(search_queries, 1):
+                    f.write(f"  {i}. {query}\n")
+                f.write(f"Destination: {query_analysis.get('destination', 'Unknown')}\n")
+                f.write(f"Keywords: {query_analysis.get('keywords_for_analysis', [])}\n\n")
+
+                # Filtering Statistics
+                f.write("STEP 2: FILTERING RESULTS\n")
+                f.write("-" * 30 + "\n")
+                stats = search_agent.evaluation_stats
+                f.write(f"Domain/Video Filtered: {stats.get('domain_filtered', 0)}\n")
+                f.write(f"AI Evaluated: {stats.get('total_evaluated', 0)}\n")
+                f.write(f"AI Passed: {stats.get('passed_filter', 0)}\n")
+                f.write(f"AI Failed: {stats.get('failed_filter', 0)}\n")
+                f.write(f"Evaluation Errors: {stats.get('evaluation_errors', 0)}\n")
+
+                if stats.get('total_evaluated', 0) > 0:
+                    success_rate = (stats.get('passed_filter', 0) / stats.get('total_evaluated', 1)) * 100
+                    f.write(f"AI Success Rate: {success_rate:.1f}%\n")
+                f.write("\n")
+
+                # Final Results
+                f.write("STEP 3: FINAL RESULTS FOR SCRAPING\n")
+                f.write("-" * 30 + "\n")
+                f.write(f"URLs Passed All Filters: {len(search_results)}\n\n")
+
+                if search_results:
+                    for i, result in enumerate(search_results, 1):
+                        f.write(f"URL {i}:\n")
+                        f.write(f"  Title: {result.get('title', 'N/A')}\n")
+                        f.write(f"  URL: {result.get('url', 'N/A')}\n")
+
+                        # Show AI evaluation details
+                        ai_eval = result.get('ai_evaluation', {})
+                        if ai_eval:
+                            f.write(f"  AI Quality Score: {ai_eval.get('content_quality', 0):.2f}\n")
+                            f.write(f"  Restaurant Count: {ai_eval.get('restaurant_count', 0)}\n")
+                            f.write(f"  AI Reasoning: {ai_eval.get('reasoning', 'N/A')}\n")
+                        f.write("\n")
+                else:
+                    f.write("❌ NO URLS PASSED FILTERING\n\n")
+                    f.write("POSSIBLE ISSUES:\n")
+                    f.write("- AI filtering threshold too strict (currently 0.5)\n")
+                    f.write("- Search queries not finding restaurant guides\n")
+                    f.write("- Domain filtering too aggressive\n")
+
+                # Recently Filtered URLs (Debug)
+                f.write("\nSTEP 4: RECENTLY FILTERED URLS (DEBUG)\n")
+                f.write("-" * 30 + "\n")
+                filtered_urls = search_agent.filtered_urls[-10:] if hasattr(search_agent, 'filtered_urls') else []
+
+                if filtered_urls:
+                    for filtered in filtered_urls:
+                        f.write(f"❌ Filtered: {filtered.get('url', 'N/A')}\n")
+                        f.write(f"   Reason: {filtered.get('reason', 'N/A')}\n\n")
+                else:
+                    f.write("No filtering debug info available.\n")
+
+                # Configuration
+                f.write("\nCURRENT CONFIGURATION:\n")
+                f.write("-" * 30 + "\n")
+                f.write(f"Excluded Domains: {getattr(config, 'EXCLUDED_RESTAURANT_SOURCES', [])}\n")
+                f.write(f"Search Count per Query: {getattr(config, 'BRAVE_SEARCH_COUNT', 15)}\n")
+                f.write(f"AI Model: {getattr(config, 'OPENAI_MODEL', 'gpt-4o')}\n")
+
+            # Send results to admin
+            try:
+                # Summary message
+                result_count = len(search_results)
+                ai_success_rate = (stats.get('passed_filter', 0) / max(stats.get('total_evaluated', 1), 1)) * 100
+
+                summary = (
+                    f"🔍 <b>Search Test Complete</b>\n\n"
+                    f"📝 Query: <code>{restaurant_query}</code>\n"
+                    f"🎯 URLs Found: {result_count}\n"
+                    f"📊 AI Success: {ai_success_rate:.1f}%\n"
+                    f"🤖 Simplified filtering active\n\n"
+                    f"{'✅ SUCCESS' if result_count > 0 else '❌ NO RESULTS'}"
+                )
+
+                bot.send_message(admin_chat_id, summary, parse_mode='HTML')
+
+                # Send detailed file
+                with open(filepath, 'rb') as f:
+                    bot.send_document(
+                        admin_chat_id,
+                        f,
+                        caption=f"🔍 Search filtering test: {restaurant_query}"
+                    )
+
+                logger.info(f"Search filtering test completed: {result_count} results")
+
+            except Exception as e:
+                logger.error(f"Error sending results: {e}")
+                bot.send_message(
+                    admin_chat_id,
+                    f"❌ Test completed but failed to send results: {str(e)}"
+                )
+
+        except Exception as e:
+            logger.error(f"Error in search filtering test: {e}")
+            try:
+                bot.send_message(
+                    admin_chat_id,
+                    f"❌ Search test failed for '{restaurant_query}': {str(e)}"
+                )
+            except:
+                pass
+
+    thread = threading.Thread(target=run_test, daemon=True)
+    thread.start()
 
 def perform_restaurant_search(search_query, chat_id, user_id):
     """Perform restaurant search using orchestrator"""
@@ -375,14 +579,8 @@ def main():
     # Initialize the orchestrator
     orchestrator_instance = get_orchestrator()
 
-    # Add admin test commands
-    try:
-        from search_test import add_search_test_command
-        add_search_test_command(bot, config, orchestrator_instance)
-        logger.info("Added /test_search command")
-    except ImportError as e:
-        logger.error(f"Failed to add search test command: {e}")
-
+    logger.info("Admin commands available: /test_scrape")
+    
     # Log that admin commands are available
     logger.info("Admin commands available: /test_scrape, /test_search")
 
