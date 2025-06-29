@@ -95,7 +95,7 @@ class EditorAgent:
     def _slim_recommendations(self, recs: dict) -> dict:
         """
         Return a lightweight copy of `recs` that keeps only the fields
-        the formatter LLM needs.
+        the formatter LLM needs. Combines all restaurants into main_list.
         """
         KEEP = {
             "name",
@@ -110,20 +110,26 @@ class EditorAgent:
         def slim_one(rest: dict) -> dict:
             return {k: v for k, v in rest.items() if k in KEEP and v}
 
-        # Get restaurants from main_list
+        # Combine all restaurants into main_list
+        all_restaurants = []
+
+        # Add main_list restaurants
         main_list = recs.get("main_list", [])
         if isinstance(main_list, list):
-            slimmed_restaurants = [slim_one(r) for r in main_list]
-        else:
-            slimmed_restaurants = []
+            all_restaurants.extend([slim_one(r) for r in main_list])
+
+        # Add hidden_gems to the main list (if they exist)
+        hidden_gems = recs.get("hidden_gems", [])
+        if isinstance(hidden_gems, list):
+            all_restaurants.extend([slim_one(r) for r in hidden_gems])
 
         # Handle legacy format
-        if "recommended" in recs and not slimmed_restaurants:
+        if "recommended" in recs:
             recommended = recs.get("recommended", [])
             if isinstance(recommended, list):
-                slimmed_restaurants = [slim_one(r) for r in recommended]
+                all_restaurants.extend([slim_one(r) for r in recommended])
 
-        return {"main_list": slimmed_restaurants}
+        return {"main_list": all_restaurants}
 
 
     @log_function_call
@@ -164,13 +170,29 @@ class EditorAgent:
                 if not recommendations or not isinstance(recommendations, dict):
                     recommendations = {"main_list": []}
 
-                # Normalize structure
-                if "main_list" not in recommendations:
-                    # Handle legacy format
-                    if "recommended" in recommendations:
-                        recommendations["main_list"] = recommendations.pop("recommended")
-                    else:
-                        recommendations["main_list"] = []
+                # Normalize structure - combine all restaurants
+                all_restaurants = []
+
+                # Get restaurants from main_list
+                if "main_list" in recommendations:
+                    main_list = recommendations["main_list"]
+                    if isinstance(main_list, list):
+                        all_restaurants.extend(main_list)
+
+                # Get restaurants from hidden_gems and add to main list
+                if "hidden_gems" in recommendations:
+                    hidden_gems = recommendations["hidden_gems"]
+                    if isinstance(hidden_gems, list):
+                        all_restaurants.extend(hidden_gems)
+
+                # Handle legacy format
+                if "recommended" in recommendations and not all_restaurants:
+                    recommended = recommendations["recommended"]
+                    if isinstance(recommended, list):
+                        all_restaurants.extend(recommended)
+
+                # Update recommendations to have all restaurants in main_list
+                recommendations = {"main_list": all_restaurants}
 
                 # ── 4. call the LLM formatter ─────────────────────────────
                 response = self.chain.invoke(
@@ -201,6 +223,14 @@ class EditorAgent:
                         # Handle legacy format conversion
                         if "recommended" in formatted_rec:
                             formatted_rec["main_list"] = formatted_rec.pop("recommended")
+                        # Remove hidden_gems if it exists
+                        if "hidden_gems" in formatted_rec:
+                            hidden_gems = formatted_rec.pop("hidden_gems")
+                            # Add hidden_gems to main_list
+                            if isinstance(hidden_gems, list) and hidden_gems:
+                                main_list = formatted_rec.get("main_list", [])
+                                main_list.extend(hidden_gems)
+                                formatted_rec["main_list"] = main_list
                 else:
                     formatted_results = {
                         "formatted_recommendations": formatted_results
@@ -298,14 +328,16 @@ class EditorAgent:
             # Combine all restaurants into one list for query generation
             all_restaurants = []
 
-            # Get restaurants from main_list
-            all_restaurants = []
-
             if isinstance(recommendations, dict):
                 # Add main_list
                 main_list = recommendations.get("main_list", [])
                 if isinstance(main_list, list):
                     all_restaurants.extend(main_list)
+
+                # Add hidden_gems
+                hidden_gems = recommendations.get("hidden_gems", [])
+                if isinstance(hidden_gems, list):
+                    all_restaurants.extend(hidden_gems)
 
                 # Handle legacy format
                 if "recommended" in recommendations and not all_restaurants:
@@ -313,7 +345,7 @@ class EditorAgent:
                     if isinstance(recommended, list):
                         all_restaurants.extend(recommended)
 
-            # Create recommendations structure
+            # Create recommendations structure with combined list
             combined_recommendations = {"main_list": all_restaurants}
 
             # Turn recommendations into a JSON string once.

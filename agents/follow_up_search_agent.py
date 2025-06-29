@@ -25,7 +25,7 @@ import googlemaps
 from langchain_core.tracers.context import tracing_v2_enabled
 
 from agents.search_agent import BraveSearchAgent
-from agents.optimized_scraper import WebScraper
+from agents.scraper import WebScraper
 from utils.debug_utils import dump_chain_state
 
 # ---------------------------------------------------------------------------
@@ -68,13 +68,13 @@ class FollowUpSearchAgent:
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Enrich every restaurant in *formatted_recommendations*.
 
-        Returns main_list with enhanced restaurant data.
+        Returns only main_list, no hidden_gems.
         Restaurants that do not meet the minimum Google rating are silently
         excluded from the output.
         """
 
         with tracing_v2_enabled(project_name="restaurant-recommender"):
-            # Get all restaurants from main_list
+            # Collect all restaurants from both main_list and hidden_gems
             all_restaurants = []
 
             # Add main_list restaurants
@@ -82,6 +82,10 @@ class FollowUpSearchAgent:
             if isinstance(main_list, list):
                 all_restaurants.extend(main_list)
 
+            # Add hidden_gems restaurants to the main list
+            hidden_gems = formatted_recommendations.get("hidden_gems", [])
+            if isinstance(hidden_gems, list):
+                all_restaurants.extend(hidden_gems)
 
             dump_chain_state(
                 "follow_up_search_start",

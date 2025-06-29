@@ -22,8 +22,7 @@ from typing import Any, Dict, List, Sequence
 from langchain_mistralai import ChatMistralAI
 from langchain_core.output_parsers import PydanticOutputParser, StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel, Field
-from pydantic import field_validator
+from pydantic import BaseModel, Field, validator
 from tenacity import retry, stop_after_attempt, wait_exponential
 import config
 
@@ -53,39 +52,16 @@ class Restaurant(BaseModel):
     location: str
     city: str = Field(default="", description="City name from the query")
 
-    @field_validator("description")
-    @classmethod
+    @validator("description")
     def ensure_len(cls, v):
-        # Handle the case where v is not a string
-        if v is None:
-            return "Description unavailable"
-
-        # Convert non-strings to string, but handle common problematic values
-        if not isinstance(v, str):
-            if isinstance(v, bool):
-                return "Description unavailable"
-            elif isinstance(v, (int, float)):
-                return "Description unavailable"
-            else:
-                # Try to convert to string as last resort
-                try:
-                    v = str(v)
-                except:
-                    return "Description unavailable"
-
-        # Clean up the string
-        v = v.strip()
-
-        # If empty or just whitespace, return default
-        if not v or v == "Description unavailable":
-            return "Description unavailable"
-
-        # Return the cleaned description
+        if v == "Description unavailable":
+            return v
+        # Simply return the description as-is, don't append any text
         return v
 
 class ListResponse(BaseModel):
     main_list: List[Restaurant]
-    
+    hidden_gems: List[Restaurant]
 
 # Parser to give the LLM format instructions + parse back to python.
 PARSER = PydanticOutputParser(pydantic_object=ListResponse)
@@ -94,7 +70,7 @@ PARSER = PydanticOutputParser(pydantic_object=ListResponse)
 # Prompt pieces
 ###############################################################################
 SYSTEM_PROMPT = """You are restaurant list analyser. Follow ALL rules:
-1. ALWAYS output pure JSON with key `main_list` containing all recommended restaurants.
+1. ALWAYS output pure JSON with keys `main_list` with restaurants praised by multiple experts and `hidden_gems` highly recommended by one or two sources.
 2. No markdown, no code fences, no commentary.
 3. Each restaurant must include: name, location, city (from query), description (40‑60 words, start with a concrete fact), price_range, recommended_dishes, sources (publication names only, not full article titles), source_urls.
 4. Identify at least 8 restaurants that match the search parameters and are in the specified location/city.
@@ -242,6 +218,38 @@ class ListAnalyzer:
             logger.debug("LLM call took %.1fs", time.perf_counter() - start)
             return result
 
+    async def _ensure_hidden_gems(
+        self, response: ListResponse, destination: str
+    ) -> ListResponse:
+        """If hidden_gems empty, ask LLM to pick them from main_list."""
+        if response.hidden_gems:
+            return response
+        logger.info("hidden_gems empty – running follow‑up selection")
+        gems_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", f"Select up to 3 hidden gems (appear in <=2 sources) from the list. Only include restaurants in {destination}."),
+                (
+                    "human",
+                    (
+                        "Here is the list as JSON:\n{raw}\n\n"
+                        "Return JSON with key `hidden_gems` only."
+                    ),
+                ),
+            ]
+        )
+        follow_chain = gems_prompt | self.llm | StrOutputParser()
+        raw = response.json()
+        async with self._sem:
+            gems_json = await follow_chain.ainvoke({"raw": raw})
+        try:
+            gems = ListResponse.model_validate_json(
+                '{"main_list": [], "hidden_gems": ' + gems_json + "}"
+            ).hidden_gems
+            response.hidden_gems = gems
+        except Exception as e:
+            logger.warning("Failed to parse hidden gems follow‑up: %s", e)
+        return response
+
     async def _expand_short_descriptions(
         self, resp: ListResponse, location: str
     ) -> ListResponse:
@@ -312,21 +320,24 @@ class ListAnalyzer:
 
         # -------------- Parse & validate ---------- #
         try:
-            response_model = ListResponse.model_validate_json(content)
+            response_model = PARSER.parse(content)
         except Exception as exc:
             logger.error("Pydantic parse failed: %s", exc)
             # Propagate for upstream error handling
             raise
 
         # -------------- Quality gates ------------- #
+        response_model = await self._ensure_hidden_gems(response_model, destination)
         response_model = await self._expand_short_descriptions(
             response_model, location=destination
         )
 
         # Set the city for all restaurants
-        for restaurant in response_model.main_list:
+        for restaurant in response_model.main_list + response_model.hidden_gems:
             restaurant.city = destination
             restaurant.location = destination
+
+        return response_model.model_dump()
 
     # --------------------------------------------------------------------- #
     # Utility

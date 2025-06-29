@@ -10,6 +10,7 @@ import config
 from main import setup_orchestrator
 import json
 from scraping_test_command import add_test_scraping_command
+from debug_query_command import add_debug_query_command
 
 # Configure logging
 logging.basicConfig(
@@ -132,10 +133,11 @@ def get_orchestrator():
 def send_welcome(message):
     """Handle /start and /help commands"""
     try:
-        # Clear user session on start
         user_id = message.from_user.id
-        if user_id in user_sessions:
-            del user_sessions[user_id]
+
+        # Clear conversation history on start
+        if user_id in user_conversations:
+            del user_conversations[user_id]
 
         bot.reply_to(
             message, 
@@ -146,102 +148,6 @@ def send_welcome(message):
     except Exception as e:
         logger.error(f"Error sending welcome message: {e}")
         bot.reply_to(message, "Hello! I'm Restaurant Babe, ready to help you find amazing restaurants!")
-
-# ADD THIS NEW COMMAND HANDLER HERE - BEFORE the general message handler
-@bot.message_handler(commands=['debug_query'])
-def handle_debug_query(message):
-    """Handle /debug_query command - ADMIN ONLY"""
-
-    user_id = message.from_user.id
-    admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
-
-    # Check if user is admin
-    if not admin_chat_id or str(user_id) != str(admin_chat_id):
-        bot.reply_to(message, "❌ This command is only available to administrators.")
-        return
-
-    # Parse command arguments
-    command_text = message.text
-
-    # Extract query after the command
-    if len(command_text.split(None, 1)) < 2:
-        help_text = (
-            "🧠 <b>Intelligent Scraper Pipeline Debug Command</b>\n\n"
-            "<b>Usage:</b>\n"
-            "<code>/debug_query [your restaurant query]</code>\n\n"
-            "<b>Examples:</b>\n"
-            "<code>/debug_query best cevicherias in Lima</code>\n"
-            "<code>/debug_query romantic restaurants in Paris</code>\n"
-            "<code>/debug_query family-friendly pizza in Rome</code>\n\n"
-            "This will run the complete intelligent scraper pipeline up to the list_analyzer stage "
-            "and show you exactly what content gets passed to the AI for analysis.\n\n"
-            "📊 <b>Features:</b>\n"
-            "• Shows AI strategy analysis for each URL\n"
-            "• Displays cost savings vs Firecrawl-only approach\n"
-            "• Reports scraping method distribution\n"
-            "• Shows domain intelligence cache\n"
-            "• Tracks strategy effectiveness"
-        )
-        bot.reply_to(message, help_text, parse_mode='HTML')
-        return
-
-    # Extract the query
-    user_query = command_text.split(None, 1)[1].strip()
-
-    if not user_query:
-        bot.reply_to(message, "❌ Please provide a restaurant query to debug.")
-        return
-
-    # Send confirmation and start debug
-    bot.reply_to(
-        message, 
-        f"🧠 Starting intelligent scraper pipeline debug for query:\n<code>{user_query}</code>\n\n"
-        "This will run the complete search and intelligent scraping pipeline. "
-        "You'll receive a detailed report showing:\n\n"
-        "• 🤖 AI analysis decisions for each URL\n"
-        "• 📊 Strategy distribution and cost savings\n"
-        "• 🎯 Cache hits and domain learning\n"
-        "• 📝 Exact content passed to list_analyzer\n\n"
-        "⏱ This may take 2-3 minutes...",
-        parse_mode='HTML'
-    )
-
-    # Run debug in background thread
-    import threading
-
-    def run_debug():
-        try:
-            # Import the debug handler here to avoid circular imports
-            from debug_query_command import DebugQueryCommand
-
-            # Create debug handler
-            debug_handler = DebugQueryCommand(config, get_orchestrator())
-
-            # Run the async debug
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            debug_path = loop.run_until_complete(
-                debug_handler.debug_query_pipeline(user_query, bot)
-            )
-
-            loop.close()
-
-            logger.info(f"Intelligent scraper query debug completed. Report saved to: {debug_path}")
-
-        except Exception as e:
-            logger.error(f"Error in intelligent scraper query debug: {e}")
-            try:
-                bot.send_message(
-                    admin_chat_id,
-                    f"❌ Intelligent scraper debug failed for '{user_query}': {str(e)}"
-                )
-            except:
-                pass
-
-    thread = threading.Thread(target=run_debug, daemon=True)
-    thread.start()
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
@@ -389,7 +295,22 @@ def main():
         logger.error(f"Failed to start bot: {e}")
         return
 
-    # Start polling with better error handling
+    # Initialize orchestrator and add admin commands
+    try:
+        logger.info("Setting up admin commands...")
+        orchestrator_instance = get_orchestrator()
+
+        # Add both admin commands
+        add_test_scraping_command(bot, config, orchestrator_instance)
+        add_debug_query_command(bot, config, orchestrator_instance)
+
+        logger.info("Admin commands added successfully")
+        logger.info("Available admin commands: /test_scraping, /debug_query")
+    except Exception as e:
+        logger.error(f"Failed to add admin commands: {e}")
+        # Continue anyway, regular bot functionality should still work
+
+    # Start polling with better error handling (existing code continues...)
     while True:
         try:
             logger.info("Starting bot polling...")
