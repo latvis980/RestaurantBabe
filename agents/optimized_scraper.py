@@ -4,6 +4,7 @@ Enhanced version of the optimized scraper with intelligent content sectioning.
 This version integrates the ContentSectioningAgent into the existing scraper pipeline.
 """
 
+import json
 import asyncio
 import logging
 import time
@@ -559,6 +560,8 @@ class EnhancedOptimizedScraper:
         url = result.get("url", "")
         domain = self._extract_domain(url)
 
+        logger.info(f"🔍 ANALYZING: {domain}") 
+
         try:
             # First, do a quick HTTP probe to analyze the actual content
             probe_result = await self._probe_url_content(url)
@@ -639,7 +642,6 @@ class EnhancedOptimizedScraper:
 
             strategy = ScrapeStrategy(
                 complexity=complexity,
-                scraper_type=scraper_type_map[complexity],
                 estimated_cost=cost_map[complexity],
                 confidence=analysis.get("confidence", 0.7),
                 reasoning=reasoning
