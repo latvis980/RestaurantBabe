@@ -9,7 +9,7 @@ from langchain_core.prompts import ChatPromptTemplate
 import config
 from main import setup_orchestrator
 import json
-from unified_scraping_analyzer import add_unified_scraping_command
+from scrape_test import add_scrape_test_command  # NEW: Simple scrape test
 
 # Configure logging
 logging.basicConfig(
@@ -74,48 +74,33 @@ Return JSON only:
 EXAMPLES:
 
 User: "ramen in tokyo"
-→ {{"action": "SEARCH", "search_query": "best ramen restaurants in Tokyo", "bot_response": "Perfect! I'll search for the best ramen restaurants in Tokyo. Let me check with my critic friends - this will take a couple of minutes.", "reasoning": "Have both location (Tokyo) and preference (ramen)"}}
+→ {{"action": "SEARCH", "search_query": "best ramen restaurants in Tokyo", "bot_response": "Perfect! Let me find the best ramen places in Tokyo for you.", "reasoning": "Have both location and preference"}}
 
-User: "I want Italian food"
-→ {{"action": "CLARIFY", "search_query": "", "bot_response": "Great choice! Italian cuisine is amazing. Which city are you looking for Italian restaurants in?", "reasoning": "Have preference (Italian) but missing location"}}
+User: "I want something romantic"
+→ {{"action": "CLARIFY", "bot_response": "Romantic sounds wonderful! Which city or area would you like me to search for romantic restaurants?", "reasoning": "Missing location information"}}
 
-User: "Paris"
-→ {{"action": "CLARIFY", "search_query": "", "bot_response": "Ah, Paris! Wonderful city for dining. What type of restaurants are you interested in? Perhaps traditional French, modern bistros, international cuisine, or something specific?", "reasoning": "Have location (Paris) but missing dining preference"}}
-
-User: "what's the weather like?"
-→ {{"action": "REDIRECT", "search_query": "", "bot_response": "I'm your restaurant expert! I can help you find amazing places to eat and drink around the world. What city are you interested in dining in?", "reasoning": "Off-topic, not about restaurants"}}
-
-CONVERSATION STYLE:
-- Be warm, enthusiastic, and knowledgeable about food
-- Reference previous messages naturally 
-- Once you have location + preference, always choose "SEARCH"
-- Keep responses concise but friendly
-- Show expertise about restaurants and dining
+User: "How's the weather?"
+→ {{"action": "REDIRECT", "bot_response": "I specialize in restaurant recommendations! Tell me what type of food or dining experience you're looking for, and in which city.", "reasoning": "Off-topic question"}}
 """
 
-def get_conversation_history(user_id):
-    """Get recent conversation history for user"""
-    if user_id not in user_conversations:
-        user_conversations[user_id] = []
-    return user_conversations[user_id]
-
 def add_to_conversation(user_id, message, is_user=True):
-    """Add message to conversation history"""
+    """Add message to user conversation history (keeps last 5 messages)"""
     if user_id not in user_conversations:
         user_conversations[user_id] = []
 
-    # Keep only last 8 messages (4 exchanges)
-    if len(user_conversations[user_id]) >= 8:
-        user_conversations[user_id] = user_conversations[user_id][-6:]
+    role = "User" if is_user else "Bot"
+    user_conversations[user_id].append(f"{role}: {message}")
 
-    sender = "User" if is_user else "Bot"
-    user_conversations[user_id].append(f"{sender}: {message}")
+    # Keep only last 5 messages
+    if len(user_conversations[user_id]) > 5:
+        user_conversations[user_id] = user_conversations[user_id][-5:]
 
 def format_conversation_history(user_id):
     """Format conversation history for AI prompt"""
-    history = get_conversation_history(user_id)
-    if not history:
-        return "No previous conversation."
+    if user_id not in user_conversations:
+        return "No previous conversation"
+
+    history = user_conversations[user_id]
     return "\n".join(history)
 
 # Initialize orchestrator (will be set up when first needed)
@@ -148,6 +133,60 @@ def send_welcome(message):
         logger.error(f"Error sending welcome message: {e}")
         bot.reply_to(message, "Hello! I'm Restaurant Babe, ready to help you find amazing restaurants!")
 
+def perform_restaurant_search(search_query, chat_id, user_id):
+    """Perform restaurant search using orchestrator"""
+    try:
+        # Send processing message
+        processing_msg = bot.send_message(
+            chat_id,
+            "🔍 Searching for the best recommendations... This may take a few minutes as I consult with my critic friends!",
+            parse_mode='HTML'
+        )
+
+        # Get orchestrator and perform search
+        orchestrator_instance = get_orchestrator()
+
+        # This is where the actual search happens
+        result = orchestrator_instance.process_search(search_query)
+
+        # Format for Telegram (ensure proper formatting)
+        telegram_text = result.get('telegram_text', result.get('answer', 'Sorry, no recommendations found.'))
+
+        # Delete the processing message
+        try:
+            bot.delete_message(chat_id, processing_msg.message_id)
+        except:
+            pass  # Don't worry if we can't delete it
+
+        # Send the results
+        bot.send_message(
+            chat_id,
+            telegram_text,
+            parse_mode='HTML',
+            disable_web_page_preview=True
+        )
+
+        logger.info(f"Successfully sent restaurant recommendations to user {user_id}")
+
+        # Add search completion to conversation history
+        add_to_conversation(user_id, "Restaurant recommendations delivered!", is_user=False)
+
+    except Exception as e:
+        logger.error(f"Error in restaurant search process: {e}")
+        try:
+            # Delete processing message if it exists
+            if 'processing_msg' in locals():
+                bot.delete_message(chat_id, processing_msg.message_id)
+        except:
+            pass
+
+        bot.send_message(
+            chat_id,
+            "😔 Sorry, I encountered an error while searching for restaurants. Please try again with a different query!",
+            parse_mode='HTML'
+        )
+
+# IMPORTANT: This must be the LAST message handler (catch-all for non-command messages)
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     """Handle all text messages with AI conversation management"""
@@ -197,88 +236,36 @@ def handle_message(message):
 
         action = ai_decision.get("action")
         bot_response = ai_decision.get("bot_response", "How can I help you find restaurants?")
-        search_query = ai_decision.get("search_query", "")
-        reasoning = ai_decision.get("reasoning", "")
 
-        logger.info(f"AI Decision - Action: {action}, Reasoning: {reasoning}")
+        if action == "SEARCH":
+            search_query = ai_decision.get("search_query")
+            if search_query:
+                # Add bot response to conversation before search
+                add_to_conversation(user_id, bot_response, is_user=False)
 
-        # Add bot response to conversation history
-        add_to_conversation(user_id, bot_response, is_user=False)
+                # Send the bot response
+                bot.reply_to(message, bot_response, parse_mode='HTML')
 
-        if action == "SEARCH" and search_query:
-            # Send immediate response
-            bot.reply_to(message, bot_response, parse_mode='HTML')
-
-            # Process restaurant search in background
-            threading.Thread(
-                target=process_restaurant_search,
-                args=(message, search_query, user_id),
-                daemon=True
-            ).start()
-
+                # Perform the search in background
+                threading.Thread(
+                    target=perform_restaurant_search,
+                    args=(search_query, message.chat.id, user_id),
+                    daemon=True
+                ).start()
+            else:
+                # Fallback if no search query
+                add_to_conversation(user_id, bot_response, is_user=False)
+                bot.reply_to(message, bot_response, parse_mode='HTML')
         else:
-            # Send clarification or redirect response
+            # CLARIFY or REDIRECT - just send the bot response
+            add_to_conversation(user_id, bot_response, is_user=False)
             bot.reply_to(message, bot_response, parse_mode='HTML')
 
     except Exception as e:
         logger.error(f"Error handling message: {e}")
         bot.reply_to(
             message, 
-            "Sorry, I encountered an error. Please try asking about restaurants in a specific city!"
-        )
-
-def process_restaurant_search(message, search_query, user_id):
-    """Process restaurant search request in background"""
-    try:
-        chat_id = message.chat.id
-
-        logger.info(f"Starting restaurant search for user {user_id}: {search_query}")
-
-        # Send processing message
-        processing_msg = bot.send_message(
-            chat_id,
-            "🔍 Searching for the best recommendations... This may take a few minutes as I consult with my critic friends!",
-            parse_mode='HTML'
-        )
-
-        # Process the query through orchestrator
-        orch = get_orchestrator()
-        result = orch.process_query(search_query)
-
-        # Get the formatted response
-        telegram_text = result.get("telegram_text", "Sorry, I couldn't find any restaurants for your request.")
-
-        # Delete the processing message
-        try:
-            bot.delete_message(chat_id, processing_msg.message_id)
-        except:
-            pass  # Don't worry if we can't delete it
-
-        # Send the results
-        bot.send_message(
-            chat_id,
-            telegram_text,
-            parse_mode='HTML',
-            disable_web_page_preview=True
-        )
-
-        logger.info(f"Successfully sent restaurant recommendations to user {user_id}")
-
-        # Add search completion to conversation history
-        add_to_conversation(user_id, "Restaurant recommendations delivered!", is_user=False)
-
-    except Exception as e:
-        logger.error(f"Error in restaurant search process: {e}")
-        try:
-            # Delete processing message if it exists
-            if 'processing_msg' in locals():
-                bot.delete_message(chat_id, processing_msg.message_id)
-        except:
-            pass
-
-        bot.send_message(
-            chat_id,
-            "😔 Sorry, I encountered an error while searching for restaurants. Please try again with a different query!",
+            "I'm having trouble understanding right now. Could you try asking again about restaurants in a specific city?",
             parse_mode='HTML'
         )
 
@@ -299,16 +286,16 @@ def main():
         logger.info("Setting up admin commands...")
         orchestrator_instance = get_orchestrator()
 
-        # Add both admin commands
-        add_unified_scraping_command(bot, config, orchestrator_instance)
+        # Add the simple scrape test command
+        add_scrape_test_command(bot, config, orchestrator_instance)
 
         logger.info("Admin commands added successfully")
-        logger.info("Available admin commands: /test_scraping, /debug_query")
+        logger.info("Available admin command: /test_scrape")
     except Exception as e:
         logger.error(f"Failed to add admin commands: {e}")
         # Continue anyway, regular bot functionality should still work
 
-    # Start polling with better error handling (existing code continues...)
+    # Start polling with better error handling
     while True:
         try:
             logger.info("Starting bot polling...")
