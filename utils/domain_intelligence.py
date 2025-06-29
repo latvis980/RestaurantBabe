@@ -3,7 +3,7 @@ import logging
 import json
 import time
 from typing import Dict, List, Any, Optional
-from sqlalchemy import create_engine, MetaData, Table, Column, String, Float, Integer, DateTime, Text
+from sqlalchemy import create_engine, MetaData, Table, Column, String, Float, Integer, DateTime, Text, func
 from sqlalchemy.dialects.postgresql import JSON
 from datetime import datetime, timedelta
 
@@ -269,35 +269,38 @@ def get_domain_intelligence_stats(config) -> Dict[str, Any]:
 
     try:
         with engine.begin() as conn:
-            # Total domains
-            total_count = conn.execute(
-                f"SELECT COUNT(*) FROM {domain_intelligence_table.name}"
+            # Total domains - FIXED: Use proper SQLAlchemy COUNT
+            total_count_result = conn.execute(
+                domain_intelligence_table.select().with_only_columns(func.count())
             ).scalar()
+            total_count = total_count_result or 0
 
-            # High confidence domains (>0.8)
-            high_confidence_count = conn.execute(
-                domain_intelligence_table.select().where(
+            # High confidence domains (>0.8) - FIXED: Use COUNT instead of rowcount
+            high_confidence_result = conn.execute(
+                domain_intelligence_table.select().with_only_columns(func.count()).where(
                     domain_intelligence_table.c.confidence > 0.8
                 )
-            ).rowcount
+            ).scalar()
+            high_confidence_count = high_confidence_result or 0
 
-            # Domains by complexity
+            # Domains by complexity - FIXED: Use COUNT for each complexity type
             complexity_stats = {}
             for complexity in ['simple_html', 'moderate_js', 'heavy_js', 'specialized']:
-                count = conn.execute(
-                    domain_intelligence_table.select().where(
+                complexity_result = conn.execute(
+                    domain_intelligence_table.select().with_only_columns(func.count()).where(
                         domain_intelligence_table.c.complexity == complexity
                     )
-                ).rowcount
-                complexity_stats[complexity] = count
+                ).scalar()
+                complexity_stats[complexity] = complexity_result or 0
 
-            # Recent activity (last 7 days)
+            # Recent activity (last 7 days) - FIXED: Use COUNT
             recent_cutoff = datetime.utcnow() - timedelta(days=7)
-            recent_updates = conn.execute(
-                domain_intelligence_table.select().where(
+            recent_updates_result = conn.execute(
+                domain_intelligence_table.select().with_only_columns(func.count()).where(
                     domain_intelligence_table.c.last_updated > recent_cutoff
                 )
-            ).rowcount
+            ).scalar()
+            recent_updates = recent_updates_result or 0
 
             # Top performing domains
             top_domains = conn.execute(
