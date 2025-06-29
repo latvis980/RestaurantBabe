@@ -212,8 +212,9 @@ def retry_async(fn):
 class ListAnalyzer:
     """Restaurant list analyzer using Claude Sonnet 4 for reliable structured output"""
 
-    def __init__(self):
-        # Initialize Claude Sonnet 4
+    def __init__(self, config=None):
+        # Initialize Claude Sonnet 4 (config parameter for compatibility)
+        self.config = config  # Store config if passed
         self.llm = ChatAnthropic(
             model="claude-3-5-sonnet-20241022",  # Latest Claude model
             temperature=0.2,  # Slightly higher for more creative descriptions
@@ -238,7 +239,7 @@ class ListAnalyzer:
 
         # Ensure we have a destination
         if not destination or destination == "Unknown":
-            destination = "Location from search query"
+            destination = "Location from search query"            
 
         # Convert parameters to strings
         if isinstance(primary_search_parameters, list):
@@ -411,3 +412,24 @@ Write a compelling 40-60 word description:""")
             logger.warning(f"Description enhancement failed: {e}")
 
         return restaurant.description
+
+    # Compatibility method for existing orchestrator code
+    async def analyze(
+        self,
+        search_results: List[Dict[str, Any]],
+        keywords_for_analysis: List[str] = None,
+        primary_search_parameters: str = "",
+        secondary_filter_parameters: str = "",
+        destination: str = "Unknown",
+    ) -> Dict[str, Any]:
+        """
+        Compatibility wrapper for existing orchestrator code.
+        Calls the main analyze_search_results method.
+        """
+        return await self.analyze_search_results(
+            search_results=search_results,
+            primary_search_parameters=primary_search_parameters,
+            secondary_filter_parameters=secondary_filter_parameters,
+            keywords_for_analysis=keywords_for_analysis,
+            destination=destination
+        )
