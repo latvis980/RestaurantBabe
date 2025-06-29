@@ -9,7 +9,6 @@ from langchain_core.prompts import ChatPromptTemplate
 import config
 from main import setup_orchestrator
 import json
-from scrape_test import add_scrape_test_command  # Simple scrape test
 
 # Configure logging
 logging.basicConfig(
@@ -113,7 +112,7 @@ def get_orchestrator():
         orchestrator = setup_orchestrator()
     return orchestrator
 
-# COMMAND HANDLERS FIRST (before any other handlers)
+# COMMAND HANDLERS MUST BE DEFINED FIRST
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -134,6 +133,94 @@ def send_welcome(message):
     except Exception as e:
         logger.error(f"Error sending welcome message: {e}")
         bot.reply_to(message, "Hello! I'm Restaurant Babe, ready to help you find amazing restaurants!")
+
+# ADMIN COMMAND: /test_scrape - DEFINED DIRECTLY HERE
+@bot.message_handler(commands=['test_scrape'])
+def handle_test_scrape(message):
+    """Handle /test_scrape command - scraping process test"""
+
+    user_id = message.from_user.id
+    admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
+
+    # Check if user is admin
+    if not admin_chat_id or str(user_id) != str(admin_chat_id):
+        bot.reply_to(message, "❌ This command is only available to administrators.")
+        return
+
+    # Parse command
+    command_text = message.text.strip()
+
+    if len(command_text.split(None, 1)) < 2:
+        help_text = (
+            "🧪 <b>Scraping Process Test</b>\n\n"
+            "<b>Usage:</b>\n"
+            "<code>/test_scrape [restaurant query]</code>\n\n"
+            "<b>Examples:</b>\n"
+            "<code>/test_scrape best brunch in Lisbon</code>\n"
+            "<code>/test_scrape romantic restaurants Paris</code>\n"
+            "<code>/test_scrape family pizza Rome</code>\n\n"
+            "This runs the complete scraping process and shows:\n"
+            "• Which search results are found\n"
+            "• What gets scraped successfully\n"
+            "• Exact content that goes to list_analyzer\n"
+            "• Scraping method statistics\n\n"
+            "📄 Results are saved to a detailed file."
+        )
+        bot.reply_to(message, help_text, parse_mode='HTML')
+        return
+
+    # Extract query
+    restaurant_query = command_text.split(None, 1)[1].strip()
+
+    if not restaurant_query:
+        bot.reply_to(message, "❌ Please provide a restaurant query to test.")
+        return
+
+    # Send confirmation
+    bot.reply_to(
+        message,
+        f"🧪 <b>Starting scraping process test...</b>\n\n"
+        f"📝 Query: <code>{restaurant_query}</code>\n\n"
+        "This will run the complete pipeline:\n"
+        "1️⃣ Query analysis\n"
+        "2️⃣ Web search\n"
+        "3️⃣ Intelligent scraping\n"
+        "4️⃣ Content analysis\n\n"
+        "⏱ Please wait 2-3 minutes...",
+        parse_mode='HTML'
+    )
+
+    # Run test in background
+    def run_test():
+        try:
+            # Import and run the scraping test
+            from scrape_test import ScrapeTest
+            import asyncio
+
+            scrape_tester = ScrapeTest(config, get_orchestrator())
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            results_path = loop.run_until_complete(
+                scrape_tester.test_scraping_process(restaurant_query, bot)
+            )
+
+            loop.close()
+            logger.info(f"Scraping test completed: {results_path}")
+
+        except Exception as e:
+            logger.error(f"Error in scraping test: {e}")
+            try:
+                bot.send_message(
+                    admin_chat_id,
+                    f"❌ Scraping test failed for '{restaurant_query}': {str(e)}"
+                )
+            except:
+                pass
+
+    thread = threading.Thread(target=run_test, daemon=True)
+    thread.start()
 
 def perform_restaurant_search(search_query, chat_id, user_id):
     """Perform restaurant search using orchestrator"""
@@ -283,19 +370,8 @@ def main():
         logger.error(f"Failed to start bot: {e}")
         return
 
-    # CRITICAL: Add admin commands BEFORE starting polling
-    try:
-        logger.info("Setting up admin commands...")
-        orchestrator_instance = get_orchestrator()
-
-        # Add the scrape test command
-        add_scrape_test_command(bot, config, orchestrator_instance)
-
-        logger.info("Admin commands added successfully")
-        logger.info("Available admin command: /test_scrape")
-    except Exception as e:
-        logger.error(f"Failed to add admin commands: {e}")
-        # Continue anyway, regular bot functionality should still work
+    # Log that admin command is available
+    logger.info("Admin command available: /test_scrape")
 
     # Start polling with better error handling
     while True:
