@@ -238,7 +238,7 @@ class ListAnalyzer:
 
         # Ensure we have a destination
         if not destination or destination == "Unknown":
-            destination = self._derive_city(primary_search_parameters)
+            destination = "Location from search query"
 
         # Convert parameters to strings
         if isinstance(primary_search_parameters, list):
@@ -411,26 +411,3 @@ Write a compelling 40-60 word description:""")
             logger.warning(f"Description enhancement failed: {e}")
 
         return restaurant.description
-
-    @staticmethod
-    def _derive_city(primary_parameters: str) -> str:
-        """Extract city name from search parameters"""
-        if isinstance(primary_parameters, list):
-            primary_parameters = " ".join(primary_parameters)
-
-        # Look for common patterns
-        patterns = [
-            r"\bin\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
-            r"\bat\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",  
-            r"\bnear\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
-            r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+restaurants?",
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, primary_parameters)
-            if match:
-                city = match.group(1)
-                if city.lower() not in ['best', 'top', 'good', 'great', 'amazing', 'recommended']:
-                    return city
-
-        return "Unknown"
