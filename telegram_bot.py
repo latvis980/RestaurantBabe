@@ -1,4 +1,4 @@
-# telegram_bot.py - AI-Powered Restaurant Bot - FIXED VERSION
+# telegram_bot.py - DIRECT COMMAND REGISTRATION APPROACH
 import telebot
 import logging
 import time
@@ -9,6 +9,7 @@ from langchain_core.prompts import ChatPromptTemplate
 import config
 from main import setup_orchestrator
 import json
+import asyncio
 
 # Configure logging
 logging.basicConfig(
@@ -112,7 +113,7 @@ def get_orchestrator():
         orchestrator = setup_orchestrator()
     return orchestrator
 
-# BASIC COMMAND HANDLERS - Define these FIRST
+# COMMAND HANDLERS - Define directly to avoid conflicts
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -133,6 +134,182 @@ def send_welcome(message):
     except Exception as e:
         logger.error(f"Error sending welcome message: {e}")
         bot.reply_to(message, "Hello! I'm Restaurant Babe, ready to help you find amazing restaurants!")
+
+# ADMIN COMMAND: /test_scrape - Call external class directly
+@bot.message_handler(commands=['test_scrape'])
+def handle_test_scrape(message):
+    """Handle /test_scrape command using external ScrapeTest class"""
+
+    user_id = message.from_user.id
+    admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
+
+    # Check if user is admin
+    if not admin_chat_id or str(user_id) != str(admin_chat_id):
+        bot.reply_to(message, "❌ This command is only available to administrators.")
+        return
+
+    # Parse command
+    command_text = message.text.strip()
+
+    if len(command_text.split(None, 1)) < 2:
+        help_text = (
+            "🧪 <b>Scraping Process Test</b>\n\n"
+            "<b>Usage:</b>\n"
+            "<code>/test_scrape [restaurant query]</code>\n\n"
+            "<b>Examples:</b>\n"
+            "<code>/test_scrape best brunch in Lisbon</code>\n"
+            "<code>/test_scrape romantic restaurants Paris</code>\n"
+            "<code>/test_scrape family pizza Rome</code>\n\n"
+            "This runs the complete scraping process and shows:\n"
+            "• Which search results are found\n"
+            "• What gets scraped successfully\n"
+            "• Exact content that goes to list_analyzer\n"
+            "• Scraping method statistics\n\n"
+            "📄 Results are saved to a detailed file."
+        )
+        bot.reply_to(message, help_text, parse_mode='HTML')
+        return
+
+    # Extract query
+    restaurant_query = command_text.split(None, 1)[1].strip()
+
+    if not restaurant_query:
+        bot.reply_to(message, "❌ Please provide a restaurant query to test.")
+        return
+
+    # Send confirmation
+    bot.reply_to(
+        message,
+        f"🧪 <b>Starting scraping process test...</b>\n\n"
+        f"📝 Query: <code>{restaurant_query}</code>\n\n"
+        "This will run the complete pipeline:\n"
+        "1️⃣ Query analysis\n"
+        "2️⃣ Web search\n"
+        "3️⃣ Intelligent scraping\n"
+        "4️⃣ Content analysis\n\n"
+        "⏱ Please wait 2-3 minutes...",
+        parse_mode='HTML'
+    )
+
+    # Run test in background
+    def run_test():
+        try:
+            # Import and run the scraping test
+            from scrape_test import ScrapeTest
+
+            scrape_tester = ScrapeTest(config, get_orchestrator())
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            results_path = loop.run_until_complete(
+                scrape_tester.test_scraping_process(restaurant_query, bot)
+            )
+
+            loop.close()
+            logger.info(f"Scraping test completed: {results_path}")
+
+        except Exception as e:
+            logger.error(f"Error in scraping test: {e}")
+            try:
+                bot.send_message(
+                    admin_chat_id,
+                    f"❌ Scraping test failed for '{restaurant_query}': {str(e)}"
+                )
+            except:
+                pass
+
+    thread = threading.Thread(target=run_test, daemon=True)
+    thread.start()
+
+# ADMIN COMMAND: /test_search - Call external class directly
+@bot.message_handler(commands=['test_search'])
+def handle_test_search(message):
+    """Handle /test_search command using external SearchTest class"""
+
+    user_id = message.from_user.id
+    admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
+
+    # Check if user is admin
+    if not admin_chat_id or str(user_id) != str(admin_chat_id):
+        bot.reply_to(message, "❌ This command is only available to administrators.")
+        return
+
+    # Parse command
+    command_text = message.text.strip()
+
+    if len(command_text.split(None, 1)) < 2:
+        help_text = (
+            "🔍 <b>Simplified Search Process Test</b>\n\n"
+            "<b>Usage:</b>\n"
+            "<code>/test_search [restaurant query]</code>\n\n"
+            "<b>Examples:</b>\n"
+            "<code>/test_search best cocktail bars in tel aviv</code>\n"
+            "<code>/test_search romantic restaurants Paris</code>\n"
+            "<code>/test_search family pizza Rome</code>\n\n"
+            "This tests the simplified search process:\n"
+            "• Raw Brave search results\n"
+            "• Domain filtering (excluded sources + video platforms)\n"
+            "• AI-only content filtering decisions\n"
+            "• Final URLs for scraping\n\n"
+            "📄 Results are saved to a detailed file.\n\n"
+            "🤖 <b>New:</b> Removed keyword filtering, AI-only filtering now."
+        )
+        bot.reply_to(message, help_text, parse_mode='HTML')
+        return
+
+    # Extract query
+    restaurant_query = command_text.split(None, 1)[1].strip()
+
+    if not restaurant_query:
+        bot.reply_to(message, "❌ Please provide a restaurant query to test.")
+        return
+
+    # Send confirmation
+    bot.reply_to(
+        message,
+        f"🔍 <b>Starting simplified search test...</b>\n\n"
+        f"📝 Query: <code>{restaurant_query}</code>\n\n"
+        "New simplified process:\n"
+        "1️⃣ Query analysis\n"
+        "2️⃣ Domain filtering only\n"
+        "3️⃣ AI-based content evaluation\n"
+        "4️⃣ Results analysis\n\n"
+        "⚡ Much faster - no keyword filtering!\n"
+        "⏱ Please wait 1-2 minutes...",
+        parse_mode='HTML'
+    )
+
+    # Run test in background
+    def run_test():
+        try:
+            # Import and run the search test
+            from search_test import SearchTest
+
+            search_tester = SearchTest(config, get_orchestrator())
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            results_path = loop.run_until_complete(
+                search_tester.test_search_process(restaurant_query, bot)
+            )
+
+            loop.close()
+            logger.info(f"Simplified search test completed: {results_path}")
+
+        except Exception as e:
+            logger.error(f"Error in simplified search test: {e}")
+            try:
+                bot.send_message(
+                    admin_chat_id,
+                    f"❌ Simplified search test failed for '{restaurant_query}': {str(e)}"
+                )
+            except:
+                pass
+
+    thread = threading.Thread(target=run_test, daemon=True)
+    thread.start()
 
 def perform_restaurant_search(search_query, chat_id, user_id):
     """Perform restaurant search using orchestrator"""
@@ -187,44 +364,10 @@ def perform_restaurant_search(search_query, chat_id, user_id):
             parse_mode='HTML'
         )
 
-# FUNCTION TO ADD EXTERNAL COMMANDS
-def setup_admin_commands():
-    """Setup admin commands from external files"""
-    commands_added = []
-
-    # Add scrape test command
-    try:
-        from scrape_test import add_scrape_test_command
-        add_scrape_test_command(bot, config, get_orchestrator())
-        commands_added.append("/test_scrape")
-        logger.info("✅ Added /test_scrape command from scrape_test.py")
-    except ImportError as e:
-        logger.error(f"❌ Failed to add scrape test command: {e}")
-        logger.error("Make sure scrape_test.py exists and has no syntax errors")
-
-    # Add search test command
-    try:
-        from search_test import add_search_test_command
-        add_search_test_command(bot, config, get_orchestrator())
-        commands_added.append("/test_search")
-        logger.info("✅ Added /test_search command from search_test.py")
-    except ImportError as e:
-        logger.error(f"❌ Failed to add search test command: {e}")
-        logger.error("Make sure search_test.py exists and has no syntax errors")
-
-    return commands_added
-
 # IMPORTANT: This must be the LAST message handler (catch-all for non-command messages)
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     """Handle all text messages with AI conversation management"""
-
-    # IMPORTANT: Skip if this is a command that should be handled by external handlers
-    if message.text.startswith('/test_'):
-        logger.warning(f"Command {message.text.split()[0]} not recognized - check if external command loaded properly")
-        bot.reply_to(message, "❌ Command not recognized. Available admin commands: /test_scrape, /test_search")
-        return
-
     try:
         user_id = message.from_user.id
         user_message = message.text.strip()
@@ -319,15 +462,9 @@ def main():
     # Initialize the orchestrator
     orchestrator_instance = get_orchestrator()
 
-    # Setup external admin commands AFTER defining all message handlers
-    logger.info("🔧 Setting up admin commands...")
-    commands_added = setup_admin_commands()
-
-    # Log available commands
-    if commands_added:
-        logger.info(f"🎯 Admin commands available: {', '.join(commands_added)}")
-    else:
-        logger.warning("⚠️ No admin test commands were loaded")
+    # Log available commands (now defined directly)
+    logger.info("🎯 Admin commands available: /test_scrape, /test_search")
+    logger.info("✅ Commands registered directly in telegram_bot.py")
 
     # Start polling with better error handling
     while True:
