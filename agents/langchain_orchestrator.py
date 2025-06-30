@@ -5,7 +5,7 @@ import time
 import json
 import re
 import html
-from html import escape
+from html import escape, unescape
 from utils.database import save_data
 from utils.debug_utils import dump_chain_state, log_function_call
 from utils.async_utils import sync_to_async
@@ -368,7 +368,7 @@ class LangChainOrchestrator:
             text = str(text)
 
             # First, decode any existing HTML entities to get clean text
-            text = unescape(text)
+            text = html.unescape(text)
 
             # Now escape only the characters that need escaping for Telegram HTML
             # We need to be selective - only escape & < > that aren't part of valid HTML tags
