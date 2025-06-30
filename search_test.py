@@ -193,8 +193,13 @@ class SearchTest:
 
                             for i, filtered in enumerate(recent_filtered, 1):
                                 f.write(f"  {i:2d}. ❌ REJECTED\n")
-                                f.write(f"      URL: {filtered.get('url', 'Unknown')}\n")
-                                f.write(f"      Reason: {filtered.get('reason', 'Unknown')}\n\n")
+                                # Handle both string URLs and dict objects
+                                if isinstance(filtered, str):
+                                    f.write(f"      URL: {filtered}\n")
+                                    f.write(f"      Reason: Failed AI evaluation\n\n")
+                                else:
+                                    f.write(f"      URL: {filtered.get('url', 'Unknown')}\n")
+                                    f.write(f"      Reason: {filtered.get('reason', 'Unknown')}\n\n")
                     else:
                         f.write("❌ NO URLs passed domain filtering - AI filtering skipped\n\n")
 
