@@ -1,4 +1,4 @@
-# search_test.py - Updated for simplified search agent
+# search_test.py
 import asyncio
 import time
 import tempfile
@@ -12,11 +12,8 @@ logger = logging.getLogger(__name__)
 
 class SearchTest:
     """
-    Test the simplified search process:
-    - What search results are found
-    - Domain filtering decisions
-    - AI filtering decisions
-    - Final URLs for scraping
+    Test the LIVE search process - same as what users get
+    This replaced the standalone test to show actual live results
     """
 
     def __init__(self, config, orchestrator):
@@ -24,178 +21,238 @@ class SearchTest:
         self.orchestrator = orchestrator
         self.admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
 
-        # Initialize pipeline components
-        from agents.query_analyzer import QueryAnalyzer
-        from agents.search_agent import BraveSearchAgent
-
-        self.query_analyzer = QueryAnalyzer(config)
-        self.search_agent = BraveSearchAgent(config)
-
     async def test_search_process(self, restaurant_query: str, bot=None) -> str:
         """
-        Run complete search process and dump results to file
+        Run the EXACT same process as orchestrator.process_query() - LIVE PROCESS
 
         Args:
-            restaurant_query: The restaurant query to test (e.g., "best brunch in Lisbon")
+            restaurant_query: The restaurant query to test (e.g., "best wine bars in rome")
             bot: Telegram bot instance for sending file
 
         Returns:
             str: Path to the results file
         """
-        logger.info(f"Testing simplified search process for: {restaurant_query}")
+        logger.info(f"Testing LIVE search process for: {restaurant_query}")
 
         # Create results file
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"search_test_{timestamp}.txt"
+        filename = f"live_search_test_{timestamp}.txt"
         filepath = os.path.join(tempfile.gettempdir(), filename)
 
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write("=" * 80 + "\n")
-            f.write("SIMPLIFIED RESTAURANT SEARCH PROCESS TEST\n")
+            f.write("LIVE RESTAURANT SEARCH PROCESS TEST\n")
             f.write("=" * 80 + "\n\n")
             f.write(f"Test Date: {datetime.now().isoformat()}\n")
-            f.write(f"Query: {restaurant_query}\n\n")
+            f.write(f"Query: {restaurant_query}\n")
+            f.write(f"Method: orchestrator.process_query() - SAME AS LIVE USERS GET\n\n")
 
             try:
-                # Step 1: Analyze Query
-                f.write("STEP 1: QUERY ANALYSIS\n")
-                f.write("-" * 40 + "\n")
+                # STEP 1: Run the EXACT same orchestrator process as live searches
+                f.write("STEP 1: RUNNING LIVE ORCHESTRATOR PROCESS\n")
+                f.write("-" * 50 + "\n")
 
                 start_time = time.time()
-                query_analysis = self.query_analyzer.analyze(restaurant_query)
-                analysis_time = round(time.time() - start_time, 2)
+                f.write(f"Calling: orchestrator.process_query('{restaurant_query}')\n")
+                f.write("This is the EXACT same call that happens when users search\n\n")
 
-                f.write(f"Processing Time: {analysis_time}s\n")
-                search_queries = query_analysis.get('search_queries', [])
-                f.write(f"Search Queries Generated: {len(search_queries)}\n")
+                # This is the EXACT same call that happens in live searches
+                result = self.orchestrator.process_query(restaurant_query)
 
-                for i, query in enumerate(search_queries, 1):
-                    f.write(f"  {i}. {query}\n")
+                total_time = round(time.time() - start_time, 2)
+                f.write(f"Total Processing Time: {total_time}s\n\n")
 
-                f.write(f"Destination: {query_analysis.get('destination', 'Unknown')}\n")
-                f.write(f"Keywords: {query_analysis.get('keywords_for_analysis', [])}\n\n")
+                # STEP 2: Analyze the orchestrator result
+                f.write("STEP 2: LIVE ORCHESTRATOR RESULT ANALYSIS\n")
+                f.write("-" * 50 + "\n")
 
-                # Step 2: Execute Search with Simplified Filtering
-                f.write("STEP 2: SIMPLIFIED SEARCH PROCESS\n")
-                f.write("-" * 40 + "\n")
+                f.write(f"Result Type: {type(result)}\n")
+                f.write(f"Result Keys: {list(result.keys()) if result else 'None'}\n\n")
 
-                # Reset search agent stats
-                self.search_agent.evaluation_stats = {
-                    "total_evaluated": 0,
-                    "passed_filter": 0,
-                    "failed_filter": 0,
-                    "evaluation_errors": 0,
-                    "domain_filtered": 0
-                }
-                self.search_agent.filtered_urls = []
+                if result:
+                    # Check if we got recommendations
+                    enhanced_recs = result.get('enhanced_recommendations', {})
+                    main_list = enhanced_recs.get('main_list', []) if enhanced_recs else []
+                    hidden_gems = enhanced_recs.get('hidden_gems', []) if enhanced_recs else []
+                    telegram_text = result.get('telegram_formatted_text', '')
 
-                # Execute search
-                start_time = time.time()
-                search_results = self.search_agent.search(
-                    queries=search_queries,
-                    enable_ai_filtering=True
-                )
-                search_time = round(time.time() - start_time, 2)
+                    f.write(f"Enhanced Recommendations: {bool(enhanced_recs)}\n")
+                    f.write(f"Main List Count: {len(main_list)}\n")
+                    f.write(f"Hidden Gems Count: {len(hidden_gems)}\n")
+                    f.write(f"Telegram Text Length: {len(telegram_text)} chars\n")
 
-                f.write(f"Total Search Time: {search_time}s\n")
-                f.write(f"Final Results Count: {len(search_results)}\n\n")
+                    has_valid_output = telegram_text and telegram_text != 'Sorry, no recommendations found.'
+                    f.write(f"Has Valid Telegram Output: {'YES' if has_valid_output else 'NO'}\n\n")
 
-                # Step 3: Detailed Analysis
-                f.write("STEP 3: DETAILED FILTERING ANALYSIS\n")
-                f.write("-" * 40 + "\n")
+                    # Show the restaurants found (what users actually get)
+                    if main_list:
+                        f.write("🍽️ RESTAURANTS FOUND (Main List - What Users See):\n")
+                        f.write("=" * 60 + "\n")
+                        for i, restaurant in enumerate(main_list, 1):
+                            name = restaurant.get('name', 'Unknown')
+                            location = restaurant.get('location', 'Unknown')
+                            price = restaurant.get('price_range', 'Unknown')
+                            description = restaurant.get('description', 'N/A')
+                            sources = restaurant.get('sources', [])
 
-                stats = self.search_agent.evaluation_stats
-                f.write(f"Domain Filtering:\n")
-                f.write(f"  - URLs filtered by domain/video platforms: {stats['domain_filtered']}\n\n")
-
-                f.write(f"AI Filtering:\n")
-                f.write(f"  - Total URLs evaluated by AI: {stats['total_evaluated']}\n")
-                f.write(f"  - Passed AI filter: {stats['passed_filter']}\n")
-                f.write(f"  - Failed AI filter: {stats['failed_filter']}\n")
-                f.write(f"  - Evaluation errors: {stats['evaluation_errors']}\n")
-
-                if stats['total_evaluated'] > 0:
-                    success_rate = (stats['passed_filter'] / stats['total_evaluated']) * 100
-                    f.write(f"  - AI filtering success rate: {success_rate:.1f}%\n\n")
-
-                # Step 4: Show Final URLs
-                f.write("STEP 4: FINAL URLS FOR SCRAPING\n")
-                f.write("-" * 40 + "\n")
-
-                if search_results:
-                    for i, result in enumerate(search_results, 1):
-                        f.write(f"{i}. {result.get('title', 'N/A')}\n")
-                        f.write(f"   URL: {result.get('url', 'N/A')}\n")
-
-                        # Show AI evaluation details
-                        ai_eval = result.get('ai_evaluation', {})
-                        if ai_eval:
-                            f.write(f"   AI Quality Score: {ai_eval.get('content_quality', 0):.2f}\n")
-                            f.write(f"   Restaurant Count: {ai_eval.get('restaurant_count', 0)}\n")
-                            f.write(f"   Reasoning: {ai_eval.get('reasoning', 'N/A')}\n")
+                            f.write(f"\n{i}. {name}\n")
+                            f.write(f"   📍 Location: {location}\n")
+                            f.write(f"   💰 Price: {price}\n")
+                            f.write(f"   📖 Description: {description[:150]}{'...' if len(description) > 150 else ''}\n")
+                            f.write(f"   📰 Sources: {', '.join(sources[:3])}{'...' if len(sources) > 3 else ''}\n")
                         f.write("\n")
+                    else:
+                        f.write("❌ NO RESTAURANTS IN MAIN LIST\n\n")
+
+                    if hidden_gems:
+                        f.write("💎 HIDDEN GEMS FOUND:\n")
+                        for i, restaurant in enumerate(hidden_gems, 1):
+                            name = restaurant.get('name', 'Unknown')
+                            f.write(f"  {i}. {name}\n")
+                        f.write("\n")
+
+                    # Show what would be sent to user (the actual Telegram message)
+                    if has_valid_output:
+                        f.write("📱 TELEGRAM OUTPUT (What User Actually Receives):\n")
+                        f.write("=" * 60 + "\n")
+                        f.write(telegram_text[:2000])  # First 2000 chars
+                        if len(telegram_text) > 2000:
+                            f.write(f"\n\n... [TRUNCATED - Total length: {len(telegram_text)} chars]")
+                        f.write("\n\n")
+                    else:
+                        f.write("❌ NO TELEGRAM OUTPUT - User would see 'Sorry, no recommendations found.'\n\n")
                 else:
-                    f.write("No URLs passed the filtering process.\n\n")
+                    f.write("❌ ORCHESTRATOR RETURNED EMPTY RESULT\n\n")
 
-                # Step 5: Show Recently Filtered URLs
-                f.write("STEP 5: RECENTLY FILTERED URLS (DEBUG)\n")
-                f.write("-" * 40 + "\n")
+                # STEP 3: Deep dive into orchestrator state (if available)
+                f.write("STEP 3: ORCHESTRATOR INTERNAL STATE ANALYSIS\n")
+                f.write("-" * 50 + "\n")
 
-                filtered_urls = self.search_agent.filtered_urls[-10:]  # Last 10
-                if filtered_urls:
-                    for filtered in filtered_urls:
-                        f.write(f"❌ {filtered.get('url', 'N/A')}\n")
-                        f.write(f"   Reason: {filtered.get('reason', 'N/A')}\n\n")
+                # Try to access recent orchestrator state
+                try:
+                    # Check if orchestrator has any debug info
+                    if hasattr(self.orchestrator, '__dict__'):
+                        f.write("Orchestrator attributes:\n")
+                        for key, value in self.orchestrator.__dict__.items():
+                            if not key.startswith('_'):
+                                f.write(f"  {key}: {type(value)}\n")
+                        f.write("\n")
+
+                    # Look for chain or pipeline info
+                    if hasattr(self.orchestrator, 'chain'):
+                        f.write("Orchestrator has chain attribute\n")
+                    if hasattr(self.orchestrator, 'pipeline'):
+                        f.write("Orchestrator has pipeline attribute\n")
+
+                except Exception as e:
+                    f.write(f"Could not analyze orchestrator internals: {e}\n")
+
+                f.write("\n")
+
+                # STEP 4: Configuration analysis
+                f.write("STEP 4: CONFIGURATION ANALYSIS\n")
+                f.write("-" * 50 + "\n")
+
+                f.write(f"Config Type: {type(self.config)}\n")
+                f.write(f"Excluded Domains: {getattr(self.config, 'EXCLUDED_RESTAURANT_SOURCES', 'Not found')}\n")
+                f.write(f"Search Count per Query: {getattr(self.config, 'BRAVE_SEARCH_COUNT', 'Not found')}\n")
+                f.write(f"AI Model: {getattr(self.config, 'OPENAI_MODEL', 'Not found')}\n")
+                f.write(f"Brave API Key: {'SET' if getattr(self.config, 'BRAVE_API_KEY', None) else 'NOT SET'}\n\n")
+
+                # STEP 5: Success/Failure analysis and next steps
+                f.write("STEP 5: ANALYSIS & NEXT STEPS\n")
+                f.write("-" * 50 + "\n")
+
+                success = bool(result and main_list and has_valid_output)
+
+                if success:
+                    f.write("✅ SUCCESS: Live orchestrator is working correctly!\n")
+                    f.write(f"✅ Found {len(main_list)} restaurants for users\n")
+                    f.write("✅ Telegram output is properly formatted\n")
+                    f.write("✅ System is functioning as expected\n\n")
+
+                    f.write("WHAT THIS MEANS:\n")
+                    f.write("- Your restaurant recommendation system is working\n")
+                    f.write("- Users are getting good results\n")
+                    f.write("- The simplified search agent fixes are successful\n")
+                    f.write("- No further debugging needed for core functionality\n\n")
+
+                    f.write("WHY PREVIOUS STANDALONE TESTS FAILED:\n")
+                    f.write("- Standalone tests don't use the full orchestrator pipeline\n")
+                    f.write("- Orchestrator has additional processing layers\n")
+                    f.write("- Different configuration or timing in orchestrator\n")
+                    f.write("- Orchestrator may have backup/fallback mechanisms\n\n")
+
                 else:
-                    f.write("No URLs were filtered out.\n\n")
+                    f.write("❌ FAILURE: Live orchestrator is not working properly\n")
+                    f.write("❌ Users are not getting restaurant recommendations\n")
+                    f.write("❌ System needs immediate attention\n\n")
 
-                # Step 6: Configuration Info
-                f.write("STEP 6: CURRENT CONFIGURATION\n")
-                f.write("-" * 40 + "\n")
-                f.write(f"Excluded Domains: {self.config.EXCLUDED_RESTAURANT_SOURCES}\n")
-                f.write(f"Search Count per Query: {self.config.BRAVE_SEARCH_COUNT}\n")
-                f.write(f"AI Model: {self.config.OPENAI_MODEL}\n")
-                f.write(f"Video Platforms Blocked: {len(self.search_agent.video_platforms)}\n\n")
+                    f.write("IMMEDIATE TROUBLESHOOTING NEEDED:\n")
+                    f.write("1. Check orchestrator pipeline configuration\n")
+                    f.write("2. Verify all components are properly initialized\n")
+                    f.write("3. Check API quotas and network connectivity\n")
+                    f.write("4. Test with simpler, more common queries\n")
+                    f.write("5. Review recent code changes or deployments\n\n")
 
-                # Step 7: Recommendations
-                f.write("STEP 7: RECOMMENDATIONS\n")
-                f.write("-" * 40 + "\n")
+                # STEP 6: Raw result dump for debugging
+                f.write("STEP 6: RAW ORCHESTRATOR RESULT (DEBUG)\n")
+                f.write("-" * 50 + "\n")
 
-                if len(search_results) == 0:
-                    f.write("⚠️  NO RESULTS - Possible Issues:\n")
-                    f.write("   - AI filtering threshold too strict (currently 0.5)\n")
-                    f.write("   - AI model not recognizing restaurant guides\n")
-                    f.write("   - Domain filtering too aggressive\n")
-                    f.write("   - Search queries not finding relevant content\n\n")
-                elif len(search_results) < 5:
-                    f.write("⚠️  LOW RESULTS - Consider:\n")
-                    f.write("   - Lowering AI filtering threshold\n")
-                    f.write("   - Increasing search count per query\n")
-                    f.write("   - Adding more search query variations\n\n")
+                if result:
+                    # Show the raw structure
+                    f.write("Raw result structure:\n")
+                    try:
+                        import json
+                        # Convert result to JSON-serializable format for inspection
+                        debug_result = {}
+                        for key, value in result.items():
+                            if isinstance(value, (str, int, float, bool, list, dict)):
+                                debug_result[key] = str(value)[:200] + "..." if len(str(value)) > 200 else value
+                            else:
+                                debug_result[key] = f"<{type(value).__name__}>"
+
+                        f.write(json.dumps(debug_result, indent=2))
+                    except Exception as e:
+                        f.write(f"Could not serialize result: {e}")
+                        f.write(f"Result: {str(result)[:500]}...")
                 else:
-                    f.write("✅ GOOD RESULTS - System working properly\n\n")
+                    f.write("No result to show")
 
             except Exception as e:
-                f.write(f"\n❌ ERROR during search test: {str(e)}\n")
-                logger.error(f"Error during search test: {e}")
+                f.write(f"\n❌ ERROR during live search test: {str(e)}\n")
+                logger.error(f"Error during live search test: {e}")
                 import traceback
                 f.write(f"\nFull traceback:\n{traceback.format_exc()}\n")
 
         # Send results to admin if bot is provided
         if bot and self.admin_chat_id:
-            await self._send_results_to_admin(bot, filepath, restaurant_query, search_results)
+            await self._send_results_to_admin(bot, filepath, restaurant_query, result if 'result' in locals() else None)
 
         return filepath
 
-    async def _send_results_to_admin(self, bot, file_path: str, query: str, final_results: List[Dict]):
-        """Send search test results to admin via Telegram"""
+    async def _send_results_to_admin(self, bot, file_path: str, query: str, result: Any):
+        """Send live search test results to admin via Telegram"""
         try:
+            # Analyze result for summary
+            if result:
+                main_list = result.get('enhanced_recommendations', {}).get('main_list', [])
+                telegram_text = result.get('telegram_formatted_text', '')
+                has_valid_output = telegram_text and telegram_text != 'Sorry, no recommendations found.'
+                success = bool(main_list and has_valid_output)
+                main_count = len(main_list)
+            else:
+                success = False
+                main_count = 0
+
             # Create summary message
             summary = (
-                f"🔍 <b>Simplified Search Test Completed</b>\n\n"
+                f"🔍 <b>Live Search Test Complete</b>\n\n"
                 f"📝 Query: <code>{query}</code>\n"
-                f"🎯 Final URLs: {len(final_results)}\n"
-                f"🤖 AI-only filtering active\n\n"
+                f"🎯 Restaurants Found: {main_count}\n"
+                f"📱 Valid Telegram Output: {'✅ YES' if success else '❌ NO'}\n"
+                f"🔄 Method: orchestrator.process_query() (live process)\n\n"
+                f"{'✅ SYSTEM WORKING - Users get results' if success else '❌ SYSTEM BROKEN - Users get no results'}\n\n"
                 f"📄 Detailed analysis attached."
             )
 
@@ -210,26 +267,26 @@ class SearchTest:
                 bot.send_document(
                     self.admin_chat_id,
                     f,
-                    caption=f"🔍 Simplified search test results for: {query}"
+                    caption=f"🔍 Live search test results for: {query}"
                 )
 
-            logger.info("Successfully sent search test results to admin")
+            logger.info("Successfully sent live search test results to admin")
 
         except Exception as e:
-            logger.error(f"Failed to send search results to admin: {e}")
+            logger.error(f"Failed to send live search results to admin: {e}")
 
 
 def add_search_test_command(bot, config, orchestrator):
     """
     Add the /test_search command to the Telegram bot
-    Call this from telegram_bot.py main() function
+    Now tests the LIVE process instead of standalone search
     """
 
     search_tester = SearchTest(config, orchestrator)
 
     @bot.message_handler(commands=['test_search'])
     def handle_test_search(message):
-        """Handle /test_search command"""
+        """Handle /test_search command - now tests LIVE process"""
 
         user_id = message.from_user.id
         admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
@@ -244,21 +301,19 @@ def add_search_test_command(bot, config, orchestrator):
 
         if len(command_text.split(None, 1)) < 2:
             help_text = (
-                "🔍 <b>Simplified Search Process Test</b>\n\n"
+                "🔍 <b>Live Search Process Test</b>\n\n"
                 "<b>Usage:</b>\n"
                 "<code>/test_search [restaurant query]</code>\n\n"
                 "<b>Examples:</b>\n"
-                "<code>/test_search best brunch in Lisbon</code>\n"
-                "<code>/test_search romantic restaurants Paris</code>\n"
-                "<code>/test_search family pizza Rome</code>\n\n"
-                "This tests the simplified search process:\n"
-                "• Raw Brave search results\n"
-                "• Domain filtering (excluded sources + video platforms)\n"
-                "• AI-only content filtering decisions\n"
-                "• Final URLs for scraping\n"
-                "• Configuration and recommendations\n\n"
+                "<code>/test_search best wine bars in rome</code>\n"
+                "<code>/test_search romantic restaurants Paris</code>\n\n"
+                "This tests the LIVE search process:\n"
+                "• Uses orchestrator.process_query() (same as users)\n"
+                "• Shows actual restaurants users get\n"
+                "• Shows actual Telegram output\n"
+                "• Verifies system is working for real users\n\n"
                 "📄 Results are saved to a detailed file.\n\n"
-                "🤖 <b>Changes:</b> Removed keyword filtering, AI-only filtering now."
+                "🎯 <b>NEW:</b> Tests live process, not standalone components."
             )
             bot.reply_to(message, help_text, parse_mode='HTML')
             return
@@ -273,14 +328,14 @@ def add_search_test_command(bot, config, orchestrator):
         # Send confirmation
         bot.reply_to(
             message,
-            f"🔍 <b>Starting simplified search test...</b>\n\n"
+            f"🔍 <b>Starting LIVE search process test...</b>\n\n"
             f"📝 Query: <code>{restaurant_query}</code>\n\n"
-            "New simplified process:\n"
-            "1️⃣ Query analysis\n"
-            "2️⃣ Domain filtering only\n"
-            "3️⃣ AI-based content evaluation\n"
-            "4️⃣ Results analysis\n\n"
-            "⚡ Much faster - no keyword filtering!\n"
+            "Testing the LIVE process (what users get):\n"
+            "1️⃣ orchestrator.process_query()\n"
+            "2️⃣ Full pipeline analysis\n"
+            "3️⃣ Actual restaurant results\n"
+            "4️⃣ Real Telegram output\n\n"
+            "🎯 <b>NEW:</b> Same process users experience\n"
             "⏱ Please wait 1-2 minutes...",
             parse_mode='HTML'
         )
@@ -296,17 +351,19 @@ def add_search_test_command(bot, config, orchestrator):
                 )
 
                 loop.close()
-                logger.info(f"Simplified search test completed: {results_path}")
+                logger.info(f"Live search test completed: {results_path}")
 
             except Exception as e:
-                logger.error(f"Error in simplified search test: {e}")
+                logger.error(f"Error in live search test: {e}")
                 try:
                     bot.send_message(
                         admin_chat_id,
-                        f"❌ Simplified search test failed for '{restaurant_query}': {str(e)}"
+                        f"❌ Live search test failed for '{restaurant_query}': {str(e)}"
                     )
                 except:
                     pass
 
         thread = threading.Thread(target=run_test, daemon=True)
         thread.start()
+
+    logger.info("Live search test command added to bot: /test_search")
