@@ -358,43 +358,164 @@ class LangChainOrchestrator:
             name="follow_up_search"
         )
 
-        # HTML extraction - updated to handle single list
+        def clean_html_entities(text):
+            """Clean up HTML entities and properly escape text for Telegram"""
+            if not text:
+                return ""
+
+            # Convert to string first
+            text = str(text)
+
+            # First, decode any existing HTML entities to get clean text
+            text = html.unescape(text)
+
+            # Now escape only the characters that need escaping for Telegram HTML
+            # We need to be selective - only escape & < > that aren't part of valid HTML tags
+
+            # Replace & that aren't part of valid entities
+            text = re.sub(r'&(?!(?:amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)', '&amp;', text)
+
+            # Replace < and > that aren't part of valid HTML tags
+            # Allow <b>, </b>, <i>, </i>, <a href="...">, </a>, etc.
+            text = re.sub(r'<(?!/?(?:b|i|u|s|code|pre|a\s))', '&lt;', text)
+            text = re.sub(r'(?<!(?:b|i|u|s|code|pre|a))>', '&gt;', text)
+
+            return text
+
         def extract_html_step(x):
+            """Extract HTML step - Format recommendations for Telegram with robust error handling"""
             try:
-                # Debug before html extraction
-                dump_chain_state("pre_extract_html", {
-                    "enhanced_recommendations_keys": list(x.get("enhanced_recommendations", {}).keys())
-                })
+                logger.info("🔧 Starting Telegram formatting")
 
-                # Get the recommendations - THIS IS THE KEY FIX
-                enhanced_recommendations = x.get("enhanced_recommendations", {})
+                # Get enhanced recommendations
+                enhanced_recs = x.get("enhanced_recommendations", {})
+                main_list = enhanced_recs.get("main_list", [])
 
-                # Log what we're actually getting
-                logger.info(f"Enhanced recommendations structure: {list(enhanced_recommendations.keys())}")
-                logger.info(f"Main list count: {len(enhanced_recommendations.get('main_list', []))}")
+                logger.info(f"📋 Found {len(main_list)} restaurants to format")
 
-                # Create HTML output with the correct structure
-                telegram_text = self._create_detailed_html(enhanced_recommendations)
+                # If no restaurants found, return early with informative message
+                if not main_list:
+                    logger.warning("❌ No restaurants found to format")
+                    return {
+                        **x,
+                        "telegram_formatted_text": "<b>Sorry, no restaurant recommendations found for your search.</b>\n\nTry rephrasing your query or searching for a different area."
+                    }
 
-                # Debug after html extraction
-                dump_chain_state("post_extract_html", {
-                    "telegram_text_length": len(telegram_text) if telegram_text else 0,
-                    "telegram_text_preview": telegram_text[:200] if telegram_text else None
-                })
+                # Create HTML output step by step
+                html_parts = []
 
-                # Return result with proper structure
+                # Add header
+                html_parts.append("<b>🍽️ Recommended Restaurants</b>\n\n")
+
+                # Process each restaurant safely
+                formatted_count = 0
+                for i, restaurant in enumerate(main_list, 1):
+                    try:
+                        # Safely extract data with defaults
+                        name = str(restaurant.get('name', 'Unknown Restaurant')).strip()
+                        description = str(restaurant.get('description', 'No description available')).strip()
+                        address = restaurant.get('address', 'Address unavailable')
+                        sources = restaurant.get('sources', [])
+
+                        # Skip if no name
+                        if not name or name == 'Unknown Restaurant':
+                            continue
+
+                        # Clean and escape HTML properly
+                        name_escaped = clean_html_entities(name)
+                        desc_escaped = clean_html_entities(description)
+
+                        # Format restaurant block
+                        html_parts.append(f"<b>{i}. {name_escaped}</b>\n")
+
+                        # Handle address (could be plain text or HTML link)
+                        if address and address != "Address unavailable":
+                            if "<a href=" in str(address):
+                                # Address is already a formatted link, validate it
+                                link_match = re.search(r'<a href="([^"]+)"[^>]*>([^<]+)</a>', str(address))
+                                if link_match:
+                                    url, address_text = link_match.groups()
+                                    html_parts.append(f'📍 <a href="{url}">{clean_html_entities(address_text)}</a>\n')
+                                else:
+                                    # Invalid link, use as plain text
+                                    html_parts.append(f"📍 {clean_html_entities(str(address))}\n")
+                            else:
+                                # Plain text address
+                                html_parts.append(f"📍 {clean_html_entities(str(address))}\n")
+                        else:
+                            html_parts.append("📍 Address unavailable\n")
+
+                        # Add description
+                        html_parts.append(f"{desc_escaped}\n")
+
+                        # Add sources if available
+                        if sources and isinstance(sources, list):
+                            valid_sources = []
+                            for source in sources:
+                                if source and str(source).strip():
+                                    valid_sources.append(clean_html_entities(str(source).strip()))
+
+                            if valid_sources:
+                                sources_text = ", ".join(valid_sources[:3])  # Limit to 3 sources
+                                html_parts.append(f"<i>✅ Sources: {sources_text}</i>\n")
+
+                        html_parts.append("\n")  # Add spacing between restaurants
+                        formatted_count += 1
+
+                    except Exception as e:
+                        logger.error(f"❌ Error formatting restaurant {i}: {e}")
+                        # Continue with next restaurant instead of failing completely
+                        continue
+
+                # Add footer
+                html_parts.append("<i>Recommendations compiled from reputable restaurant guides and critics.</i>")
+
+                # Join all parts
+                final_html = ''.join(html_parts)
+
+                # Apply length limit for Telegram (4096 characters max)
+                if len(final_html) > 4096:
+                    final_html = final_html[:4093] + "…"
+                    logger.info(f"📏 Truncated message to 4096 characters")
+
+                logger.info(f"✅ Successfully formatted {formatted_count} restaurants ({len(final_html)} chars)")
+
                 return {
-                    **x, 
-                    "telegram_formatted_text": telegram_text,
-                    "final_recommendations": enhanced_recommendations  # Keep the original data for debugging
+                    **x,
+                    "telegram_formatted_text": final_html
                 }
+
             except Exception as e:
-                logger.error(f"Error in extract_html: {e}")
-                # Log the error and return a fallback
-                dump_chain_state("extract_html_error", x, error=e)
+                logger.error(f"❌ Critical error in Telegram formatting: {e}")
+                logger.error(f"Exception type: {type(e).__name__}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+
+                # Emergency fallback - try to show basic info
+                try:
+                    enhanced_recs = x.get("enhanced_recommendations", {})
+                    main_list = enhanced_recs.get("main_list", [])
+
+                    if main_list:
+                        # Create very basic output as fallback
+                        basic_html = "<b>🍽️ Restaurant Recommendations</b>\n\n"
+                        for i, restaurant in enumerate(main_list[:5], 1):  # Limit to 5 for safety
+                            name = restaurant.get('name', 'Unknown')
+                            basic_html += f"<b>{i}. {clean_html_entities(str(name))}</b>\n"
+                            desc = restaurant.get('description', 'No description')
+                            basic_html += f"{clean_html_entities(str(desc))}\n\n"
+
+                        return {
+                            **x,
+                            "telegram_formatted_text": basic_html
+                        }
+                except:
+                    pass
+
+                # Final fallback
                 return {
-                    **x, 
-                    "telegram_formatted_text": "<b>Извините, не удалось найти рестораны по вашему запросу.</b>"
+                    **x,
+                    "telegram_formatted_text": "<b>Sorry, there was an error formatting the restaurant recommendations.</b>\n\nPlease try your search again."
                 }
 
         # Extract HTML with debugging
