@@ -510,19 +510,44 @@ class BraveSearchAgent:
         filtered_results = []
 
         for result in search_results["web"]["results"]:
-            # Skip results from excluded domains
-            if not any(excluded in result.get("url", "") for excluded in self.excluded_domains):
-                # Clean and extract the relevant information
-                filtered_result = {
-                    "title": result.get("title", ""),
-                    "url": result.get("url", ""),
-                    "description": result.get("description", ""),
-                    "language": result.get("language", "en"),
-                    "favicon": result.get("favicon", "")
-                }
-                filtered_results.append(filtered_result)
+            url = result.get("url", "")
+
+            # Check if URL should be excluded by domain
+            if self._should_exclude_domain(url):
+                logger.debug(f"[SearchAgent] Domain-filtered: {url}")
+                self.evaluation_stats["domain_filtered"] += 1
+                continue
+
+            # Check if it's a video platform
+            if self._is_video_platform(url):
+                logger.debug(f"[SearchAgent] Video platform filtered: {url}")
+                self.evaluation_stats["domain_filtered"] += 1
+                continue
+
+            # Clean and extract the relevant information
+            filtered_result = {
+                "title": result.get("title", ""),
+                "url": result.get("url", ""),
+                "description": result.get("description", ""),
+                "language": result.get("language", "en"),
+                "favicon": result.get("favicon", "")
+            }
+            filtered_results.append(filtered_result)
 
         return filtered_results
+
+    def _should_exclude_domain(self, url):
+        """Check if URL domain should be excluded"""
+        try:
+            parsed_url = urlparse(url)
+            domain = parsed_url.netloc.lower()
+            # Remove www. prefix for comparison
+            if domain.startswith('www.'):
+                domain = domain[4:]
+
+            return any(excluded in domain for excluded in self.excluded_domains)
+        except Exception:
+            return False
 
     def follow_up_search(self, restaurant_name, location, additional_context=None):
         """
