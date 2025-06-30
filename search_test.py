@@ -161,8 +161,10 @@ class SearchTest:
                         f.write(f"AI FILTERING RESULTS:\n")
                         f.write(f"URLs sent to AI for evaluation: {len(domain_passed)}\n\n")
 
-                        # Apply AI filtering
-                        ai_filtered_results = asyncio.run(self.search_agent._apply_ai_filtering(domain_passed))
+                        # Apply AI filtering - FIXED: Use thread-based approach
+                        ai_filtered_results = self.search_agent._run_async_in_thread(
+                            self.search_agent._apply_ai_filtering(domain_passed)
+                        )
 
                         f.write(f"✅ Passed AI filter: {len(ai_filtered_results)}\n")
                         f.write(f"❌ Failed AI filter: {len(domain_passed) - len(ai_filtered_results)}\n\n")
