@@ -1,4 +1,4 @@
-# search_test.py - FOCUSED on Brave URLs and filtering process only
+# search_test.py - Updated to use orchestrator singleton
 import asyncio
 import time
 import tempfile
@@ -12,24 +12,27 @@ logger = logging.getLogger(__name__)
 
 class SearchTest:
     """
-    Focused test: Shows exactly what URLs Brave returns and what gets filtered out
+    Test focused on search URL filtering and analysis:
+    - What search URLs are found
+    - Which URLs pass AI filtering
+    - Final URLs sent to scraper
+    - Detailed filtering analysis
+
+    Updated to use orchestrator singleton pattern
     """
 
     def __init__(self, config, orchestrator):
         self.config = config
-        self.orchestrator = orchestrator
+        self.orchestrator = orchestrator  # Now receives the singleton instance
         self.admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
 
-        # Initialize only what we need for search and filtering
-        from agents.query_analyzer import QueryAnalyzer
-        from agents.search_agent import BraveSearchAgent
-
-        self.query_analyzer = QueryAnalyzer(config)
-        self.search_agent = BraveSearchAgent(config)
+        # Get components from orchestrator to ensure consistency
+        self.query_analyzer = orchestrator.query_analyzer
+        self.search_agent = orchestrator.search_agent
 
     async def test_search_process(self, restaurant_query: str, bot=None) -> str:
         """
-        Test ONLY the search and filtering process
+        Run search and filtering analysis
 
         Args:
             restaurant_query: The restaurant query to test
@@ -38,204 +41,165 @@ class SearchTest:
         Returns:
             str: Path to the results file
         """
-        logger.info(f"Testing search and filtering for: {restaurant_query}")
+        logger.info(f"Testing search filtering process for: {restaurant_query}")
 
         # Create results file
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"search_filtering_test_{timestamp}.txt"
+        filename = f"search_test_{timestamp}.txt"
         filepath = os.path.join(tempfile.gettempdir(), filename)
 
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write("=" * 80 + "\n")
-            f.write("BRAVE SEARCH + FILTERING ANALYSIS\n")
+            f.write("RESTAURANT SEARCH FILTERING TEST\n")
             f.write("=" * 80 + "\n\n")
             f.write(f"Test Date: {datetime.now().isoformat()}\n")
-            f.write(f"Query: {restaurant_query}\n\n")
+            f.write(f"Query: {restaurant_query}\n")
+            f.write(f"Orchestrator: Singleton instance\n\n")
 
             try:
-                # STEP 1: Query Analysis
+                # Step 1: Query Analysis
                 f.write("STEP 1: QUERY ANALYSIS\n")
                 f.write("-" * 40 + "\n")
 
+                start_time = time.time()
                 query_analysis = self.query_analyzer.analyze(restaurant_query)
+                analysis_time = round(time.time() - start_time, 2)
+
+                f.write(f"Processing Time: {analysis_time}s\n")
+                f.write(f"Generated Search Queries:\n")
+
                 search_queries = query_analysis.get('search_queries', [])
-
-                f.write(f"Search Queries Generated: {len(search_queries)}\n")
                 for i, query in enumerate(search_queries, 1):
-                    f.write(f"  {i}. '{query}'\n")
-                f.write(f"Destination: {query_analysis.get('destination', 'Unknown')}\n\n")
+                    f.write(f"  {i}. {query}\n")
 
-                # STEP 2: Raw Brave Search Results
-                f.write("STEP 2: RAW BRAVE SEARCH RESULTS\n")
+                f.write(f"\nSearch Parameters:\n")
+                f.write(f"  Destination: {query_analysis.get('destination', 'Unknown')}\n")
+                f.write(f"  Primary: {query_analysis.get('primary_search_parameters', [])}\n")
+                f.write(f"  Secondary: {query_analysis.get('secondary_filter_parameters', [])}\n\n")
+
+                # Step 2: Raw Search Results
+                f.write("STEP 2: RAW SEARCH RESULTS\n")
                 f.write("-" * 40 + "\n")
 
-                all_raw_results = []
+                start_time = time.time()
+                raw_results = []
 
-                for query_idx, query in enumerate(search_queries, 1):
-                    f.write(f"\nQuery {query_idx}: '{query}'\n")
-                    f.write("-" * 20 + "\n")
+                # Execute each search query
+                for i, search_query in enumerate(search_queries, 1):
+                    f.write(f"Search Query {i}: {search_query}\n")
 
-                    # Execute raw Brave search
-                    try:
-                        raw_response = self.search_agent._execute_search(query)
-                        brave_results = raw_response.get('web', {}).get('results', [])
+                    # Get raw results for this query
+                    query_results = self.search_agent.search([search_query])
+                    raw_results.extend(query_results)
 
-                        f.write(f"Brave API returned: {len(brave_results)} results\n\n")
+                    f.write(f"  URLs found: {len(query_results)}\n")
 
-                        if brave_results:
-                            f.write("RAW URLs from Brave:\n")
-                            for i, result in enumerate(brave_results, 1):
-                                url = result.get('url', 'No URL')
-                                title = result.get('title', 'No title')
-                                f.write(f"  {i:2d}. {url}\n")
-                                f.write(f"      Title: {title[:80]}{'...' if len(title) > 80 else ''}\n")
+                    # Show first 5 URLs from this query
+                    for j, result in enumerate(query_results[:5], 1):
+                        f.write(f"    {j}. {result.get('url', 'Unknown URL')}\n")
+                        f.write(f"       Title: {result.get('title', 'No title')[:80]}...\n")
 
-                            all_raw_results.extend(brave_results)
-                        else:
-                            f.write("❌ No results returned by Brave API\n")
+                    if len(query_results) > 5:
+                        f.write(f"    ... and {len(query_results) - 5} more URLs\n")
+                    f.write("\n")
 
-                    except Exception as e:
-                        f.write(f"❌ Error calling Brave API: {e}\n")
+                search_time = round(time.time() - start_time, 2)
 
-                f.write(f"\nTOTAL RAW RESULTS: {len(all_raw_results)}\n\n")
+                # Remove duplicates for analysis
+                unique_urls = set()
+                unique_results = []
+                for result in raw_results:
+                    url = result.get('url', '')
+                    if url and url not in unique_urls:
+                        unique_urls.add(url)
+                        unique_results.append(result)
 
-                # STEP 3: Filtering Process Analysis
-                f.write("STEP 3: FILTERING PROCESS ANALYSIS\n")
+                f.write(f"Search Summary:\n")
+                f.write(f"  Processing Time: {search_time}s\n")
+                f.write(f"  Total URLs (with duplicates): {len(raw_results)}\n")
+                f.write(f"  Unique URLs: {len(unique_results)}\n\n")
+
+                # Step 3: AI Filtering Analysis
+                f.write("STEP 3: AI FILTERING ANALYSIS\n")
                 f.write("-" * 40 + "\n")
 
-                if all_raw_results:
-                    # Reset search agent stats
-                    self.search_agent.evaluation_stats = {
-                        "total_evaluated": 0,
-                        "passed_filter": 0,
-                        "failed_filter": 0,
-                        "evaluation_errors": 0,
-                        "domain_filtered": 0
-                    }
-                    self.search_agent.filtered_urls = []
+                # Check if search agent has evaluation stats
+                evaluation_stats = getattr(self.search_agent, 'evaluation_stats', {})
 
-                    # Apply filtering step by step
-                    f.write("FILTERING RESULTS:\n\n")
+                if evaluation_stats:
+                    f.write("AI Evaluation Statistics:\n")
+                    for key, value in evaluation_stats.items():
+                        f.write(f"  {key}: {value}\n")
+                    f.write("\n")
 
-                    # Domain filtering
-                    domain_passed = []
-                    domain_failed = []
+                # Analyze domain distribution
+                domain_counts = {}
+                filtered_urls = []
 
-                    for result in all_raw_results:
-                        url = result.get('url', '')
-                        title = result.get('title', 'No title')
+                for result in unique_results:
+                    url = result.get('url', '')
+                    if url:
+                        # Extract domain
+                        try:
+                            from urllib.parse import urlparse
+                            domain = urlparse(url).netloc.lower()
+                            if domain.startswith('www.'):
+                                domain = domain[4:]
+                            domain_counts[domain] = domain_counts.get(domain, 0) + 1
+                        except:
+                            domain = 'unknown'
+                            domain_counts[domain] = domain_counts.get(domain, 0) + 1
 
-                        # Check domain exclusions
-                        excluded_domain = self.search_agent._should_exclude_domain(url)
-                        is_video = self.search_agent._is_video_platform(url)
+                        # Check if URL would be filtered
+                        excluded_domains = self.config.EXCLUDED_RESTAURANT_SOURCES
+                        is_excluded = any(excluded in url.lower() for excluded in excluded_domains)
 
-                        if excluded_domain:
-                            domain_failed.append({
-                                'url': url,
-                                'title': title,
-                                'reason': 'Excluded domain'
-                            })
-                        elif is_video:
-                            domain_failed.append({
-                                'url': url,
-                                'title': title,
-                                'reason': 'Video/social platform'
-                            })
-                        else:
-                            domain_passed.append(result)
+                        if not is_excluded:
+                            filtered_urls.append(result)
 
-                    f.write(f"DOMAIN FILTERING RESULTS:\n")
-                    f.write(f"✅ Passed domain filter: {len(domain_passed)}\n")
-                    f.write(f"❌ Failed domain filter: {len(domain_failed)}\n\n")
+                f.write("Domain Analysis:\n")
+                sorted_domains = sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)
+                for domain, count in sorted_domains[:15]:  # Top 15 domains
+                    f.write(f"  {domain}: {count} URLs\n")
 
-                    # Show what was filtered out by domain
-                    if domain_failed:
-                        f.write("DOMAIN FILTERED URLs:\n")
-                        for i, failed in enumerate(domain_failed, 1):
-                            f.write(f"  {i:2d}. ❌ {failed['reason']}\n")
-                            f.write(f"      URL: {failed['url']}\n")
-                            f.write(f"      Title: {failed['title'][:80]}{'...' if len(failed['title']) > 80 else ''}\n\n")
+                f.write(f"\nFiltering Results:\n")
+                f.write(f"  Before filtering: {len(unique_results)} URLs\n")
+                f.write(f"  After basic filtering: {len(filtered_urls)} URLs\n")
+                f.write(f"  Filtered out: {len(unique_results) - len(filtered_urls)} URLs\n\n")
 
-                    # AI filtering (if any URLs passed domain filtering)
-                    if domain_passed:
-                        f.write(f"AI FILTERING RESULTS:\n")
-                        f.write(f"URLs sent to AI for evaluation: {len(domain_passed)}\n\n")
-
-                        # Apply AI filtering - FIXED: Use thread-based approach
-                        ai_filtered_results = self.search_agent._run_async_in_thread(
-                            self.search_agent._apply_ai_filtering(domain_passed)
-                        )
-
-                        f.write(f"✅ Passed AI filter: {len(ai_filtered_results)}\n")
-                        f.write(f"❌ Failed AI filter: {len(domain_passed) - len(ai_filtered_results)}\n\n")
-
-                        # Show what passed AI filtering
-                        if ai_filtered_results:
-                            f.write("AI APPROVED URLs:\n")
-                            for i, result in enumerate(ai_filtered_results, 1):
-                                url = result.get('url', 'No URL')
-                                title = result.get('title', 'No title')
-                                ai_eval = result.get('ai_evaluation', {})
-                                score = ai_eval.get('content_quality', 0)
-                                reasoning = ai_eval.get('reasoning', 'No reasoning')
-
-                                f.write(f"  {i:2d}. ✅ APPROVED (Score: {score:.2f})\n")
-                                f.write(f"      URL: {url}\n")
-                                f.write(f"      Title: {title[:80]}{'...' if len(title) > 80 else ''}\n")
-                                f.write(f"      AI Reasoning: {reasoning[:100]}{'...' if len(reasoning) > 100 else ''}\n\n")
-
-                        # Show what was rejected by AI
-                        ai_rejected = len(domain_passed) - len(ai_filtered_results)
-                        if ai_rejected > 0:
-                            f.write("AI REJECTED URLs:\n")
-                            # Get recently filtered URLs from search agent
-                            recent_filtered = self.search_agent.filtered_urls[-ai_rejected:] if hasattr(self.search_agent, 'filtered_urls') else []
-
-                            for i, filtered in enumerate(recent_filtered, 1):
-                                f.write(f"  {i:2d}. ❌ REJECTED\n")
-                                # Handle both string URLs and dict objects
-                                if isinstance(filtered, str):
-                                    f.write(f"      URL: {filtered}\n")
-                                    f.write(f"      Reason: Failed AI evaluation\n\n")
-                                else:
-                                    f.write(f"      URL: {filtered.get('url', 'Unknown')}\n")
-                                    f.write(f"      Reason: {filtered.get('reason', 'Unknown')}\n\n")
-                    else:
-                        f.write("❌ NO URLs passed domain filtering - AI filtering skipped\n\n")
-
-                # STEP 4: Summary and Analysis
-                f.write("STEP 4: SUMMARY & ANALYSIS\n")
+                # Step 4: Final URLs for Scraping
+                f.write("STEP 4: FINAL URLs FOR SCRAPING\n")
                 f.write("-" * 40 + "\n")
 
-                final_count = len(ai_filtered_results) if 'ai_filtered_results' in locals() else 0
+                f.write("URLs that would be sent to scraper:\n")
+                for i, result in enumerate(filtered_urls[:20], 1):  # Show first 20
+                    url = result.get('url', 'Unknown URL')
+                    title = result.get('title', 'No title')
+                    f.write(f"  {i}. {url}\n")
+                    f.write(f"     Title: {title[:100]}...\n")
 
-                f.write(f"FILTERING PIPELINE SUMMARY:\n")
-                f.write(f"Raw Brave results: {len(all_raw_results)}\n")
-                f.write(f"After domain filtering: {len(domain_passed) if 'domain_passed' in locals() else 0}\n")
-                f.write(f"Final URLs for scraping: {final_count}\n\n")
+                if len(filtered_urls) > 20:
+                    f.write(f"  ... and {len(filtered_urls) - 20} more URLs\n")
 
-                if final_count == 0:
-                    f.write("❌ PROBLEM IDENTIFIED:\n")
-                    if len(all_raw_results) == 0:
-                        f.write("- Brave API returned no results\n")
-                        f.write("- Check API key, quotas, and search queries\n")
-                    elif len(domain_passed) == 0:
-                        f.write("- All results filtered out by domain filtering\n")
-                        f.write("- Brave only returned TripAdvisor/Yelp/social media\n")
-                        f.write("- Consider adjusting search queries or excluded domains\n")
-                    else:
-                        f.write("- Results passed domain filter but failed AI filtering\n")
-                        f.write("- AI filtering threshold may be too strict (currently 0.5)\n")
-                        f.write("- Check AI evaluation reasoning above\n")
-                else:
-                    f.write("✅ SUCCESS:\n")
-                    f.write(f"- {final_count} URLs ready for scraping\n")
-                    f.write("- Filtering process working correctly\n")
+                final_count = len(filtered_urls)
 
-                f.write(f"\nCONFIGURATION:\n")
-                f.write(f"Excluded domains: {getattr(self.config, 'EXCLUDED_RESTAURANT_SOURCES', [])}\n")
-                f.write(f"Search count per query: {getattr(self.config, 'BRAVE_SEARCH_COUNT', 15)}\n")
-                f.write(f"AI model: {getattr(self.config, 'OPENAI_MODEL', 'Unknown')}\n")
+                # Configuration Info
+                f.write(f"\nCONFIGURATION INFO:\n")
+                f.write(f"  Excluded domains: {getattr(self.config, 'EXCLUDED_RESTAURANT_SOURCES', [])}\n")
+                f.write(f"  Search count limit: {getattr(self.config, 'BRAVE_SEARCH_COUNT', 15)}\n")
+                f.write(f"  AI model: {getattr(self.config, 'OPENAI_MODEL', 'Unknown')}\n")
+
+                # Overall Summary
+                f.write(f"\nOVERALL SUMMARY:\n")
+                f.write(f"  Query analysis: {analysis_time}s\n")
+                f.write(f"  Search execution: {search_time}s\n")
+                f.write(f"  Total processing: {analysis_time + search_time}s\n")
+                f.write(f"  Final URLs for scraping: {final_count}\n")
+                f.write(f"  Success rate: {(final_count / max(len(unique_results), 1) * 100):.1f}%\n\n")
+
+                f.write("=" * 80 + "\n")
+                f.write("SEARCH FILTERING TEST COMPLETED\n")
+                f.write("=" * 80 + "\n")
 
             except Exception as e:
                 f.write(f"\n❌ ERROR during search test: {str(e)}\n")
@@ -257,7 +221,8 @@ class SearchTest:
                 f"🔍 <b>Search Filtering Test Complete</b>\n\n"
                 f"📝 Query: <code>{query}</code>\n"
                 f"🎯 Final URLs: {final_count}\n"
-                f"🔍 Focus: Brave URLs + Filtering analysis\n\n"
+                f"🔧 Orchestrator: Singleton instance\n"
+                f"🔍 Focus: URL filtering analysis\n\n"
                 f"{'✅ URLs found for scraping' if final_count > 0 else '❌ All URLs filtered out'}\n\n"
                 f"📄 Detailed filtering analysis attached."
             )
@@ -282,94 +247,12 @@ class SearchTest:
             logger.error(f"Failed to send search filtering results to admin: {e}")
 
 
+# Convenience function for backward compatibility
 def add_search_test_command(bot, config, orchestrator):
     """
     Add the /test_search command to the Telegram bot
-    Focused on search URLs and filtering analysis
+    This function is now deprecated since commands are handled directly in telegram_bot.py
+    Keeping for backward compatibility.
     """
-
-    search_tester = SearchTest(config, orchestrator)
-
-    @bot.message_handler(commands=['test_search'])
-    def handle_test_search(message):
-        """Handle /test_search command - focused on URL filtering"""
-
-        user_id = message.from_user.id
-        admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
-
-        # Check if user is admin
-        if not admin_chat_id or str(user_id) != str(admin_chat_id):
-            bot.reply_to(message, "❌ This command is only available to administrators.")
-            return
-
-        # Parse command
-        command_text = message.text.strip()
-
-        if len(command_text.split(None, 1)) < 2:
-            help_text = (
-                "🔍 <b>Search URL Filtering Test</b>\n\n"
-                "<b>Usage:</b>\n"
-                "<code>/test_search [restaurant query]</code>\n\n"
-                "<b>Examples:</b>\n"
-                "<code>/test_search best wine bars in rome</code>\n"
-                "<code>/test_search romantic restaurants Paris</code>\n\n"
-                "This shows exactly:\n"
-                "• What URLs Brave returns\n"
-                "• Which URLs get filtered out and why\n"
-                "• Domain filtering results\n"
-                "• AI filtering decisions\n\n"
-                "📄 Results are saved to a detailed file.\n\n"
-                "🎯 <b>Focus:</b> URL filtering analysis only."
-            )
-            bot.reply_to(message, help_text, parse_mode='HTML')
-            return
-
-        # Extract query
-        restaurant_query = command_text.split(None, 1)[1].strip()
-
-        if not restaurant_query:
-            bot.reply_to(message, "❌ Please provide a restaurant query to test.")
-            return
-
-        # Send confirmation
-        bot.reply_to(
-            message,
-            f"🔍 <b>Starting URL filtering analysis...</b>\n\n"
-            f"📝 Query: <code>{restaurant_query}</code>\n\n"
-            "Analyzing:\n"
-            "1️⃣ Raw Brave search results\n"
-            "2️⃣ Domain filtering process\n"
-            "3️⃣ AI filtering decisions\n"
-            "4️⃣ Final URLs for scraping\n\n"
-            "🎯 <b>Focus:</b> Which URLs pass/fail filtering\n"
-            "⏱ Please wait 1-2 minutes...",
-            parse_mode='HTML'
-        )
-
-        # Run test in background
-        def run_test():
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-
-                results_path = loop.run_until_complete(
-                    search_tester.test_search_process(restaurant_query, bot)
-                )
-
-                loop.close()
-                logger.info(f"Search filtering test completed: {results_path}")
-
-            except Exception as e:
-                logger.error(f"Error in search filtering test: {e}")
-                try:
-                    bot.send_message(
-                        admin_chat_id,
-                        f"❌ Search filtering test failed for '{restaurant_query}': {str(e)}"
-                    )
-                except:
-                    pass
-
-        thread = threading.Thread(target=run_test, daemon=True)
-        thread.start()
-
-    logger.info("Search filtering test command added to bot: /test_search")
+    logger.info("Note: search test commands are now handled directly in telegram_bot.py")
+    pass
