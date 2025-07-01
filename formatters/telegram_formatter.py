@@ -1,12 +1,12 @@
-# Suggested new file structure for better organization:
-
-# 1. Create: formatters/telegram_formatter.py
+# formatters/telegram_formatter.py
 """
-Dedicated Telegram HTML formatter - handles all Telegram-specific formatting
+Complete Telegram HTML formatter - handles all Telegram-specific formatting
 """
 import re
-import html
+import logging
 from html import escape, unescape
+
+logger = logging.getLogger(__name__)
 
 class TelegramFormatter:
     """Handles all Telegram HTML formatting for restaurant recommendations"""
@@ -18,37 +18,72 @@ class TelegramFormatter:
 
     def format_recommendations(self, recommendations_data):
         """Main entry point for formatting recommendations"""
-        main_list = recommendations_data.get("main_list", [])
+        try:
+            logger.info("🔧 Starting Telegram formatting")
 
-        if not main_list:
-            return self._format_no_results()
+            main_list = recommendations_data.get("main_list", [])
+            logger.info(f"📋 Found {len(main_list)} restaurants to format")
 
-        return self._format_restaurant_list(main_list)
+            if not main_list:
+                logger.warning("❌ No restaurants found to format")
+                return self.format_no_results()
+
+            formatted_html = self._format_restaurant_list(main_list)
+            logger.info("✅ Telegram formatting completed successfully")
+
+            return formatted_html
+
+        except Exception as e:
+            logger.error(f"❌ Error in Telegram formatting: {e}")
+            return self.format_no_results()
 
     def _format_restaurant_list(self, restaurants):
         """Format the main restaurant list"""
         html_parts = ["<b>🍽️ Recommended Restaurants</b>\n\n"]
 
+        formatted_count = 0
         for i, restaurant in enumerate(restaurants, 1):
-            html_parts.append(self._format_single_restaurant(restaurant, i))
+            try:
+                formatted_restaurant = self._format_single_restaurant(restaurant, i)
+                if formatted_restaurant:  # Only add if formatting succeeded
+                    html_parts.append(formatted_restaurant)
+                    formatted_count += 1
+            except Exception as e:
+                logger.error(f"❌ Error formatting restaurant {i}: {e}")
+                continue  # Skip this restaurant and continue with others
+
+        if formatted_count == 0:
+            return self.format_no_results()
 
         html_parts.append(self._format_footer())
 
-        return self._finalize_html(''.join(html_parts))
+        final_html = ''.join(html_parts)
+
+        logger.info(f"✅ Successfully formatted {formatted_count} restaurants")
+        return self._finalize_html(final_html)
 
     def _format_single_restaurant(self, restaurant, index):
         """Format a single restaurant entry"""
-        name = self._clean_text(restaurant.get('name', 'Unknown'))
-        description = self._clean_text(restaurant.get('description', ''))
+        # Safely extract data with defaults
+        name = str(restaurant.get('name', 'Unknown Restaurant')).strip()
+        description = str(restaurant.get('description', 'No description available')).strip()
         address = restaurant.get('address', 'Address unavailable')
         sources = restaurant.get('sources', [])
 
+        # Skip if no valid name
+        if not name or name == 'Unknown Restaurant':
+            return ""
+
+        # Clean and escape text
+        name_escaped = self._clean_text(name)
+        desc_escaped = self._clean_text(description)
+
         parts = [
-            f"<b>{index}. {escape(name)}</b>\n",
+            f"<b>{index}. {name_escaped}</b>\n",
             self._format_address(address),
-            f"{escape(description)}\n" if description else "",
+            f"{desc_escaped}\n" if desc_escaped else "",
             self._format_sources(sources),
-            "\n"
+            "\n"  # Add spacing between restaurants
         ]
 
         return ''.join(filter(None, parts))
@@ -62,9 +97,9 @@ class TelegramFormatter:
         link_match = re.search(r'<a href="([^"]+)"[^>]*>([^<]+)</a>', str(address))
         if link_match:
             url, address_text = link_match.groups()
-            return f'📍 <a href="{url}">{escape(address_text)}</a>\n'
+            return f'📍 <a href="{url}">{self._clean_text(address_text)}</a>\n'
 
-        return f"📍 {escape(str(address))}\n"
+        return f"📍 {self._clean_text(str(address))}\n"
 
     def _format_sources(self, sources):
         """Format source attribution"""
@@ -74,10 +109,12 @@ class TelegramFormatter:
         valid_sources = []
         for source in sources:
             if source and str(source).strip():
-                valid_sources.append(escape(str(source).strip()))
+                cleaned_source = self._clean_text(str(source).strip())
+                if cleaned_source:
+                    valid_sources.append(cleaned_source)
 
         if valid_sources:
-            sources_text = ", ".join(valid_sources[:3])
+            sources_text = ", ".join(valid_sources[:3])  # Limit to 3 sources
             return f"<i>✅ Sources: {sources_text}</i>\n"
 
         return ""
@@ -86,7 +123,7 @@ class TelegramFormatter:
         """Standard footer for recommendations"""
         return "<i>Recommendations compiled from reputable restaurant guides and critics.</i>"
 
-    def _format_no_results(self):
+    def format_no_results(self):
         """Message when no restaurants found"""
         return ("<b>Sorry, no restaurant recommendations found for your search.</b>\n\n"
                 "Try rephrasing your query or searching for a different area.")
@@ -97,10 +134,18 @@ class TelegramFormatter:
             return ""
 
         text = str(text).strip()
-        text = unescape(text)  # Decode existing entities
 
-        # Selective escaping for Telegram
+        # First, decode any existing HTML entities to get clean text
+        text = unescape(text)
+
+        # Now escape only the characters that need escaping for Telegram HTML
+        # We need to be selective - only escape & < > that aren't part of valid HTML tags
+
+        # Replace & that aren't part of valid entities
         text = re.sub(r'&(?!(?:amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)', '&amp;', text)
+
+        # Replace < and > that aren't part of valid HTML tags
+        # Allow <b>, </b>, <i>, </i>, <a href="...">, </a>, etc.
         text = re.sub(r'<(?!/?(?:b|i|u|s|code|pre|a\s))', '&lt;', text)
         text = re.sub(r'(?<!(?:b|i|u|s|code|pre|a))>', '&gt;', text)
 
@@ -114,66 +159,83 @@ class TelegramFormatter:
         # Apply length limit
         if len(html) > self.MAX_MESSAGE_LENGTH:
             html = html[:self.MAX_MESSAGE_LENGTH-3] + "…"
+            logger.info(f"📏 Truncated message to {len(html)} characters")
 
         return html
 
     def _sanitize_for_telegram(self, text):
         """Ensure HTML is safe for Telegram API"""
-        # Implementation of your existing sanitize_html_for_telegram function
-        # Move the existing function here
-        pass
+        if not text:
+            return ""
 
+        # First, escape any unescaped text content
+        # Do this for any text between > and <
+        def escape_text_content(match):
+            content = match.group(1)
+            # Only escape if it's not already escaped
+            if '&' in content and ('&lt;' in content or '&gt;' in content or '&amp;' in content):
+                return '>' + content + '<'
+            return '>' + escape(content) + '<'
 
-# 2. Create: formatters/base_formatter.py
-"""
-Base formatter interface for different output formats
-"""
-from abc import ABC, abstractmethod
+        # Fix unescaped content between tags
+        text = re.sub(r'>([^<]+)<', escape_text_content, text)
 
-class BaseFormatter(ABC):
-    """Base class for all output formatters"""
+        # Ensure all tags are properly closed
+        # Stack to track open tags
+        stack = []
+        result = []
+        i = 0
 
-    @abstractmethod
-    def format_recommendations(self, recommendations_data):
-        """Format recommendations for specific output format"""
-        pass
+        while i < len(text):
+            if text[i] == '<':
+                # Find the end of the tag
+                end = text.find('>', i)
+                if end == -1:
+                    # No closing bracket, treat as plain text
+                    result.append('&lt;')
+                    i += 1
+                    continue
 
+                tag_content = text[i+1:end]
+                if tag_content.startswith('/'):
+                    # Closing tag
+                    tag_name = tag_content[1:].split()[0].lower()
+                    if tag_name in self.allowed_tags:
+                        if stack and stack[-1] == tag_name:
+                            stack.pop()
+                            result.append(text[i:end+1])
+                        else:
+                            # Mismatched closing tag, just add as text
+                            result.append(escape(text[i:end+1]))
+                    else:
+                        # Not an allowed tag
+                        result.append(escape(text[i:end+1]))
+                else:
+                    # Opening tag
+                    tag_parts = tag_content.split(None, 1)
+                    tag_name = tag_parts[0].lower()
+                    if tag_name in self.allowed_tags:
+                        if tag_name == 'a':
+                            # Special handling for links
+                            if len(tag_parts) > 1 and 'href=' in tag_parts[1]:
+                                result.append(text[i:end+1])
+                                stack.append(tag_name)
+                            else:
+                                result.append(escape(text[i:end+1]))
+                        else:
+                            result.append(text[i:end+1])
+                            stack.append(tag_name)
+                    else:
+                        # Not an allowed tag
+                        result.append(escape(text[i:end+1]))
+                i = end + 1
+            else:
+                result.append(text[i])
+                i += 1
 
-# 3. Update: agents/langchain_orchestrator.py
-"""
-Simplified orchestrator that delegates formatting
-"""
-from formatters.telegram_formatter import TelegramFormatter
+        # Close any unclosed tags
+        while stack:
+            tag = stack.pop()
+            result.append(f'</{tag}>')
 
-class LangChainOrchestrator:
-    def __init__(self, config):
-        # ... existing initialization ...
-
-        # Initialize formatter
-        self.telegram_formatter = TelegramFormatter()
-
-        # Simplified extract_html step
-        def extract_html_step(x):
-            """Extract HTML step - Now just delegates to formatter"""
-            try:
-                enhanced_recs = x.get("enhanced_recommendations", {})
-                telegram_text = self.telegram_formatter.format_recommendations(enhanced_recs)
-
-                return {
-                    **x,
-                    "telegram_formatted_text": telegram_text
-                }
-            except Exception as e:
-                logger.error(f"Error in HTML formatting: {e}")
-                return {
-                    **x,
-                    "telegram_formatted_text": self.telegram_formatter._format_no_results()
-                }
-
-        self.extract_html = RunnableLambda(extract_html_step, name="extract_html")
-
-
-# 4. Future: Add other formatters
-# formatters/json_formatter.py - for API responses
-# formatters/markdown_formatter.py - for documentation
-# formatters/email_formatter.py - for email recommendations
+        return ''.join(result)
