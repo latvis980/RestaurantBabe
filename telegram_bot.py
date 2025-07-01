@@ -1,15 +1,15 @@
-# telegram_bot.py - DIRECT COMMAND REGISTRATION APPROACH
+# telegram_bot.py - Clean version with no formatting logic
 import telebot
 import logging
 import time
 import threading
-from telebot import types
+import json
+import asyncio
+
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 import config
 from main import setup_orchestrator
-import json
-import asyncio
 
 # Configure logging
 logging.basicConfig(
@@ -23,64 +23,58 @@ bot = telebot.TeleBot(config.TELEGRAM_BOT_TOKEN)
 
 # Initialize AI conversation handler
 conversation_ai = ChatOpenAI(
-    model=config.OPENAI_MODEL,  # GPT-4o as specified
+    model=config.OPENAI_MODEL,
     temperature=0.3
 )
 
-# Simple conversation history storage (last 5 messages per user)
+# Simple conversation history storage
 user_conversations = {}
 
 # Welcome message
 WELCOME_MESSAGE = (
-    """🍸 Hello! I'm an AI assistant Restaurant Babe, and I know all about the most delicious and trendy restaurants, cafes, bakeries, bars, and coffee shops around the world.\n\n"""
-    """Tell me what you are looking for. For example:\n"""
-    """<i>What new restaurants have recently opened in Lisbon?</i>\n"""
-    """<i>Local residents' favorite cevicherias in Lima</i>\n"""
-    """<i>Where can I find the most delicious plov in Tashkent?</i>\n"""
-    """<i>Recommend places with brunch and specialty coffee in Barcelona.</i>\n"""
-    """<i>Best cocktail bars in Paris's Marais district</i>\n\n"""
-    """I will check with my restaurant critic friends and provide the best recommendations. This might take a couple of minutes because I search very carefully and thoroughly verify the results. But there won't be any random places in my list.\n"""
-    """Shall we begin?"""
+    "🍸 Hello! I'm an AI assistant Restaurant Babe, and I know all about the most delicious and trendy restaurants, cafes, bakeries, bars, and coffee shops around the world.\n\n"
+    "Tell me what you are looking for. For example:\n"
+    "<i>What new restaurants have recently opened in Lisbon?</i>\n"
+    "<i>Local residents' favorite cevicherias in Lima</i>\n"
+    "<i>Where can I find the most delicious plov in Tashkent?</i>\n"
+    "<i>Recommend places with brunch and specialty coffee in Barcelona.</i>\n"
+    "<i>Best cocktail bars in Paris's Marais district</i>\n\n"
+    "I will check with my restaurant critic friends and provide the best recommendations. This might take a couple of minutes because I search very carefully and thoroughly verify the results. But there won't be any random places in my list.\n"
+    "Shall we begin?"
 )
 
 # AI Conversation Prompt
 CONVERSATION_PROMPT = """
-You are Restaurant Babe, an expert AI assistant for restaurant recommendations worldwide. You help users find amazing restaurants, cafes, bars, bakeries, and coffee shops.
+You are Restaurant Babe, an expert AI assistant for restaurant recommendations worldwide. 
 
-CONVERSATION HISTORY (last few messages):
+CONVERSATION HISTORY:
 {conversation_history}
 
 CURRENT USER MESSAGE: {user_message}
 
-YOUR TASK:
-Analyze the conversation and decide what to do next. You need TWO pieces of information to search:
-1. LOCATION (city/neighborhood/area)
-2. DINING PREFERENCE (cuisine type, restaurant style, or specific request like "brunch", "cocktails", "romantic dinner")
+TASK: Analyze the conversation and decide what to do next. You need TWO pieces of information:
+1. LOCATION (city/neighborhood/area)  
+2. DINING PREFERENCE (cuisine type, restaurant style, or specific request)
 
 DECISION RULES:
 - If you have BOTH location AND dining preference → Action: "SEARCH"
-- If missing one or both pieces → Action: "CLARIFY" 
+- If missing one or both pieces → Action: "CLARIFY"
 - If completely off-topic → Action: "REDIRECT"
 
-RESPONSE FORMAT:
-Return JSON only:
+RESPONSE FORMAT (JSON only):
 {{
     "action": "SEARCH" | "CLARIFY" | "REDIRECT",
     "search_query": "complete restaurant search query (only if action is SEARCH)",
     "bot_response": "what to say to the user",
-    "reasoning": "brief explanation of your decision"
+    "reasoning": "brief explanation"
 }}
 
 EXAMPLES:
+User: "ramen in tokyo" → {{"action": "SEARCH", "search_query": "best ramen restaurants in Tokyo", "bot_response": "Perfect! Let me find the best ramen places in Tokyo for you."}}
 
-User: "ramen in tokyo"
-→ {{"action": "SEARCH", "search_query": "best ramen restaurants in Tokyo", "bot_response": "Perfect! Let me find the best ramen places in Tokyo for you.", "reasoning": "Have both location and preference"}}
+User: "I want something romantic" → {{"action": "CLARIFY", "bot_response": "Romantic sounds wonderful! Which city would you like me to search for romantic restaurants?"}}
 
-User: "I want something romantic"
-→ {{"action": "CLARIFY", "bot_response": "Romantic sounds wonderful! Which city or area would you like me to search for romantic restaurants?", "reasoning": "Missing location information"}}
-
-User: "How's the weather?"
-→ {{"action": "REDIRECT", "bot_response": "I specialize in restaurant recommendations! Tell me what type of food or dining experience you're looking for, and in which city.", "reasoning": "Off-topic question"}}
+User: "How's the weather?" → {{"action": "REDIRECT", "bot_response": "I specialize in restaurant recommendations! Tell me what type of food you're looking for and in which city."}}
 """
 
 def add_to_conversation(user_id, message, is_user=True):
@@ -99,11 +93,9 @@ def format_conversation_history(user_id):
     """Format conversation history for AI prompt"""
     if user_id not in user_conversations:
         return "No previous conversation"
+    return "\n".join(user_conversations[user_id])
 
-    history = user_conversations[user_id]
-    return "\n".join(history)
-
-# Initialize orchestrator (will be set up when first needed)
+# Initialize orchestrator (lazy loading)
 orchestrator = None
 
 def get_orchestrator():
@@ -113,7 +105,7 @@ def get_orchestrator():
         orchestrator = setup_orchestrator()
     return orchestrator
 
-# COMMAND HANDLERS - Define directly to avoid conflicts
+# COMMAND HANDLERS
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -125,54 +117,38 @@ def send_welcome(message):
         if user_id in user_conversations:
             del user_conversations[user_id]
 
-        bot.reply_to(
-            message, 
-            WELCOME_MESSAGE, 
-            parse_mode='HTML'
-        )
+        bot.reply_to(message, WELCOME_MESSAGE, parse_mode='HTML')
         logger.info(f"Sent welcome message to user {user_id}")
     except Exception as e:
         logger.error(f"Error sending welcome message: {e}")
         bot.reply_to(message, "Hello! I'm Restaurant Babe, ready to help you find amazing restaurants!")
 
-# ADMIN COMMAND: /test_scrape - Call external class directly
 @bot.message_handler(commands=['test_scrape'])
 def handle_test_scrape(message):
-    """Handle /test_scrape command using external ScrapeTest class"""
-
+    """Handle /test_scrape admin command"""
     user_id = message.from_user.id
     admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
 
-    # Check if user is admin
+    # Check admin access
     if not admin_chat_id or str(user_id) != str(admin_chat_id):
         bot.reply_to(message, "❌ This command is only available to administrators.")
         return
 
     # Parse command
     command_text = message.text.strip()
-
     if len(command_text.split(None, 1)) < 2:
         help_text = (
             "🧪 <b>Scraping Process Test</b>\n\n"
-            "<b>Usage:</b>\n"
-            "<code>/test_scrape [restaurant query]</code>\n\n"
+            "<b>Usage:</b> <code>/test_scrape [restaurant query]</code>\n\n"
             "<b>Examples:</b>\n"
-            "<code>/test_scrape best brunch in Lisbon</code>\n"
-            "<code>/test_scrape romantic restaurants Paris</code>\n"
-            "<code>/test_scrape family pizza Rome</code>\n\n"
-            "This runs the complete scraping process and shows:\n"
-            "• Which search results are found\n"
-            "• What gets scraped successfully\n"
-            "• Exact content that goes to list_analyzer\n"
-            "• Scraping method statistics\n\n"
-            "📄 Results are saved to a detailed file."
+            "• <code>/test_scrape best brunch in Lisbon</code>\n"
+            "• <code>/test_scrape romantic restaurants Paris</code>\n\n"
+            "This runs the complete scraping pipeline and generates a detailed report."
         )
         bot.reply_to(message, help_text, parse_mode='HTML')
         return
 
-    # Extract query
     restaurant_query = command_text.split(None, 1)[1].strip()
-
     if not restaurant_query:
         bot.reply_to(message, "❌ Please provide a restaurant query to test.")
         return
@@ -180,13 +156,8 @@ def handle_test_scrape(message):
     # Send confirmation
     bot.reply_to(
         message,
-        f"🧪 <b>Starting scraping process test...</b>\n\n"
+        f"🧪 <b>Starting scraping test...</b>\n\n"
         f"📝 Query: <code>{restaurant_query}</code>\n\n"
-        "This will run the complete pipeline:\n"
-        "1️⃣ Query analysis\n"
-        "2️⃣ Web search\n"
-        "3️⃣ Intelligent scraping\n"
-        "4️⃣ Content analysis\n\n"
         "⏱ Please wait 2-3 minutes...",
         parse_mode='HTML'
     )
@@ -194,9 +165,7 @@ def handle_test_scrape(message):
     # Run test in background
     def run_test():
         try:
-            # Import and run the scraping test
             from scrape_test import ScrapeTest
-
             scrape_tester = ScrapeTest(config, get_orchestrator())
 
             loop = asyncio.new_event_loop()
@@ -208,59 +177,41 @@ def handle_test_scrape(message):
 
             loop.close()
             logger.info(f"Scraping test completed: {results_path}")
-
         except Exception as e:
             logger.error(f"Error in scraping test: {e}")
             try:
-                bot.send_message(
-                    admin_chat_id,
-                    f"❌ Scraping test failed for '{restaurant_query}': {str(e)}"
-                )
+                bot.send_message(admin_chat_id, f"❌ Scraping test failed: {str(e)}")
             except:
                 pass
 
-    thread = threading.Thread(target=run_test, daemon=True)
-    thread.start()
+    threading.Thread(target=run_test, daemon=True).start()
 
-# ADMIN COMMAND: /test_search - Call external class directly
 @bot.message_handler(commands=['test_search'])
 def handle_test_search(message):
-    """Handle /test_search command using external SearchTest class"""
-
+    """Handle /test_search admin command"""
     user_id = message.from_user.id
     admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
 
-    # Check if user is admin
+    # Check admin access
     if not admin_chat_id or str(user_id) != str(admin_chat_id):
         bot.reply_to(message, "❌ This command is only available to administrators.")
         return
 
     # Parse command
     command_text = message.text.strip()
-
     if len(command_text.split(None, 1)) < 2:
         help_text = (
-            "🔍 <b>Simplified Search Process Test</b>\n\n"
-            "<b>Usage:</b>\n"
-            "<code>/test_search [restaurant query]</code>\n\n"
+            "🔍 <b>Search Process Test</b>\n\n"
+            "<b>Usage:</b> <code>/test_search [restaurant query]</code>\n\n"
             "<b>Examples:</b>\n"
-            "<code>/test_search best cocktail bars in tel aviv</code>\n"
-            "<code>/test_search romantic restaurants Paris</code>\n"
-            "<code>/test_search family pizza Rome</code>\n\n"
-            "This tests the simplified search process:\n"
-            "• Raw Brave search results\n"
-            "• Domain filtering (excluded sources + video platforms)\n"
-            "• AI-only content filtering decisions\n"
-            "• Final URLs for scraping\n\n"
-            "📄 Results are saved to a detailed file.\n\n"
-            "🤖 <b>New:</b> Removed keyword filtering, AI-only filtering now."
+            "• <code>/test_search best ramen Tokyo</code>\n"
+            "• <code>/test_search pizza Rome</code>\n\n"
+            "This runs the search pipeline and generates a detailed analysis."
         )
         bot.reply_to(message, help_text, parse_mode='HTML')
         return
 
-    # Extract query
     restaurant_query = command_text.split(None, 1)[1].strip()
-
     if not restaurant_query:
         bot.reply_to(message, "❌ Please provide a restaurant query to test.")
         return
@@ -268,14 +219,8 @@ def handle_test_search(message):
     # Send confirmation
     bot.reply_to(
         message,
-        f"🔍 <b>Starting simplified search test...</b>\n\n"
+        f"🔍 <b>Starting search test...</b>\n\n"
         f"📝 Query: <code>{restaurant_query}</code>\n\n"
-        "New simplified process:\n"
-        "1️⃣ Query analysis\n"
-        "2️⃣ Domain filtering only\n"
-        "3️⃣ AI-based content evaluation\n"
-        "4️⃣ Results analysis\n\n"
-        "⚡ Much faster - no keyword filtering!\n"
         "⏱ Please wait 1-2 minutes...",
         parse_mode='HTML'
     )
@@ -283,9 +228,7 @@ def handle_test_search(message):
     # Run test in background
     def run_test():
         try:
-            # Import and run the search test
             from search_test import SearchTest
-
             search_tester = SearchTest(config, get_orchestrator())
 
             loop = asyncio.new_event_loop()
@@ -296,23 +239,18 @@ def handle_test_search(message):
             )
 
             loop.close()
-            logger.info(f"Simplified search test completed: {results_path}")
-
+            logger.info(f"Search test completed: {results_path}")
         except Exception as e:
-            logger.error(f"Error in simplified search test: {e}")
+            logger.error(f"Error in search test: {e}")
             try:
-                bot.send_message(
-                    admin_chat_id,
-                    f"❌ Simplified search test failed for '{restaurant_query}': {str(e)}"
-                )
+                bot.send_message(admin_chat_id, f"❌ Search test failed: {str(e)}")
             except:
                 pass
 
-    thread = threading.Thread(target=run_test, daemon=True)
-    thread.start()
+    threading.Thread(target=run_test, daemon=True).start()
 
 def perform_restaurant_search(search_query, chat_id, user_id):
-    """Perform restaurant search using orchestrator"""
+    """Perform restaurant search using orchestrator - NO FORMATTING HERE"""
     try:
         # Send processing message
         processing_msg = bot.send_message(
@@ -323,20 +261,18 @@ def perform_restaurant_search(search_query, chat_id, user_id):
 
         # Get orchestrator and perform search
         orchestrator_instance = get_orchestrator()
-
-        # This is where the actual search happens
         result = orchestrator_instance.process_query(search_query)
 
-        # Format for Telegram (ensure proper formatting)
+        # Get the pre-formatted text from orchestrator (NO formatting here!)
         telegram_text = result.get('telegram_formatted_text', 'Sorry, no recommendations found.')
 
-        # Delete the processing message
+        # Delete processing message
         try:
             bot.delete_message(chat_id, processing_msg.message_id)
         except:
-            pass  # Don't worry if we can't delete it
+            pass
 
-        # Send the results
+        # Send the results directly (already formatted by TelegramFormatter)
         bot.send_message(
             chat_id,
             telegram_text,
@@ -346,25 +282,26 @@ def perform_restaurant_search(search_query, chat_id, user_id):
 
         logger.info(f"Successfully sent restaurant recommendations to user {user_id}")
 
-        # Add search completion to conversation history
+        # Add completion to conversation history
         add_to_conversation(user_id, "Restaurant recommendations delivered!", is_user=False)
 
     except Exception as e:
         logger.error(f"Error in restaurant search process: {e}")
+
+        # Delete processing message if it exists
         try:
-            # Delete processing message if it exists
             if 'processing_msg' in locals():
                 bot.delete_message(chat_id, processing_msg.message_id)
         except:
             pass
 
+        # Send error message
         bot.send_message(
             chat_id,
             "😔 Sorry, I encountered an error while searching for restaurants. Please try again with a different query!",
             parse_mode='HTML'
         )
 
-# IMPORTANT: This must be the LAST message handler (catch-all for non-command messages)
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     """Handle all text messages with AI conversation management"""
@@ -388,7 +325,6 @@ def handle_message(message):
 
         # Get AI decision
         conversation_chain = conversation_prompt | conversation_ai
-
         response = conversation_chain.invoke({
             "conversation_history": format_conversation_history(user_id),
             "user_message": user_message
@@ -405,7 +341,6 @@ def handle_message(message):
             ai_decision = json.loads(content)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse AI decision: {e}")
-            logger.error(f"Raw content: {content}")
             # Fallback response
             ai_decision = {
                 "action": "CLARIFY",
@@ -461,12 +396,9 @@ def main():
 
     # Initialize the orchestrator
     orchestrator_instance = get_orchestrator()
-
-    # Log available commands (now defined directly)
     logger.info("🎯 Admin commands available: /test_scrape, /test_search")
-    logger.info("✅ Commands registered directly in telegram_bot.py")
 
-    # Start polling with better error handling
+    # Start polling with error handling
     while True:
         try:
             logger.info("Starting bot polling...")
@@ -478,7 +410,7 @@ def main():
             )
         except telebot.apihelper.ApiTelegramException as e:
             if "409" in str(e):
-                logger.error("Another bot instance is running. Waiting 30 seconds before retry...")
+                logger.error("Another bot instance is running. Waiting 30 seconds...")
                 time.sleep(30)
                 continue
             else:

@@ -3,97 +3,16 @@ from langchain_core.runnables import RunnableSequence, RunnableLambda
 from langchain_core.tracers.context import tracing_v2_enabled
 import time
 import json
-import re
-import html
-from html import escape, unescape
-from utils.database import save_data
-from utils.debug_utils import dump_chain_state, log_function_call
-from utils.async_utils import sync_to_async
 import asyncio
 import logging
+import concurrent.futures
 
-# Create logger. 
+from utils.database import save_data
+from utils.debug_utils import dump_chain_state, log_function_call
+from formatters.telegram_formatter import TelegramFormatter
+
+# Create logger
 logger = logging.getLogger("restaurant-recommender.orchestrator")
-
-# Move the sanitize_html_for_telegram function here instead of importing from telegram_bot
-def sanitize_html_for_telegram(text):
-    """Clean HTML text to ensure it's safe for Telegram API"""
-    if not text:
-        return ""
-
-    # First, escape any unescaped text content
-    # Do this for any text between > and <
-    def escape_text_content(match):
-        content = match.group(1)
-        # Only escape if it's not already escaped
-        if '&' in content and ('&lt;' in content or '&gt;' in content or '&amp;' in content):
-            return '>' + content + '<'
-        return '>' + escape(content) + '<'
-
-    # Fix unescaped content between tags
-    text = re.sub(r'>([^<]+)<', escape_text_content, text)
-
-    # Ensure all tags are properly closed
-    # Stack to track open tags
-    stack = []
-    result = []
-    i = 0
-
-    allowed_tags = {'b', 'i', 'u', 's', 'a', 'code', 'pre'}
-
-    while i < len(text):
-        if text[i] == '<':
-            # Find the end of the tag
-            end = text.find('>', i)
-            if end == -1:
-                # No closing bracket, treat as plain text
-                result.append('&lt;')
-                i += 1
-                continue
-
-            tag_content = text[i+1:end]
-            if tag_content.startswith('/'):
-                # Closing tag
-                tag_name = tag_content[1:].split()[0].lower()
-                if tag_name in allowed_tags:
-                    if stack and stack[-1] == tag_name:
-                        stack.pop()
-                        result.append(text[i:end+1])
-                    else:
-                        # Mismatched closing tag, just add as text
-                        result.append(escape(text[i:end+1]))
-                else:
-                    # Not an allowed tag
-                    result.append(escape(text[i:end+1]))
-            else:
-                # Opening tag
-                tag_parts = tag_content.split(None, 1)
-                tag_name = tag_parts[0].lower()
-                if tag_name in allowed_tags:
-                    if tag_name == 'a':
-                        # Special handling for links
-                        if len(tag_parts) > 1 and 'href=' in tag_parts[1]:
-                            result.append(text[i:end+1])
-                            stack.append(tag_name)
-                        else:
-                            result.append(escape(text[i:end+1]))
-                    else:
-                        result.append(text[i:end+1])
-                        stack.append(tag_name)
-                else:
-                    # Not an allowed tag
-                    result.append(escape(text[i:end+1]))
-            i = end + 1
-        else:
-            result.append(text[i])
-            i += 1
-
-    # Close any unclosed tags
-    while stack:
-        tag = stack.pop()
-        result.append(f'</{tag}>')
-
-    return ''.join(result)
 
 class LangChainOrchestrator:
     def __init__(self, config):
@@ -104,28 +23,36 @@ class LangChainOrchestrator:
         from agents.list_analyzer import ListAnalyzer
         from agents.editor_agent import EditorAgent
         from agents.follow_up_search_agent import FollowUpSearchAgent
-        from agents.translator import TranslatorAgent
 
         # Initialize agents
         self.query_analyzer = QueryAnalyzer(config)
         self.search_agent = BraveSearchAgent(config)
-        self.scraper = WebScraper(config)  # Use Firecrawl scraper directly
+        self.scraper = WebScraper(config)
         self.list_analyzer = ListAnalyzer(config)
         self.editor_agent = EditorAgent(config)
         self.follow_up_search_agent = FollowUpSearchAgent(config)
-        self.translator = TranslatorAgent(config)
+
+        # Initialize formatter
+        self.telegram_formatter = TelegramFormatter()
 
         self.config = config
 
-        # Create runnable lambdas for each step
+        # Build the pipeline steps
+        self._build_pipeline()
+
+    def _build_pipeline(self):
+        """Build the LangChain pipeline with clean step separation"""
+
+        # Step 1: Analyze Query
         self.analyze_query = RunnableLambda(
             lambda x: {
                 **self.query_analyzer.analyze(x["query"]),
-                "query": x["query"]  # Keep the original query in the chain
+                "query": x["query"]
             },
             name="analyze_query"
         )
 
+        # Step 2: Search
         self.search = RunnableLambda(
             lambda x: {
                 **x,
@@ -134,398 +61,37 @@ class LangChainOrchestrator:
             name="search"
         )
 
-        # Define a wrapper that properly converts async to sync
-        def scrape_helper(x):
-            """Wrapper to handle async scraping in the LangChain"""
-            import asyncio
-            import concurrent.futures
+        # Step 3: Scrape
+        self.scrape = RunnableLambda(
+            self._scrape_step,
+            name="scrape"
+        )
 
-            # Get the search results from the chain data
-            search_results = x.get("search_results", [])
-            logger.info(f"Scrape helper running for {len(search_results)} results")
-
-            # Define a function that runs in its own thread with a fresh event loop
-            def run_in_new_event_loop():
-                # Create a new event loop for this thread
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-
-                # Run the async function in this new loop
-                try:
-                    return loop.run_until_complete(self.scraper.scrape_search_results(search_results))
-                finally:
-                    loop.close()
-
-            # Execute the function in a thread
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                enriched_results = pool.submit(run_in_new_event_loop).result()
-
-            # Log Firecrawl usage after scraping
-            self._log_firecrawl_usage()
-
-            # Return the results with the original data
-            logger.info(f"Scrape completed with {len(enriched_results)} enriched results")
-            return {**x, "enriched_results": enriched_results}
-
-        # Assign the helper to the scrape step
-        self.scrape = RunnableLambda(scrape_helper, name="scrape")
-
-        async def analyze_results_with_debug_async(x):
-            try:
-                # Debug log before analysis
-                dump_chain_state("pre_analyze_results", {
-                    "enriched_results_count": len(x.get("enriched_results", [])),
-                    "keywords": x.get("keywords_for_analysis", []),
-                    "primary_params": x.get("primary_search_parameters", []),
-                    "secondary_params": x.get("secondary_filter_parameters", []),
-                    "destination": x.get("destination", "Unknown")  # Log the destination
-                })
-
-                # Execute list analyzer with the destination - AWAIT the async call
-                recommendations = await self.list_analyzer.analyze(
-                    search_results=x["enriched_results"],  # Changed parameter name
-                    keywords_for_analysis=x.get("keywords_for_analysis", []),  # Changed parameter name
-                    primary_search_parameters=x.get("primary_search_parameters", []),  # Changed parameter name
-                    secondary_filter_parameters=x.get("secondary_filter_parameters", []),  # Changed parameter name
-                    destination=x.get("destination")  # Pass the destination!
-                )
-
-                # Debug log after analysis
-                dump_chain_state("post_analyze_results", {
-                    "recommendations_keys": list(recommendations.keys() if recommendations else {}),
-                    "recommendations": recommendations
-                })
-
-                # Convert to single list structure - combine all restaurants into main_list
-                if isinstance(recommendations, dict):
-                    all_restaurants = []
-
-                    # Get restaurants from main_list
-                    main_list = recommendations.get("main_list", [])
-                    if isinstance(main_list, list):
-                        all_restaurants.extend(main_list)
-
-                    # Get restaurants from hidden_gems and add to main list
-                    hidden_gems = recommendations.get("hidden_gems", [])
-                    if isinstance(hidden_gems, list):
-                        all_restaurants.extend(hidden_gems)
-
-                    # Handle legacy format
-                    if "recommended" in recommendations and not all_restaurants:
-                        recommended = recommendations.get("recommended", [])
-                        if isinstance(recommended, list):
-                            all_restaurants.extend(recommended)
-
-                    # Return standardized structure with only main_list
-                    standardized = {
-                        "main_list": all_restaurants
-                    }
-                else:
-                    # Initialize empty structure
-                    standardized = {
-                        "main_list": []
-                    }
-
-                # Return the result
-                return {**x, "recommendations": standardized}
-            except Exception as e:
-                print(f"Error in analyze_results: {e}")
-                # Log the error and return a fallback
-                dump_chain_state("analyze_results_error", x, error=e)
-                return {
-                    **x,
-                    "recommendations": {
-                        "main_list": []
-                    }
-                }
-
-        # And modify the RunnableLambda to handle async:
-        def async_analyze_results(x):
-            """Wrapper to run async analyze_results in the chain"""
-            import asyncio
-            import concurrent.futures
-
-            # Define a function that runs in its own thread with a fresh event loop
-            def run_in_new_event_loop():
-                # Create a new event loop for this thread
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-
-                # Run the async function in this new loop
-                try:
-                    return loop.run_until_complete(analyze_results_with_debug_async(x))
-                finally:
-                    loop.close()
-
-            # Execute the function in a thread
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                result = pool.submit(run_in_new_event_loop).result()
-
-            return result
-
-        # Replace this line in the orchestrator:
+        # Step 4: Analyze Results
         self.analyze_results = RunnableLambda(
-            async_analyze_results,  # Use the new async wrapper
+            self._analyze_results_step,
             name="analyze_results"
         )
 
-        # Improved editor step with debug logging
-        def editor_step(x):
-            try:
-                # Debug before edit
-                dump_chain_state("pre_edit", {
-                    "recommendations_keys": list(x.get("recommendations", {}).keys()),
-                    "query": x.get("query", "")
-                })
-
-                # Get recommendations
-                recommendations = x.get("recommendations", {})
-
-                # Execute editor
-                formatted_results = self.editor_agent.edit(recommendations, x["query"])
-
-                # Debug after edit
-                dump_chain_state("post_edit", {
-                    "formatted_results_keys": list(formatted_results.keys() if formatted_results else {}),
-                    "formatted_results": formatted_results
-                })
-
-                # Ensure proper structure is returned
-                return {**x, "formatted_recommendations": formatted_results}
-            except Exception as e:
-                print(f"Error in editor step: {e}")
-                # Log the error and return a fallback
-                dump_chain_state("editor_error", x, error=e)
-                return {
-                    **x,
-                    "formatted_recommendations": {
-                        "formatted_recommendations": x.get("recommendations", {})
-                    }
-                }
-
+        # Step 5: Edit
         self.edit = RunnableLambda(
-            editor_step,
+            self._edit_step,
             name="edit"
         )
 
-        # Improved follow-up search step
-        def follow_up_step(x):
-            try:
-                # Debug before follow_up
-                dump_chain_state("pre_follow_up", {
-                    "formatted_recommendations_keys": list(x.get("formatted_recommendations", {}).keys())
-                })
-
-                # Get formatted recommendations
-                formatted_recs = x.get("formatted_recommendations", {})
-
-                # Extract the actual recommendations
-                if "formatted_recommendations" in formatted_recs:
-                    actual_recs = formatted_recs.get("formatted_recommendations", {})
-                else:
-                    actual_recs = formatted_recs
-
-                # Get follow up queries focusing on mandatory fields
-                follow_up_queries = formatted_recs.get("follow_up_queries", [])
-
-                # Get secondary filter parameters from original query analysis
-                secondary_params = x.get("secondary_filter_parameters", [])
-
-                # Execute follow up search
-                enhanced_recommendations = self.follow_up_search_agent.perform_follow_up_searches(
-                    actual_recs,
-                    follow_up_queries,
-                    secondary_params
-                )
-
-                # Debug after follow_up
-                dump_chain_state("post_follow_up", {
-                    "enhanced_recommendations_keys": list(enhanced_recommendations.keys() if enhanced_recommendations else {})
-                })
-
-                # Return result
-                return {**x, "enhanced_recommendations": enhanced_recommendations}
-            except Exception as e:
-                print(f"Error in follow-up step: {e}")
-                # Log the error and return a fallback
-                dump_chain_state("follow_up_error", x, error=e)
-                return {
-                    **x,
-                    "enhanced_recommendations": x.get("formatted_recommendations", {}).get("formatted_recommendations", {})
-                }
-
+        # Step 6: Follow-up Search
         self.follow_up_search = RunnableLambda(
-            follow_up_step,
+            self._follow_up_step,
             name="follow_up_search"
         )
 
-        def clean_html_entities(text):
-            """Clean up HTML entities and properly escape text for Telegram"""
-            if not text:
-                return ""
-
-            # Convert to string first
-            text = str(text)
-
-            # First, decode any existing HTML entities to get clean text
-            text = html.unescape(text)
-
-            # Now escape only the characters that need escaping for Telegram HTML
-            # We need to be selective - only escape & < > that aren't part of valid HTML tags
-
-            # Replace & that aren't part of valid entities
-            text = re.sub(r'&(?!(?:amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)', '&amp;', text)
-
-            # Replace < and > that aren't part of valid HTML tags
-            # Allow <b>, </b>, <i>, </i>, <a href="...">, </a>, etc.
-            text = re.sub(r'<(?!/?(?:b|i|u|s|code|pre|a\s))', '&lt;', text)
-            text = re.sub(r'(?<!(?:b|i|u|s|code|pre|a))>', '&gt;', text)
-
-            return text
-
-        def extract_html_step(x):
-            """Extract HTML step - Format recommendations for Telegram with robust error handling"""
-            try:
-                logger.info("🔧 Starting Telegram formatting")
-
-                # Get enhanced recommendations
-                enhanced_recs = x.get("enhanced_recommendations", {})
-                main_list = enhanced_recs.get("main_list", [])
-
-                logger.info(f"📋 Found {len(main_list)} restaurants to format")
-
-                # If no restaurants found, return early with informative message
-                if not main_list:
-                    logger.warning("❌ No restaurants found to format")
-                    return {
-                        **x,
-                        "telegram_formatted_text": "<b>Sorry, no restaurant recommendations found for your search.</b>\n\nTry rephrasing your query or searching for a different area."
-                    }
-
-                # Create HTML output step by step
-                html_parts = []
-
-                # Add header
-                html_parts.append("<b>🍽️ Recommended Restaurants</b>\n\n")
-
-                # Process each restaurant safely
-                formatted_count = 0
-                for i, restaurant in enumerate(main_list, 1):
-                    try:
-                        # Safely extract data with defaults
-                        name = str(restaurant.get('name', 'Unknown Restaurant')).strip()
-                        description = str(restaurant.get('description', 'No description available')).strip()
-                        address = restaurant.get('address', 'Address unavailable')
-                        sources = restaurant.get('sources', [])
-
-                        # Skip if no name
-                        if not name or name == 'Unknown Restaurant':
-                            continue
-
-                        # Clean and escape HTML properly
-                        name_escaped = clean_html_entities(name)
-                        desc_escaped = clean_html_entities(description)
-
-                        # Format restaurant block
-                        html_parts.append(f"<b>{i}. {name_escaped}</b>\n")
-
-                        # Handle address (could be plain text or HTML link)
-                        if address and address != "Address unavailable":
-                            if "<a href=" in str(address):
-                                # Address is already a formatted link, validate it
-                                link_match = re.search(r'<a href="([^"]+)"[^>]*>([^<]+)</a>', str(address))
-                                if link_match:
-                                    url, address_text = link_match.groups()
-                                    html_parts.append(f'📍 <a href="{url}">{clean_html_entities(address_text)}</a>\n')
-                                else:
-                                    # Invalid link, use as plain text
-                                    html_parts.append(f"📍 {clean_html_entities(str(address))}\n")
-                            else:
-                                # Plain text address
-                                html_parts.append(f"📍 {clean_html_entities(str(address))}\n")
-                        else:
-                            html_parts.append("📍 Address unavailable\n")
-
-                        # Add description
-                        html_parts.append(f"{desc_escaped}\n")
-
-                        # Add sources if available
-                        if sources and isinstance(sources, list):
-                            valid_sources = []
-                            for source in sources:
-                                if source and str(source).strip():
-                                    valid_sources.append(clean_html_entities(str(source).strip()))
-
-                            if valid_sources:
-                                sources_text = ", ".join(valid_sources[:3])  # Limit to 3 sources
-                                html_parts.append(f"<i>✅ Sources: {sources_text}</i>\n")
-
-                        html_parts.append("\n")  # Add spacing between restaurants
-                        formatted_count += 1
-
-                    except Exception as e:
-                        logger.error(f"❌ Error formatting restaurant {i}: {e}")
-                        # Continue with next restaurant instead of failing completely
-                        continue
-
-                # Add footer
-                html_parts.append("<i>Recommendations compiled from reputable restaurant guides and critics.</i>")
-
-                # Join all parts
-                final_html = ''.join(html_parts)
-
-                # Apply length limit for Telegram (4096 characters max)
-                if len(final_html) > 4096:
-                    final_html = final_html[:4093] + "…"
-                    logger.info(f"📏 Truncated message to 4096 characters")
-
-                logger.info(f"✅ Successfully formatted {formatted_count} restaurants ({len(final_html)} chars)")
-
-                return {
-                    **x,
-                    "telegram_formatted_text": final_html
-                }
-
-            except Exception as e:
-                logger.error(f"❌ Critical error in Telegram formatting: {e}")
-                logger.error(f"Exception type: {type(e).__name__}")
-                import traceback
-                logger.error(f"Traceback: {traceback.format_exc()}")
-
-                # Emergency fallback - try to show basic info
-                try:
-                    enhanced_recs = x.get("enhanced_recommendations", {})
-                    main_list = enhanced_recs.get("main_list", [])
-
-                    if main_list:
-                        # Create very basic output as fallback
-                        basic_html = "<b>🍽️ Restaurant Recommendations</b>\n\n"
-                        for i, restaurant in enumerate(main_list[:5], 1):  # Limit to 5 for safety
-                            name = restaurant.get('name', 'Unknown')
-                            basic_html += f"<b>{i}. {clean_html_entities(str(name))}</b>\n"
-                            desc = restaurant.get('description', 'No description')
-                            basic_html += f"{clean_html_entities(str(desc))}\n\n"
-
-                        return {
-                            **x,
-                            "telegram_formatted_text": basic_html
-                        }
-                except:
-                    pass
-
-                # Final fallback
-                return {
-                    **x,
-                    "telegram_formatted_text": "<b>Sorry, there was an error formatting the restaurant recommendations.</b>\n\nPlease try your search again."
-                }
-
-        # Extract HTML with debugging
-        self.extract_html = RunnableLambda(
-            extract_html_step,
-            name="extract_html"
+        # Step 7: Format for Telegram (SIMPLIFIED)
+        self.format_output = RunnableLambda(
+            self._format_step,
+            name="format_output"
         )
 
-        # Create the sequence WITHOUT translation
+        # Create the complete chain
         self.chain = RunnableSequence(
             first=self.analyze_query,
             middle=[
@@ -534,95 +100,241 @@ class LangChainOrchestrator:
                 self.analyze_results,
                 self.edit,
                 self.follow_up_search,
-                self.extract_html,  # Extract HTML without translating
+                self.format_output,
             ],
-            last=RunnableLambda(lambda x: x),  # Pass through everything
+            last=RunnableLambda(lambda x: x),
             name="restaurant_recommendation_chain"
         )
 
+    def _scrape_step(self, x):
+        """Handle async scraping with proper event loop management"""
+        search_results = x.get("search_results", [])
+        logger.info(f"Scraping {len(search_results)} search results")
+
+        def run_scraping():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(
+                    self.scraper.scrape_search_results(search_results)
+                )
+            finally:
+                loop.close()
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            enriched_results = pool.submit(run_scraping).result()
+
+        # Log usage after scraping
+        self._log_firecrawl_usage()
+
+        logger.info(f"Scraping completed with {len(enriched_results)} enriched results")
+        return {**x, "enriched_results": enriched_results}
+
+    def _analyze_results_step(self, x):
+        """Handle async result analysis"""
+        def run_analysis():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(self._analyze_results_async(x))
+            finally:
+                loop.close()
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(run_analysis).result()
+
+    async def _analyze_results_async(self, x):
+        """Async analysis of search results"""
+        try:
+            dump_chain_state("pre_analyze_results", {
+                "enriched_results_count": len(x.get("enriched_results", [])),
+                "keywords": x.get("keywords_for_analysis", []),
+                "destination": x.get("destination", "Unknown")
+            })
+
+            recommendations = await self.list_analyzer.analyze(
+                search_results=x["enriched_results"],
+                keywords_for_analysis=x.get("keywords_for_analysis", []),
+                primary_search_parameters=x.get("primary_search_parameters", []),
+                secondary_filter_parameters=x.get("secondary_filter_parameters", []),
+                destination=x.get("destination")
+            )
+
+            # Standardize the recommendations structure
+            standardized = self._standardize_recommendations(recommendations)
+
+            return {**x, "recommendations": standardized}
+
+        except Exception as e:
+            logger.error(f"Error in analyze_results: {e}")
+            dump_chain_state("analyze_results_error", x, error=e)
+            return {**x, "recommendations": {"main_list": []}}
+
+    def _standardize_recommendations(self, recommendations):
+        """Convert recommendations to standard format"""
+        if not isinstance(recommendations, dict):
+            return {"main_list": []}
+
+        all_restaurants = []
+
+        # Get restaurants from main_list
+        main_list = recommendations.get("main_list", [])
+        if isinstance(main_list, list):
+            all_restaurants.extend(main_list)
+
+        # Get restaurants from hidden_gems and add to main list
+        hidden_gems = recommendations.get("hidden_gems", [])
+        if isinstance(hidden_gems, list):
+            all_restaurants.extend(hidden_gems)
+
+        # Handle legacy format
+        if "recommended" in recommendations and not all_restaurants:
+            recommended = recommendations.get("recommended", [])
+            if isinstance(recommended, list):
+                all_restaurants.extend(recommended)
+
+        return {"main_list": all_restaurants}
+
+    def _edit_step(self, x):
+        """Edit step with error handling"""
+        try:
+            dump_chain_state("pre_edit", {
+                "recommendations_keys": list(x.get("recommendations", {}).keys()),
+                "query": x.get("query", "")
+            })
+
+            recommendations = x.get("recommendations", {})
+            formatted_results = self.editor_agent.edit(recommendations, x["query"])
+
+            dump_chain_state("post_edit", {
+                "formatted_results_keys": list(formatted_results.keys() if formatted_results else {})
+            })
+
+            return {**x, "formatted_recommendations": formatted_results}
+
+        except Exception as e:
+            logger.error(f"Error in editor step: {e}")
+            dump_chain_state("editor_error", x, error=e)
+            return {
+                **x,
+                "formatted_recommendations": {
+                    "formatted_recommendations": x.get("recommendations", {})
+                }
+            }
+
+    def _follow_up_step(self, x):
+        """Follow-up search step"""
+        try:
+            dump_chain_state("pre_follow_up", {
+                "formatted_recommendations_keys": list(x.get("formatted_recommendations", {}).keys())
+            })
+
+            formatted_recs = x.get("formatted_recommendations", {})
+
+            # Extract the actual recommendations
+            if "formatted_recommendations" in formatted_recs:
+                actual_recs = formatted_recs.get("formatted_recommendations", {})
+            else:
+                actual_recs = formatted_recs
+
+            # Get follow up queries and parameters
+            follow_up_queries = formatted_recs.get("follow_up_queries", [])
+            secondary_params = x.get("secondary_filter_parameters", [])
+
+            # Execute follow up search
+            enhanced_recommendations = self.follow_up_search_agent.perform_follow_up_searches(
+                actual_recs,
+                follow_up_queries,
+                secondary_params
+            )
+
+            dump_chain_state("post_follow_up", {
+                "enhanced_recommendations_keys": list(enhanced_recommendations.keys() if enhanced_recommendations else {})
+            })
+
+            return {**x, "enhanced_recommendations": enhanced_recommendations}
+
+        except Exception as e:
+            logger.error(f"Error in follow-up step: {e}")
+            dump_chain_state("follow_up_error", x, error=e)
+            return {
+                **x,
+                "enhanced_recommendations": x.get("formatted_recommendations", {}).get("formatted_recommendations", {})
+            }
+
+    def _format_step(self, x):
+        """Simple formatting step using dedicated formatter"""
+        try:
+            logger.info("🔧 Starting Telegram formatting")
+
+            enhanced_recs = x.get("enhanced_recommendations", {})
+            telegram_text = self.telegram_formatter.format_recommendations(enhanced_recs)
+
+            logger.info("✅ Telegram formatting completed")
+
+            return {
+                **x,
+                "telegram_formatted_text": telegram_text
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error in formatting step: {e}")
+            # Use formatter's error handling
+            return {
+                **x,
+                "telegram_formatted_text": self.telegram_formatter.format_no_results()
+            }
+
     def _extract_user_preferences(self, query):
-        """
-        Extract user preferences from query if they're provided
-
-        Args:
-            query (str): User query which might contain preferences
-
-        Returns:
-            tuple: (cleaned_query, preference_list)
-        """
-        # Check if preferences are included in the query
+        """Extract user preferences from query if provided"""
         preference_marker = "User preferences:"
 
         if preference_marker in query:
-            # Split the query to extract preferences
             parts = query.split(preference_marker)
             clean_query = parts[0].strip()
 
-            # Get preferences as a list
             if len(parts) > 1:
                 preferences_text = parts[1].strip()
                 preferences = [p.strip() for p in preferences_text.split(',') if p.strip()]
                 return clean_query, preferences
 
-        # No preferences found
         return query, []
 
     def _check_usage_limits(self):
-        """Check if approaching usage limits and return whether to continue"""
+        """Check if approaching usage limits"""
         try:
             stats = self.scraper.get_stats()
 
-            # Configuration - you can adjust these limits
-            DAILY_CREDIT_LIMIT = 400  # Leave some buffer from 500 free credits
-            HIGH_USAGE_THRESHOLD = 300  # Warn at 300 credits
-            COST_ALERT_THRESHOLD = 5.0  # Alert if estimated cost > $5
+            DAILY_CREDIT_LIMIT = 400
+            HIGH_USAGE_THRESHOLD = 300
+            COST_ALERT_THRESHOLD = 5.0
 
-            # Check credit limits
             if stats['credits_used'] > DAILY_CREDIT_LIMIT:
                 logger.error(f"🚨 DAILY CREDIT LIMIT EXCEEDED: {stats['credits_used']}/{DAILY_CREDIT_LIMIT}")
-                self._send_alert_to_admin(
-                    f"🚨 Credit limit exceeded! Used {stats['credits_used']} credits today."
-                )
-                return False  # Stop processing
+                self._send_alert_to_admin(f"🚨 Credit limit exceeded! Used {stats['credits_used']} credits today.")
+                return False
 
             elif stats['credits_used'] > HIGH_USAGE_THRESHOLD:
                 logger.warning(f"⚠️ HIGH USAGE WARNING: {stats['credits_used']}/{DAILY_CREDIT_LIMIT} credits used")
-                self._send_alert_to_admin(
-                    f"⚠️ High usage alert: {stats['credits_used']} credits used today."
-                )
+                self._send_alert_to_admin(f"⚠️ High usage alert: {stats['credits_used']} credits used today.")
 
-            # Check cost estimates
-            estimated_cost = (stats['credits_used'] / 500) * 16  # Free tier equivalent cost
+            estimated_cost = (stats['credits_used'] / 500) * 16
             if estimated_cost > COST_ALERT_THRESHOLD:
                 logger.warning(f"💰 HIGH COST ALERT: Estimated ${estimated_cost:.2f}")
-                self._send_alert_to_admin(
-                    f"💰 Cost alert: Estimated ${estimated_cost:.2f} in usage today."
-                )
+                self._send_alert_to_admin(f"💰 Cost alert: Estimated ${estimated_cost:.2f} in usage today.")
 
-            return True  # Continue processing
+            return True
 
         except Exception as e:
             logger.error(f"Error checking usage limits: {e}")
-            return True  # Continue on error
+            return True
 
     def _send_alert_to_admin(self, message):
-        """Send alert message to admin (you can customize this)"""
+        """Send alert message to admin"""
         try:
-            # Option 1: Log to console (always works)
             logger.critical(f"ADMIN ALERT: {message}")
 
-            # Option 2: Send to admin Telegram chat (add your admin chat ID)
-            ADMIN_CHAT_ID = getattr(self.config, 'ADMIN_CHAT_ID', None)
-            if ADMIN_CHAT_ID:
-                try:
-                    import telebot
-                    bot = telebot.TeleBot(self.config.TELEGRAM_BOT_TOKEN)
-                    bot.send_message(ADMIN_CHAT_ID, f"🤖 Restaurant Bot Alert\n\n{message}")
-                    logger.info("Alert sent to admin Telegram")
-                except Exception as telegram_error:
-                    logger.error(f"Failed to send Telegram alert: {telegram_error}")
-
-            # Option 3: Save to database as urgent record
+            # Save to database
             alert_record = {
                 "alert_type": "usage_limit",
                 "message": message,
@@ -630,88 +342,30 @@ class LangChainOrchestrator:
                 "urgency": "high"
             }
 
-            try:
-                save_data(self.config.DB_TABLE_PROCESSES, alert_record, self.config)
-                logger.info("Alert saved to database")
-            except Exception as db_error:
-                logger.error(f"Failed to save alert to database: {db_error}")
+            save_data(self.config.DB_TABLE_PROCESSES, alert_record, self.config)
+            logger.info("Alert saved to database")
 
         except Exception as e:
             logger.error(f"Error sending admin alert: {e}")
 
-    def _log_user_usage(self, user_id, stats):
-        """Track usage per Telegram user"""
-        try:
-            user_usage = {
-                "user_id": str(user_id),
-                "credits_used": stats['credits_used'],
-                "restaurants_found": stats['total_restaurants_found'],
-                "success_rate": (stats['successful_extractions'] / max(stats['total_scraped'], 1)) * 100,
-                "timestamp": time.time(),
-                "session_id": f"user_{user_id}_{int(time.time())}"
-            }
-
-            # Save to database
-            save_data(self.config.DB_TABLE_PROCESSES, user_usage, self.config)
-            logger.info(f"User {user_id} usage logged: {stats['credits_used']} credits")
-
-        except Exception as e:
-            logger.error(f"Error logging user usage: {e}")
-
     def _log_firecrawl_usage(self):
-        """Log Firecrawl usage statistics and cost estimates"""
+        """Log Firecrawl usage statistics"""
         try:
             stats = self.scraper.get_stats()
-
-            # Check usage limits first
             can_continue = self._check_usage_limits()
+
             if not can_continue:
                 logger.error("Usage limits exceeded - consider upgrading plan")
 
-            # Log usage details
             logger.info("=" * 50)
             logger.info("FIRECRAWL USAGE REPORT")
             logger.info("=" * 50)
-            logger.info(f"URLs scraped: {stats['total_scraped']}")
-            logger.info(f"Successful extractions: {stats['successful_extractions']}")
-            logger.info(f"Failed extractions: {stats['failed_extractions']}")
-            logger.info(f"Total restaurants found: {stats['total_restaurants_found']}")
-            logger.info(f"Credits used: {stats['credits_used']}")
-
-            # Calculate success rate
-            if stats['total_scraped'] > 0:
-                success_rate = (stats['successful_extractions'] / stats['total_scraped']) * 100
-                logger.info(f"Success rate: {success_rate:.1f}%")
-
-            # Cost estimation with free tier consideration
-            if stats['credits_used'] > 0:
-                # Firecrawl pricing tiers
-                cost_estimates = {
-                    "Free Tier": {"credits": 500, "price": 0},  # Free tier
-                    "Hobby": {"credits": 3000, "price": 16},  # Updated pricing
-                    "Standard": {"credits": 100000, "price": 83},  # Updated pricing
-                    "Growth": {"credits": 500000, "price": 333}  # Updated pricing
-                }
-
-                # Calculate cost for each tier
-                for tier, info in cost_estimates.items():
-                    if info["price"] == 0:  # Free tier
-                        remaining = max(0, info["credits"] - stats['credits_used'])
-                        logger.info(f"Free tier: {remaining} credits remaining")
-                    else:
-                        cost_per_credit = info["price"] / info["credits"]
-                        estimated_cost = stats['credits_used'] * cost_per_credit
-                        logger.info(f"Estimated cost ({tier} plan): ${estimated_cost:.3f}")
-
-                # Show average cost per restaurant found
-                if stats['total_restaurants_found'] > 0:
-                    cost_per_restaurant = (stats['credits_used'] * 0.032)  # Hobby plan rate
-                    cost_per_restaurant = cost_per_restaurant / stats['total_restaurants_found']
-                    logger.info(f"Average cost per restaurant: ${cost_per_restaurant:.3f}")
-
+            logger.info(f"URLs scraped: {stats.get('total_scraped', 0)}")
+            logger.info(f"Successful extractions: {stats.get('successful_extractions', 0)}")
+            logger.info(f"Credits used: {stats.get('credits_used', 0)}")
             logger.info("=" * 50)
 
-            # Store usage for database tracking
+            # Store usage record
             usage_record = {
                 "timestamp": time.time(),
                 "firecrawl_stats": stats,
@@ -719,157 +373,10 @@ class LangChainOrchestrator:
                 "can_continue": can_continue
             }
 
-            # Save to database if possible
-            try:
-                save_data(
-                    self.config.DB_TABLE_PROCESSES,
-                    usage_record,
-                    self.config
-                )
-                logger.info("Usage statistics saved to database")
-            except Exception as db_error:
-                logger.warning(f"Could not save usage to database: {db_error}")
+            save_data(self.config.DB_TABLE_PROCESSES, usage_record, self.config)
 
         except Exception as e:
             logger.error(f"Error logging Firecrawl usage: {e}")
-
-    @log_function_call
-    def _create_detailed_html(self, recommendations):
-        """Create elegant, emoji-light HTML output for Telegram - single list only."""
-        try:
-            # ――― Debug input ―――
-            logger.info(f"Creating HTML for recommendations: {list(recommendations.keys()) if isinstance(recommendations, dict) else type(recommendations)}")
-
-            # ――― Get restaurant list ―――
-            main_list = recommendations.get("main_list", [])
-
-            # Check for legacy format
-            if not main_list and "recommended" in recommendations:
-                main_list = recommendations.get("recommended", [])
-
-            # Debug log count
-            logger.info(f"Main list count: {len(main_list)}")
-
-            # ――― If no restaurants found, return early ―――
-            if not main_list:
-                logger.warning("No restaurants found in recommendations")
-                return "<b>No restaurants found for your query.</b>"
-
-            # ――― Build HTML ―――
-            html_parts = []
-            html_parts.append("<b>Recommended Restaurants</b>\n\n")
-
-            def format_restaurant_block(restaurants):
-                """Format a block of restaurants for HTML output"""
-                block_parts = []
-
-                for i, restaurant in enumerate(restaurants, 1):
-                    # Safely get restaurant details
-                    name = str(restaurant.get("name", "Restaurant")).strip()
-                    addr = str(restaurant.get("address", "Address unavailable")).strip()
-                    desc = str(restaurant.get("description", "")).strip()
-                    price = str(restaurant.get("price_range", "")).strip()
-                    dishes = restaurant.get("recommended_dishes", [])
-                    sources = restaurant.get("sources", [])
-
-                    # Debug individual restaurant
-                    logger.info(f"Formatting restaurant {i}: {name}")
-
-                    # Format restaurant entry with proper escaping
-                    block_parts.append(f"<b>{i}. {escape(name)}</b>\n")
-
-                    # Handle address
-                    if addr and addr != "Address unavailable":
-                        # Check if it's already a formatted link
-                        if "<a href=" in addr:
-                            # Validate the link format
-                            link_match = re.search(r'<a href="([^"]+)"[^>]*>([^<]+)</a>', addr)
-                            if link_match:
-                                url, address_text = link_match.groups()
-                                # Properly format the link for Telegram
-                                block_parts.append(f'📍 <a href="{url}">{escape(address_text)}</a>\n')
-                            else:
-                                # Invalid link format, treat as plain text
-                                block_parts.append(f"📍 {escape(addr)}\n")
-                        else:
-                            # Plain text address
-                            block_parts.append(f"📍 {escape(addr)}\n")
-                    else:
-                        block_parts.append("📍 Address unavailable\n")
-
-                    # Add description
-                    if desc:
-                        block_parts.append(f"{escape(desc)}\n")
-                    else:
-                        block_parts.append("Description unavailable\n")
-
-                    # Add signature dishes
-                    if dishes and isinstance(dishes, list):
-                        # Filter and escape dishes
-                        valid_dishes = []
-                        for d in dishes:
-                            if d and str(d).strip():
-                                valid_dishes.append(escape(str(d).strip()))
-                        if valid_dishes:
-                            dishes_str = ", ".join(valid_dishes[:3])
-                            block_parts.append(f"<i>Signature dishes:</i> {dishes_str}\n")
-
-                    # Add sources
-                    if sources and isinstance(sources, list):
-                        # Filter and escape sources
-                        valid_sources = []
-                        seen = set()
-                        for s in sources:
-                            if s and str(s).strip():
-                                source_str = escape(str(s).strip())
-                                if source_str.lower() not in seen:
-                                    valid_sources.append(source_str)
-                                    seen.add(source_str.lower())
-                        if valid_sources:
-                            sources_str = ", ".join(valid_sources[:3])
-                            block_parts.append(f"<i>Recommended by:</i> {sources_str}\n")
-
-                    # Add price range
-                    if price:
-                        block_parts.append(f"<i>Price range:</i> {escape(price)}\n")
-
-                    # Add spacing after restaurant
-                    block_parts.append("\n")
-
-                return ''.join(block_parts)
-
-            # Add all restaurants in main list
-            if main_list:
-                logger.info(f"Formatting {len(main_list)} restaurants")
-                html_parts.append(format_restaurant_block(main_list))
-
-            # Add footer
-            html_parts.append("<i>Recommendations compiled from reputable critic and guide sources.</i>")
-
-            # Join all parts
-            html = ''.join(html_parts)
-
-            # Apply final sanitization
-            html = sanitize_html_for_telegram(html)
-
-            # Respect Telegram's message length limit (4096 characters)
-            if len(html) > 4096:
-                html = html[:4093] + "…"
-                logger.info(f"Truncated HTML to {len(html)} characters")
-
-            logger.info(f"Final HTML length: {len(html)}")
-            logger.info(f"Successfully created HTML for {len(main_list)} restaurants")
-
-            return html
-
-        except Exception as e:
-            logger.error(f"Error in _create_detailed_html: {e}")
-            logger.error(f"Exception details: {type(e).__name__}: {str(e)}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-
-            # Absolute fallback
-            return "<b>Sorry, we couldn't format the restaurant list due to an error.</b>"
 
     @log_function_call
     def process_query(self, user_query, standing_prefs=None):
@@ -885,91 +392,68 @@ class LangChainOrchestrator:
         """
         # Extract user preferences if included in the query
         clean_query, explicit_prefs = self._extract_user_preferences(user_query)
-
-        # Combine explicit preferences from query with standing preferences
         user_preferences = list(set(explicit_prefs + (standing_prefs or [])))
 
-        # Create a unique trace ID for this request
+        # Create trace ID for this request
         trace_id = f"restaurant_rec_{int(time.time())}"
 
-        # Use LangSmith tracing
         with tracing_v2_enabled(project_name="restaurant-recommender"):
             try:
-                # Log query start
                 logger.info(f"Processing query: {clean_query}")
                 logger.info(f"User preferences: {user_preferences}")
 
-                # Create initial input with preferences
-                input_data = {"query": clean_query, "user_preferences": user_preferences}
+                # Create input data
+                input_data = {
+                    "query": clean_query, 
+                    "user_preferences": user_preferences
+                }
 
-                # Execute the chain with our input data
+                # Execute the chain
                 result = self.chain.invoke(input_data)
 
-                # Log completion and dump final state
+                # Log completion
                 dump_chain_state("process_query_complete", {
                     "result_keys": list(result.keys()),
                     "has_recommendations": "enhanced_recommendations" in result,
                     "has_telegram_text": "telegram_formatted_text" in result
                 })
 
-                # Final Firecrawl usage summary
+                # Final usage summary
                 self._log_firecrawl_usage()
 
-                # Save process results to database
+                # Save process record
                 process_record = {
                     "query": user_query,
                     "trace_id": trace_id,
                     "timestamp": time.time(),
-                    "firecrawl_stats": self.scraper.get_stats()  # Include Firecrawl stats
+                    "firecrawl_stats": self.scraper.get_stats()
                 }
 
-                try:
-                    save_data(
-                        self.config.DB_TABLE_PROCESSES,
-                        process_record,
-                        self.config
-                    )
-                except Exception as db_error:
-                    print(f"Error saving to database: {db_error}")
+                save_data(self.config.DB_TABLE_PROCESSES, process_record, self.config)
 
-                # Get the telegram text
+                # Extract results
                 telegram_text = result.get("telegram_formatted_text", 
-                                         "<b>Извините, не удалось найти рестораны по вашему запросу.</b>")
-
-                # Get the enhanced recommendations
+                                         "Sorry, no recommendations found.")
                 enhanced_recommendations = result.get("enhanced_recommendations", {})
-
-                # Extract main_list from enhanced_recommendations
                 main_list = enhanced_recommendations.get("main_list", [])
 
-                # ADD THIS DEBUG LOG
                 logger.info(f"Final result - Main list: {len(main_list)} restaurants")
 
-                # Return the complete data structure (no hidden_gems)
                 return {
                     "telegram_text": telegram_text,
-                    "enhanced_recommendations": enhanced_recommendations,  # Include the full structure
+                    "enhanced_recommendations": enhanced_recommendations,
                     "main_list": main_list,
                     "destination": result.get("destination"),
-                    "firecrawl_stats": self.scraper.get_stats()  # Include usage stats in response
+                    "firecrawl_stats": self.scraper.get_stats()
                 }
 
             except Exception as e:
                 logger.error(f"Error in chain execution: {e}")
-                # Log the error
                 dump_chain_state("process_query_error", {"query": user_query}, error=e)
-
-                # Log final Firecrawl usage even on error
                 self._log_firecrawl_usage()
 
-                # Return a basic error message
                 return {
-                    "main_list": [
-                        {
-                            "name": "Ошибка обработки запроса",
-                            "description": "Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз позже."
-                        }
-                    ],
-                    "telegram_text": "<b>Извините, произошла ошибка при обработке вашего запроса.</b>",
-                    "firecrawl_stats": self.scraper.get_stats()  # Include stats even on error
+                    "main_list": [],
+                    "telegram_text": "Sorry, there was an error processing your request.",
+                    "firecrawl_stats": self.scraper.get_stats()
                 }
