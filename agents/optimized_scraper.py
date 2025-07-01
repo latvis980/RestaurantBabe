@@ -356,17 +356,14 @@ class WebScraper:
             from agents.specialized_scraper import EaterTimeoutSpecializedScraper
             self.specialized_scraper = EaterTimeoutSpecializedScraper(self.config)
 
-        results = []
-        for url_data in urls:
-            try:
-                result = await self.specialized_scraper.process_url(url_data)
-                if result:
-                    results.append(result)
-                    self.stats["specialized_used"] += 1
-            except Exception as e:
-                logger.error(f"Specialized scraping failed for {url_data.get('url', '')}: {e}")
-
-        return results
+        # Process all URLs at once using the specialized scraper
+        try:
+            results = await self.specialized_scraper.process_specialized_urls(urls)
+            self.stats["specialized_used"] += len(results)
+            return results
+        except Exception as e:
+            logger.error(f"Specialized scraping failed: {e}")
+            return []
 
     def _extract_source_name(self, url: str) -> str:
         """Extract readable source name from URL"""
