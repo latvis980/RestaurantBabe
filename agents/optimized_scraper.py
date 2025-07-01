@@ -1,7 +1,7 @@
-# agents/optimized_scraper.py - Clean integration replacing old content sectioning
+# agents/optimized_scraper.py
 """
-Enhanced intelligent scraper with DeepSeek-powered content sectioning.
-This replaces the old slow content sectioning agent completely.
+Intelligent scraper with DeepSeek-powered content sectioning.
+Replaces the old slow content sectioning with 90% speed improvement.
 """
 
 import asyncio
@@ -16,16 +16,16 @@ from readability import Document
 # Import existing components
 from agents.firecrawl_scraper import FirecrawlWebScraper
 from agents.specialized_scraper import EaterTimeoutSpecializedScraper
-from agents.content_sectioning_agent import ContentSectioningAgent  # This will be the NEW fast agent
+from agents.content_sectioning_agent import ContentSectioningAgent
 
 logger = logging.getLogger(__name__)
 
-class EnhancedOptimizedScraper:
+class WebScraper:
     """
-    Enhanced intelligent scraper with DeepSeek content sectioning.
+    Intelligent web scraper with ultra-fast DeepSeek content sectioning.
 
-    The old slow content sectioning agent has been completely replaced
-    with ultra-fast DeepSeek processing (90% speed improvement).
+    This is the main scraper class - no confusing wrapper classes needed.
+    Uses DeepSeek for 90% speed improvement over the old content sectioning method.
     """
 
     def __init__(self, config):
@@ -35,11 +35,10 @@ class EnhancedOptimizedScraper:
         self.firecrawl_scraper = FirecrawlWebScraper(config)
         self.specialized_scraper = None  # Lazy initialization
 
-        # UPDATED: This now uses the fast DeepSeek-powered content sectioning agent
-        # Same import name, but it's the new fast implementation
+        # DeepSeek-powered content sectioning (90% faster than old method)
         self.content_sectioner = ContentSectioningAgent(config)
 
-        # Enhanced statistics tracking
+        # Statistics tracking
         self.stats = {
             "total_processed": 0,
             "specialized_used": 0,
@@ -57,34 +56,40 @@ class EnhancedOptimizedScraper:
 
     async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Main scraping method with ultra-fast content sectioning
+        Main scraping method with ultra-fast DeepSeek content sectioning.
+
+        This is the primary method that your orchestrator calls.
         """
         if not search_results:
             return []
 
         start_time = time.time()
-        logger.info(f"🧠 Enhanced intelligent scraping: {len(search_results)} URLs")
+        logger.info(f"🧠 Intelligent scraping with DeepSeek: {len(search_results)} URLs")
 
-        # Strategy analysis and routing (existing logic)
+        # Route URLs to appropriate scraping methods
         specialized_urls, simple_urls, enhanced_urls, firecrawl_urls = await self._analyze_and_route_urls(search_results)
 
         enriched_results = []
 
-        # Process each category with fast content sectioning
+        # Process each category with fast DeepSeek content sectioning
         if specialized_urls:
+            logger.info(f"🔄 Processing {len(specialized_urls)} URLs with specialized scrapers")
             specialized_results = await self._process_specialized_urls(specialized_urls)
             enriched_results.extend(specialized_results)
 
         if simple_urls:
-            simple_results = await self._process_simple_urls_with_fast_sectioning(simple_urls)
+            logger.info(f"🔄 Processing {len(simple_urls)} URLs with simple HTTP + DeepSeek")
+            simple_results = await self._process_simple_urls(simple_urls)
             enriched_results.extend(simple_results)
 
         if enhanced_urls:
-            enhanced_results = await self._process_enhanced_urls_with_fast_sectioning(enhanced_urls)
+            logger.info(f"🔄 Processing {len(enhanced_urls)} URLs with enhanced HTTP + DeepSeek")
+            enhanced_results = await self._process_enhanced_urls(enhanced_urls)
             enriched_results.extend(enhanced_results)
 
         if firecrawl_urls:
-            firecrawl_results = await self._process_firecrawl_urls_with_fast_sectioning(firecrawl_urls)
+            logger.info(f"🔄 Processing {len(firecrawl_urls)} URLs with Firecrawl + DeepSeek")
+            firecrawl_results = await self._process_firecrawl_urls(firecrawl_urls)
             enriched_results.extend(firecrawl_results)
 
         # Update statistics
@@ -92,24 +97,29 @@ class EnhancedOptimizedScraper:
         self.stats["processing_time"] += total_time
         self.stats["total_processed"] += len(search_results)
 
-        # Log performance summary with DeepSeek improvements
+        # Log performance summary
         sectioning_stats = self.content_sectioner.get_stats()
-        logger.info(f"🚀 ENHANCED SCRAPING RESULTS:")
+        logger.info(f"🚀 SCRAPING COMPLETE:")
         logger.info(f"   📊 URLs processed: {len(search_results)}")
         logger.info(f"   ⚡ DeepSeek sectioning: {sectioning_stats.get('total_processed', 0)} articles")
         logger.info(f"   📈 Cache hits: {sectioning_stats.get('cache_hits', 0)}")
-        logger.info(f"   💰 Cost saved: ~${self.stats.get('sectioning_time_saved', 0) * 0.01:.2f}")
         logger.info(f"   ⏱️ Total time: {total_time:.1f}s")
 
-        # Calculate improvement vs old method
-        old_estimated_time = len(search_results) * 4 * 60  # 4 minutes per URL with old method
-        improvement_pct = ((old_estimated_time - total_time) / old_estimated_time) * 100
-        logger.info(f"   📈 Speed improvement: {improvement_pct:.1f}% faster than old method")
+        # Show speed improvement
+        old_estimated_time = len(search_results) * 4 * 60  # Old method: ~4 min per URL
+        if old_estimated_time > 0:
+            improvement_pct = ((old_estimated_time - total_time) / old_estimated_time) * 100
+            logger.info(f"   📈 Speed improvement: {improvement_pct:.1f}% faster than old method")
 
         return enriched_results
 
-    async def _process_simple_urls_with_fast_sectioning(self, urls: List[Dict]) -> List[Dict]:
-        """Process simple URLs with ultra-fast DeepSeek content sectioning"""
+    # Alternative method name for backward compatibility
+    async def filter_and_scrape_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Backward compatibility method - same as scrape_search_results"""
+        return await self.scrape_search_results(search_results)
+
+    async def _process_simple_urls(self, urls: List[Dict]) -> List[Dict]:
+        """Process simple URLs with basic HTTP + ultra-fast DeepSeek sectioning"""
 
         async def process_single_simple(result):
             url = result.get("url")
@@ -136,7 +146,7 @@ class EnhancedOptimizedScraper:
                         else:
                             content_text = soup.get_text(separator='\n\n', strip=True)
 
-                        # FAST SECTIONING: Use DeepSeek-powered content sectioning
+                        # Apply ultra-fast DeepSeek content sectioning
                         sectioning_result = await self._apply_content_sectioning(
                             content_text, url, "simple_http"
                         )
@@ -144,13 +154,14 @@ class EnhancedOptimizedScraper:
                         enhanced_result = result.copy()
                         enhanced_result.update({
                             "scraped_content": sectioning_result.optimized_content,
+                            "content": sectioning_result.optimized_content,  # For compatibility
                             "scraped_title": soup.title.text.strip() if soup.title else "",
-                            "scraping_method": "simple_http_fast",
+                            "scraping_method": "simple_http_deepseek",
                             "scraping_success": len(sectioning_result.optimized_content) > 0,
                             "source_info": {
                                 "name": self._extract_source_name(url),
                                 "url": url,
-                                "extraction_method": "simple_http_fast_deepseek_sectioned"
+                                "extraction_method": "simple_http_deepseek_sectioned"
                             },
                             "sectioning_result": sectioning_result.__dict__
                         })
@@ -161,16 +172,18 @@ class EnhancedOptimizedScraper:
                 logger.warning(f"Simple HTTP scraping failed for {url}: {e}")
 
             result["scraping_failed"] = True
-            result["scraping_method"] = "simple_http_fast"
+            result["scraping_method"] = "simple_http_deepseek"
             return result
 
         tasks = [process_single_simple(result) for result in urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        self.stats["simple_http_used"] += len([r for r in results if r and not isinstance(r, Exception)])
-        return [r for r in results if r and not isinstance(r, Exception)]
 
-    async def _process_enhanced_urls_with_fast_sectioning(self, urls: List[Dict]) -> List[Dict]:
-        """Process enhanced URLs with readability + ultra-fast DeepSeek sectioning"""
+        successful_results = [r for r in results if r and not isinstance(r, Exception)]
+        self.stats["simple_http_used"] += len(successful_results)
+        return successful_results
+
+    async def _process_enhanced_urls(self, urls: List[Dict]) -> List[Dict]:
+        """Process enhanced URLs with Readability + ultra-fast DeepSeek sectioning"""
 
         async def process_single_enhanced(result):
             url = result.get("url")
@@ -181,7 +194,7 @@ class EnhancedOptimizedScraper:
                     })
 
                     if response.status_code == 200:
-                        # Use readability for content extraction
+                        # Use readability for better content extraction
                         doc = Document(response.text)
                         readable_html = doc.summary()
                         title = doc.title()
@@ -190,7 +203,7 @@ class EnhancedOptimizedScraper:
                         soup = BeautifulSoup(readable_html, 'html.parser')
                         content_text = soup.get_text(separator='\n\n', strip=True)
 
-                        # FAST SECTIONING: Use DeepSeek-powered content sectioning
+                        # Apply ultra-fast DeepSeek content sectioning
                         sectioning_result = await self._apply_content_sectioning(
                             content_text, url, "enhanced_http"
                         )
@@ -198,13 +211,14 @@ class EnhancedOptimizedScraper:
                         enhanced_result = result.copy()
                         enhanced_result.update({
                             "scraped_content": sectioning_result.optimized_content,
+                            "content": sectioning_result.optimized_content,  # For compatibility
                             "scraped_title": title or "",
-                            "scraping_method": "enhanced_http_fast", 
+                            "scraping_method": "enhanced_http_deepseek",
                             "scraping_success": len(sectioning_result.optimized_content) > 0,
                             "source_info": {
                                 "name": self._extract_source_name(url),
                                 "url": url,
-                                "extraction_method": "enhanced_http_readability_deepseek_sectioned"
+                                "extraction_method": "enhanced_http_readability_deepseek"
                             },
                             "sectioning_result": sectioning_result.__dict__
                         })
@@ -215,19 +229,21 @@ class EnhancedOptimizedScraper:
                 logger.warning(f"Enhanced HTTP scraping failed for {url}: {e}")
 
             result["scraping_failed"] = True
-            result["scraping_method"] = "enhanced_http_fast"
+            result["scraping_method"] = "enhanced_http_deepseek"
             return result
 
         tasks = [process_single_enhanced(result) for result in urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        self.stats["enhanced_http_used"] += len([r for r in results if r and not isinstance(r, Exception)])
-        return [r for r in results if r and not isinstance(r, Exception)]
 
-    async def _process_firecrawl_urls_with_fast_sectioning(self, urls: List[Dict]) -> List[Dict]:
+        successful_results = [r for r in results if r and not isinstance(r, Exception)]
+        self.stats["enhanced_http_used"] += len(successful_results)
+        return successful_results
+
+    async def _process_firecrawl_urls(self, urls: List[Dict]) -> List[Dict]:
         """Process Firecrawl URLs with fast DeepSeek content sectioning"""
-        logger.warning(f"💸 Using expensive Firecrawl for {len(urls)} URLs with fast sectioning")
+        logger.warning(f"💸 Using expensive Firecrawl for {len(urls)} URLs (with DeepSeek enhancement)")
 
-        # Use existing Firecrawl scraper but enhance the results with fast sectioning
+        # Use existing Firecrawl scraper then enhance with DeepSeek sectioning
         firecrawl_results = await self.firecrawl_scraper.scrape_search_results(urls)
 
         enhanced_results = []
@@ -241,12 +257,13 @@ class EnhancedOptimizedScraper:
                         "firecrawl"
                     )
 
-                    # Update Firecrawl result with fast-sectioned content
+                    # Update result with DeepSeek-sectioned content
                     result["scraped_content"] = sectioning_result.optimized_content
+                    result["content"] = sectioning_result.optimized_content  # For compatibility
                     result["sectioning_result"] = sectioning_result.__dict__
 
                 except Exception as e:
-                    logger.warning(f"Fast sectioning failed for Firecrawl result {result.get('url', '')}: {e}")
+                    logger.warning(f"DeepSeek sectioning failed for Firecrawl result: {e}")
                     # Keep original Firecrawl content if sectioning fails
 
             enhanced_results.append(result)
@@ -256,16 +273,14 @@ class EnhancedOptimizedScraper:
 
     async def _apply_content_sectioning(self, content: str, url: str, source_method: str):
         """
-        Apply fast DeepSeek content sectioning (replaces old slow method).
+        Apply ultra-fast DeepSeek content sectioning.
 
-        This is the key replacement - same interface, but now uses DeepSeek
-        for 90% speed improvement over the old content sectioning agent.
+        This is the key performance improvement - 90% faster than the old method.
         """
         sectioning_start = time.time()
 
         try:
-            # Use the fast DeepSeek-powered content sectioning
-            # The content_sectioner is now the fast implementation
+            # Use DeepSeek-powered content sectioning
             sectioning_result = await self.content_sectioner.process_content(
                 content, url, source_method
             )
@@ -274,35 +289,32 @@ class EnhancedOptimizedScraper:
 
             # Update statistics
             self.stats["content_sectioning_used"] += 1
-            old_expected_time = 240.0  # 4 minutes typical for old method
+            old_expected_time = 240.0  # Old method took ~4 minutes
             time_saved = max(0, old_expected_time - sectioning_time)
             self.stats["sectioning_time_saved"] += time_saved
 
-            logger.info(f"⚡ DeepSeek sectioning: {url[:50]}... "
-                       f"({len(content)} → {len(sectioning_result.optimized_content)} chars "
-                       f"in {sectioning_time:.1f}s, saved {time_saved:.1f}s)")
+            logger.debug(f"⚡ DeepSeek sectioning: {url[:50]}... "
+                        f"({len(content)} → {len(sectioning_result.optimized_content)} chars "
+                        f"in {sectioning_time:.1f}s)")
 
             return sectioning_result
 
         except Exception as e:
-            logger.error(f"Fast content sectioning failed for {url}: {e}")
+            logger.error(f"DeepSeek content sectioning failed for {url}: {e}")
             # Fallback to simple truncation
-            from agents.content_sectioning_agent import FastSectioningResult
-            return FastSectioningResult(
-                optimized_content=content[:6000],  # Simple fallback
+            from agents.content_sectioning_agent import SectioningResult
+            return SectioningResult(
+                optimized_content=content[:6000],
                 original_length=len(content),
                 optimized_length=min(len(content), 6000),
-                processing_time=time.time() - sectioning_start,
-                method="fallback_truncation",
-                restaurant_density=0.0,
+                sections_identified=["fallback_truncation"],
+                restaurants_density=0.0,
+                sectioning_method="fallback_truncation",
                 confidence=0.3
             )
 
-    # ... rest of your existing methods stay exactly the same ...
-
     async def _analyze_and_route_urls(self, search_results: List[Dict]) -> tuple:
-        """Analyze URLs and route them to appropriate scraping methods (unchanged)"""
-        # Your existing URL routing logic stays exactly the same
+        """Analyze URLs and route them to appropriate scraping methods"""
         specialized_urls = []
         simple_urls = []
         enhanced_urls = []
@@ -315,27 +327,31 @@ class EnhancedOptimizedScraper:
             for result in search_results:
                 url = result.get('url', '')
 
+                # Check for specialized handlers first
                 if temp_scraper._find_handler(url):
                     specialized_urls.append(result)
                 else:
                     domain = urlparse(url).netloc.lower()
 
-                    # Your existing routing logic
-                    if 'timeout.com' in domain or 'eater.com' in domain:
+                    # Route based on domain characteristics
+                    if any(x in domain for x in ['timeout.com', 'eater.com', 'cntraveler.com']):
                         enhanced_urls.append(result)
-                    elif 'opentable.com' in domain or 'javascript' in url.lower():
+                    elif any(x in domain for x in ['opentable.com', 'resy.com']) or 'javascript' in url.lower():
                         firecrawl_urls.append(result)
                     else:
                         simple_urls.append(result)
 
         except ImportError:
+            logger.warning("Specialized scraper not available, using simple HTTP for all URLs")
             simple_urls = search_results
+
+        logger.info(f"URL routing: {len(specialized_urls)} specialized, {len(simple_urls)} simple, "
+                   f"{len(enhanced_urls)} enhanced, {len(firecrawl_urls)} firecrawl")
 
         return specialized_urls, simple_urls, enhanced_urls, firecrawl_urls
 
     async def _process_specialized_urls(self, urls: List[Dict]) -> List[Dict]:
-        """Process URLs using specialized scrapers (unchanged)"""
-        # Your existing specialized scraping logic stays the same
+        """Process URLs using specialized scrapers"""
         if not self.specialized_scraper:
             from agents.specialized_scraper import EaterTimeoutSpecializedScraper
             self.specialized_scraper = EaterTimeoutSpecializedScraper(self.config)
@@ -353,25 +369,77 @@ class EnhancedOptimizedScraper:
         return results
 
     def _extract_source_name(self, url: str) -> str:
-        """Extract source name from URL (unchanged)"""
+        """Extract readable source name from URL"""
         try:
             domain = urlparse(url).netloc.lower()
             if domain.startswith('www.'):
                 domain = domain[4:]
 
+            # Known source mappings
             source_mapping = {
                 'timeout.com': 'Time Out',
-                'eater.com': 'Eater', 
+                'eater.com': 'Eater',
                 'cntraveler.com': 'Condé Nast Traveler',
                 'guide.michelin.com': 'Michelin Guide',
-                # ... your existing mappings
+                'foodandwine.com': 'Food & Wine',
+                'bonappetit.com': 'Bon Appétit',
+                'theinfatuation.com': 'The Infatuation',
+                'zagat.com': 'Zagat',
+                'sortiraparis.com': 'Sortir à Paris',
+                'secretdeparis.com': 'Secret de Paris',
+                'myparisianlife.com': 'My Parisian Life'
             }
 
             for domain_part, source_name in source_mapping.items():
                 if domain_part in domain:
                     return source_name
 
+            # Fallback to cleaned domain name
             return domain.replace('.com', '').replace('.fr', '').title()
 
         except Exception as e:
+            logger.warning(f"Failed to extract source name from {url}: {e}")
             return "Unknown Source"
+
+    # Statistics and monitoring methods
+    def get_stats(self) -> Dict:
+        """Get comprehensive scraping statistics"""
+        return self.stats.copy()
+
+    def get_sectioning_stats(self) -> Dict:
+        """Get DeepSeek content sectioning specific statistics"""
+        return self.content_sectioner.get_stats()
+
+    def reset_stats(self):
+        """Reset all statistics"""
+        self.stats = {
+            "total_processed": 0,
+            "specialized_used": 0,
+            "simple_http_used": 0,
+            "enhanced_http_used": 0,
+            "firecrawl_used": 0,
+            "total_cost_saved": 0.0,
+            "processing_time": 0.0,
+            "ai_analysis_calls": 0,
+            "cache_hits": 0,
+            "content_sectioning_used": 0,
+            "sectioning_time_saved": 0.0,
+            "average_content_improvement": 0.0
+        }
+
+    # Legacy compatibility methods (for any old code that might call these)
+    def get_domain_intelligence(self) -> Dict[str, Any]:
+        """Legacy compatibility method"""
+        return {}
+
+    def get_database_intelligence_stats(self) -> Dict[str, Any]:
+        """Legacy compatibility method"""  
+        return {}
+
+    def clear_domain_cache(self):
+        """Legacy compatibility method"""
+        pass
+
+    async def export_domain_intelligence(self, file_path: str = None) -> str:
+        """Legacy compatibility method"""
+        return ""
