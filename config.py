@@ -19,7 +19,8 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # OpenAI API settings (for components that need highest quality)
 OPENAI_MODEL = "gpt-4o"  # Always using GPT-4o as requested
-SEARCH_EVALUATION_MODEL = "gpt-4o-mini"  # Always using GPT-4o as requested
+SEARCH_EVALUATION_MODEL = "gpt-4o-mini"  # Using GPT-4o-mini for search evaluation
+SEARCH_EVALUATION_TEMPERATURE = 0.2
 OPENAI_TEMPERATURE = 0.2
 OPENAI_MAX_RETRIES = 1          # Aggressive - prevent delays
 OPENAI_TIMEOUT = 45.0           # Shorter timeout
@@ -32,14 +33,16 @@ DEEPSEEK_TEMPERATURE = 0.2
 DEEPSEEK_MAX_RETRIES = 1
 DEEPSEEK_TIMEOUT = 30.0  # Even faster timeout
 
-# NEW: Model selection strategy - which components use which models
+# FIXED: Model selection strategy - search_evaluation now uses OpenAI
 MODEL_STRATEGY = {
-    # Speed-critical components (3-5 min → 10-30 sec improvement)
+    # Speed-critical components using DeepSeek
     'content_sectioning': 'deepseek',     # MAJOR bottleneck fix
-    'search_evaluation': 'deepseek',      # URL evaluation speedup
     'strategy_analysis': 'deepseek',      # Domain analysis speedup
 
-    # Quality-critical components (keep existing for now)
+    # FIXED: Search evaluation now uses OpenAI (gpt-4o-mini)
+    'search_evaluation': 'openai',        # Changed from 'deepseek' to 'openai'
+
+    # Quality-critical components (keep existing)
     'restaurant_extraction': 'openai',    # Keep quality for core function
     'list_analysis': 'claude',            # Keep Claude for final analysis
     'conversation': 'openai',             # Keep for user chat
@@ -48,7 +51,8 @@ MODEL_STRATEGY = {
 
 # Component-specific token limits optimized for each model
 OPENAI_MAX_TOKENS_BY_COMPONENT = {
-    'search_agent': 512,           # URL evaluation
+    'search_agent': 512,           # URL evaluation - now using OpenAI
+    'search_evaluation': 512,      # Added explicit search evaluation limit
     'conversation': 1024,          # Telegram chat  
     'editor_agent': 4096,          # Restaurant formatting
     'firecrawl_scraper': 6144,     # Restaurant extraction
@@ -59,7 +63,6 @@ OPENAI_MAX_TOKENS_BY_COMPONENT = {
 # NEW: DeepSeek token limits (optimized for speed)
 DEEPSEEK_MAX_TOKENS_BY_COMPONENT = {
     'content_sectioning': 2048,    # Fast content analysis
-    'search_evaluation': 256,      # Quick URL evaluation  
     'strategy_analysis': 512,      # Fast domain analysis
     'default': 1024                # General purpose
 }
