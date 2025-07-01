@@ -431,16 +431,18 @@ class LangChainOrchestrator:
 
                 save_data(self.config.DB_TABLE_PROCESSES, process_record, self.config)
 
-                # Extract results
+                # Extract results - FIXED KEY NAME!
                 telegram_text = result.get("telegram_formatted_text", 
                                          "Sorry, no recommendations found.")
+
                 enhanced_recommendations = result.get("enhanced_recommendations", {})
                 main_list = enhanced_recommendations.get("main_list", [])
 
                 logger.info(f"Final result - Main list: {len(main_list)} restaurants")
 
+                # FIXED: Return the correct key name that telegram_bot.py expects
                 return {
-                    "telegram_text": telegram_text,
+                    "telegram_formatted_text": telegram_text,  # ← FIXED: Changed from "telegram_text"
                     "enhanced_recommendations": enhanced_recommendations,
                     "main_list": main_list,
                     "destination": result.get("destination"),
@@ -454,6 +456,7 @@ class LangChainOrchestrator:
 
                 return {
                     "main_list": [],
-                    "telegram_text": "Sorry, there was an error processing your request.",
+                    "telegram_formatted_text": "Sorry, there was an error processing your request.",  # ← FIXED: Changed from "telegram_text"
                     "firecrawl_stats": self.scraper.get_stats()
                 }
+    
