@@ -129,7 +129,9 @@ class ScrapeTest:
 
                         f.write(f"  {i}. ✅ {url}\n")
                         f.write(f"     Content Length: {content_length:,} chars\n")
-                        f.write(f"     Preview: {content[:200].replace('\n', ' ')}...\n")
+                        # Write first few sentences instead of full content
+                        preview = content[:300].replace('\n', ' ') + "..." if len(content) > 300 else content
+                        f.write(f"     Preview: {preview}\n")
                     else:
                         failed_scrapes += 1
                         f.write(f"  {i}. ❌ {url}\n")
@@ -160,9 +162,9 @@ class ScrapeTest:
                 f.write(f"Secondary parameters: {analyzer_input['secondary_filter_parameters']}\n")
                 f.write(f"Destination: {analyzer_input['destination']}\n\n")
 
-                # Show the actual content structure
+                # Show the actual content structure (only first 5 articles for brevity)
                 f.write("Content Structure Analysis:\n")
-                for i, article in enumerate(analyzer_input['scraped_articles'][:5], 1):  # Show first 5
+                for i, article in enumerate(analyzer_input['scraped_articles'][:5], 1):
                     f.write(f"\nArticle {i}:\n")
                     f.write(f"  URL: {article.get('url', 'Unknown')}\n")
                     f.write(f"  Title: {article.get('title', 'No title')}\n")
@@ -170,7 +172,7 @@ class ScrapeTest:
 
                     content = article.get('content', '')
                     if content:
-                        # Show first few sentences
+                        # Show just a preview instead of full content
                         sentences = content.split('. ')[:3]
                         preview = '. '.join(sentences)
                         f.write(f"  Content preview: {preview[:300]}...\n")
