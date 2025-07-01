@@ -38,7 +38,7 @@ class BraveSearchAgent:
             'estimated_cost_saved': 0.0
         }
 
-    def search_multiple_queries(self, queries: List[str], max_retries: int = 2, 
+    def search(self, queries: List[str], max_retries: int = 2, 
                               retry_delay: int = 2, enable_ai_filtering: bool = True) -> List[Dict]:
         """
         Execute searches for multiple queries with fast AI filtering
