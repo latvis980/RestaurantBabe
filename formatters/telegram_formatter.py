@@ -129,7 +129,7 @@ class TelegramFormatter:
                 "Try rephrasing your query or searching for a different area.")
 
     def _clean_text(self, text):
-        """Clean and prepare text for HTML formatting"""
+        """Clean and prepare text for HTML formatting - FIXED VERSION"""
         if not text:
             return ""
 
@@ -139,15 +139,35 @@ class TelegramFormatter:
         text = unescape(text)
 
         # Now escape only the characters that need escaping for Telegram HTML
-        # We need to be selective - only escape & < > that aren't part of valid HTML tags
+        # Use simple replacements instead of complex lookbehind patterns
 
         # Replace & that aren't part of valid entities
         text = re.sub(r'&(?!(?:amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)', '&amp;', text)
 
-        # Replace < and > that aren't part of valid HTML tags
-        # Allow <b>, </b>, <i>, </i>, <a href="...">, </a>, etc.
-        text = re.sub(r'<(?!/?(?:b|i|u|s|code|pre|a\s))', '&lt;', text)
-        text = re.sub(r'(?<!(?:b|i|u|s|code|pre|a))>', '&gt;', text)
+        # For < and >, use a different approach without variable-width lookbehind
+        # Instead, we'll use a two-step process:
+
+        # Step 1: Temporarily mark valid HTML tags
+        valid_tag_pattern = r'</?(?:b|i|u|s|code|pre|a(?:\s[^>]*)?)\s*>'
+        protected_tags = []
+
+        def protect_tag(match):
+            tag = match.group(0)
+            placeholder = f"__PROTECTED_TAG_{len(protected_tags)}__"
+            protected_tags.append(tag)
+            return placeholder
+
+        # Protect valid tags
+        text = re.sub(valid_tag_pattern, protect_tag, text, flags=re.IGNORECASE)
+
+        # Step 2: Now escape all remaining < and >
+        text = text.replace('<', '&lt;')
+        text = text.replace('>', '&gt;')
+
+        # Step 3: Restore the protected tags
+        for i, tag in enumerate(protected_tags):
+            placeholder = f"__PROTECTED_TAG_{i}__"
+            text = text.replace(placeholder, tag)
 
         return text
 
