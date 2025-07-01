@@ -1,4 +1,4 @@
-# search_test.py - Updated to use orchestrator singleton
+# search_test.py - Updated with detailed AI reasoning display
 import asyncio
 import time
 import tempfile
@@ -14,11 +14,11 @@ class SearchTest:
     """
     Test focused on search URL filtering and analysis:
     - What search URLs are found
-    - Which URLs pass AI filtering
+    - Which URLs pass AI filtering with detailed reasoning
     - Final URLs sent to scraper
-    - Detailed filtering analysis
+    - Detailed filtering analysis with cost optimization tracking
 
-    Updated to use orchestrator singleton pattern
+    Updated to use orchestrator singleton pattern and show GPT-4o-mini optimization
     """
 
     def __init__(self, config, orchestrator):
@@ -32,7 +32,7 @@ class SearchTest:
 
     async def test_search_process(self, restaurant_query: str, bot=None) -> str:
         """
-        Run search and filtering analysis
+        Run search and filtering analysis with detailed AI reasoning
 
         Args:
             restaurant_query: The restaurant query to test
@@ -43,6 +43,19 @@ class SearchTest:
         """
         logger.info(f"Testing search filtering process for: {restaurant_query}")
 
+        # Reset evaluation stats for clean test
+        self.search_agent.evaluation_stats = {
+            "total_evaluated": 0,
+            "passed_filter": 0,
+            "failed_filter": 0,
+            "evaluation_errors": 0,
+            "domain_filtered": 0,
+            "model_used": getattr(self.config, 'SEARCH_EVALUATION_MODEL', 'gpt-4o'),
+            "estimated_cost_saved": 0.0
+        }
+        self.search_agent.filtered_urls = []
+        logger.info("🔄 Reset evaluation statistics for fresh test")
+
         # Create results file
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"search_test_{timestamp}.txt"
@@ -50,11 +63,12 @@ class SearchTest:
 
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write("=" * 80 + "\n")
-            f.write("RESTAURANT SEARCH FILTERING TEST\n")
+            f.write("RESTAURANT SEARCH FILTERING TEST (Enhanced with AI Reasoning)\n")
             f.write("=" * 80 + "\n\n")
             f.write(f"Test Date: {datetime.now().isoformat()}\n")
             f.write(f"Query: {restaurant_query}\n")
-            f.write(f"Orchestrator: Singleton instance\n\n")
+            f.write(f"Orchestrator: Singleton instance\n")
+            f.write(f"AI Model: {getattr(self.config, 'SEARCH_EVALUATION_MODEL', 'gpt-4o')} (cost-optimized)\n\n")
 
             try:
                 # Step 1: Query Analysis
@@ -132,6 +146,32 @@ class SearchTest:
                         f.write(f"  {key}: {value}\n")
                     f.write("\n")
 
+                # Step 3.5: Detailed AI Evaluation Results
+                f.write("STEP 3.5: DETAILED AI EVALUATION RESULTS\n")
+                f.write("-" * 40 + "\n")
+
+                for i, result in enumerate(unique_results, 1):
+                    url = result.get('url', 'Unknown')
+                    title = result.get('title', 'No title')
+                    ai_eval = result.get('ai_evaluation', {})
+
+                    f.write(f"\nURL {i}: {url}\n")
+                    f.write(f"Title: {title[:100]}...\n")
+
+                    if ai_eval:
+                        f.write(f"✅ AI EVALUATION:\n")
+                        f.write(f"   Passed Filter: {ai_eval.get('passed_filter', 'N/A')}\n")
+                        f.write(f"   Is Restaurant List: {ai_eval.get('is_restaurant_list', 'N/A')}\n")
+                        f.write(f"   Restaurant Count: {ai_eval.get('restaurant_count', 'N/A')}\n")
+                        f.write(f"   Content Quality: {ai_eval.get('content_quality', 'N/A'):.2f}\n")
+                        f.write(f"   Reasoning: {ai_eval.get('reasoning', 'No reasoning provided')}\n")
+                    else:
+                        f.write(f"❌ NO AI EVALUATION DATA (may have been filtered at domain level)\n")
+
+                    f.write("-" * 60 + "\n")
+
+                f.write("\n")
+
                 # Analyze domain distribution
                 domain_counts = {}
                 filtered_urls = []
@@ -147,32 +187,28 @@ class SearchTest:
                                 domain = domain[4:]
                             domain_counts[domain] = domain_counts.get(domain, 0) + 1
                         except:
-                            domain = 'unknown'
-                            domain_counts[domain] = domain_counts.get(domain, 0) + 1
+                            pass
 
-                        # Check if URL would be filtered
-                        excluded_domains = self.config.EXCLUDED_RESTAURANT_SOURCES
-                        is_excluded = any(excluded in url.lower() for excluded in excluded_domains)
-
-                        if not is_excluded:
+                        # Check if this URL made it through filtering
+                        ai_eval = result.get('ai_evaluation', {})
+                        if ai_eval.get('passed_filter', False) or not ai_eval:
                             filtered_urls.append(result)
 
                 f.write("Domain Analysis:\n")
-                sorted_domains = sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)
-                for domain, count in sorted_domains[:15]:  # Top 15 domains
+                for domain, count in sorted(domain_counts.items()):
                     f.write(f"  {domain}: {count} URLs\n")
 
                 f.write(f"\nFiltering Results:\n")
                 f.write(f"  Before filtering: {len(unique_results)} URLs\n")
-                f.write(f"  After basic filtering: {len(filtered_urls)} URLs\n")
+                f.write(f"  After AI filtering: {len(filtered_urls)} URLs\n")
                 f.write(f"  Filtered out: {len(unique_results) - len(filtered_urls)} URLs\n\n")
 
                 # Step 4: Final URLs for Scraping
                 f.write("STEP 4: FINAL URLs FOR SCRAPING\n")
                 f.write("-" * 40 + "\n")
-
                 f.write("URLs that would be sent to scraper:\n")
-                for i, result in enumerate(filtered_urls[:20], 1):  # Show first 20
+
+                for i, result in enumerate(filtered_urls, 1):
                     url = result.get('url', 'Unknown URL')
                     title = result.get('title', 'No title')
                     f.write(f"  {i}. {url}\n")
@@ -183,11 +219,25 @@ class SearchTest:
 
                 final_count = len(filtered_urls)
 
+                # Cost Analysis Section
+                f.write(f"\nCOST OPTIMIZATION ANALYSIS:\n")
+                f.write("-" * 40 + "\n")
+                model_used = evaluation_stats.get('model_used', 'Unknown')
+                cost_saved = evaluation_stats.get('estimated_cost_saved', 0.0)
+                f.write(f"  AI Model Used: {model_used}\n")
+                f.write(f"  Total Evaluations: {evaluation_stats.get('total_evaluated', 0)}\n")
+
+                if model_used == 'gpt-4o-mini':
+                    f.write(f"  💰 Estimated Cost Savings: ${cost_saved:.3f} vs GPT-4o\n")
+                    f.write(f"  📊 Cost Reduction: ~95% vs GPT-4o\n")
+                else:
+                    f.write(f"  💡 Switch to gpt-4o-mini for 95% cost reduction\n")
+
                 # Configuration Info
                 f.write(f"\nCONFIGURATION INFO:\n")
                 f.write(f"  Excluded domains: {getattr(self.config, 'EXCLUDED_RESTAURANT_SOURCES', [])}\n")
                 f.write(f"  Search count limit: {getattr(self.config, 'BRAVE_SEARCH_COUNT', 15)}\n")
-                f.write(f"  AI model: {getattr(self.config, 'OPENAI_MODEL', 'Unknown')}\n")
+                f.write(f"  AI model: {getattr(self.config, 'SEARCH_EVALUATION_MODEL', getattr(self.config, 'OPENAI_MODEL', 'Unknown'))}\n")
 
                 # Overall Summary
                 f.write(f"\nOVERALL SUMMARY:\n")
@@ -195,7 +245,8 @@ class SearchTest:
                 f.write(f"  Search execution: {search_time}s\n")
                 f.write(f"  Total processing: {analysis_time + search_time}s\n")
                 f.write(f"  Final URLs for scraping: {final_count}\n")
-                f.write(f"  Success rate: {(final_count / max(len(unique_results), 1) * 100):.1f}%\n\n")
+                f.write(f"  Success rate: {(final_count / max(len(unique_results), 1) * 100):.1f}%\n")
+                f.write(f"  AI Filtering efficiency: {evaluation_stats.get('passed_filter', 0)}/{evaluation_stats.get('total_evaluated', 0)} passed\n\n")
 
                 f.write("=" * 80 + "\n")
                 f.write("SEARCH FILTERING TEST COMPLETED\n")
@@ -216,15 +267,28 @@ class SearchTest:
     async def _send_results_to_admin(self, bot, file_path: str, query: str, final_count: int):
         """Send search filtering test results to admin via Telegram"""
         try:
+            # Get evaluation stats for summary
+            evaluation_stats = getattr(self.search_agent, 'evaluation_stats', {})
+            model_used = evaluation_stats.get('model_used', 'Unknown')
+            cost_saved = evaluation_stats.get('estimated_cost_saved', 0.0)
+
             # Create summary message
             summary = (
                 f"🔍 <b>Search Filtering Test Complete</b>\n\n"
                 f"📝 Query: <code>{query}</code>\n"
                 f"🎯 Final URLs: {final_count}\n"
+                f"🤖 AI Model: {model_used}\n"
+                f"📊 Evaluations: {evaluation_stats.get('passed_filter', 0)}/{evaluation_stats.get('total_evaluated', 0)} passed\n"
+            )
+
+            if model_used == 'gpt-4o-mini':
+                summary += f"💰 Cost Savings: ${cost_saved:.3f}\n"
+
+            summary += (
                 f"🔧 Orchestrator: Singleton instance\n"
-                f"🔍 Focus: URL filtering analysis\n\n"
+                f"🔍 Focus: URL filtering with AI reasoning\n\n"
                 f"{'✅ URLs found for scraping' if final_count > 0 else '❌ All URLs filtered out'}\n\n"
-                f"📄 Detailed filtering analysis attached."
+                f"📄 Detailed filtering analysis with AI reasoning attached."
             )
 
             bot.send_message(
