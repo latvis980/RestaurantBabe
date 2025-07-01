@@ -26,9 +26,13 @@ class BraveSearchAgent:
 
         # Initialize the AI evaluation model
         self.model = ChatOpenAI(
-            model=config.OPENAI_MODEL,
-            temperature=0.2
+            model=config.SEARCH_EVALUATION_MODEL,
+            temperature=config.SEARCH_EVALUATION_TEMPERATURE,  # Use the config value
+            api_key=config.OPENAI_API_KEY  # Explicitly set the API key
         )
+
+        # Log the model being used for transparency
+        logger.info(f"🔍 Search evaluation using: {config.SEARCH_EVALUATION_MODEL} (cost-optimized)")
 
         # AI evaluation system prompt - extracted from your scraper
         self.eval_system_prompt = """
@@ -83,7 +87,9 @@ class BraveSearchAgent:
             "passed_filter": 0,
             "failed_filter": 0,
             "evaluation_errors": 0,
-            "domain_filtered": 0  # New stat for domain filtering
+            "domain_filtered": 0,
+            "model_used": config.SEARCH_EVALUATION_MODEL,  # Track which model we're using
+            "estimated_cost_saved": 0.0  # Track cost savings vs GPT-4o
         }
 
         # Define video/streaming platforms to exclude
@@ -610,7 +616,15 @@ class BraveSearchAgent:
         return results
 
     def get_filtering_stats(self):
-        """Get current AI filtering statistics"""
+        """Get current AI filtering statistics with cost information"""
+        # Calculate estimated cost savings
+        if self.config.SEARCH_EVALUATION_MODEL == "gpt-4o-mini":
+            # Rough calculation: GPT-4o-mini is ~95% cheaper than GPT-4o
+            cost_multiplier = 0.05  # GPT-4o-mini costs about 5% of GPT-4o
+            estimated_calls = self.evaluation_stats["total_evaluated"]
+            estimated_savings_per_call = 0.012  # Rough estimate per evaluation call
+            self.evaluation_stats["estimated_cost_saved"] = estimated_calls * estimated_savings_per_call * 0.95
+
         return {
             "evaluation_stats": self.evaluation_stats.copy(),
             "filtered_urls": self.filtered_urls.copy()

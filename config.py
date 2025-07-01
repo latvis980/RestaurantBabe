@@ -13,9 +13,13 @@ GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
 # PostgreSQL settings (using variable in Railway)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# OpenAI API settings (still used for other components)
-OPENAI_MODEL = "gpt-4o"  # Always using GPT-4o as requested
+# OpenAI API settings
+OPENAI_MODEL = "gpt-4o"  # Always using GPT-4o as requested for complex tasks
 OPENAI_TEMPERATURE = 0.2
+
+# NEW: Separate model for simple search evaluation (much cheaper!)
+SEARCH_EVALUATION_MODEL = "gpt-4o-mini"  # 95% cheaper than GPT-4o for simple classification
+SEARCH_EVALUATION_TEMPERATURE = 0.2
 
 # Claude API settings (NEW)
 CLAUDE_MODEL = "claude-3-5-sonnet-20241022"  # Latest Claude Sonnet 4
