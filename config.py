@@ -19,6 +19,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # OpenAI API settings (for components that need highest quality)
 OPENAI_MODEL = "gpt-4o"  # Always using GPT-4o as requested
+SEARCH_EVALUATION_MODEL = "gpt-4o-mini"  # Always using GPT-4o as requested
 OPENAI_TEMPERATURE = 0.2
 OPENAI_MAX_RETRIES = 1          # Aggressive - prevent delays
 OPENAI_TIMEOUT = 45.0           # Shorter timeout
