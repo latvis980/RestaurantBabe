@@ -1,4 +1,4 @@
-# scrape_test.py - Updated to use orchestrator singleton
+# scrape_test.py - Updated to show FULL content of all scraped articles
 import asyncio
 import time
 import tempfile
@@ -15,10 +15,10 @@ class ScrapeTest:
     Simple test to see the complete scraping process:
     - What search results are found
     - Which ones get scraped successfully  
-    - What content is actually scraped
+    - What content is actually scraped (now showing FULL content)
     - What goes to list_analyzer
 
-    Updated to use orchestrator singleton pattern
+    Updated to use orchestrator singleton pattern and show full content
     """
 
     def __init__(self, config, orchestrator):
@@ -34,6 +34,7 @@ class ScrapeTest:
     async def test_scraping_process(self, restaurant_query: str, bot=None) -> str:
         """
         Run complete scraping process and dump results to file
+        Now shows FULL content of all scraped articles
 
         Args:
             restaurant_query: The restaurant query to test (e.g., "best brunch in Lisbon")
@@ -51,7 +52,7 @@ class ScrapeTest:
 
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write("=" * 80 + "\n")
-            f.write("RESTAURANT SCRAPING PROCESS TEST\n")
+            f.write("RESTAURANT SCRAPING PROCESS TEST - FULL CONTENT\n")
             f.write("=" * 80 + "\n\n")
             f.write(f"Test Date: {datetime.now().isoformat()}\n")
             f.write(f"Query: {restaurant_query}\n")
@@ -87,7 +88,7 @@ class ScrapeTest:
                 f.write(f"Processing Time: {search_time}s\n")
                 f.write(f"Total URLs Found: {len(search_results)}\n")
 
-                # Log first 10 URLs for analysis
+                # Log all URLs for analysis
                 f.write("\nSearch Results (First 10):\n")
                 for i, result in enumerate(search_results[:10], 1):
                     f.write(f"  {i}. {result.get('url', 'Unknown URL')}\n")
@@ -129,9 +130,6 @@ class ScrapeTest:
 
                         f.write(f"  {i}. ✅ {url}\n")
                         f.write(f"     Content Length: {content_length:,} chars\n")
-                        # Write first few sentences instead of full content
-                        preview = content[:300].replace('\n', ' ') + "..." if len(content) > 300 else content
-                        f.write(f"     Preview: {preview}\n")
                     else:
                         failed_scrapes += 1
                         f.write(f"  {i}. ❌ {url}\n")
@@ -162,23 +160,26 @@ class ScrapeTest:
                 f.write(f"Secondary parameters: {analyzer_input['secondary_filter_parameters']}\n")
                 f.write(f"Destination: {analyzer_input['destination']}\n\n")
 
-                # Show the actual content structure (only first 5 articles for brevity)
-                f.write("Content Structure Analysis:\n")
-                for i, article in enumerate(analyzer_input['scraped_articles'][:5], 1):
-                    f.write(f"\nArticle {i}:\n")
+                # Now, show the FULL content of all articles
+                f.write("\n" + "=" * 80 + "\n")
+                f.write("FULL CONTENT OF ALL SCRAPED ARTICLES\n")
+                f.write("=" * 80 + "\n\n")
+
+                for i, article in enumerate(analyzer_input['scraped_articles'], 1):
+                    f.write(f"\nARTICLE {i}:\n")
                     f.write(f"  URL: {article.get('url', 'Unknown')}\n")
                     f.write(f"  Title: {article.get('title', 'No title')}\n")
                     f.write(f"  Content length: {len(article.get('content', ''))}\n")
+                    f.write(f"  FULL CONTENT:\n")
+                    f.write("-" * 40 + "\n")
 
                     content = article.get('content', '')
                     if content:
-                        # Show just a preview instead of full content
-                        sentences = content.split('. ')[:3]
-                        preview = '. '.join(sentences)
-                        f.write(f"  Content preview: {preview[:300]}...\n")
+                        f.write(content)
+                    else:
+                        f.write("  [No content available]")
 
-                if len(analyzer_input['scraped_articles']) > 5:
-                    f.write(f"\n... and {len(analyzer_input['scraped_articles']) - 5} more articles\n")
+                    f.write("\n" + "-" * 40 + "\n")
 
                 # Get scraper statistics
                 scraper_stats = self.scraper.get_stats()
@@ -221,7 +222,7 @@ class ScrapeTest:
                 f"🔧 Orchestrator: Singleton instance\n"
                 f"🎯 Focus: Complete pipeline analysis\n\n"
                 f"{'✅ Content extracted successfully' if successful_count > 0 else '❌ No content extracted'}\n\n"
-                f"📄 Detailed scraping analysis attached."
+                f"📄 Detailed scraping analysis attached with FULL content of all articles."
             )
 
             bot.send_message(
@@ -235,7 +236,7 @@ class ScrapeTest:
                 bot.send_document(
                     self.admin_chat_id,
                     f,
-                    caption=f"🧪 Scraping test results for: {query}"
+                    caption=f"🧪 Scraping test results for: {query} (includes FULL content)"
                 )
 
             logger.info("Successfully sent scraping test results to admin")
