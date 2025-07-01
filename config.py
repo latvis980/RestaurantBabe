@@ -30,8 +30,8 @@ OPENAI_REQUEST_TIMEOUT = 20.0   # Connection timeout
 DEEPSEEK_CHAT_MODEL = "deepseek-chat"  # DeepSeek-V3 - ultra fast
 DEEPSEEK_REASONER_MODEL = "deepseek-reasoner"  # DeepSeek-R1 - for complex reasoning
 DEEPSEEK_TEMPERATURE = 0.2
-DEEPSEEK_MAX_RETRIES = 1
-DEEPSEEK_TIMEOUT = 30.0  # Even faster timeout
+DEEPSEEK_MAX_RETRIES = 2
+DEEPSEEK_TIMEOUT = 120.0  
 
 # FIXED: Model selection strategy - search_evaluation now uses OpenAI
 MODEL_STRATEGY = {
