@@ -300,25 +300,31 @@ class LangChainOrchestrator:
 
         return query, []
 
+    # Fix for agents/langchain_orchestrator.py
+    # The issue is that get_stats() is returning a dict without 'credits_used' key
+
     def _check_usage_limits(self):
-        """Check if approaching usage limits"""
+        """Check if approaching usage limits - FIXED VERSION"""
         try:
             stats = self.scraper.get_stats()
+
+            # FIX: Handle case where 'credits_used' might not exist
+            credits_used = stats.get('credits_used', 0)  # Default to 0 if not present
 
             DAILY_CREDIT_LIMIT = 400
             HIGH_USAGE_THRESHOLD = 300
             COST_ALERT_THRESHOLD = 5.0
 
-            if stats['credits_used'] > DAILY_CREDIT_LIMIT:
-                logger.error(f"🚨 DAILY CREDIT LIMIT EXCEEDED: {stats['credits_used']}/{DAILY_CREDIT_LIMIT}")
-                self._send_alert_to_admin(f"🚨 Credit limit exceeded! Used {stats['credits_used']} credits today.")
+            if credits_used > DAILY_CREDIT_LIMIT:
+                logger.error(f"🚨 DAILY CREDIT LIMIT EXCEEDED: {credits_used}/{DAILY_CREDIT_LIMIT}")
+                self._send_alert_to_admin(f"🚨 Credit limit exceeded! Used {credits_used} credits today.")
                 return False
 
-            elif stats['credits_used'] > HIGH_USAGE_THRESHOLD:
-                logger.warning(f"⚠️ HIGH USAGE WARNING: {stats['credits_used']}/{DAILY_CREDIT_LIMIT} credits used")
-                self._send_alert_to_admin(f"⚠️ High usage alert: {stats['credits_used']} credits used today.")
+            elif credits_used > HIGH_USAGE_THRESHOLD:
+                logger.warning(f"⚠️ HIGH USAGE WARNING: {credits_used}/{DAILY_CREDIT_LIMIT} credits used")
+                self._send_alert_to_admin(f"⚠️ High usage alert: {credits_used} credits used today.")
 
-            estimated_cost = (stats['credits_used'] / 500) * 16
+            estimated_cost = (credits_used / 500) * 16
             if estimated_cost > COST_ALERT_THRESHOLD:
                 logger.warning(f"💰 HIGH COST ALERT: Estimated ${estimated_cost:.2f}")
                 self._send_alert_to_admin(f"💰 Cost alert: Estimated ${estimated_cost:.2f} in usage today.")
@@ -327,7 +333,53 @@ class LangChainOrchestrator:
 
         except Exception as e:
             logger.error(f"Error checking usage limits: {e}")
+            # FIX: Return True to allow processing to continue when stats fail
             return True
+
+    def _log_firecrawl_usage(self):
+        """Log Firecrawl usage statistics - FIXED VERSION"""
+        try:
+            stats = self.scraper.get_stats()
+            can_continue = self._check_usage_limits()
+
+            if not can_continue:
+                logger.error("Usage limits exceeded - consider upgrading plan")
+
+            logger.info("=" * 50)
+            logger.info("FIRECRAWL USAGE REPORT")
+            logger.info("=" * 50)
+            logger.info(f"URLs scraped: {stats.get('total_scraped', 0)}")
+            logger.info(f"Successful extractions: {stats.get('successful_extractions', 0)}")
+            logger.info(f"Credits used: {stats.get('credits_used', 0)}")  # FIX: Use .get() with default
+            logger.info("=" * 50)
+
+            # Store usage record
+            usage_record = {
+                "timestamp": time.time(),
+                "firecrawl_stats": stats,
+                "session_id": f"session_{int(time.time())}",
+                "can_continue": can_continue
+            }
+
+            save_data(self.config.DB_TABLE_PROCESSES, usage_record, self.config)
+
+        except Exception as e:
+            logger.error(f"Error logging Firecrawl usage: {e}")
+
+    # ADDITIONAL FIX: Make sure the scraper's get_stats() method returns proper data
+    # This should be added to agents/firecrawl_scraper.py
+
+    def get_stats(self):
+        """Get scraping statistics - FIXED VERSION"""
+        # Ensure all expected keys are present
+        stats = {
+            "total_scraped": self.stats.get("total_scraped", 0),
+            "successful_extractions": self.stats.get("successful_extractions", 0),
+            "failed_extractions": self.stats.get("failed_extractions", 0),
+            "total_restaurants_found": self.stats.get("total_restaurants_found", 0),
+            "credits_used": self.stats.get("credits_used", 0)  # FIX: Ensure this key always exists
+        }
+        return stats
 
     def _send_alert_to_admin(self, message):
         """Send alert message to admin"""
