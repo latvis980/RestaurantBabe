@@ -336,7 +336,6 @@ class FollowUpSearchAgent:
         global_guides = [
             "Michelin Guide",
             "World's 50 Best Restaurants",
-            "Zagat",
             "James Beard Awards"
         ]
 
