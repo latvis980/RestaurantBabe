@@ -35,16 +35,16 @@ CONSOLIDATION RULES:
 
 OUTPUT FORMAT:
 Return ONLY valid JSON in this exact structure:
-{
+{{
   "restaurants": [
-    {
+    {{
       "name": "Restaurant Name",
       "address": "Complete address OR 'Requires verification'",
       "description": "Detailed 15-30 word description highlighting unique features",
       "sources": ["domain1.com", "domain2.com"]
-    }
+    }}
   ]
-}
+}}
 
 IMPORTANT:
 - Never include Tripadvisor, Yelp, or Google in sources
