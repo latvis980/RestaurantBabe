@@ -359,9 +359,9 @@ class LangChainOrchestrator:
         # Generate trace ID for debugging
         trace_id = f"query_{int(time.time())}"
 
-        with tracing_v2_enabled(project_name="restaurant-recommender", trace_id=trace_id):
+        with tracing_v2_enabled(project_name="restaurant-recommender"):
             try:
-                dump_chain_state("process_query_start", {"query": user_query})
+                dump_chain_state("process_query_start", {"query": user_query, "trace_id": trace_id})
 
                 # Prepare input data
                 input_data = {
