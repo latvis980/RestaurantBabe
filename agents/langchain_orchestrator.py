@@ -304,10 +304,8 @@ class LangChainOrchestrator:
                 }
 
             # Format for Telegram using the formatter
-            telegram_text = self.telegram_formatter.format_restaurants(
-                restaurants=main_list,
-                destination=x.get("destination", "Unknown"),
-                original_query=x.get("query", "")
+            telegram_text = self.telegram_formatter.format_recommendations(
+                enhanced_results  # Pass the entire enhanced_results dict
             )
 
             dump_chain_state("post_format", {
