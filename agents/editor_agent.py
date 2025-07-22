@@ -1,459 +1,271 @@
+# agents/simplified_editor_agent.py
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tracers.context import tracing_v2_enabled
 import json
+import logging
+from collections import defaultdict
 from utils.debug_utils import dump_chain_state, log_function_call
 
-class EditorAgent:
+logger = logging.getLogger(__name__)
+
+class SimplifiedEditorAgent:
     def __init__(self, config):
         self.model = ChatOpenAI(
             model=config.OPENAI_MODEL,
-            temperature=0.3
+            temperature=0.2  # Lower temperature for more consistent formatting
         )
 
-        # Editor prompt - updated to generate only main_list
+        # Simplified prompt focused on consolidation and JSON output
         self.system_prompt = """
-        You are a professional editor for a food publication specializing in restaurant recommendations.
-        You will receive raw recommendations and must format & polish them according to the guidelines below.
-        ⚠️ NEVER omit a restaurant: format every item you receive.
+You are an AI assistant that processes restaurant recommendations from web scraping results.
 
-        ────────────────────────
-        MANDATORY FIELDS (each restaurant)
-        ────────────────────────
-        • **Name** (bold)  
-        • Street address ─ street number + street name  
-        • 2-40-word informative description  
-        • Price range (€, €€, €€€)  
-        • Recommended dishes ─ list at least 2–3 signature items  
-        • Sources ─ list every source you have; show ≥ 2 if available  
-          – Do NOT cite Tripadvisor, Yelp, or Google  
-        • missing_info ─ array of any mandatory fields still missing
+YOUR TASK:
+1. Analyze all scraped content to identify unique restaurants
+2. Group descriptions and addresses for restaurants mentioned multiple times
+3. Create comprehensive 15-30 word descriptions combining information from all sources
+4. Extract source domains (timeout.com, tastingtable.com, etc.) from URLs
 
-        ────────────────────────
-        OPTIONAL FIELDS (include when found)
-        ────────────────────────
-        • reservations_required (boolean) ─ clearly state if reservations are strongly advised  
-        • instagram ─ "instagram.com/username"  
-        • chef ─ name / background  
-        • hours ─ opening hours  
-        • atmosphere ─ noteworthy ambience details
+CONSOLIDATION RULES:
+- If a restaurant appears in multiple sources, combine all information
+- Use the most complete address found across sources
+- If addresses conflict or are missing, mark for verification
+- Create detailed descriptions that highlight what makes each restaurant special
+- Avoid generic phrases like "great food" or "nice atmosphere"
 
-        ────────────────────────
-        MISSING-INFO POLICY
-        ────────────────────────
-        If mandatory data is missing, KEEP the restaurant in the list  
-        and list the absent fields in its missing_info array. Never move or delete an entry.
+OUTPUT FORMAT:
+Return ONLY valid JSON in this exact structure:
+{
+  "restaurants": [
+    {
+      "name": "Restaurant Name",
+      "address": "Complete address OR 'Requires verification'",
+      "description": "Detailed 15-30 word description highlighting unique features",
+      "sources": ["domain1.com", "domain2.com"]
+    }
+  ]
+}
 
-        ────────────────────────
-        OUTPUT FORMAT
-        ────────────────────────
-        Return a single JSON object with ALL restaurants in one comprehensive list:
-        {{
-          "formatted_recommendations": {{
-            "main_list": [ …all restaurants… ]
-          }}
-        }}
-
-        Each restaurant object:
-        {{
-          "name": "<bold restaurant name>",
-          "address": "<full street address | 'Address unavailable'>",
-          "description": "<concise description>",
-          "price_range": "€ / €€ / €€€",
-          "recommended_dishes": ["dish1", "dish2", …],
-          "sources": ["source1", "source2", …],
-          "missing_info": ["fieldA", "fieldB", …],      # empty [] if none
-          "reservations_required": true | false | null,
-          "instagram": "instagram.com/username" | null,
-          "chef": "Chef Name" | null,
-          "hours": "Mon–Sun 12-22" | null,
-          "atmosphere": "short ambience note" | null
-        }}
-
-        ────────────────────────
-        PRESENTATION RULES
-        ────────────────────────
-        1. Return one comprehensive list of ALL restaurants.
-        2. Apply consistent formatting; no emojis.
-        3. Ensure every description is concise yet informative.
-        4. Verify all mandatory data; flag what's missing in missing_info.
-        5. Also generate follow-up search queries (outside the JSON) for any missing mandatory info.
-        """
+IMPORTANT:
+- Never include Tripadvisor, Yelp, or Google in sources
+- Focus on unique selling points in descriptions (signature dishes, style, atmosphere)
+- Be specific about cuisine types, specialties, or notable features
+- If multiple locations exist, include only the main/original location
+"""
 
         # Create prompt template
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", self.system_prompt),
-            ("human", "Here are the restaurant recommendations to format:\n\n{recommendations}\n\nOriginal query: {original_query}")
+            ("human", """
+Original query: {original_query}
+Destination: {destination}
+
+Scraped content from multiple sources:
+{scraped_content}
+
+Process this content and return the consolidated restaurant list as JSON.
+""")
         ])
 
         # Create chain
         self.chain = self.prompt | self.model
-
         self.config = config
 
-
-    def _slim_recommendations(self, recs: dict) -> dict:
+    def _prepare_scraped_content(self, search_results):
         """
-        Return a lightweight copy of `recs` that keeps only the fields
-        the formatter LLM needs. Combines all restaurants into main_list.
+        Convert search results into a clean format for the AI to process.
+        Includes URL sources and content for each article.
         """
-        KEEP = {
-            "name",
-            "address",
-            "description",
-            "price_range",
-            "recommended_dishes",
-            "sources",
-            "missing_info",
-        }
+        formatted_content = []
 
-        def slim_one(rest: dict) -> dict:
-            return {k: v for k, v in rest.items() if k in KEEP and v}
+        for i, result in enumerate(search_results, 1):
+            # Extract domain from URL for source attribution
+            url = result.get('url', '')
+            domain = self._extract_domain(url)
 
-        # Combine all restaurants into main_list
-        all_restaurants = []
+            # Get content
+            content = result.get('scraped_content', result.get('content', ''))
+            title = result.get('title', 'Untitled')
 
-        # Add main_list restaurants
-        main_list = recs.get("main_list", [])
-        if isinstance(main_list, list):
-            all_restaurants.extend([slim_one(r) for r in main_list])
+            if content and len(content.strip()) > 50:  # Only include substantial content
+                formatted_content.append(f"""
+ARTICLE {i}:
+URL: {url}
+Domain: {domain}  
+Title: {title}
+Content: {content[:3000]}...  
+---""")
 
-        # Add hidden_gems to the main list (if they exist)
-        hidden_gems = recs.get("hidden_gems", [])
-        if isinstance(hidden_gems, list):
-            all_restaurants.extend([slim_one(r) for r in hidden_gems])
+        return "\n".join(formatted_content)
 
-        # Handle legacy format
-        if "recommended" in recs:
-            recommended = recs.get("recommended", [])
-            if isinstance(recommended, list):
-                all_restaurants.extend([slim_one(r) for r in recommended])
+    def _extract_domain(self, url):
+        """Extract clean domain name from URL for source attribution"""
+        try:
+            if not url:
+                return "unknown.com"
 
-        return {"main_list": all_restaurants}
+            # Remove protocol
+            if url.startswith(('http://', 'https://')):
+                url = url.split('://', 1)[1]
 
+            # Get domain part
+            domain = url.split('/')[0]
 
-    @log_function_call
-    def edit(self, recommendations: dict, original_query: str) -> dict:
+            # Remove www.
+            if domain.startswith('www.'):
+                domain = domain[4:]
+
+            return domain
+
+        except Exception:
+            return "unknown.com"
+
+    def _post_process_results(self, ai_output, original_query, destination):
         """
-        Format and polish the restaurant recommendations into one comprehensive list.
-
-        Args
-        ----
-        recommendations : dict   – raw result from ListAnalyzer
-        original_query  : str    – user's initial query
-
-        Returns
-        -------
-        dict with keys:
-            formatted_recommendations : { main_list }
-            follow_up_queries         : list
+        Post-process AI output to ensure quality and consistency.
         """
-        with tracing_v2_enabled(project_name="restaurant-recommender"):
-            try:
-                # ── 1. debug input ──────────────────────────────────────────
-                dump_chain_state(
-                    "editor_input",
-                    {
-                        "recommendations_keys": list(recommendations.keys())
-                        if isinstance(recommendations, dict)
-                        else [],
-                        "original_query": original_query,
-                    },
-                )
-
-                # ── 2. follow-up query skeletons ──────────────────────────
-                follow_up_queries = self._generate_follow_up_queries(
-                    recommendations, original_query
-                )
-
-                # ── 3. guarantee structure presence ───────────────────────
-                if not recommendations or not isinstance(recommendations, dict):
-                    recommendations = {"main_list": []}
-
-                # Normalize structure - combine all restaurants
-                all_restaurants = []
-
-                # Get restaurants from main_list
-                if "main_list" in recommendations:
-                    main_list = recommendations["main_list"]
-                    if isinstance(main_list, list):
-                        all_restaurants.extend(main_list)
-
-                # Get restaurants from hidden_gems and add to main list
-                if "hidden_gems" in recommendations:
-                    hidden_gems = recommendations["hidden_gems"]
-                    if isinstance(hidden_gems, list):
-                        all_restaurants.extend(hidden_gems)
-
-                # Handle legacy format
-                if "recommended" in recommendations and not all_restaurants:
-                    recommended = recommendations["recommended"]
-                    if isinstance(recommended, list):
-                        all_restaurants.extend(recommended)
-
-                # Update recommendations to have all restaurants in main_list
-                recommendations = {"main_list": all_restaurants}
-
-                # ── 4. call the LLM formatter ─────────────────────────────
-                response = self.chain.invoke(
-                    {
-                        "recommendations": json.dumps(
-                            self._slim_recommendations(recommendations),
-                            ensure_ascii=False,
-                            separators=(",", ":")
-                        ),
-                        "original_query": original_query,
-                    }
-                )
-
-                # ── 5. clean markdown fences & parse JSON ─────────────────
-                content = response.content
+        try:
+            # Parse JSON response
+            if isinstance(ai_output, str):
+                # Clean markdown formatting if present
+                content = ai_output.strip()
                 if "```json" in content:
                     content = content.split("```json")[1].split("```")[0].strip()
                 elif "```" in content:
                     content = content.split("```")[1].split("```")[0].strip()
 
-                dump_chain_state("editor_raw_response", {"raw": content[:1000]})
-                formatted_results = json.loads(content)
+                parsed_data = json.loads(content)
+            else:
+                parsed_data = ai_output
 
-                # ── 6. normalise keys and ensure single list structure ──────────
-                if "formatted_recommendations" in formatted_results:
-                    formatted_rec = formatted_results["formatted_recommendations"]
-                    if isinstance(formatted_rec, dict):
-                        # Handle legacy format conversion
-                        if "recommended" in formatted_rec:
-                            formatted_rec["main_list"] = formatted_rec.pop("recommended")
-                        # Remove hidden_gems if it exists
-                        if "hidden_gems" in formatted_rec:
-                            hidden_gems = formatted_rec.pop("hidden_gems")
-                            # Add hidden_gems to main_list
-                            if isinstance(hidden_gems, list) and hidden_gems:
-                                main_list = formatted_rec.get("main_list", [])
-                                main_list.extend(hidden_gems)
-                                formatted_rec["main_list"] = main_list
-                else:
-                    formatted_results = {
-                        "formatted_recommendations": formatted_results
-                    }
-                    fr = formatted_results["formatted_recommendations"]
-                    if isinstance(fr, dict):
-                        if "recommended" in fr:
-                            fr["main_list"] = fr.pop("recommended")
-                        # Remove hidden_gems if it exists
-                        if "hidden_gems" in fr:
-                            hidden_gems = fr.pop("hidden_gems")
-                            if isinstance(hidden_gems, list) and hidden_gems:
-                                main_list = fr.get("main_list", [])
-                                main_list.extend(hidden_gems)
-                                fr["main_list"] = main_list
+            restaurants = parsed_data.get("restaurants", [])
 
-                # ── 7. SAFETY NET – never lose restaurants ─────
-                formatted_rec = formatted_results.get("formatted_recommendations", {})
+            # Validate and clean each restaurant entry
+            cleaned_restaurants = []
+            seen_names = set()
 
-                # Combine all original restaurants
-                orig_all = []
-                orig_all.extend(recommendations.get("main_list", []))
-                # Note: we already combined hidden_gems above
+            for restaurant in restaurants:
+                name = restaurant.get("name", "").strip()
+                if not name or name.lower() in seen_names:
+                    continue
 
-                def _merge_list(orig: list, fmt: list) -> list:
-                    """
-                    • If the formatter returned nothing, fall back to the original list.
-                    • If the formatter returned fewer items, append the missing ones.
-                    """
-                    if not fmt and orig:
-                        return orig
+                seen_names.add(name.lower())
 
-                    if len(fmt) < len(orig):
-                        fmt_names = { (r.get("name") or "").lower() for r in fmt }
-                        missing   = [r for r in orig
-                                     if (r.get("name") or "").lower() not in fmt_names]
-                        fmt.extend(missing)
+                # Validate description length
+                description = restaurant.get("description", "").strip()
+                word_count = len(description.split())
+                if word_count < 10 or word_count > 35:
+                    logger.warning(f"Description for {name} has {word_count} words, outside 15-30 range")
 
-                    return fmt
+                # Clean sources
+                sources = restaurant.get("sources", [])
+                clean_sources = []
+                for source in sources:
+                    source = source.lower().strip()
+                    if not any(blocked in source for blocked in ['tripadvisor', 'yelp', 'google']):
+                        clean_sources.append(source)
 
-                if isinstance(formatted_rec, dict):
-                    formatted_rec["main_list"] = _merge_list(orig_all, formatted_rec.get("main_list", []))
-                    # Ensure no hidden_gems in output
-                    formatted_rec.pop("hidden_gems", None)
-                    formatted_results["formatted_recommendations"] = formatted_rec
-
-                # ── 8. attach follow-up queries & finish ────────────────
-                formatted_results["follow_up_queries"] = follow_up_queries
-
-                dump_chain_state(
-                    "editor_final_results",
-                    {
-                        "formatted_keys": list(formatted_results.keys()),
-                        "follow_up_queries": len(follow_up_queries),
-                        "total_restaurants": len(formatted_results.get("formatted_recommendations", {}).get("main_list", [])),
-                    },
-                )
-                return formatted_results
-
-            # ── 9. JSON or attr error inside try-block ───────────────────
-            except (json.JSONDecodeError, AttributeError) as exc:
-                dump_chain_state(
-                    "editor_json_error",
-                    {"error": str(exc), "response_preview": str(response.content)[:500]},
-                )
-                return {
-                    "formatted_recommendations": {
-                        "main_list": recommendations.get("main_list", []),
-                    },
-                    "follow_up_queries": follow_up_queries if "follow_up_queries" in locals() else [],
+                cleaned_restaurant = {
+                    "name": name,
+                    "address": restaurant.get("address", "Requires verification").strip(),
+                    "description": description,
+                    "sources": clean_sources
                 }
 
-            # ── 10. any other exception ───────────────────────────────────
-            except Exception as exc:
-                dump_chain_state(
-                    "editor_general_error",
-                    {
-                        "error": str(exc),
-                        "recommendations_preview": str(recommendations)[:500],
-                    },
-                    error=exc,
-                )
-                return {
-                    "formatted_recommendations": {
-                        "main_list": recommendations.get("main_list", [])
-                        if isinstance(recommendations, dict)
-                        else [],
-                    },
-                    "follow_up_queries": [],
-                }
+                cleaned_restaurants.append(cleaned_restaurant)
 
-    def _generate_follow_up_queries(self, recommendations, original_query):
-        """Generate follow-up search queries for each restaurant, focusing on mandatory information."""
+            # Format for compatibility with existing system
+            return {
+                "formatted_recommendations": {
+                    "main_list": [{
+                        "name": r["name"],
+                        "address": r["address"],
+                        "description": r["description"],
+                        "sources": r["sources"],
+                        "missing_info": ["address"] if r["address"] == "Requires verification" else []
+                    } for r in cleaned_restaurants]
+                },
+                "follow_up_queries": self._generate_follow_up_queries(cleaned_restaurants, destination)
+            }
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse AI response as JSON: {e}")
+            logger.error(f"Raw response: {ai_output[:500]}...")
+            return self._fallback_response()
+        except Exception as e:
+            logger.error(f"Error in post-processing: {e}")
+            return self._fallback_response()
+
+    def _generate_follow_up_queries(self, restaurants, destination):
+        """
+        Generate search queries for restaurants that need address verification.
+        """
+        queries = []
+        for restaurant in restaurants:
+            if restaurant.get("address") == "Requires verification":
+                queries.append(f"{restaurant['name']} {destination} address location")
+
+        return queries[:5]  # Limit to 5 follow-up queries
+
+    def _fallback_response(self):
+        """Return fallback response when AI processing fails"""
+        return {
+            "formatted_recommendations": {
+                "main_list": []
+            },
+            "follow_up_queries": []
+        }
+
+    @log_function_call
+    def edit(self, search_results, original_query, destination="Unknown"):
+        """
+        Main method to process search results and return consolidated restaurant recommendations.
+
+        Args:
+            search_results: List of scraped articles with content
+            original_query: The user's original search query
+            destination: The city/location being searched
+
+        Returns:
+            Dict with formatted_recommendations and follow_up_queries
+        """
         try:
-            # Combine all restaurants into one list for query generation
-            all_restaurants = []
+            logger.info(f"Processing {len(search_results)} articles for {destination}")
 
-            if isinstance(recommendations, dict):
-                # Add main_list
-                main_list = recommendations.get("main_list", [])
-                if isinstance(main_list, list):
-                    all_restaurants.extend(main_list)
+            # Prepare content for AI processing
+            scraped_content = self._prepare_scraped_content(search_results)
 
-                # Add hidden_gems
-                hidden_gems = recommendations.get("hidden_gems", [])
-                if isinstance(hidden_gems, list):
-                    all_restaurants.extend(hidden_gems)
+            if not scraped_content.strip():
+                logger.warning("No substantial content found in search results")
+                return self._fallback_response()
 
-                # Handle legacy format
-                if "recommended" in recommendations and not all_restaurants:
-                    recommended = recommendations.get("recommended", [])
-                    if isinstance(recommended, list):
-                        all_restaurants.extend(recommended)
-
-            # Create recommendations structure with combined list
-            combined_recommendations = {"main_list": all_restaurants}
-
-            # Turn recommendations into a JSON string once.
-            rec_json = json.dumps(combined_recommendations, ensure_ascii=False, indent=2)
-
-            # Prompt template with placeholders, no raw braces.
-            follow_up_prompt = ChatPromptTemplate.from_messages([
-                ("system",
-                 """
-            You are an expert at crafting targeted web-search queries for restaurants.
-
-            For each restaurant, create queries **only** to retrieve missing **MANDATORY** info:
-            1. Address
-            2. Price range
-            3. Recommended dishes
-            4. Reputable sources (Michelin, Time Out, etc.)
-
-            Do **NOT** create queries for optional data (chef, Instagram, hours, atmosphere).
-
-            If a restaurant already has all mandatory info, return just **one** query
-            to check for mentions in respected guides.
-
-            Return a JSON array, e.g.:
-            [
-              {{{{
-                "restaurant_name": "Example Bistro",
-                "queries": ["example bistro address", "example bistro price range"]
-              }}}},
-              …
-            ]
-            (Max 3 queries per restaurant.)
-            """),
-                ("human",
-                 """
-            Original user query:
-            {original_query}
-
-            Restaurant recommendations (JSON):
-            {recommendations}
-
-            Create the follow-up search queries as specified above.
-            """)
-            ])
-
-            follow_up_chain = follow_up_prompt | self.model
-
-            # Supply the variables the template expects.
-            response = follow_up_chain.invoke({
+            # Get AI processing
+            response = self.chain.invoke({
                 "original_query": original_query,
-                "recommendations": rec_json
+                "destination": destination,
+                "scraped_content": scraped_content
             })
 
-            # Strip any markdown fences, then parse.
-            content = response.content
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
+            # Process AI output
+            result = self._post_process_results(response.content, original_query, destination)
 
-            return json.loads(content)
+            logger.info(f"Successfully processed {len(result['formatted_recommendations']['main_list'])} restaurants")
 
-        except (json.JSONDecodeError, AttributeError) as exc:
-            print(f"Error parsing follow-up queries: {exc}")
-            return self._generate_basic_queries({"main_list": all_restaurants})
+            return result
 
-        except Exception as exc:
-            print(f"Error generating follow-up queries: {exc}")
-            return self._generate_basic_queries({"main_list": all_restaurants})
+        except Exception as e:
+            logger.error(f"Error in simplified editor: {e}")
+            dump_chain_state("simplified_editor_error", {
+                "error": str(e),
+                "query": original_query,
+                "destination": destination
+            })
+            return self._fallback_response()
 
-    def _generate_basic_queries(self, recommendations):
-        """Generate basic follow-up queries focused on mandatory information if the main generation fails"""
-        basic_queries = []
-
-        # Get restaurants from main_list
-        main_list = recommendations.get("main_list", [])
-
-        for restaurant in main_list:
-            name = restaurant.get("name", "")
-            if name:
-                # Check what mandatory information is missing
-                address = restaurant.get("address", "")
-                price_range = restaurant.get("price_range", "")
-                recommended_dishes = restaurant.get("recommended_dishes", [])
-                sources = restaurant.get("sources", [])
-
-                queries = []
-
-                # Only create queries for missing mandatory information
-                if not address or address == "Address unavailable":
-                    queries.append(f"{name} restaurant address location")
-
-                if not price_range:
-                    queries.append(f"{name} restaurant price range cost")
-
-                if not recommended_dishes or len(recommended_dishes) < 2:
-                    queries.append(f"{name} restaurant signature dishes menu specialties")
-
-                if not sources or len(sources) < 2:
-                    queries.append(f"{name} restaurant reviews guide recommended by")
-
-                # If no missing information or we have room for another query, add a guide check
-                if not queries or len(queries) < 3:
-                    queries.append(f"{name} restaurant michelin guide world's 50 best")
-
-                # Limit to 3 queries maximum
-                basic_queries.append({
-                    "restaurant_name": name,
-                    "queries": queries[:3]
-                })
-
-        return basic_queries
+# Compatibility wrapper to maintain existing interface
+class EditorAgent(SimplifiedEditorAgent):
+    """
+    Compatibility wrapper for existing orchestrator code.
+    Inherits from SimplifiedEditorAgent and provides the same interface.
+    """
+    pass
