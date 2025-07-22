@@ -1,4 +1,4 @@
-# agents/simplified_follow_up_search_agent.py
+# agents/follow_up_search_agent.py
 
 import logging
 import googlemaps
@@ -7,9 +7,9 @@ from utils.debug_utils import dump_chain_state, log_function_call
 
 logger = logging.getLogger(__name__)
 
-class SimplifiedFollowUpSearchAgent:
+class FollowUpSearchAgent:
     """
-    Simplified follow-up search agent that handles:
+    Follow-up search agent that handles:
     1. Address verification using Google Maps API
     2. Rating filtering and restaurant rejection based on Google ratings
     """
@@ -40,7 +40,7 @@ class SimplifiedFollowUpSearchAgent:
     @log_function_call
     def perform_follow_up_searches(
         self,
-        formatted_recommendations: Dict[str, List[Dict[str, Any]]],
+        edited_results: Dict[str, List[Dict[str, Any]]],
         follow_up_queries: List[Dict[str, Any]] = None,  # Not used but kept for compatibility
         destination: str = "Unknown",
         secondary_filter_parameters: Optional[List[str]] = None  # Not used but kept for compatibility
@@ -50,16 +50,16 @@ class SimplifiedFollowUpSearchAgent:
         Restaurants below the minimum rating threshold are removed from the list.
 
         Args:
-            formatted_recommendations: Restaurant data with main_list
+            edited_results: Restaurant data from editor with main_list
             follow_up_queries: Ignored (kept for compatibility)
             destination: City from original query
             secondary_filter_parameters: Ignored (kept for compatibility)
 
         Returns:
-            Dict with updated main_list containing only restaurants that pass rating filter
+            Dict with enhanced_results containing only restaurants that pass rating filter
         """
 
-        main_list = formatted_recommendations.get("main_list", [])
+        main_list = edited_results.get("main_list", [])
 
         logger.info(f"Starting address verification and rating filtering for {len(main_list)} restaurants in {destination}")
         logger.info(f"Minimum acceptable rating: {self.min_acceptable_rating}")
@@ -78,7 +78,7 @@ class SimplifiedFollowUpSearchAgent:
             else:
                 verified_restaurants.append(result)
 
-        final_result = {"main_list": verified_restaurants}
+        final_result = {"enhanced_results": {"main_list": verified_restaurants}}
 
         logger.info(f"✅ Address verification and filtering complete for {destination}")
         logger.info(f"   - Original count: {len(main_list)}")
@@ -241,11 +241,3 @@ class SimplifiedFollowUpSearchAgent:
         except Exception as e:
             logger.error(f"Unexpected error searching Google Maps for {restaurant_name} in {city}: {e}")
             return None
-
-# Compatibility wrapper to maintain existing interface
-class FollowUpSearchAgent(SimplifiedFollowUpSearchAgent):
-    """
-    Compatibility wrapper for existing orchestrator code.
-    Inherits from SimplifiedFollowUpSearchAgent to maintain the same interface.
-    """
-    pass

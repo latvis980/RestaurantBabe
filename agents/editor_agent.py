@@ -1,4 +1,4 @@
-# agents/simplified_editor_agent.py
+# agents/editor_agent.py
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tracers.context import tracing_v2_enabled
@@ -9,7 +9,7 @@ from utils.debug_utils import dump_chain_state, log_function_call
 
 logger = logging.getLogger(__name__)
 
-class SimplifiedEditorAgent:
+class EditorAgent:
     def __init__(self, config):
         self.model = ChatOpenAI(
             model=config.OPENAI_MODEL,
@@ -176,7 +176,7 @@ Content: {content[:3000]}...
 
             # Format for compatibility with existing system
             return {
-                "formatted_recommendations": {
+                "edited_results": {
                     "main_list": [{
                         "name": r["name"],
                         "address": r["address"],
@@ -210,33 +210,33 @@ Content: {content[:3000]}...
     def _fallback_response(self):
         """Return fallback response when AI processing fails"""
         return {
-            "formatted_recommendations": {
+            "edited_results": {
                 "main_list": []
             },
             "follow_up_queries": []
         }
 
     @log_function_call
-    def edit(self, search_results, original_query, destination="Unknown"):
+    def edit(self, scraped_results, original_query, destination="Unknown"):
         """
-        Main method to process search results and return consolidated restaurant recommendations.
+        Main method to process scraped results and return consolidated restaurant recommendations.
 
         Args:
-            search_results: List of scraped articles with content
+            scraped_results: List of scraped articles with content  
             original_query: The user's original search query
             destination: The city/location being searched
 
         Returns:
-            Dict with formatted_recommendations and follow_up_queries
+            Dict with edited_results and follow_up_queries
         """
         try:
-            logger.info(f"Processing {len(search_results)} articles for {destination}")
+            logger.info(f"Processing {len(scraped_results)} articles for {destination}")
 
             # Prepare content for AI processing
-            scraped_content = self._prepare_scraped_content(search_results)
+            scraped_content = self._prepare_scraped_content(scraped_results)
 
             if not scraped_content.strip():
-                logger.warning("No substantial content found in search results")
+                logger.warning("No substantial content found in scraped results")
                 return self._fallback_response()
 
             # Get AI processing
@@ -249,23 +249,15 @@ Content: {content[:3000]}...
             # Process AI output
             result = self._post_process_results(response.content, original_query, destination)
 
-            logger.info(f"Successfully processed {len(result['formatted_recommendations']['main_list'])} restaurants")
+            logger.info(f"Successfully processed {len(result['edited_results']['main_list'])} restaurants")
 
             return result
 
         except Exception as e:
-            logger.error(f"Error in simplified editor: {e}")
-            dump_chain_state("simplified_editor_error", {
+            logger.error(f"Error in editor: {e}")
+            dump_chain_state("editor_error", {
                 "error": str(e),
                 "query": original_query,
                 "destination": destination
             })
             return self._fallback_response()
-
-# Compatibility wrapper to maintain existing interface
-class EditorAgent(SimplifiedEditorAgent):
-    """
-    Compatibility wrapper for existing orchestrator code.
-    Inherits from SimplifiedEditorAgent and provides the same interface.
-    """
-    pass
