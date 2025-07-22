@@ -1,4 +1,6 @@
 # agents/langchain_orchestrator.py
+# FIXED VERSION - Now passes destination to follow-up search
+
 from langchain_core.runnables import RunnableSequence, RunnableLambda
 from langchain_core.tracers.context import tracing_v2_enabled
 import time
@@ -223,10 +225,14 @@ class LangChainOrchestrator:
             }
 
     def _follow_up_step(self, x):
-        """Follow-up search step"""
+        """Follow-up search step
+
+        FIXED: Now passes the destination parameter to the follow-up search agent
+        """
         try:
             dump_chain_state("pre_follow_up", {
-                "formatted_recommendations_keys": list(x.get("formatted_recommendations", {}).keys())
+                "formatted_recommendations_keys": list(x.get("formatted_recommendations", {}).keys()),
+                "destination": x.get("destination", "Unknown")  # Log destination
             })
 
             formatted_recs = x.get("formatted_recommendations", {})
@@ -241,15 +247,20 @@ class LangChainOrchestrator:
             follow_up_queries = formatted_recs.get("follow_up_queries", [])
             secondary_params = x.get("secondary_filter_parameters", [])
 
-            # Execute follow up search
+            # FIXED: Extract destination from the query analysis
+            destination = x.get("destination", "Unknown")
+
+            # Execute follow up search with destination parameter
             enhanced_recommendations = self.follow_up_search_agent.perform_follow_up_searches(
                 actual_recs,
                 follow_up_queries,
+                destination,  # FIXED: Pass destination as third parameter
                 secondary_params
             )
 
             dump_chain_state("post_follow_up", {
-                "enhanced_recommendations_keys": list(enhanced_recommendations.keys() if enhanced_recommendations else {})
+                "enhanced_recommendations_keys": list(enhanced_recommendations.keys() if enhanced_recommendations else {}),
+                "destination_used": destination
             })
 
             return {**x, "enhanced_recommendations": enhanced_recommendations}
@@ -259,18 +270,30 @@ class LangChainOrchestrator:
             dump_chain_state("follow_up_error", x, error=e)
             return {
                 **x,
-                "enhanced_recommendations": x.get("formatted_recommendations", {}).get("formatted_recommendations", {})
+                "enhanced_recommendations": {
+                    "main_list": x.get("recommendations", {}).get("main_list", [])
+                }
             }
 
     def _format_step(self, x):
-        """Simple formatting step using dedicated formatter"""
+        """Format the results for Telegram"""
         try:
-            logger.info("🔧 Starting Telegram formatting")
+            enhanced_recommendations = x.get("enhanced_recommendations", {})
+            main_list = enhanced_recommendations.get("main_list", [])
 
-            enhanced_recs = x.get("enhanced_recommendations", {})
-            telegram_text = self.telegram_formatter.format_recommendations(enhanced_recs)
+            if not main_list:
+                return {
+                    **x,
+                    "telegram_formatted_text": "Sorry, no restaurants found matching your criteria."
+                }
 
-            logger.info("✅ Telegram formatting completed")
+            # Format for Telegram
+            telegram_text = self.telegram_formatter.format(enhanced_recommendations)
+
+            dump_chain_state("format_complete", {
+                "restaurants_formatted": len(main_list),
+                "text_length": len(telegram_text)
+            })
 
             return {
                 **x,
@@ -278,160 +301,43 @@ class LangChainOrchestrator:
             }
 
         except Exception as e:
-            logger.error(f"❌ Error in formatting step: {e}")
-            # Use formatter's error handling
+            logger.error(f"Error in format step: {e}")
+            dump_chain_state("format_error", x, error=e)
             return {
                 **x,
-                "telegram_formatted_text": self.telegram_formatter.format_no_results()
+                "telegram_formatted_text": "Sorry, there was an error formatting the recommendations."
             }
-
-    def _extract_user_preferences(self, query):
-        """Extract user preferences from query if provided"""
-        preference_marker = "User preferences:"
-
-        if preference_marker in query:
-            parts = query.split(preference_marker)
-            clean_query = parts[0].strip()
-
-            if len(parts) > 1:
-                preferences_text = parts[1].strip()
-                preferences = [p.strip() for p in preferences_text.split(',') if p.strip()]
-                return clean_query, preferences
-
-        return query, []
-
-    # Fix for agents/langchain_orchestrator.py
-    # The issue is that get_stats() is returning a dict without 'credits_used' key
-
-    def _check_usage_limits(self):
-        """Check if approaching usage limits - FIXED VERSION"""
-        try:
-            stats = self.scraper.get_stats()
-
-            # FIX: Handle case where 'credits_used' might not exist
-            credits_used = stats.get('credits_used', 0)  # Default to 0 if not present
-
-            DAILY_CREDIT_LIMIT = 400
-            HIGH_USAGE_THRESHOLD = 300
-            COST_ALERT_THRESHOLD = 5.0
-
-            if credits_used > DAILY_CREDIT_LIMIT:
-                logger.error(f"🚨 DAILY CREDIT LIMIT EXCEEDED: {credits_used}/{DAILY_CREDIT_LIMIT}")
-                self._send_alert_to_admin(f"🚨 Credit limit exceeded! Used {credits_used} credits today.")
-                return False
-
-            elif credits_used > HIGH_USAGE_THRESHOLD:
-                logger.warning(f"⚠️ HIGH USAGE WARNING: {credits_used}/{DAILY_CREDIT_LIMIT} credits used")
-                self._send_alert_to_admin(f"⚠️ High usage alert: {credits_used} credits used today.")
-
-            estimated_cost = (credits_used / 500) * 16
-            if estimated_cost > COST_ALERT_THRESHOLD:
-                logger.warning(f"💰 HIGH COST ALERT: Estimated ${estimated_cost:.2f}")
-                self._send_alert_to_admin(f"💰 Cost alert: Estimated ${estimated_cost:.2f} in usage today.")
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Error checking usage limits: {e}")
-            # FIX: Return True to allow processing to continue when stats fail
-            return True
-
-    def _log_firecrawl_usage(self):
-        """Log Firecrawl usage statistics - FIXED VERSION"""
-        try:
-            stats = self.scraper.get_stats()
-            can_continue = self._check_usage_limits()
-
-            if not can_continue:
-                logger.error("Usage limits exceeded - consider upgrading plan")
-
-            logger.info("=" * 50)
-            logger.info("FIRECRAWL USAGE REPORT")
-            logger.info("=" * 50)
-            logger.info(f"URLs scraped: {stats.get('total_scraped', 0)}")
-            logger.info(f"Successful extractions: {stats.get('successful_extractions', 0)}")
-            logger.info(f"Credits used: {stats.get('credits_used', 0)}")  # FIX: Use .get() with default
-            logger.info("=" * 50)
-
-            # Store usage record
-            usage_record = {
-                "timestamp": time.time(),
-                "firecrawl_stats": stats,
-                "session_id": f"session_{int(time.time())}",
-                "can_continue": can_continue
-            }
-
-            save_data(self.config.DB_TABLE_PROCESSES, usage_record, self.config)
-
-        except Exception as e:
-            logger.error(f"Error logging Firecrawl usage: {e}")
-
-    # ADDITIONAL FIX: Make sure the scraper's get_stats() method returns proper data
-    # This should be added to agents/firecrawl_scraper.py
-
-    def get_stats(self):
-        """Get scraping statistics - FIXED VERSION"""
-        # Ensure all expected keys are present
-        stats = {
-            "total_scraped": self.stats.get("total_scraped", 0),
-            "successful_extractions": self.stats.get("successful_extractions", 0),
-            "failed_extractions": self.stats.get("failed_extractions", 0),
-            "total_restaurants_found": self.stats.get("total_restaurants_found", 0),
-            "credits_used": self.stats.get("credits_used", 0)  # FIX: Ensure this key always exists
-        }
-        return stats
-
-    def _send_alert_to_admin(self, message):
-        """Send alert message to admin"""
-        try:
-            logger.critical(f"ADMIN ALERT: {message}")
-
-            # Save to database
-            alert_record = {
-                "alert_type": "usage_limit",
-                "message": message,
-                "timestamp": time.time(),
-                "urgency": "high"
-            }
-
-            save_data(self.config.DB_TABLE_PROCESSES, alert_record, self.config)
-            logger.info("Alert saved to database")
-
-        except Exception as e:
-            logger.error(f"Error sending admin alert: {e}")
 
     def _log_firecrawl_usage(self):
         """Log Firecrawl usage statistics"""
         try:
             stats = self.scraper.get_stats()
-            can_continue = self._check_usage_limits()
-
-            if not can_continue:
-                logger.error("Usage limits exceeded - consider upgrading plan")
-
-            logger.info("=" * 50)
-            logger.info("FIRECRAWL USAGE REPORT")
-            logger.info("=" * 50)
-            logger.info(f"URLs scraped: {stats.get('total_scraped', 0)}")
-            logger.info(f"Successful extractions: {stats.get('successful_extractions', 0)}")
-            logger.info(f"Credits used: {stats.get('credits_used', 0)}")
-            logger.info("=" * 50)
-
-            # Store usage record
-            usage_record = {
-                "timestamp": time.time(),
-                "firecrawl_stats": stats,
-                "session_id": f"session_{int(time.time())}",
-                "can_continue": can_continue
-            }
-
-            save_data(self.config.DB_TABLE_PROCESSES, usage_record, self.config)
-
+            logger.info(f"Firecrawl usage - Total calls: {stats.get('total_calls', 0)}, "
+                       f"Credits used: {stats.get('credits_used', 0)}, "
+                       f"Success rate: {stats.get('success_rate', 0):.1%}")
         except Exception as e:
-            logger.error(f"Error logging Firecrawl usage: {e}")
+            logger.warning(f"Error logging Firecrawl stats: {e}")
 
-    @log_function_call
-    def process_query(self, user_query, standing_prefs=None):
+    def _extract_user_preferences(self, query):
+        """Extract explicit preferences from the query"""
+        # Simple extraction for now - can be enhanced later
+        explicit_prefs = []
+        clean_query = query
+
+        # Extract dietary restrictions and preferences
+        pref_indicators = [
+            "vegetarian", "vegan", "halal", "kosher", "gluten-free", "organic",
+            "farm-to-table", "local", "sustainable", "seafood", "steakhouse",
+            "fine dining", "casual", "romantic", "family-friendly", "outdoor seating"
+        ]
+
+        for pref in pref_indicators:
+            if pref in query.lower():
+                explicit_prefs.append(pref)
+
+        return clean_query, explicit_prefs
+
+    def process_query(self, user_query: str, standing_prefs: list = None):
         """
         Process a user query using the LangChain sequence
 
@@ -467,7 +373,8 @@ class LangChainOrchestrator:
                 dump_chain_state("process_query_complete", {
                     "result_keys": list(result.keys()),
                     "has_recommendations": "enhanced_recommendations" in result,
-                    "has_telegram_text": "telegram_formatted_text" in result
+                    "has_telegram_text": "telegram_formatted_text" in result,
+                    "destination": result.get("destination", "Unknown")
                 })
 
                 # Final usage summary
@@ -476,6 +383,7 @@ class LangChainOrchestrator:
                 # Save process record
                 process_record = {
                     "query": user_query,
+                    "destination": result.get("destination", "Unknown"),
                     "trace_id": trace_id,
                     "timestamp": time.time(),
                     "firecrawl_stats": self.scraper.get_stats()
@@ -490,7 +398,7 @@ class LangChainOrchestrator:
                 enhanced_recommendations = result.get("enhanced_recommendations", {})
                 main_list = enhanced_recommendations.get("main_list", [])
 
-                logger.info(f"Final result - Main list: {len(main_list)} restaurants")
+                logger.info(f"Final result - Main list: {len(main_list)} restaurants for {result.get('destination', 'Unknown')}")
 
                 # FIXED: Return the correct key name that telegram_bot.py expects
                 return {
@@ -511,4 +419,3 @@ class LangChainOrchestrator:
                     "telegram_formatted_text": "Sorry, there was an error processing your request.",  # ← FIXED: Changed from "telegram_text"
                     "firecrawl_stats": self.scraper.get_stats()
                 }
-    
