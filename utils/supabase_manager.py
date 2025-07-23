@@ -334,18 +334,18 @@ class SupabaseManager:
             # Generate query embedding
             query_embedding = self.embedding_model.encode(query).tolist()
 
-            # Search for similar content chunks
-            # Note: Supabase vector search syntax
+            # Search for similar content chunks using RPC
             result = self.supabase.rpc('match_content_chunks', {
                 'query_embedding': query_embedding,
                 'match_threshold': self.config.SIMILARITY_THRESHOLD,
                 'match_count': limit
             }).execute()
 
-            return result.data
+            return result.data if result.data else []
 
         except Exception as e:
-            logger.error(f"Error searching similar content: {e}")
+            logger.warning(f"Vector search not available (function may not exist): {e}")
+            # Fallback: return empty list if vector search isn't set up yet
             return []
 
     def cache_search_results(self, query: str, results: Dict[str, Any]) -> bool:
