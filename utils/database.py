@@ -1,6 +1,6 @@
 # utils/database.py - Supabase adapter (replaces your old PostgreSQL setup)
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from .supabase_manager import SupabaseManager
 
 logger = logging.getLogger(__name__)
@@ -134,7 +134,7 @@ def get_trusted_domains(config, min_confidence: float = None) -> List[str]:
 
 # ============ NEW RAG FUNCTIONS ============
 
-def save_scraped_content(source_url: str, content: str, restaurant_mentions: List[str] = None) -> bool:
+def save_scraped_content(source_url: str, content: str, restaurant_mentions: Optional[List[str]] = None) -> bool:
     """Save scraped content for RAG"""
     try:
         manager = get_supabase_manager()
