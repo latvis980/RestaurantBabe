@@ -166,19 +166,16 @@ class BraveSearchAgent:
         if enable_ai_filtering:
             logger.info(f"[SearchAgent] AI Filtering Stats: {self.evaluation_stats}")
 
-        # Save results to database for future reference
+        # Cache search results using new Supabase system
         if all_results:
-            save_data(
-                self.config.DB_TABLE_SEARCHES,
-                {
-                    "queries": queries,
-                    "timestamp": time.time(),
-                    "results": all_results,
-                    "ai_filtering_enabled": enable_ai_filtering,
-                    "filtering_stats": self.evaluation_stats.copy()
-                },
-                self.config
-            )
+            from utils.database import cache_search_results
+            cache_search_results(str(queries), {
+                "queries": queries,
+                "timestamp": time.time(),
+                "results": all_results,
+                "ai_filtering_enabled": enable_ai_filtering,
+                "filtering_stats": self.evaluation_stats.copy()
+            })
 
         return all_results
 

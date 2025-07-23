@@ -381,16 +381,6 @@ class LangChainOrchestrator:
                 # Final usage summary
                 self._log_firecrawl_usage()
 
-                # Save process record
-                process_record = {
-                    "query": user_query,
-                    "destination": result.get("destination", "Unknown"),
-                    "trace_id": trace_id,
-                    "timestamp": time.time(),
-                    "firecrawl_stats": self.scraper.get_stats()
-                }
-
-                save_data(self.config.DB_TABLE_PROCESSES, process_record, self.config)
 
                 # Extract results with correct key names
                 telegram_text = result.get("telegram_formatted_text", 
