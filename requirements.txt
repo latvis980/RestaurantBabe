@@ -41,4 +41,4 @@ beautifulsoup4
 
 # Vector operations and text processing
 numpy>=1.24.0
-hashlib2  # For query hashing
+# hashlib is built into Python - no need to install
