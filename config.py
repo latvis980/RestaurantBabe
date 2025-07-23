@@ -14,10 +14,13 @@ GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
-# SUPABASE SETTINGS (replacing PostgreSQL)
+# SUPABASE SETTINGS (NEW - replacing PostgreSQL)
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")  # Use service_role key for server operations
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")  # For admin operations
+
+# PostgreSQL settings (using variable in Railway) - KEEP FOR BACKWARD COMPATIBILITY
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # OpenAI API settings (for components that need highest quality)
 OPENAI_MODEL = "gpt-4o"  # Always using GPT-4o as requested
@@ -39,62 +42,108 @@ DEEPSEEK_TIMEOUT = 120.0
 MODEL_STRATEGY = {
     # Speed-critical components using DeepSeek
     'content_sectioning': 'deepseek',     # MAJOR bottleneck fix
-    'strategy_analysis': 'deepseek',      # Fast strategy decisions
-    'list_analyzer': 'openai',            # Keep quality high for final results
-    'search_evaluation': 'openai',        # FIXED: Use OpenAI for quality filtering
-    'telegram_formatter': 'openai',       # Keep formatting quality high
+    'strategy_analysis': 'deepseek',      # Domain analysis speedup
+
+    # FIXED: Search evaluation now uses OpenAI (gpt-4o-mini)
+    'search_evaluation': 'openai',        # Changed from 'deepseek' to 'openai'
+
+    # Quality-critical components (keep existing)
+    'restaurant_extraction': 'openai',    # Keep quality for core function
+    'list_analysis': 'claude',            # Keep Claude for final analysis
+    'conversation': 'openai',             # Keep for user chat
+    'editor': 'openai'                    # Keep for restaurant formatting
 }
 
-# RAG and Vector Search Settings
+# Component-specific token limits optimized for each model
+OPENAI_MAX_TOKENS_BY_COMPONENT = {
+    'search_agent': 512,           # URL evaluation - now using OpenAI
+    'search_evaluation': 512,      # Added explicit search evaluation limit
+    'conversation': 1024,          # Telegram chat  
+    'editor_agent': 4096,          # Restaurant formatting
+    'firecrawl_scraper': 6144,     # Restaurant extraction
+    'list_analyzer': 8192,         # Final analysis (Claude)
+    'default': 2048                # Fallback
+}
+
+# NEW: DeepSeek token limits (optimized for speed)
+DEEPSEEK_MAX_TOKENS_BY_COMPONENT = {
+    'content_sectioning': 2048,    # Fast content analysis
+    'strategy_analysis': 512,      # Fast domain analysis
+    'default': 1024                # General purpose
+}
+
+# Content processing limits (character-based)
+CONTENT_PROCESSING_LIMITS = {
+    'firecrawl_content_limit': 12000,      # Increased from 4000
+    'content_sectioner_limit': 8000,      # Optimized for DeepSeek
+    'simple_scraper_limit': 6000,         # For basic HTTP scraping
+    'search_snippet_limit': 500           # Keep search evaluation lightweight
+}
+
+# Rate limiting settings (prevents the retry delays you're seeing)
+MAX_CONCURRENT_OPENAI_CALLS = 2  # Reduced since using DeepSeek for many tasks
+MAX_CONCURRENT_DEEPSEEK_CALLS = 5  # DeepSeek can handle more concurrent calls
+OPENAI_RATE_LIMIT_DELAY = 0.5    
+DEEPSEEK_RATE_LIMIT_DELAY = 0.2  # Faster rate limiting for DeepSeek
+
+# Claude API settings (high token limit for final analysis)
+CLAUDE_MODEL = "claude-3-5-sonnet-20241022"  # Latest Claude Sonnet 4
+CLAUDE_TEMPERATURE = 0.2
+CLAUDE_MAX_TOKENS = 8192
+
+# RAG and Vector Search Settings (NEW)
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # Fast, good quality
 EMBEDDING_DIMENSION = 384  # Dimension for all-MiniLM-L6-v2
 SIMILARITY_THRESHOLD = 0.7  # For semantic search
 CHUNK_MAX_LENGTH = 1000  # Maximum characters per content chunk
 CHUNK_OVERLAP = 100  # Overlap between chunks
 
-# Restaurant Data Settings
+# Restaurant Data Settings (NEW)
 DEFAULT_CREDIBILITY_SCORE = 0.5
 MIN_CREDIBILITY_FOR_RECOMMENDATION = 0.6
 MAX_RESTAURANTS_PER_QUERY = 10
 CACHE_EXPIRY_DAYS = 7
 
-# Domain Intelligence Settings (keeping your existing system)
+# Domain Intelligence Settings (NEW - enhancing your existing system)
 DOMAIN_INTELLIGENCE_ENABLED = True
 AUTO_UPDATE_DOMAIN_INTELLIGENCE = True
 DOMAIN_SUCCESS_THRESHOLD = 0.7  # Minimum success rate to trust a domain
 DOMAIN_FAILURE_LIMIT = 5  # Block domain after this many failures
 
-# Google My Maps Integration
+# Google My Maps Integration (NEW)
 GOOGLE_MAPS_ENABLED = True
 MY_MAPS_AUTO_UPDATE = True
 MY_MAPS_MAX_RESTAURANTS = 500  # Limit for performance
 
-# Firecrawl settings (keeping your existing scraping setup)
+# Database table names (KEEP FOR BACKWARD COMPATIBILITY)
+DB_TABLE_USER_PREFS = "user_preferences"
+DB_TABLE_SEARCHES = "searches"
+DB_TABLE_PROCESSES = "processes"
+
+# Search settings
+EXCLUDED_RESTAURANT_SOURCES = ["tripadvisor.com", "yelp.com", "google.com/maps"]
+
+# Brave search settings
+BRAVE_SEARCH_COUNT = 15
+
+# Firecrawl AI scraping
 FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY")
-FIRECRAWL_API_URL = "https://api.firecrawl.dev"
 
-# Search and scraping configuration
-MAX_PAGES_PER_SEARCH = 3
-MAX_SEARCH_RESULTS = 20
-SCRAPER_TIMEOUT = 120
-MAX_CONCURRENT_SCRAPES = 5
+# Admin alerts
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")
 
-# Telegram bot settings
-TELEGRAM_ADMIN_CHAT_ID = os.environ.get("TELEGRAM_ADMIN_CHAT_ID")
-TELEGRAM_MAX_MESSAGE_LENGTH = 4096
-TELEGRAM_PARSE_MODE = 'HTML'
+# Helper functions to get appropriate settings for each component
+def get_model_for_component(component_name: str) -> str:
+    """Get the appropriate model (openai/deepseek/claude) for a component"""
+    return MODEL_STRATEGY.get(component_name, 'openai')
 
-# LangSmith tracing
-LANGSMITH_PROJECT = "restaurant-recommender-supabase"
-LANGSMITH_TRACING = os.environ.get("LANGSMITH_TRACING", "true").lower() == "true"
+def get_token_limit_for_component(component_name: str, model_type: str = None) -> int:
+    """Get the appropriate token limit for a component based on its assigned model"""
+    if model_type == 'deepseek' or get_model_for_component(component_name) == 'deepseek':
+        return DEEPSEEK_MAX_TOKENS_BY_COMPONENT.get(component_name, DEEPSEEK_MAX_TOKENS_BY_COMPONENT['default'])
+    else:
+        return OPENAI_MAX_TOKENS_BY_COMPONENT.get(component_name, OPENAI_MAX_TOKENS_BY_COMPONENT['default'])
 
-# Development/Debug settings
-DEBUG_MODE = os.environ.get("DEBUG_MODE", "false").lower() == "true"
-SAVE_DEBUG_FILES = DEBUG_MODE
-DEBUG_LOGS_DIR = "debug_logs"
-
-# Legacy table names (remove these after migration)
-# These were for your old PostgreSQL setup
-# DB_TABLE_USER_PREFS = "user_preferences" 
-# DB_TABLE_SEARCHES = "searches"
-# DB_TABLE_PROCESSES = "processes"
+def get_content_limit_for_component(component_name: str) -> int:
+    """Get the appropriate content character limit for a component"""
+    return CONTENT_PROCESSING_LIMITS.get(f"{component_name}_limit", 6000)
