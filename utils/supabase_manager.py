@@ -17,11 +17,6 @@ class SupabaseManager:
 
     def __init__(self, config):
         self.config = config
-
-        logger.info(f"SUPABASE_URL: {config.SUPABASE_URL}")
-        logger.info(f"SUPABASE_SERVICE_KEY exists: {bool(config.SUPABASE_SERVICE_KEY)}")
-        logger.info(f"SUPABASE_SERVICE_KEY length: {len(config.SUPABASE_SERVICE_KEY) if config.SUPABASE_SERVICE_KEY else 0}")
-        
         self.supabase: Client = create_client(
             config.SUPABASE_URL, 
             config.SUPABASE_SERVICE_KEY  # Use service key for server operations
@@ -566,21 +561,43 @@ class SupabaseManager:
     # ============ VECTOR SEARCH HELPER FUNCTION ============
 
     def create_vector_search_function(self):
-        """Check if vector search function exists (function should be created manually in SQL Editor)"""
+        """Create the vector search function in Supabase (run once during setup)"""
+        sql_function = """
+        CREATE OR REPLACE FUNCTION match_content_chunks(
+            query_embedding vector(384),
+            match_threshold float DEFAULT 0.7,
+            match_count int DEFAULT 10
+        )
+        RETURNS TABLE (
+            id uuid,
+            content_text text,
+            similarity float,
+            restaurants_mentioned uuid[],
+            neighborhood_tags text[],
+            cuisine_tags text[],
+            source_id uuid
+        )
+        LANGUAGE sql STABLE
+        AS $
+        SELECT
+            content_chunks.id,
+            content_chunks.content_text,
+            1 - (content_chunks.embedding <=> query_embedding) as similarity,
+            content_chunks.restaurants_mentioned,
+            content_chunks.neighborhood_tags,
+            content_chunks.cuisine_tags,
+            content_chunks.source_id
+        FROM content_chunks
+        WHERE 1 - (content_chunks.embedding <=> query_embedding) > match_threshold
+        ORDER BY content_chunks.embedding <=> query_embedding
+        LIMIT match_count;
+        $;
+        """
+
         try:
-            # Test if the function exists by trying to call it with dummy data
-            test_embedding = [0.0] * 384  # 384-dimensional zero vector
-            result = self.supabase.rpc('match_content_chunks', {
-                'query_embedding': test_embedding,
-                'match_threshold': 0.9,  # High threshold so no results expected
-                'match_count': 1
-            }).execute()
-
-            logger.info("Vector search function exists and is working")
+            self.supabase.sql(sql_function).execute()
+            logger.info("Created vector search function successfully")
             return True
-
         except Exception as e:
-            logger.warning(f"Vector search function not found or not working: {e}")
-            logger.info("Please create the vector search function manually in Supabase SQL Editor")
-            # Don't fail initialization just because the function doesn't exist yet
+            logger.error(f"Error creating vector search function: {e}")
             return False

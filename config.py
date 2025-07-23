@@ -19,9 +19,6 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")  # Use service_role key for server operations
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")  # For admin operations
 
-# PostgreSQL settings (using variable in Railway) - KEEP FOR BACKWARD COMPATIBILITY
-DATABASE_URL = os.environ.get("DATABASE_URL")
-
 # OpenAI API settings (for components that need highest quality)
 OPENAI_MODEL = "gpt-4o"  # Always using GPT-4o as requested
 SEARCH_EVALUATION_MODEL = "gpt-4o-mini"  # Using GPT-4o-mini for search evaluation
@@ -114,11 +111,6 @@ DOMAIN_FAILURE_LIMIT = 5  # Block domain after this many failures
 GOOGLE_MAPS_ENABLED = True
 MY_MAPS_AUTO_UPDATE = True
 MY_MAPS_MAX_RESTAURANTS = 500  # Limit for performance
-
-# Database table names (KEEP FOR BACKWARD COMPATIBILITY)
-DB_TABLE_USER_PREFS = "user_preferences"
-DB_TABLE_SEARCHES = "searches"
-DB_TABLE_PROCESSES = "processes"
 
 # Search settings
 EXCLUDED_RESTAURANT_SOURCES = ["tripadvisor.com", "yelp.com", "google.com/maps"]
