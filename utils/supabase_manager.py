@@ -17,6 +17,11 @@ class SupabaseManager:
 
     def __init__(self, config):
         self.config = config
+
+        logger.info(f"SUPABASE_URL: {config.SUPABASE_URL}")
+        logger.info(f"SUPABASE_SERVICE_KEY exists: {bool(config.SUPABASE_SERVICE_KEY)}")
+        logger.info(f"SUPABASE_SERVICE_KEY length: {len(config.SUPABASE_SERVICE_KEY) if config.SUPABASE_SERVICE_KEY else 0}")
+        
         self.supabase: Client = create_client(
             config.SUPABASE_URL, 
             config.SUPABASE_SERVICE_KEY  # Use service key for server operations
