@@ -584,3 +584,24 @@ class SupabaseManager:
             logger.info("Please create the vector search function manually in Supabase SQL Editor")
             # Don't fail initialization just because the function doesn't exist yet
             return False
+
+    def test_save_data(self):
+        """Test saving data to verify connection works"""
+        try:
+            # Test saving to domain_intelligence table
+            test_data = {
+                'domain': 'test.com',
+                'complexity': 'simple',
+                'scraper_type': 'basic',
+                'cost_per_scrape': 0.0,
+                'confidence': 0.8,
+                'reasoning': 'Test entry'
+            }
+
+            result = self.supabase.table('domain_intelligence').insert(test_data).execute()
+            logger.info(f"Test data saved successfully: {result.data}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Test save failed: {e}")
+            return False

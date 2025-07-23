@@ -9,16 +9,17 @@ logger = logging.getLogger(__name__)
 _supabase_manager = None
 
 def initialize_db(config):
-    """Initialize Supabase connection (replaces old PostgreSQL initialization)"""
     global _supabase_manager
 
     if _supabase_manager is not None:
-        return  # Already initialized
+        return
 
     try:
         _supabase_manager = SupabaseManager(config)
 
-        # Create vector search function if it doesn't exist
+        # Test the connection with real data
+        _supabase_manager.test_save_data()
+
         _supabase_manager.create_vector_search_function()
 
         logger.info("Supabase database initialized successfully")
