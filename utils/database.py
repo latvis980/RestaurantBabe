@@ -1,108 +1,162 @@
-# Modified version of database.py - keeping necessary tables
+# utils/database.py - Supabase adapter (replaces your old PostgreSQL setup)
 import logging
-import json
-import uuid
-import time
-from sqlalchemy import create_engine, MetaData, Table, Column, String, JSON, Float
+from typing import Dict, Any, Optional
+from .supabase_manager import SupabaseManager
 
 logger = logging.getLogger(__name__)
 
-# Globals
-meta = MetaData()
-engine = None
-tables = {}
+# Global instance
+_supabase_manager = None
 
 def initialize_db(config):
-    """Initialize database connection and necessary tables (idempotent)."""
-    global engine, tables
+    """Initialize Supabase connection (replaces old PostgreSQL initialization)"""
+    global _supabase_manager
 
-    if engine is not None:
-        return  # already initialized
+    if _supabase_manager is not None:
+        return  # Already initialized
 
     try:
-        # Create engine
-        engine = create_engine(config.DATABASE_URL)
+        _supabase_manager = SupabaseManager(config)
 
-        # Define tables we want to keep
-        core_tables = {
-            config.DB_TABLE_USER_PREFS: [('_id', String, True), ('data', JSON), ('timestamp', Float)],
-            config.DB_TABLE_SEARCHES: [('_id', String, True), ('data', JSON), ('timestamp', Float)],
-            config.DB_TABLE_PROCESSES: [('_id', String, True), ('data', JSON), ('timestamp', Float)],
-        }
+        # Create vector search function if it doesn't exist
+        _supabase_manager.create_vector_search_function()
 
-        # Create table definitions
-        for name, cols in core_tables.items():
-            if name in tables:
-                continue
-            tables[name] = Table(
-                name,
-                meta,
-                *[Column(col_name, col_type, primary_key=is_pk) for col_name, col_type, is_pk in
-                  [(c[0], c[1], c[2] if len(c) == 3 else False) for c in cols]]
-            )
-
-        # Create tables if not exists
-        meta.create_all(engine)
-        logger.info("Database tables initialized (user_prefs, searches, processes).")
+        logger.info("Supabase database initialized successfully")
 
     except Exception as e:
-        logger.error(f"Error initializing database: {e}")
+        logger.error(f"Error initializing Supabase: {e}")
         raise
 
-# Keep save_data and find_data functions for general use
-def save_data(table_name, data_dict, config):
-    """Save data to the specified table with upsert behavior for duplicates."""
-    global engine, tables
-    if engine is None:
-        initialize_db(config)
+def get_supabase_manager() -> SupabaseManager:
+    """Get the global Supabase manager instance"""
+    if _supabase_manager is None:
+        raise RuntimeError("Supabase not initialized. Call initialize_db() first.")
+    return _supabase_manager
 
+# ============ LEGACY COMPATIBILITY FUNCTIONS ============
+# These maintain compatibility with your existing code
+
+def save_data(table_name: str, data_dict: Dict[str, Any], config) -> Optional[str]:
+    """Legacy function for saving data - now routes to appropriate Supabase method"""
     try:
-        doc_id = data_dict.get('id', str(uuid.uuid4()))
-        record = {
-            '_id': doc_id,
-            'data': data_dict,
-            'timestamp': data_dict.get('timestamp', time.time())
-        }
+        manager = get_supabase_manager()
 
-        # Use an upsert operation instead of plain insert
-        with engine.begin() as conn:
-            # Check if record exists
-            stmt = tables[table_name].select().where(tables[table_name].c._id == doc_id)
-            existing = conn.execute(stmt).fetchone()
+        # Route to appropriate method based on old table names
+        if table_name == "user_preferences":
+            user_id = data_dict.get('user_id') or data_dict.get('id')
+            if user_id:
+                success = manager.save_user_preferences(user_id, data_dict)
+                return user_id if success else None
 
-            if existing:
-                # Update existing record
-                update_stmt = tables[table_name].update().where(tables[table_name].c._id == doc_id).values(
-                    data=data_dict,
-                    timestamp=record['timestamp']
-                )
-                conn.execute(update_stmt)
-            else:
-                # Insert new record
-                conn.execute(tables[table_name].insert().values(**record))
+        elif table_name == "searches":
+            # Cache search results
+            query = data_dict.get('query', '')
+            if query:
+                success = manager.cache_search_results(query, data_dict)
+                return data_dict.get('id') if success else None
 
-        return doc_id
-    except Exception as e:
-        logger.error(f"Error saving to database: {e}")
+        elif table_name == "processes":
+            # For process logging, we could store in user preferences or create a separate method
+            logger.info(f"Process logged: {data_dict.get('query', 'unknown')}")
+            return data_dict.get('id')
+
+        # For unknown tables, log warning
+        logger.warning(f"Unknown table name in save_data: {table_name}")
         return None
 
-def find_data(table_name, query, config):
-    """Find data in the specified table based on a query."""
-    global engine, tables
-    if engine is None:
-        initialize_db(config)
-
-    try:
-        table = tables[table_name]
-        with engine.begin() as conn:
-            if 'user_id' in query:
-                stmt = table.select().where(table.c._id == str(query['user_id']))
-            else:
-                logger.error(f"Unsupported query: {query}")
-                return None
-
-            row = conn.execute(stmt).fetchone()
-            return row[1] if row else None
     except Exception as e:
-        logger.error(f"Error querying database: {e}")
+        logger.error(f"Error in legacy save_data: {e}")
+        return None
+
+def find_data(table_name: str, query: Dict[str, Any], config) -> Optional[Dict[str, Any]]:
+    """Legacy function for finding data - now routes to appropriate Supabase method"""
+    try:
+        manager = get_supabase_manager()
+
+        if table_name == "user_preferences":
+            user_id = query.get('user_id')
+            if user_id:
+                preferences = manager.get_user_preferences(user_id)
+                return preferences
+
+        elif table_name == "searches":
+            # Try to get cached results
+            search_query = query.get('query', '')
+            if search_query:
+                cached = manager.get_cached_results(search_query)
+                return cached
+
+        # For unknown queries, return None
+        logger.warning(f"Unknown table name in find_data: {table_name}")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error in legacy find_data: {e}")
+        return None
+
+# ============ NEW DOMAIN INTELLIGENCE FUNCTIONS ============
+# Enhanced versions of your existing domain intelligence
+
+def save_domain_intelligence(domain: str, intelligence_data: Dict[str, Any], config) -> bool:
+    """Save domain intelligence data"""
+    try:
+        manager = get_supabase_manager()
+        return manager.save_domain_intelligence(domain, intelligence_data)
+    except Exception as e:
+        logger.error(f"Error saving domain intelligence: {e}")
+        return False
+
+def get_domain_intelligence(domain: str, config) -> Optional[Dict[str, Any]]:
+    """Get domain intelligence data"""
+    try:
+        manager = get_supabase_manager()
+        return manager.get_domain_intelligence(domain)
+    except Exception as e:
+        logger.error(f"Error getting domain intelligence: {e}")
+        return None
+
+def update_domain_success(domain: str, success: bool, restaurants_found: int, config):
+    """Update domain success metrics"""
+    try:
+        manager = get_supabase_manager()
+        manager.update_domain_success(domain, success, restaurants_found)
+    except Exception as e:
+        logger.error(f"Error updating domain success: {e}")
+
+def get_trusted_domains(config, min_confidence: float = None) -> List[str]:
+    """Get list of trusted domains"""
+    try:
+        manager = get_supabase_manager()
+        return manager.get_trusted_domains(min_confidence)
+    except Exception as e:
+        logger.error(f"Error getting trusted domains: {e}")
+        return []
+
+# ============ NEW RAG FUNCTIONS ============
+
+def save_scraped_content(source_url: str, content: str, restaurant_mentions: List[str] = None) -> bool:
+    """Save scraped content for RAG"""
+    try:
+        manager = get_supabase_manager()
+        return manager.save_scraped_content(source_url, content, restaurant_mentions)
+    except Exception as e:
+        logger.error(f"Error saving scraped content: {e}")
+        return False
+
+def search_similar_content(query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """Search for similar content using vector search"""
+    try:
+        manager = get_supabase_manager()
+        return manager.search_similar_content(query, limit)
+    except Exception as e:
+        logger.error(f"Error searching similar content: {e}")
+        return []
+
+def save_restaurant_data(restaurant_data: Dict[str, Any]) -> Optional[str]:
+    """Save restaurant data"""
+    try:
+        manager = get_supabase_manager()
+        return manager.save_restaurant(restaurant_data)
+    except Exception as e:
+        logger.error(f"Error saving restaurant data: {e}")
         return None
