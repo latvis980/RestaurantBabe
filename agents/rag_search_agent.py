@@ -1,5 +1,6 @@
 # agents/rag_search_agent.py
-# IMPROVED VERSION - Better cache logic to save API calls
+# CLEAN VERSION - Remove all orchestrator code that got mixed in
+
 import logging
 import time
 from typing import Dict, List, Any, Optional
@@ -203,7 +204,7 @@ class RAGSearchAgent:
         """
         Convert cached search results to RAG content format
 
-        This bridges the gap between cached search results and RAG content format
+        FIXED: Extract actual source URLs and show domain names instead of "rag"
         """
         try:
             if not cached_results or not isinstance(cached_results, dict):
@@ -239,9 +240,12 @@ class RAGSearchAgent:
 
                 highlights = restaurant.get("highlights", [])
                 if highlights and isinstance(highlights, list):
-                    content_parts.append(f"Highlights: {', '.join(highlights[:3])}")  # First 3 highlights
+                    content_parts.append(f"Highlights: {', '.join(highlights[:3])}")
 
                 content_text = " | ".join(content_parts)
+
+                # ============ SIMPLE FIX: EXTRACT DOMAIN NAMES FROM SOURCE URLs ============
+                source_domains = self._extract_domain_names_from_restaurant(restaurant)
 
                 if content_text:
                     content_chunks.append({
@@ -249,19 +253,80 @@ class RAGSearchAgent:
                         "content_text": content_text,
                         "source_summary": f"Cached: {name}",
                         "similarity": 0.95,  # High similarity since it's an exact cache hit
-                        "restaurant_data": restaurant  # Include original restaurant data
+                        "restaurant_data": restaurant,  # Include original restaurant data
+                        "source_domains": source_domains,  # SIMPLE: Just domain names
+                        "rag_metadata": {
+                            "from_cache": True,
+                            "restaurant_name": name,
+                            "sources_count": len(source_domains)
+                        }
                     })
 
-            logger.info(f"💾 Converted {len(content_chunks)} cached restaurants to content format")
+            logger.info(f"💾 Converted {len(content_chunks)} cached restaurants with domain sources")
             return content_chunks
 
         except Exception as e:
             logger.error(f"Error converting cache to content format: {e}")
             return []
 
+    def _extract_domain_names_from_restaurant(self, restaurant: Dict) -> List[str]:
+        """
+        Extract clean domain names from restaurant source URLs
+
+        SIMPLE: Just get domain names, no complex mapping needed
+        """
+        try:
+            domains = []
+
+            # Check different possible source fields
+            source_urls = restaurant.get("source_urls", [])
+
+            if source_urls and isinstance(source_urls, list):
+                for url in source_urls:
+                    domain = self._url_to_domain(url)
+                    if domain and domain not in domains:
+                        domains.append(domain)
+
+            # Remove duplicates while preserving order
+            unique_domains = []
+            for domain in domains:
+                if domain not in unique_domains:
+                    unique_domains.append(domain)
+
+            logger.debug(f"🔍 Extracted {len(unique_domains)} domain sources for {restaurant.get('name', 'unknown')}")
+            return unique_domains[:5]  # Limit to 5 sources max
+
+        except Exception as e:
+            logger.warning(f"Error extracting domain sources: {e}")
+            return []
+
+    def _url_to_domain(self, url: str) -> str:
+        """
+        Convert URL to clean domain name - SIMPLE VERSION
+
+        Just extract domain and clean it up, no complex mapping
+        """
+        try:
+            if not url or not isinstance(url, str):
+                return ""
+
+            from urllib.parse import urlparse
+            domain = urlparse(url.lower()).netloc
+
+            # Remove www prefix
+            if domain.startswith('www.'):
+                domain = domain[4:]
+
+            # Return the clean domain name
+            return domain
+
+        except Exception as e:
+            logger.debug(f"Error extracting domain from URL: {e}")
+            return ""
+
     def enhance_web_search_with_rag(self, web_results: List[Dict], query: str, destination: str = None) -> List[Dict]:
         """
-        Enhance web search results with RAG content
+        Enhance web search results with RAG content - FIXED to preserve domain sources
 
         Args:
             web_results: Results from web search
@@ -284,9 +349,17 @@ class RAGSearchAgent:
 
             self.stats["queries_enhanced"] += 1
 
-            # Convert RAG content to web result format
+            # Convert RAG content to web result format WITH DOMAIN SOURCES
             rag_as_web_results = []
             for content in rag_content[:2]:  # Limit to top 2 RAG results
+                # ============ FIXED: GET DOMAIN SOURCES ============
+                source_domains = content.get("source_domains", [])
+
+                # Create proper source name with domains
+                source_name = "Knowledge Base"
+                if source_domains:
+                    source_name = f"Previous search ({', '.join(source_domains[:2])})"
+
                 rag_result = {
                     "title": f"💾 From Knowledge Base: {content.get('source_summary', 'Previous Search')}",
                     "url": f"rag://content/{content.get('id', 'unknown')}",
@@ -295,19 +368,22 @@ class RAGSearchAgent:
                     "scraping_success": True,
                     "scraping_method": "rag_retrieval",
                     "source_info": {
-                        "name": "Knowledge Base",
+                        "name": source_name,
                         "url": "internal://rag",
-                        "extraction_method": "vector_search"
+                        "extraction_method": "vector_search",
+                        "source_domains": source_domains  # FIXED: Include domain sources
                     },
                     "rag_source": True,
-                    "rag_confidence": content.get("similarity", 0.8)
+                    "rag_confidence": content.get("similarity", 0.8),
+                    "source_domains": source_domains,  # FIXED: Add at top level
+                    "original_restaurant_data": content.get("restaurant_data", {})
                 }
                 rag_as_web_results.append(rag_result)
 
             # Insert RAG results at the beginning (highest priority)
             enhanced_results = rag_as_web_results + web_results
 
-            logger.info(f"🚀 Enhanced {len(web_results)} web results with {len(rag_as_web_results)} RAG results")
+            logger.info(f"🚀 Enhanced {len(web_results)} web results with {len(rag_as_web_results)} RAG results with domain sources")
             self.stats["content_reused"] += len(rag_as_web_results)
 
             return enhanced_results

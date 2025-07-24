@@ -117,7 +117,9 @@ class LangChainOrchestrator:
         )
 
     def _rag_enhanced_search_step(self, x):
-        """RAG-enhanced search step - checks knowledge base first, then web search"""
+        """
+        RAG-enhanced search step - SIMPLE VERSION with domain sources
+        """
         query = x.get("query", "")
         destination = x.get("destination", "Unknown")
         search_queries = x.get("search_queries", [])
@@ -132,9 +134,22 @@ class LangChainOrchestrator:
             rag_results = self.rag_search_agent.search_knowledge_base(query, destination, limit=10)
             rag_content = rag_results.get("content", [])
 
-            # Convert RAG content to search result format
+            # Convert RAG content to search result format WITH DOMAIN SOURCES
             search_results = []
             for content in rag_content:
+                # ============ SIMPLE: GET DOMAIN SOURCES ============
+                source_domains = content.get("source_domains", [])
+                restaurant_data = content.get("restaurant_data", {})
+
+                # If we have restaurant data with sources, use those
+                if not source_domains and restaurant_data:
+                    source_domains = self.rag_search_agent._extract_domain_names_from_restaurant(restaurant_data)
+
+                # Create source info with domain names
+                source_name = "Knowledge Base"
+                if source_domains:
+                    source_name = f"Previous search ({', '.join(source_domains[:2])})"
+
                 rag_result = {
                     "title": f"💾 {content.get('source_summary', 'Knowledge Base')}",
                     "url": f"rag://content/{content.get('id', 'unknown')}",
@@ -143,23 +158,26 @@ class LangChainOrchestrator:
                     "scraping_success": True,
                     "scraping_method": "rag_retrieval",
                     "source_info": {
-                        "name": "Knowledge Base",
+                        "name": source_name,
                         "url": "internal://rag",
-                        "extraction_method": "vector_search"
+                        "extraction_method": "vector_search",
+                        "source_domains": source_domains  # SIMPLE: Include domain sources
                     },
                     "rag_source": True,
-                    "rag_confidence": content.get("similarity", 0.8)
+                    "rag_confidence": content.get("similarity", 0.8),
+                    "source_domains": source_domains,  # SIMPLE: Add at top level too
+                    "original_restaurant_data": restaurant_data
                 }
                 search_results.append(rag_result)
 
-            logger.info(f"⚡ Using {len(search_results)} RAG results - skipped web search")
+            logger.info(f"⚡ Using {len(search_results)} RAG results with domain sources - skipped web search")
             return {**x, "search_results": search_results, "search_method": "rag_only"}
 
         # ============ RAG INTEGRATION POINT 2: ENHANCE WEB SEARCH WITH RAG ============
         # Perform regular web search
         web_search_results = self.search_agent.search(search_queries)
 
-        # Enhance with RAG content
+        # Enhance with RAG content (with domain sources)
         enhanced_results = self.rag_search_agent.enhance_web_search_with_rag(
             web_search_results, query, destination
         )
@@ -312,7 +330,9 @@ class LangChainOrchestrator:
             logger.error(f"Error in domain intelligence processing: {e}")
 
     def _save_scraped_content_for_rag(self, enriched_results):
-        """Save scraped content to Supabase for RAG"""
+        """
+        Save scraped content to Supabase for RAG - UPDATED VERSION with domain sources
+        """
         try:
             saved_count = 0
 
@@ -323,11 +343,14 @@ class LangChainOrchestrator:
 
                 if scraping_success and scraped_content and len(scraped_content) > 100:
                     try:
-                        # Extract restaurant mentions from content (basic approach)
+                        # ============ SIMPLE: JUST GET DOMAIN NAME ============
+                        domain_name = self._extract_domain_from_url(url)
+
+                        # Extract restaurant mentions from content
                         content_lower = scraped_content.lower()
                         restaurant_mentions = []
 
-                        # Simple restaurant name extraction (you can enhance this later)
+                        # Simple restaurant name extraction
                         import re
                         restaurant_patterns = [
                             r'\b([A-Z][a-z]+ (?:Restaurant|Café|Bar|Bistro|Trattoria|Osteria))\b',
@@ -337,21 +360,47 @@ class LangChainOrchestrator:
 
                         for pattern in restaurant_patterns:
                             matches = re.findall(pattern, scraped_content)
-                            restaurant_mentions.extend(matches[:5])  # Limit to 5 per pattern
+                            restaurant_mentions.extend(matches[:5])
 
-                        # Save to Supabase RAG system
-                        success = save_scraped_content(url, scraped_content, restaurant_mentions)
+                        # ============ SIMPLE: SAVE WITH DOMAIN NAME ============
+                        success = save_scraped_content(
+                            url, 
+                            scraped_content, 
+                            restaurant_mentions,
+                            source_domain=domain_name  # SIMPLE: Just domain name
+                        )
                         if success:
                             saved_count += 1
-                            logger.debug(f"💾 Saved content for RAG: {url[:60]}... ({len(scraped_content)} chars)")
+                            logger.debug(f"💾 Saved content for RAG: {domain_name} - {url[:60]}...")
 
                     except Exception as e:
                         logger.warning(f"Error saving scraped content for {url}: {e}")
 
-            logger.info(f"📚 Saved {saved_count} articles to RAG system")
+            logger.info(f"📚 Saved {saved_count} articles to RAG system with domain sources")
 
         except Exception as e:
             logger.error(f"Error in RAG content saving: {e}")
+
+    def _extract_domain_from_url(self, url: str) -> str:
+        """
+        Extract clean domain name from URL - SIMPLE VERSION
+        """
+        try:
+            if not url or not isinstance(url, str):
+                return "unknown-source"
+
+            from urllib.parse import urlparse
+            domain = urlparse(url.lower()).netloc
+
+            # Remove www prefix
+            if domain.startswith('www.'):
+                domain = domain[4:]
+
+            return domain or "unknown-source"
+
+        except Exception as e:
+            logger.debug(f"Error extracting domain: {e}")
+            return "unknown-source"
 
     def _analyze_results_step(self, x):
         """Handle async result analysis"""

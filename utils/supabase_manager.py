@@ -349,23 +349,54 @@ class SupabaseManager:
             return []
 
     def cache_search_results(self, query: str, results: Dict[str, Any]) -> bool:
-        """Cache search results"""
+        """
+        Cache search results with proper duplicate handling
+
+        FIXED: Use explicit check + insert/update instead of upsert to avoid constraint violations
+        """
         try:
             # Create query hash
             query_hash = hashlib.sha256(query.lower().strip().encode()).hexdigest()
+
+            # Check if cache entry already exists
+            existing = self.supabase.table('search_cache')\
+                .select('id, usage_count')\
+                .eq('query_hash', query_hash)\
+                .execute()
 
             cache_data = {
                 'query_hash': query_hash,
                 'original_query': query,
                 'normalized_query': query.lower().strip(),
                 'results_json': results,
-                'expires_at': (datetime.utcnow() + timedelta(days=self.config.CACHE_EXPIRY_DAYS)).isoformat()
+                'expires_at': (datetime.utcnow() + timedelta(days=self.config.CACHE_EXPIRY_DAYS)).isoformat(),
+                'created_at': datetime.utcnow().isoformat()
             }
 
-            # Upsert cache entry
-            self.supabase.table('search_cache').upsert(cache_data).execute()
+            if existing.data:
+                # Update existing entry
+                cache_id = existing.data[0]['id']
+                current_usage = existing.data[0].get('usage_count', 0)
 
-            logger.info(f"Cached search results for query: {query}")
+                cache_data['usage_count'] = current_usage + 1
+                cache_data['updated_at'] = datetime.utcnow().isoformat()
+
+                result = self.supabase.table('search_cache')\
+                    .update(cache_data)\
+                    .eq('id', cache_id)\
+                    .execute()
+
+                logger.info(f"Updated cached search results for query: {query}")
+            else:
+                # Insert new entry
+                cache_data['usage_count'] = 1
+
+                result = self.supabase.table('search_cache')\
+                    .insert(cache_data)\
+                    .execute()
+
+                logger.info(f"Cached new search results for query: {query}")
+
             return True
 
         except Exception as e:

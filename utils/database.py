@@ -164,11 +164,13 @@ def get_cached_results(query: str, config=None) -> Optional[Dict[str, Any]]:
 
 # ============ RAG FUNCTIONS ============
 
-def save_scraped_content(source_url: str, content: str, restaurant_mentions: Optional[List[str]] = None, config=None) -> bool:
-    """Save scraped content for RAG"""
+def save_scraped_content(source_url: str, content: str, restaurant_mentions: Optional[List[str]] = None, source_domain: str = None, config=None) -> bool:
+    """
+    Save scraped content for RAG with domain source attribution - SIMPLE VERSION
+    """
     try:
         manager = get_supabase_manager()
-        return manager.save_scraped_content(source_url, content, restaurant_mentions)
+        return manager.save_scraped_content(source_url, content, restaurant_mentions, source_domain)
     except Exception as e:
         logger.error(f"Error saving scraped content: {e}")
         return False
