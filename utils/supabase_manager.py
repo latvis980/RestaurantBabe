@@ -3,7 +3,7 @@ import logging
 import hashlib
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Any, Optional, Tuple
 from sentence_transformers import SentenceTransformer
 from supabase import create_client, Client
@@ -105,7 +105,7 @@ class SupabaseManager:
                 'cost_per_scrape': intelligence_data.get('cost', 0.0),
                 'confidence': intelligence_data.get('confidence', 0.5),
                 'reasoning': intelligence_data.get('reasoning', ''),
-                'last_updated_at': datetime.utcnow().isoformat(),
+                'last_updated_at': datetime.now(timezone.utc).isoformat(),
                 'metadata': intelligence_data.get('metadata', {})
             }
 
@@ -161,7 +161,7 @@ class SupabaseManager:
                 if new_failure >= self.config.DOMAIN_FAILURE_LIMIT:
                     update_data.update({
                         'is_blocked': True,
-                        'blocked_at': datetime.utcnow().isoformat()
+                        'blocked_at': datetime.now(timezone.utc).isoformat()  # FIXED
                     })
 
             # Calculate new confidence
@@ -169,7 +169,7 @@ class SupabaseManager:
             if total_attempts > 0:
                 update_data['confidence'] = new_success / total_attempts
 
-            update_data['last_updated_at'] = datetime.utcnow().isoformat()
+            update_data['last_updated_at'] = datetime.now(timezone.utc).isoformat()
 
             # Update database
             self.supabase.table('domain_intelligence').update(update_data).eq('domain', domain).execute()
@@ -215,7 +215,7 @@ class SupabaseManager:
                 restaurant_id = existing['id']
                 update_data = {
                     'total_mentions': existing['total_mentions'] + 1,
-                    'last_updated_at': datetime.utcnow().isoformat()
+                    'last_updated_at': datetime.now(timezone.utc).isoformat()  # FIXED
                 }
 
                 # Update credibility if this is from a professional source
@@ -536,8 +536,8 @@ class SupabaseManager:
                 'original_query': query,
                 'normalized_query': query.lower().strip(),
                 'results_json': results,
-                'expires_at': (datetime.utcnow() + timedelta(days=self.config.CACHE_EXPIRY_DAYS)).isoformat(),
-                'created_at': datetime.utcnow().isoformat()
+                'expires_at': (datetime.now(timezone.utc) + timedelta(days=self.config.CACHE_EXPIRY_DAYS)).isoformat(),  # FIXED
+                'created_at': datetime.now(timezone.utc).isoformat()  # FIXED
             }
 
             if existing.data:
@@ -546,7 +546,7 @@ class SupabaseManager:
                 current_usage = existing.data[0].get('usage_count', 0)
 
                 cache_data['usage_count'] = current_usage + 1
-                cache_data['updated_at'] = datetime.utcnow().isoformat()
+                cache_data['updated_at'] = datetime.now(timezone.utc).isoformat()
 
                 result = self.supabase.table('search_cache')\
                     .update(cache_data)\
@@ -578,7 +578,7 @@ class SupabaseManager:
             result = self.supabase.table('search_cache')\
                 .select('*')\
                 .eq('query_hash', query_hash)\
-                .gt('expires_at', datetime.utcnow().isoformat())\
+                .gt('expires_at', datetime.now(timezone.utc).isoformat())\
                 .execute()
 
             if result.data:
@@ -606,7 +606,7 @@ class SupabaseManager:
             data = {
                 'user_id': str(user_id),
                 'preferences': preferences,
-                'last_active_at': datetime.utcnow().isoformat()
+                'last_active_at': datetime.now(timezone.utc).isoformat()  # FIXED
             }
 
             self.supabase.table('user_preferences').upsert(data).execute()
@@ -646,7 +646,7 @@ class SupabaseManager:
             # Prepare new search entry
             search_entry = {
                 'query': query,
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),  # FIXED
                 'results_count': results_count
             }
 
@@ -659,19 +659,19 @@ class SupabaseManager:
                 history = history[-50:]
 
                 self.supabase.table('user_preferences')\
-                    .update({
-                        'search_history': history,
-                        'last_active_at': datetime.utcnow().isoformat()
-                    })\
-                    .eq('user_id', str(user_id))\
-                    .execute()
+                .update({
+                    'search_history': history,
+                    'last_active_at': datetime.now(timezone.utc).isoformat()  # FIXED
+                })\
+                .eq('user_id', str(user_id))\
+                .execute()
             else:
                 # Create new user record
                 self.supabase.table('user_preferences').insert({
                     'user_id': str(user_id),
                     'search_history': [search_entry],
                     'preferences': {},
-                    'last_active_at': datetime.utcnow().isoformat()
+                    'last_active_at': datetime.now(timezone.utc).isoformat()
                 }).execute()
 
             logger.info(f"Added search to history for user {user_id}")
@@ -748,7 +748,7 @@ class SupabaseManager:
         try:
             result = self.supabase.table('search_cache')\
                 .delete()\
-                .lt('expires_at', datetime.utcnow().isoformat())\
+                .lt('expires_at', datetime.now(timezone.utc).isoformat())\
                 .execute()
 
             logger.info(f"Cleaned up {len(result.data)} expired cache entries")

@@ -5,11 +5,10 @@ langchain-core>=0.1.0
 langchain-mistralai>=0.1.0  # Keep for other agents if needed
 langchain-anthropic>=0.1.0  # NEW: Add for Claude Sonnet 4
 openai>=1.0.0
-anthropic>=0.25.0  # NEW: Official Anthropic Python client
+anthropic>=0.25.0  # Official Anthropic Python client
 
 # SUPABASE INTEGRATION (replacing PostgreSQL)
 supabase>=2.10.0
-sentence-transformers>=2.2.2
 geopy>=2.4.1
 
 # Web scraping with Firecrawl and Readability
@@ -24,9 +23,11 @@ pyTelegramBotAPI>=4.20.0
 # Google Maps integration
 googlemaps>=4.10.0
 
-sentence-transformers==2.2.2
-numpy>=1.21.0
-torch>=1.9.0
+sentence-transformers==3.0.1
+transformers>=4.30.0
+huggingface-hub==0.24.6
+torch>=2.0.0
+numpy>=1.24.0
 
 # Observability
 langsmith
