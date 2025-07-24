@@ -9,6 +9,7 @@ import asyncio
 import logging
 import concurrent.futures
 from urllib.parse import urlparse
+from typing import Dict, Any, List
 
 # Updated imports for Supabase integration
 from utils.database import (
@@ -329,54 +330,97 @@ class LangChainOrchestrator:
         except Exception as e:
             logger.error(f"Error in domain intelligence processing: {e}")
 
+    async def _extract_restaurant_names_with_ai(self, content: str) -> List[str]:
+        """Extract restaurant names using AI instead of regex patterns"""
+        try:
+            from utils.unified_model_manager import get_unified_model_manager
+
+            model_manager = get_unified_model_manager(self.config)
+
+            prompt = f"""Extract restaurant names from this content. Return only a JSON list of restaurant names.
+
+    Content: {content[:1500]}
+
+    Return format: ["Restaurant Name 1", "Restaurant Name 2"]
+    Maximum 10 restaurants. Return empty list [] if no restaurants found.
+    Focus on actual restaurant names, not generic terms."""
+
+            response = await model_manager.rate_limited_call(
+                'metadata_extraction',  # Use fast model for this task
+                prompt
+            )
+
+            import json
+            try:
+                # Try to parse as JSON
+                result = json.loads(response.content.strip())
+                if isinstance(result, list):
+                    return [name for name in result if isinstance(name, str) and len(name) > 2][:10]
+            except json.JSONDecodeError:
+                # Fallback: extract quoted strings
+                import re
+                matches = re.findall(r'"([^"]+)"', response.content)
+                return [name for name in matches if len(name) > 2][:10]
+
+            return []
+
+        except Exception as e:
+            logger.warning(f"AI restaurant extraction failed: {e}")
+            return []
+    
     def _save_scraped_content_for_rag(self, enriched_results):
         """
-        Save scraped content to Supabase for RAG - UPDATED VERSION with domain sources
+        Save scraped content to Supabase for RAG - SYNC WRAPPER VERSION
         """
         try:
-            saved_count = 0
+            # Run the async function in a new event loop
+            import asyncio
 
-            for result in enriched_results:
-                url = result.get("url", "")
-                scraped_content = result.get("scraped_content", "")
-                scraping_success = result.get("scraping_success", False)
+            async def async_save():
+                saved_count = 0
 
-                if scraping_success and scraped_content and len(scraped_content) > 100:
-                    try:
-                        # ============ SIMPLE: JUST GET DOMAIN NAME ============
-                        domain_name = self._extract_domain_from_url(url)
+                for result in enriched_results:
+                    url = result.get("url", "")
+                    scraped_content = result.get("scraped_content", "")
+                    scraping_success = result.get("scraping_success", False)
 
-                        # Extract restaurant mentions from content
-                        content_lower = scraped_content.lower()
-                        restaurant_mentions = []
+                    if scraping_success and scraped_content and len(scraped_content) > 100:
+                        try:
+                            # Extract domain name for attribution
+                            domain_name = self._extract_domain_from_url(url)
 
-                        # Simple restaurant name extraction
-                        import re
-                        restaurant_patterns = [
-                            r'\b([A-Z][a-z]+ (?:Restaurant|Café|Bar|Bistro|Trattoria|Osteria))\b',
-                            r'\b(Restaurant [A-Z][a-z]+)\b',
-                            r'\b([A-Z][a-z]+ & [A-Z][a-z]+)\b'
-                        ]
+                            # AI-powered restaurant name extraction
+                            restaurant_mentions = await self._extract_restaurant_names_with_ai(scraped_content)
 
-                        for pattern in restaurant_patterns:
-                            matches = re.findall(pattern, scraped_content)
-                            restaurant_mentions.extend(matches[:5])
+                            # Import the async save function
+                            from utils.database import save_scraped_content_async
 
-                        # ============ SIMPLE: SAVE WITH DOMAIN NAME ============
-                        success = save_scraped_content(
-                            url, 
-                            scraped_content, 
-                            restaurant_mentions,
-                            source_domain=domain_name  # SIMPLE: Just domain name
-                        )
-                        if success:
-                            saved_count += 1
-                            logger.debug(f"💾 Saved content for RAG: {domain_name} - {url[:60]}...")
+                            # Save to RAG system using async version
+                            success = await save_scraped_content_async(
+                                url, 
+                                scraped_content, 
+                                restaurant_mentions,
+                                source_domain=domain_name
+                            )
+                            if success:
+                                saved_count += 1
+                                logger.info(f"✅ Saved RAG content from {domain_name}: {len(scraped_content)} chars, {len(restaurant_mentions)} restaurants")
 
-                    except Exception as e:
-                        logger.warning(f"Error saving scraped content for {url}: {e}")
+                        except Exception as e:
+                            logger.warning(f"Error saving scraped content for {url}: {e}")
 
-            logger.info(f"📚 Saved {saved_count} articles to RAG system with domain sources")
+                logger.info(f"📚 Saved {saved_count} articles to RAG system with AI-extracted restaurant names")
+
+            # Run the async function
+            try:
+                # Check if there's already an event loop running
+                loop = asyncio.get_running_loop()
+                # If we're in an event loop, use create_task and don't wait
+                asyncio.create_task(async_save())
+                logger.info("🚀 Started async RAG saving task")
+            except RuntimeError:
+                # No loop running, create new one
+                asyncio.run(async_save())
 
         except Exception as e:
             logger.error(f"Error in RAG content saving: {e}")
@@ -690,19 +734,10 @@ class LangChainOrchestrator:
             logger.error(f"Error logging Firecrawl usage: {e}")
 
     @log_function_call
-    def process_query(self, user_query: str, user_preferences: dict = None, user_id: str = None) -> dict:
+    def process_query(self, user_query: str, user_preferences: Dict[str, Any] = None, user_id: str = None) -> Dict[str, Any]:
         """
-        Process a restaurant query through the complete pipeline with Supabase integration.
-
-        Args:
-            user_query: The user's restaurant request
-            user_preferences: Optional user preferences dict
-            user_id: Optional user ID for tracking search history
-
-        Returns:
-            Dict with telegram_formatted_text and other results
+        Process restaurant query through the LangChain - SYNC VERSION with async RAG
         """
-
         # Generate trace ID for debugging
         trace_id = f"query_{int(time.time())}"
 
@@ -716,8 +751,11 @@ class LangChainOrchestrator:
                     "user_preferences": user_preferences or {}
                 }
 
-                # Execute the chain
+                # Execute the chain (synchronously)
                 result = self.chain.invoke(input_data)
+
+                # The async RAG saving happens in the _save_scraped_content_for_rag method
+                # which is called during the scrape step
 
                 # Log completion
                 dump_chain_state("process_query_complete", {

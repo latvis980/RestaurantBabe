@@ -1,5 +1,6 @@
 # utils/database.py - Clean Supabase-only interface
 import logging
+import asyncio
 from typing import Dict, Any, Optional, List
 from .supabase_manager import SupabaseManager
 
@@ -164,13 +165,36 @@ def get_cached_results(query: str, config=None) -> Optional[Dict[str, Any]]:
 
 # ============ RAG FUNCTIONS ============
 
-def save_scraped_content(source_url: str, content: str, restaurant_mentions: Optional[List[str]] = None, source_domain: str = None, config=None) -> bool:
-    """
-    Save scraped content for RAG with domain source attribution - SIMPLE VERSION
-    """
+async def save_scraped_content_async(source_url: str, content: str, restaurant_mentions: List[str] = None, source_domain: str = None) -> bool:
+    """Async wrapper for saving scraped content with AI extraction"""
     try:
         manager = get_supabase_manager()
-        return manager.save_scraped_content(source_url, content, restaurant_mentions, source_domain)
+        return await manager.save_scraped_content(source_url, content, restaurant_mentions, source_domain)
+    except Exception as e:
+        logger.error(f"Error saving scraped content: {e}")
+        return False
+
+def save_scraped_content(source_url: str, content: str, restaurant_mentions: Optional[List[str]] = None, source_domain: str = None, config=None) -> bool:
+    """
+    Save scraped content for RAG - SYNC VERSION that calls async method properly
+    """
+    try:
+        async def async_save():
+            manager = get_supabase_manager()
+            return await manager.save_scraped_content(source_url, content, restaurant_mentions, source_domain)
+
+        # Run the async function
+        try:
+            # Check if there's already an event loop running
+            loop = asyncio.get_running_loop()
+            # If we're in an event loop, create a task but don't wait for it
+            task = asyncio.create_task(async_save())
+            logger.info("🚀 Started async content saving task")
+            return True  # Return True immediately since we can't wait
+        except RuntimeError:
+            # No loop running, create new one and wait for completion
+            return asyncio.run(async_save())
+
     except Exception as e:
         logger.error(f"Error saving scraped content: {e}")
         return False

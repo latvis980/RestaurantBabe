@@ -47,7 +47,7 @@ Return ONLY valid JSON in this exact structure:
 }}
 
 IMPORTANT:
-- Never include Tripadvisor, Yelp, or Google in sources
+- Never include Tripadvisor, Yelp, Opentable, or Google in sources
 - Focus on unique selling points in descriptions (signature dishes, style, atmosphere)
 - Be specific about cuisine types, specialties, or notable features
 - If multiple locations exist, include only the main/original location

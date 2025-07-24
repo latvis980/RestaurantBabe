@@ -253,7 +253,7 @@ class QueryAnalyzer:
         local_sources_prompt = f"""
         Identify 5-7 reputable local sources for restaurant reviews and food recommendations in {location}.
         Focus on local press, respected food experts, bloggers, and local food guides that publish in {language}.
-        Do NOT include international sites like TripAdvisor, Yelp, or Google. Only include sources that locals would trust.
+        Do NOT include generic content sites like TripAdvisor, Opentable, Yelp, or Google. Only include sources with professionally curated content.
 
         Each source should be either:
         1) A local newspaper/magazine with a dedicated food section

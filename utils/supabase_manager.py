@@ -16,19 +16,81 @@ class SupabaseManager:
     """Manages all Supabase operations for the restaurant bot"""
 
     def __init__(self, config):
+        """Initialize SupabaseManager with all necessary components"""
         self.config = config
-        self.supabase: Client = create_client(
-            config.SUPABASE_URL, 
-            config.SUPABASE_SERVICE_KEY  # Use service key for server operations
-        )
 
-        # Initialize embedding model
-        self.embedding_model = SentenceTransformer(config.EMBEDDING_MODEL)
+        # Initialize Supabase client
+        try:
+            self.supabase: Client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
+            logger.info("✅ Supabase client initialized")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Supabase client: {e}")
+            raise
 
         # Initialize geocoder
-        self.geocoder = Nominatim(user_agent="restaurant-bot")
+        try:
+            self.geocoder = Nominatim(user_agent="restaurant-bot")
+            logger.info("✅ Geocoder initialized")
+        except Exception as e:
+            logger.warning(f"⚠️ Geocoder initialization failed: {e}")
+            self.geocoder = None
 
-        logger.info("Supabase manager initialized successfully")
+        # Initialize embedding model for RAG
+        try:
+            self.embedding_model = SentenceTransformer(config.EMBEDDING_MODEL)
+            logger.info(f"✅ Embedding model loaded: {config.EMBEDDING_MODEL}")
+        except Exception as e:
+            logger.error(f"❌ Failed to load embedding model: {e}")
+            logger.info("⚠️ RAG will use text search fallback")
+            self.embedding_model = None
+
+    def _fallback_text_search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Fallback text-based search when vector search fails"""
+        try:
+            result = self.supabase.table('content_chunks')\
+                .select('*')\
+                .ilike('content_text', f'%{query}%')\
+                .limit(limit)\
+                .execute()
+
+            # Add fake similarity score for compatibility
+            for item in result.data:
+                item['similarity'] = 0.7
+
+            logger.info(f"📝 Text search found {len(result.data)} results")
+            return result.data
+
+        except Exception as e:
+            logger.error(f"Text search also failed: {e}")
+            return []
+
+    def search_similar_content(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search for similar content using vector similarity - ENHANCED"""
+        try:
+            if not hasattr(self, 'embedding_model') or not self.embedding_model:
+                logger.warning("Embedding model not available - falling back to text search")
+                return self._fallback_text_search(query, limit)
+
+            # Generate query embedding
+            query_embedding = self.embedding_model.encode(query).tolist()
+
+            # Search for similar content chunks using RPC
+            result = self.supabase.rpc('match_content_chunks', {
+                'query_embedding': query_embedding,
+                'match_threshold': self.config.SIMILARITY_THRESHOLD,
+                'match_count': limit
+            }).execute()
+
+            if result.data:
+                logger.info(f"🔍 Vector search found {len(result.data)} results for: {query}")
+                return result.data
+            else:
+                logger.info(f"🔍 No vector search results for: {query}")
+                return []
+
+        except Exception as e:
+            logger.warning(f"Vector search failed: {e} - falling back to text search")
+            return self._fallback_text_search(query, limit)
 
     # ============ DOMAIN INTELLIGENCE METHODS (keeping your existing system) ============
 
@@ -224,63 +286,199 @@ class SupabaseManager:
 
     # ============ CONTENT STORAGE FOR RAG ============
 
-    def save_scraped_content(self, source_url: str, content: str, restaurant_mentions: List[str] = None) -> bool:
-        """Save scraped content with embeddings for RAG"""
+    async def save_scraped_content(self, source_url: str, content: str, restaurant_mentions: List[str] = None, source_domain: str = None) -> bool:
+        """Save scraped content with AI-powered metadata extraction"""
         try:
+            logger.info(f"🔄 Saving content for RAG: {source_url} ({len(content)} chars)")
+
+            # Check if embedding model is available
+            if not hasattr(self, 'embedding_model') or not self.embedding_model:
+                logger.error("❌ Embedding model not available - cannot save content for RAG")
+                return False
+
             # First save/get the source
-            source_id = self._save_source(source_url)
+            source_id = self._save_source(source_url, source_domain)
             if not source_id:
+                logger.error(f"❌ Failed to save source: {source_url}")
                 return False
 
             # Split content into chunks
             chunks = self._split_content_into_chunks(content)
+            logger.info(f"📄 Split into {len(chunks)} chunks")
 
+            saved_chunks = 0
             for i, chunk_text in enumerate(chunks):
-                # Generate embedding
-                embedding = self.embedding_model.encode(chunk_text).tolist()
+                try:
+                    # Generate embedding
+                    embedding = self.embedding_model.encode(chunk_text).tolist()
 
-                # Extract restaurant mentions, neighborhoods, cuisine types from chunk
-                # (This would use NER or pattern matching - simplified for now)
-                restaurants_mentioned = restaurant_mentions or []
-                neighborhood_tags = self._extract_neighborhoods(chunk_text)
-                cuisine_tags = self._extract_cuisines(chunk_text)
+                    # AI-powered metadata extraction
+                    if restaurant_mentions:
+                        restaurants_mentioned = restaurant_mentions
+                        neighborhood_tags = []
+                        cuisine_tags = []
+                    else:
+                        # Use AI to extract metadata
+                        restaurants_mentioned = await self._extract_restaurant_names(chunk_text)
+                        neighborhood_tags = await self._extract_neighborhoods(chunk_text)
+                        cuisine_tags = await self._extract_cuisines(chunk_text)
 
-                # Save chunk
-                chunk_data = {
-                    'source_id': source_id,
-                    'content_text': chunk_text,
-                    'embedding': embedding,
-                    'restaurants_mentioned': restaurants_mentioned,
-                    'neighborhood_tags': neighborhood_tags,
-                    'cuisine_tags': cuisine_tags,
-                    'chunk_position': i,
-                    'word_count': len(chunk_text.split())
-                }
+                    # Save chunk with embedding and AI-extracted metadata
+                    chunk_data = {
+                        'source_id': source_id,
+                        'content_text': chunk_text,
+                        'embedding': embedding,
+                        'restaurants_mentioned': restaurants_mentioned,
+                        'neighborhood_tags': neighborhood_tags,
+                        'cuisine_tags': cuisine_tags,
+                        'chunk_position': i,
+                        'word_count': len(chunk_text.split())
+                    }
 
-                self.supabase.table('content_chunks').insert(chunk_data).execute()
+                    result = self.supabase.table('content_chunks').insert(chunk_data).execute()
+                    if result.data:
+                        saved_chunks += 1
+                        logger.debug(f"✅ Saved chunk {i+1}/{len(chunks)} with {len(restaurants_mentioned)} restaurants")
+                    else:
+                        logger.warning(f"⚠️ Failed to save chunk {i+1}")
 
-            logger.info(f"Saved {len(chunks)} content chunks for {source_url}")
-            return True
+                except Exception as e:
+                    logger.error(f"❌ Error saving chunk {i}: {e}")
+                    continue
+
+            logger.info(f"✅ Saved {saved_chunks}/{len(chunks)} content chunks for {source_url}")
+            return saved_chunks > 0
 
         except Exception as e:
-            logger.error(f"Error saving scraped content: {e}")
+            logger.error(f"❌ Error saving scraped content: {e}")
             return False
 
-    def _save_source(self, source_url: str) -> Optional[str]:
-        """Save source information"""
+    async def _extract_restaurant_names(self, text: str) -> List[str]:
+        """Extract restaurant names using AI"""
+        try:
+            from utils.unified_model_manager import get_unified_model_manager
+
+            # Use your existing model manager
+            model_manager = get_unified_model_manager(self.config)
+
+            prompt = f"""Extract restaurant names from this text. Return only a JSON list of restaurant names, nothing else.
+
+    Text: {text[:1000]}
+
+    Return format: ["Restaurant Name 1", "Restaurant Name 2"]
+    Maximum 5 restaurants. Return empty list [] if no restaurants found."""
+
+            response = await model_manager.rate_limited_call(
+                'metadata_extraction',  # Use fast model for this task
+                prompt
+            )
+
+            # Parse the JSON response
+            import json
+            try:
+                result = json.loads(response.content.strip())
+                if isinstance(result, list):
+                    return [name for name in result if isinstance(name, str) and len(name) > 2][:5]
+            except json.JSONDecodeError:
+                # Fallback: extract from response text
+                import re
+                matches = re.findall(r'"([^"]+)"', response.content)
+                return [name for name in matches if len(name) > 2][:5]
+
+            return []
+
+        except Exception as e:
+            logger.warning(f"AI restaurant extraction failed: {e}")
+            return []
+
+    async def _extract_neighborhoods(self, text: str) -> List[str]:
+        """Extract neighborhoods using AI"""
+        try:
+            from utils.unified_model_manager import get_unified_model_manager
+
+            model_manager = get_unified_model_manager(self.config)
+
+            prompt = f"""Extract neighborhood or district names from this restaurant text. Return only a JSON list.
+
+    Text: {text[:800]}
+
+    Return format: ["Neighborhood 1", "District 2"]
+    Maximum 3 locations. Return empty list [] if no neighborhoods found."""
+
+            response = await model_manager.rate_limited_call(
+                'metadata_extraction',
+                prompt
+            )
+
+            import json
+            try:
+                result = json.loads(response.content.strip())
+                if isinstance(result, list):
+                    return [name for name in result if isinstance(name, str) and len(name) > 2][:3]
+            except json.JSONDecodeError:
+                import re
+                matches = re.findall(r'"([^"]+)"', response.content)
+                return [name for name in matches if len(name) > 2][:3]
+
+            return []
+
+        except Exception as e:
+            logger.warning(f"AI neighborhood extraction failed: {e}")
+            return []
+
+    async def _extract_cuisines(self, text: str) -> List[str]:
+        """Extract cuisine types using AI"""
+        try:
+            from utils.unified_model_manager import get_unified_model_manager
+
+            model_manager = get_unified_model_manager(self.config)
+
+            prompt = f"""Extract cuisine types from this restaurant text. Return only a JSON list.
+
+    Text: {text[:800]}
+
+    Return format: ["French", "Italian", "Seafood"]
+    Maximum 3 cuisines. Return empty list [] if no cuisine types found."""
+
+            response = await model_manager.rate_limited_call(
+                'metadata_extraction',
+                prompt
+            )
+
+            import json
+            try:
+                result = json.loads(response.content.strip())
+                if isinstance(result, list):
+                    return [name for name in result if isinstance(name, str) and len(name) > 1][:3]
+            except json.JSONDecodeError:
+                import re
+                matches = re.findall(r'"([^"]+)"', response.content)
+                return [name for name in matches if len(name) > 1][:3]
+
+            return []
+
+        except Exception as e:
+            logger.warning(f"AI cuisine extraction failed: {e}")
+            return []
+    
+    def _save_source(self, source_url: str, source_domain: str = None) -> Optional[str]:
+        """Save source information - ENHANCED VERSION"""
         try:
             # Extract domain for domain intelligence lookup
             from urllib.parse import urlparse
             domain = urlparse(source_url).netloc
+
+            # Use provided domain or extract from URL
+            domain_name = source_domain or domain
 
             # Get domain intelligence
             domain_info = self.get_domain_intelligence(domain)
 
             source_data = {
                 'domain': domain,
-                'source_name': domain,  # Could be enhanced to extract actual site name
+                'source_name': domain_name,
                 'source_url': source_url,
-                'source_type': 'guide',  # Could be determined from domain intelligence
+                'source_type': 'guide',
                 'credibility_rating': domain_info.get('confidence', 0.5) if domain_info else 0.5
             }
 
@@ -314,39 +512,8 @@ class SupabaseManager:
 
         return chunks
 
-    def _extract_neighborhoods(self, text: str) -> List[str]:
-        """Extract neighborhood mentions from text (simplified)"""
-        # This would use NER or a neighborhood database
-        # For now, return empty list
-        return []
-
-    def _extract_cuisines(self, text: str) -> List[str]:
-        """Extract cuisine types from text (simplified)"""
-        # This would use pattern matching or NER
-        # For now, return empty list  
-        return []
-
     # ============ SEARCH AND RETRIEVAL ============
 
-    def search_similar_content(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Search for similar content using vector similarity"""
-        try:
-            # Generate query embedding
-            query_embedding = self.embedding_model.encode(query).tolist()
-
-            # Search for similar content chunks using RPC
-            result = self.supabase.rpc('match_content_chunks', {
-                'query_embedding': query_embedding,
-                'match_threshold': self.config.SIMILARITY_THRESHOLD,
-                'match_count': limit
-            }).execute()
-
-            return result.data if result.data else []
-
-        except Exception as e:
-            logger.warning(f"Vector search not available (function may not exist): {e}")
-            # Fallback: return empty list if vector search isn't set up yet
-            return []
 
     def cache_search_results(self, query: str, results: Dict[str, Any]) -> bool:
         """

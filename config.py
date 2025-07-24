@@ -94,6 +94,11 @@ EMBEDDING_DIMENSION = 384  # Dimension for all-MiniLM-L6-v2
 SIMILARITY_THRESHOLD = 0.7  # For semantic search
 CHUNK_MAX_LENGTH = 1000  # Maximum characters per content chunk
 CHUNK_OVERLAP = 100  # Overlap between chunks
+DEFAULT_CREDIBILITY_SCORE = 0.5
+MIN_CREDIBILITY_FOR_RECOMMENDATION = 0.6
+CACHE_EXPIRY_DAYS = 30
+DOMAIN_FAILURE_LIMIT = 5
+DOMAIN_SUCCESS_THRESHOLD = 0.6
 
 # Restaurant Data Settings (NEW)
 DEFAULT_CREDIBILITY_SCORE = 0.5
@@ -113,7 +118,7 @@ MY_MAPS_AUTO_UPDATE = True
 MY_MAPS_MAX_RESTAURANTS = 500  # Limit for performance
 
 # Search settings
-EXCLUDED_RESTAURANT_SOURCES = ["tripadvisor.com", "yelp.com", "google.com/maps"]
+EXCLUDED_RESTAURANT_SOURCES = ["tripadvisor.com", "opentable.com",  "yelp.com", "google.com/maps"]
 
 # Brave search settings
 BRAVE_SEARCH_COUNT = 15
