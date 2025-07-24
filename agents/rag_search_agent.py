@@ -1,4 +1,5 @@
 # agents/rag_search_agent.py
+# IMPROVED VERSION - Better cache logic to save API calls
 import logging
 import time
 from typing import Dict, List, Any, Optional
@@ -12,6 +13,8 @@ class RAGSearchAgent:
 
     Uses stored content to enhance searches and provide context from previous scraping.
     This makes your bot smarter over time as it accumulates knowledge.
+
+    IMPROVED: Better cache logic to avoid unnecessary web searches and API calls.
     """
 
     def __init__(self, config):
@@ -22,12 +25,86 @@ class RAGSearchAgent:
             "rag_misses": 0,
             "cache_hits": 0,
             "content_reused": 0,
-            "queries_enhanced": 0
+            "queries_enhanced": 0,
+            "web_searches_skipped": 0  # NEW: Track web searches we saved
         }
+
+        # Cache the last check to avoid redundant calls
+        self._last_cache_check = None
+        self._last_query = None
+
+    def should_skip_web_search(self, query: str, destination: str = None) -> bool:
+        """
+        Determine if we have enough RAG content to skip web search entirely
+
+        IMPROVED: Check exact cache hits first (highest priority)
+
+        Args:
+            query: User's query
+            destination: Destination if known
+
+        Returns:
+            True if web search can be skipped
+        """
+        try:
+            # ============ PRIORITY 1: EXACT CACHE HIT ============
+            # This is the most reliable source - 100% confidence
+            cached_results = self._check_exact_cache(query)
+            if cached_results:
+                self.stats["cache_hits"] += 1
+                self.stats["web_searches_skipped"] += 1
+                self._last_cache_check = {
+                    "type": "exact_cache",
+                    "data": cached_results,
+                    "confidence": 1.0
+                }
+                self._last_query = query
+
+                logger.info(f"⚡ SKIPPING WEB SEARCH - Exact cache hit for: {query}")
+                return True
+
+            # ============ PRIORITY 2: SEMANTIC RAG SEARCH ============
+            # Only check similarity search if no exact cache hit
+            rag_results = self.search_knowledge_base(query, destination, limit=5)
+
+            # Skip web search if we have high-confidence RAG results
+            confidence = rag_results.get("confidence", 0.0)
+            content_count = len(rag_results.get("content", []))
+
+            # Threshold for skipping web search
+            skip_threshold = 0.85
+            min_content_pieces = 3
+
+            should_skip = (confidence >= skip_threshold and content_count >= min_content_pieces)
+
+            if should_skip:
+                self.stats["web_searches_skipped"] += 1
+                self._last_cache_check = {
+                    "type": "semantic_search",
+                    "data": rag_results,
+                    "confidence": confidence
+                }
+                self._last_query = query
+
+                logger.info(f"⚡ SKIPPING WEB SEARCH - High-confidence RAG content (confidence: {confidence:.2f}, pieces: {content_count})")
+                return True
+
+            # Reset cache if we're proceeding with web search
+            self._last_cache_check = None
+            self._last_query = None
+
+            logger.info(f"🔍 PROCEEDING WITH WEB SEARCH - Insufficient RAG content (confidence: {confidence:.2f}, pieces: {content_count})")
+            return False
+
+        except Exception as e:
+            logger.error(f"Error determining if web search should be skipped: {e}")
+            return False
 
     def search_knowledge_base(self, query: str, destination: str = None, limit: int = 5) -> Dict[str, Any]:
         """
         Search the RAG knowledge base for relevant content
+
+        IMPROVED: Use cached results if available from recent should_skip_web_search call
 
         Args:
             query: User's restaurant query
@@ -40,6 +117,24 @@ class RAGSearchAgent:
         try:
             self.stats["rag_queries"] += 1
 
+            # ============ OPTIMIZATION: USE RECENT CACHE CHECK ============
+            # If we just checked this query in should_skip_web_search, reuse the results
+            if (self._last_query == query and 
+                self._last_cache_check and 
+                self._last_cache_check["type"] == "exact_cache"):
+
+                cached_data = self._last_cache_check["data"]
+                logger.info(f"🔄 Reusing exact cache check for: {query}")
+
+                return {
+                    "type": "exact_cache",
+                    "confidence": 0.95,
+                    "content": self._convert_cache_to_content_format(cached_data),
+                    "source": "previous_search",
+                    "reusable": True
+                }
+
+            # ============ FRESH EXACT CACHE CHECK ============
             # Try exact cache hit first (fastest)
             cached_results = self._check_exact_cache(query)
             if cached_results:
@@ -48,11 +143,12 @@ class RAGSearchAgent:
                 return {
                     "type": "exact_cache",
                     "confidence": 0.95,
-                    "content": cached_results,
+                    "content": self._convert_cache_to_content_format(cached_results),
                     "source": "previous_search",
                     "reusable": True
                 }
 
+            # ============ SEMANTIC SEARCH ============
             # Build semantic search queries
             search_queries = self._build_rag_queries(query, destination)
 
@@ -102,6 +198,66 @@ class RAGSearchAgent:
                 "source": "error",
                 "reusable": False
             }
+
+    def _convert_cache_to_content_format(self, cached_results: Dict) -> List[Dict]:
+        """
+        Convert cached search results to RAG content format
+
+        This bridges the gap between cached search results and RAG content format
+        """
+        try:
+            if not cached_results or not isinstance(cached_results, dict):
+                return []
+
+            # Extract restaurant data from cached results
+            restaurants = cached_results.get("main_list", [])
+            if not restaurants:
+                return []
+
+            # Convert restaurant data to content chunks
+            content_chunks = []
+            for i, restaurant in enumerate(restaurants[:10]):  # Limit to 10 restaurants
+
+                # Build content text from restaurant data
+                content_parts = []
+
+                name = restaurant.get("name", "")
+                if name:
+                    content_parts.append(f"Restaurant: {name}")
+
+                address = restaurant.get("address", "")
+                if address:
+                    content_parts.append(f"Address: {address}")
+
+                cuisine = restaurant.get("cuisine", "")
+                if cuisine:
+                    content_parts.append(f"Cuisine: {cuisine}")
+
+                description = restaurant.get("description", "")
+                if description:
+                    content_parts.append(f"Description: {description}")
+
+                highlights = restaurant.get("highlights", [])
+                if highlights and isinstance(highlights, list):
+                    content_parts.append(f"Highlights: {', '.join(highlights[:3])}")  # First 3 highlights
+
+                content_text = " | ".join(content_parts)
+
+                if content_text:
+                    content_chunks.append({
+                        "id": f"cache_{i}",
+                        "content_text": content_text,
+                        "source_summary": f"Cached: {name}",
+                        "similarity": 0.95,  # High similarity since it's an exact cache hit
+                        "restaurant_data": restaurant  # Include original restaurant data
+                    })
+
+            logger.info(f"💾 Converted {len(content_chunks)} cached restaurants to content format")
+            return content_chunks
+
+        except Exception as e:
+            logger.error(f"Error converting cache to content format: {e}")
+            return []
 
     def enhance_web_search_with_rag(self, web_results: List[Dict], query: str, destination: str = None) -> List[Dict]:
         """
@@ -204,39 +360,6 @@ class RAGSearchAgent:
             logger.error(f"Error getting restaurant context for {restaurant_name}: {e}")
             return None
 
-    def should_skip_web_search(self, query: str, destination: str = None) -> bool:
-        """
-        Determine if we have enough RAG content to skip web search entirely
-
-        Args:
-            query: User's query
-            destination: Destination if known
-
-        Returns:
-            True if web search can be skipped
-        """
-        try:
-            rag_results = self.search_knowledge_base(query, destination, limit=5)
-
-            # Skip web search if we have high-confidence RAG results
-            confidence = rag_results.get("confidence", 0.0)
-            content_count = len(rag_results.get("content", []))
-
-            # Threshold for skipping web search
-            skip_threshold = 0.85
-            min_content_pieces = 3
-
-            should_skip = (confidence >= skip_threshold and content_count >= min_content_pieces)
-
-            if should_skip:
-                logger.info(f"⚡ Skipping web search - sufficient RAG content (confidence: {confidence:.2f}, pieces: {content_count})")
-
-            return should_skip
-
-        except Exception as e:
-            logger.error(f"Error determining if web search should be skipped: {e}")
-            return False
-
     def _check_exact_cache(self, query: str) -> Optional[Dict[str, Any]]:
         """Check for exact cache hit of previous search results"""
         try:
@@ -247,7 +370,10 @@ class RAGSearchAgent:
                 age_hours = (time.time() - cache_timestamp) / 3600
 
                 if age_hours < 24:  # Fresh cache
-                    return cached.get("results", {})
+                    results = cached.get("results", {})
+                    if results and results.get("main_list"):
+                        logger.info(f"📋 Found cached results: {len(results.get('main_list', []))} restaurants")
+                        return results
 
             return None
         except Exception as e:
@@ -286,59 +412,37 @@ class RAGSearchAgent:
             query_words = query.lower().split()
 
             # Simple relevance scoring
-            word_matches = sum(1 for word in query_words if word in content_text)
-            relevance_score = word_matches / len(query_words) if query_words else 0
+            relevance_score = 0
+            for word in query_words:
+                if word in content_text:
+                    relevance_score += 1
 
-            processed_result = {
-                **result,
-                "relevance_score": relevance_score,
-                "source_summary": self._generate_source_summary(result)
-            }
-            processed.append(processed_result)
+            result["relevance_score"] = relevance_score / len(query_words) if query_words else 0
+            processed.append(result)
 
-        # Sort by similarity * relevance
-        processed.sort(key=lambda x: (x.get("similarity", 0) * x.get("relevance_score", 0)), reverse=True)
+        # Sort by relevance and similarity
+        processed.sort(key=lambda x: (x.get("similarity", 0) + x.get("relevance_score", 0)), reverse=True)
 
-        return processed[:5]  # Return top 5
+        return processed[:10]  # Return top 10 results
 
-    def _calculate_confidence(self, processed_content: List[Dict]) -> float:
-        """Calculate confidence score for RAG results"""
-        if not processed_content:
+    def _calculate_confidence(self, content_list: List[Dict]) -> float:
+        """Calculate overall confidence score for RAG content"""
+        if not content_list:
             return 0.0
 
-        # Average similarity score weighted by relevance
-        total_score = 0
-        total_weight = 0
+        # Average similarity score
+        similarities = [content.get("similarity", 0) for content in content_list]
+        avg_similarity = sum(similarities) / len(similarities)
 
-        for content in processed_content:
-            similarity = content.get("similarity", 0)
-            relevance = content.get("relevance_score", 0)
-            weight = max(0.1, relevance)  # Minimum weight
+        # Boost for quantity (more content = higher confidence)
+        quantity_boost = min(0.1 * len(content_list), 0.3)  # Max 0.3 boost
 
-            total_score += similarity * weight
-            total_weight += weight
+        return min(1.0, avg_similarity + quantity_boost)
 
-        return total_score / total_weight if total_weight > 0 else 0.0
-
-    def _generate_source_summary(self, result: Dict) -> str:
-        """Generate a summary of the content source"""
-        source_id = result.get("source_id", "")
-        content_preview = result.get("content_text", "")[:100]
-
-        # Try to extract publication or domain name from content
-        if "timeout" in content_preview.lower():
-            return "Time Out Guide"
-        elif "eater" in content_preview.lower():
-            return "Eater Restaurant Guide"
-        elif "michelin" in content_preview.lower():
-            return "Michelin Guide"
-        else:
-            return "Restaurant Guide"
-
-    def _extract_restaurant_snippet(self, content: str, restaurant_name: str) -> Optional[str]:
-        """Extract relevant snippet about a specific restaurant"""
+    def _extract_restaurant_snippet(self, content_text: str, restaurant_name: str) -> Optional[str]:
+        """Extract a relevant snippet mentioning the restaurant"""
         try:
-            sentences = content.split('.')
+            sentences = content_text.split('.')
             relevant_sentences = []
 
             for sentence in sentences:
@@ -364,7 +468,8 @@ class RAGSearchAgent:
             **self.stats,
             "hit_rate": (self.stats["rag_hits"] / total_queries) * 100,
             "cache_hit_rate": (self.stats["cache_hits"] / total_queries) * 100,
-            "enhancement_rate": (self.stats["queries_enhanced"] / total_queries) * 100
+            "enhancement_rate": (self.stats["queries_enhanced"] / total_queries) * 100,
+            "web_search_savings": (self.stats["web_searches_skipped"] / total_queries) * 100  # NEW
         }
 
     def reset_stats(self):
@@ -375,5 +480,8 @@ class RAGSearchAgent:
             "rag_misses": 0,
             "cache_hits": 0,
             "content_reused": 0,
-            "queries_enhanced": 0
+            "queries_enhanced": 0,
+            "web_searches_skipped": 0
         }
+        self._last_cache_check = None
+        self._last_query = None
