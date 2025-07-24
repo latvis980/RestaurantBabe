@@ -1,5 +1,5 @@
 # agents/langchain_orchestrator.py
-# CORRECTED VERSION - With Supabase integration points
+# CORRECTED VERSION - With complete RAG integration and Supabase integration points
 
 from langchain_core.runnables import RunnableSequence, RunnableLambda
 from langchain_core.tracers.context import tracing_v2_enabled
@@ -172,6 +172,8 @@ class LangChainOrchestrator:
             "search_method": "web_plus_rag",
             "rag_stats": self.rag_search_agent.get_stats()
         }
+
+    def _scrape_step(self, x):
         """Handle async scraping with Supabase integration"""
         search_results = x.get("search_results", [])
         logger.info(f"🔍 Scraping {len(search_results)} search results with Supabase integration")
@@ -683,9 +685,8 @@ class LangChainOrchestrator:
                 enhanced_results = result.get("enhanced_results", {})
                 main_list = enhanced_results.get("main_list", [])
 
-                # Cache the complete search results
                 # ============ SUPABASE INTEGRATION POINT 6: RAG STATISTICS ============
-                rag_stats = x.get("rag_stats", {})
+                rag_stats = result.get("rag_stats", {})
 
                 cache_data = {
                     "query": user_query,
@@ -709,10 +710,7 @@ class LangChainOrchestrator:
                 telegram_text = result.get("telegram_formatted_text", 
                                          "Sorry, no recommendations found.")
 
-                logger.info(f"✅ Final result - {len(main_list)} restaurants for {result.get('destination', 'Unknown')}")
-                logger.info(f"📊 RAG Stats: {rag_stats}")
-                logger.info(f"🔍 Search Method: {result.get('search_method', 'web_only')}")
-                logger.info(f"💾 All data saved to Supabase")
+                logger.info(f"✅ Final result - {len(main_list)} restaurants for {result.get('destination', 'Unknown')}, all data saved to Supabase")
 
                 # Return with correct key names that telegram_bot.py expects
                 return {
@@ -720,7 +718,9 @@ class LangChainOrchestrator:
                     "enhanced_results": enhanced_results,
                     "main_list": main_list,
                     "destination": result.get("destination"),
-                    "firecrawl_stats": self.scraper.get_stats()
+                    "firecrawl_stats": self.scraper.get_stats(),
+                    "rag_stats": rag_stats,
+                    "search_method": result.get("search_method", "web_only")
                 }
 
             except Exception as e:
@@ -731,5 +731,7 @@ class LangChainOrchestrator:
                 return {
                     "main_list": [],
                     "telegram_formatted_text": "Sorry, there was an error processing your request.",
-                    "firecrawl_stats": self.scraper.get_stats()
+                    "firecrawl_stats": self.scraper.get_stats(),
+                    "rag_stats": {},
+                    "search_method": "error"
                 }
