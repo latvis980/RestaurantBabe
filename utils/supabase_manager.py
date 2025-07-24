@@ -271,7 +271,7 @@ class SupabaseManager:
         try:
             # Extract domain for domain intelligence lookup
             from urllib.parse import urlparse
-            domain = urlparse(source_url).netlomain
+            domain = urlparse(source_url).netloc
 
             # Get domain intelligence
             domain_info = self.get_domain_intelligence(domain)
