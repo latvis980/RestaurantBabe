@@ -34,6 +34,7 @@ class LangChainOrchestrator:
         from agents.list_analyzer import ListAnalyzer
         from agents.editor_agent import EditorAgent
         from agents.follow_up_search_agent import FollowUpSearchAgent
+        from agents.rag_search_agent import RAGSearchAgent  # NEW
 
         # Initialize agents
         self.query_analyzer = QueryAnalyzer(config)
@@ -42,6 +43,7 @@ class LangChainOrchestrator:
         self.list_analyzer = ListAnalyzer(config)
         self.editor_agent = EditorAgent(config)
         self.follow_up_search_agent = FollowUpSearchAgent(config)
+        self.rag_search_agent = RAGSearchAgent(config)  # NEW
 
         # Initialize formatter
         self.telegram_formatter = TelegramFormatter()
@@ -63,13 +65,10 @@ class LangChainOrchestrator:
             name="analyze_query"
         )
 
-        # Step 2: Search
+        # Step 2: RAG-Enhanced Search
         self.search = RunnableLambda(
-            lambda x: {
-                **x,
-                "search_results": self.search_agent.search(x["search_queries"])
-            },
-            name="search"
+            self._rag_enhanced_search_step,
+            name="rag_enhanced_search"
         )
 
         # Step 3: Scrape with Supabase Integration
@@ -117,7 +116,62 @@ class LangChainOrchestrator:
             name="restaurant_recommendation_chain"
         )
 
-    def _scrape_step(self, x):
+    def _rag_enhanced_search_step(self, x):
+        """RAG-enhanced search step - checks knowledge base first, then web search"""
+        query = x.get("query", "")
+        destination = x.get("destination", "Unknown")
+        search_queries = x.get("search_queries", [])
+
+        logger.info(f"🧠 Starting RAG-enhanced search for: {query}")
+
+        # ============ RAG INTEGRATION POINT 1: CHECK IF WE CAN SKIP WEB SEARCH ============
+        should_skip_web = self.rag_search_agent.should_skip_web_search(query, destination)
+
+        if should_skip_web:
+            # We have enough RAG content - use it directly
+            rag_results = self.rag_search_agent.search_knowledge_base(query, destination, limit=10)
+            rag_content = rag_results.get("content", [])
+
+            # Convert RAG content to search result format
+            search_results = []
+            for content in rag_content:
+                rag_result = {
+                    "title": f"💾 {content.get('source_summary', 'Knowledge Base')}",
+                    "url": f"rag://content/{content.get('id', 'unknown')}",
+                    "description": content.get("content_text", "")[:200] + "...",
+                    "scraped_content": content.get("content_text", ""),
+                    "scraping_success": True,
+                    "scraping_method": "rag_retrieval",
+                    "source_info": {
+                        "name": "Knowledge Base",
+                        "url": "internal://rag",
+                        "extraction_method": "vector_search"
+                    },
+                    "rag_source": True,
+                    "rag_confidence": content.get("similarity", 0.8)
+                }
+                search_results.append(rag_result)
+
+            logger.info(f"⚡ Using {len(search_results)} RAG results - skipped web search")
+            return {**x, "search_results": search_results, "search_method": "rag_only"}
+
+        # ============ RAG INTEGRATION POINT 2: ENHANCE WEB SEARCH WITH RAG ============
+        # Perform regular web search
+        web_search_results = self.search_agent.search(search_queries)
+
+        # Enhance with RAG content
+        enhanced_results = self.rag_search_agent.enhance_web_search_with_rag(
+            web_search_results, query, destination
+        )
+
+        logger.info(f"🔍 Web search: {len(web_search_results)} results, enhanced to {len(enhanced_results)} with RAG")
+
+        return {
+            **x, 
+            "search_results": enhanced_results,
+            "search_method": "web_plus_rag",
+            "rag_stats": self.rag_search_agent.get_stats()
+        }
         """Handle async scraping with Supabase integration"""
         search_results = x.get("search_results", [])
         logger.info(f"🔍 Scraping {len(search_results)} search results with Supabase integration")
@@ -630,6 +684,9 @@ class LangChainOrchestrator:
                 main_list = enhanced_results.get("main_list", [])
 
                 # Cache the complete search results
+                # ============ SUPABASE INTEGRATION POINT 6: RAG STATISTICS ============
+                rag_stats = x.get("rag_stats", {})
+
                 cache_data = {
                     "query": user_query,
                     "destination": result.get("destination", "Unknown"),
@@ -637,7 +694,9 @@ class LangChainOrchestrator:
                     "restaurant_count": len(main_list),
                     "trace_id": trace_id,
                     "timestamp": time.time(),
-                    "firecrawl_stats": self.scraper.get_stats()
+                    "firecrawl_stats": self.scraper.get_stats(),
+                    "rag_stats": rag_stats,
+                    "search_method": result.get("search_method", "web_only")
                 }
 
                 cache_search_results(user_query, cache_data)
@@ -650,7 +709,10 @@ class LangChainOrchestrator:
                 telegram_text = result.get("telegram_formatted_text", 
                                          "Sorry, no recommendations found.")
 
-                logger.info(f"✅ Final result - {len(main_list)} restaurants for {result.get('destination', 'Unknown')}, all data saved to Supabase")
+                logger.info(f"✅ Final result - {len(main_list)} restaurants for {result.get('destination', 'Unknown')}")
+                logger.info(f"📊 RAG Stats: {rag_stats}")
+                logger.info(f"🔍 Search Method: {result.get('search_method', 'web_only')}")
+                logger.info(f"💾 All data saved to Supabase")
 
                 # Return with correct key names that telegram_bot.py expects
                 return {
