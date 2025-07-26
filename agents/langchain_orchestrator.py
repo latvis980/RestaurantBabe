@@ -59,152 +59,132 @@ class LangChainOrchestrator:
 
     def _build_pipeline(self):
         """Build the LangChain pipeline with Supabase Update Agent integration"""
+        logger.info("🚀 BUILDING PIPELINE - VERSION 2025-07-26-FIXED")
 
         # Step 1: Analyze Query (with country detection)
         self.analyze_query = RunnableLambda(
             self._analyze_query_with_country_detection,
             name="analyze_query_with_country"
         )
+        logger.info(f"✅ Step 1 defined: {self.analyze_query}")
 
         # Step 2: Check Existing Database Coverage (NEW - AI-powered)  
         self.check_database = RunnableLambda(
             self._check_database_coverage_ai,
             name="check_database_coverage_ai"
         )
+        logger.info(f"✅ Step 2 defined: {self.check_database}")
 
         # Step 3: RAG-Enhanced Search
         self.search = RunnableLambda(
             self._rag_enhanced_search_step,
             name="rag_enhanced_search"
         )
+        logger.info(f"✅ Step 3 defined: {self.search}")
 
         # Step 4: Scrape with Supabase Integration
         self.scrape = RunnableLambda(
             self._scrape_step,
             name="scrape"
         )
+        logger.info(f"✅ Step 4 defined: {self.scrape}")
 
         # Step 5: Process with Supabase Update Agent (NEW - CRITICAL STEP)
         self.supabase_update = RunnableLambda(
             self._supabase_update_step,
             name="supabase_update"
         )
+        logger.info(f"✅ Step 5 defined: {self.supabase_update}")
 
         # Step 6: Analyze Results
         self.analyze_results = RunnableLambda(
             self._analyze_results_step,
             name="analyze_results"
         )
+        logger.info(f"✅ Step 6 defined: {self.analyze_results}")
 
         # Step 7: Edit (now works with database-stored restaurants)
         self.edit = RunnableLambda(
             self._edit_step,
             name="edit"
         )
+        logger.info(f"✅ Step 7 defined: {self.edit}")
 
         # Step 8: Follow-up Search (with geodata updates)
         self.follow_up_search = RunnableLambda(
             self._follow_up_step_with_geodata,
             name="follow_up_search_geodata"
         )
+        logger.info(f"✅ Step 8 defined: {self.follow_up_search}")
 
         # Step 9: Format for Telegram
         self.format_output = RunnableLambda(
             self._format_step,
             name="format_output"
         )
+        logger.info(f"✅ Step 9 defined: {self.format_output}")
+
+        # Before creating the chain, log what we have:
+        middle_steps = [
+            self.check_database,
+            self.search,
+            self.scrape,
+            self.supabase_update,
+            self.analyze_results,
+            self.edit,
+            self.follow_up_search,
+            self.format_output,
+        ]
+
+        logger.info(f"🔍 DEBUGGING: analyze_query = {self.analyze_query}")
+        logger.info(f"🔍 DEBUGGING: middle_steps count = {len(middle_steps)}")
+        logger.info(f"🔍 DEBUGGING: All steps defined: {[step is not None for step in middle_steps]}")
+
+        # Check for None values
+        none_steps = [i for i, step in enumerate(middle_steps) if step is None]
+        if none_steps:
+            logger.error(f"❌ None values found at indices: {none_steps}")
+            for i in none_steps:
+                step_names = ["check_database", "search", "scrape", "supabase_update", "analyze_results", "edit", "follow_up_search", "format_output"]
+                logger.error(f"❌ Step {i} ({step_names[i]}) is None!")
+        else:
+            logger.info("✅ All middle steps are properly defined (no None values)")
+
+        # Verify all methods exist
+        method_checks = [
+            ("_analyze_query_with_country_detection", hasattr(self, "_analyze_query_with_country_detection")),
+            ("_check_database_coverage_ai", hasattr(self, "_check_database_coverage_ai")),
+            ("_rag_enhanced_search_step", hasattr(self, "_rag_enhanced_search_step")),
+            ("_scrape_step", hasattr(self, "_scrape_step")),
+            ("_supabase_update_step", hasattr(self, "_supabase_update_step")),
+            ("_analyze_results_step", hasattr(self, "_analyze_results_step")),
+            ("_edit_step", hasattr(self, "_edit_step")),
+            ("_follow_up_step_with_geodata", hasattr(self, "_follow_up_step_with_geodata")),
+            ("_format_step", hasattr(self, "_format_step"))
+        ]
+
+        missing_methods = [name for name, exists in method_checks if not exists]
+        if missing_methods:
+            logger.error(f"❌ Missing methods: {missing_methods}")
+            raise ValueError(f"Missing required methods: {missing_methods}")
+        else:
+            logger.info("✅ All required methods exist")
+
+        logger.info(f"🔧 About to create RunnableSequence with first={self.analyze_query} and {len(middle_steps)} middle steps")
 
         # Create the complete chain
-        self.chain = RunnableSequence(
-            first=self.analyze_query,
-            middle=[
-                self.check_database,
-                self.search,
-                self.scrape,
-                self.supabase_update,  # NEW STEP
-                self.analyze_results,
-                self.edit,
-                self.follow_up_search,
-                self.format_output,
-            ],
-            name="restaurant_recommendation_chain"
-        )
-
-    # NEW STEP 1: Enhanced Query Analysis with AI Country Detection
-    def _analyze_query_with_country_detection(self, x):
-        """Enhanced query analysis that includes AI-powered country detection"""
         try:
-            query = x["query"]
-            logger.info(f"🔍 Analyzing query with AI country detection: {query}")
-
-            # Get basic analysis
-            analysis = self.query_analyzer.analyze(query)
-
-            # Add AI-powered country detection
-            city = analysis.get("destination", "Unknown")
-            country = self._detect_country_from_city(city)
-
-            logger.info(f"📍 Detected location: {city}, {country}")
-
-            return {
-                **analysis,
-                "query": query,
-                "city": city,
-                "country": country
-            }
-
+            self.chain = RunnableSequence(
+                first=self.analyze_query,
+                middle=middle_steps,
+                name="restaurant_recommendation_chain"
+            )
+            logger.info("✅ RunnableSequence created successfully!")
         except Exception as e:
-            logger.error(f"❌ Error in query analysis: {e}")
-            return {
-                "query": x["query"],
-                "destination": "Unknown",
-                "city": "Unknown", 
-                "country": "Unknown",
-                "search_queries": [x["query"]],
-                "primary_search_parameters": [],
-                "secondary_filter_parameters": [],
-                "keywords_for_analysis": []
-            }
-
-    # NEW STEP 2: AI-Powered Database Coverage Check
-    def _check_database_coverage_ai(self, x):
-        """Check database coverage using AI-powered semantic matching"""
-        try:
-            city = x.get("city", "Unknown")
-            primary_params = x.get("primary_search_parameters", [])
-            secondary_params = x.get("secondary_filter_parameters", [])
-
-            logger.info(f"🔍 AI-powered database coverage check for {city}")
-            logger.info(f"📋 Search parameters: {primary_params + secondary_params}")
-
-            # Use AI to extract cuisine types and atmosphere preferences
-            search_preferences = self._extract_search_preferences_ai(primary_params + secondary_params)
-
-            logger.info(f"🤖 AI extracted preferences: {search_preferences}")
-
-            # Check existing coverage with AI-enhanced matching
-            coverage = self._check_database_with_ai_matching(city, search_preferences)
-
-            # Log coverage results
-            logger.info(f"📊 Database coverage: {coverage['total_restaurants']} total, {coverage['preference_matches']} preference matches")
-
-            return {
-                **x,
-                "database_coverage": coverage,
-                "search_preferences": search_preferences,
-                "has_sufficient_data": coverage["sufficient_coverage"],
-                "should_supplement_search": not coverage["sufficient_coverage"] or coverage["total_restaurants"] < 8
-            }
-
-        except Exception as e:
-            logger.error(f"❌ Error in AI database coverage check: {e}")
-            return {
-                **x,
-                "database_coverage": {"has_data": False, "total_restaurants": 0},
-                "search_preferences": {},
-                "has_sufficient_data": False,
-                "should_supplement_search": True
-            }
+            logger.error(f"❌ Failed to create RunnableSequence: {e}")
+            logger.error(f"❌ first={self.analyze_query}")
+            logger.error(f"❌ middle={middle_steps}")
+            raise
 
     # MODIFIED STEP 3: Conditional Search Based on AI Database Coverage
     def _rag_enhanced_search_step(self, x):
