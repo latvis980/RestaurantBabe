@@ -214,46 +214,54 @@ class SupabaseManager:
                 # Update existing restaurant
                 restaurant_id = existing['id']
                 update_data = {
-                    'total_mentions': existing['total_mentions'] + 1,
-                    'last_updated_at': datetime.now(timezone.utc).isoformat()  # FIXED
+                    'total_mentions': existing.get('total_mentions', 0) + 1,  # Handle missing field
+                    'last_updated_at': datetime.now(timezone.utc).isoformat()
                 }
 
                 # Update credibility if this is from a professional source
                 if restaurant_data.get('is_professional', False):
-                    update_data['professional_mentions'] = existing['professional_mentions'] + 1
+                    update_data['professional_mentions'] = existing.get('professional_mentions', 0) + 1
                     # Recalculate credibility score
                     update_data['credibility_score'] = min(1.0, 
-                        existing['credibility_score'] + 0.1)
+                        existing.get('credibility_score', 0.5) + 0.1)
 
                 self.supabase.table('restaurants').update(update_data).eq('id', restaurant_id).execute()
                 logger.info(f"Updated existing restaurant: {restaurant_data.get('name')}")
 
             else:
-                # Insert new restaurant
+                # Insert new restaurant - FIXED: Added missing fields
                 insert_data = {
                     'name': restaurant_data['name'],
-                    'address': restaurant_data.get('address'),
+                    'address': restaurant_data.get('address', ''),
                     'latitude': restaurant_data.get('latitude'),
                     'longitude': restaurant_data.get('longitude'),
-                    'neighborhood': restaurant_data.get('neighborhood'),
-                    'city': restaurant_data.get('city'),
-                    'country': restaurant_data.get('country'),
-                    'cuisine_type': restaurant_data.get('cuisine_type'),
-                    'phone': restaurant_data.get('phone'),
-                    'website': restaurant_data.get('website'),
+                    'neighborhood': restaurant_data.get('neighborhood', ''),
+                    'city': restaurant_data.get('city', ''),
+                    'country': restaurant_data.get('country', ''),
+                    'cuisine_type': restaurant_data.get('cuisine_type', ''),
+                    'phone': restaurant_data.get('phone', ''),
+                    'website': restaurant_data.get('website', ''),
                     'credibility_score': restaurant_data.get('credibility_score', self.config.DEFAULT_CREDIBILITY_SCORE),
                     'professional_mentions': 1 if restaurant_data.get('is_professional') else 0,
+                    'total_mentions': 1,  # FIXED: Added missing field
+                    'created_at': datetime.now(timezone.utc).isoformat(),  # FIXED: Added created_at
+                    'last_updated_at': datetime.now(timezone.utc).isoformat(),  # FIXED: Added last_updated_at
                     'metadata': restaurant_data.get('metadata', {})
                 }
 
                 result = self.supabase.table('restaurants').insert(insert_data).execute()
-                restaurant_id = result.data[0]['id']
-                logger.info(f"Saved new restaurant: {restaurant_data.get('name')}")
+                if result.data:
+                    restaurant_id = result.data[0]['id']
+                    logger.info(f"Saved new restaurant: {restaurant_data.get('name')}")
+                else:
+                    logger.error(f"Failed to insert restaurant: {restaurant_data.get('name')}")
+                    return None
 
             return restaurant_id
 
         except Exception as e:
             logger.error(f"Error saving restaurant: {e}")
+            logger.error(f"Restaurant data: {restaurant_data}")  # Add debug info
             return None
 
     def _find_existing_restaurant(self, restaurant_data: Dict[str, Any]) -> Optional[Dict]:
