@@ -186,6 +186,82 @@ class LangChainOrchestrator:
             logger.error(f"❌ middle={middle_steps}")
             raise
 
+    # NEW STEP 1: Enhanced Query Analysis with AI Country Detection
+    def _analyze_query_with_country_detection(self, x):
+        """Enhanced query analysis that includes AI-powered country detection"""
+        try:
+            query = x["query"]
+            logger.info(f"🔍 Analyzing query with AI country detection: {query}")
+
+            # Get basic analysis
+            analysis = self.query_analyzer.analyze(query)
+
+            # Add AI-powered country detection
+            city = analysis.get("destination", "Unknown")
+            country = self._detect_country_from_city(city)
+
+            logger.info(f"📍 Detected location: {city}, {country}")
+
+            return {
+                **analysis,
+                "query": query,
+                "city": city,
+                "country": country
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error in query analysis: {e}")
+            return {
+                "query": x["query"],
+                "destination": "Unknown",
+                "city": "Unknown", 
+                "country": "Unknown",
+                "search_queries": [x["query"]],
+                "primary_search_parameters": [],
+                "secondary_filter_parameters": [],
+                "keywords_for_analysis": []
+            }
+
+    # NEW STEP 2: AI-Powered Database Coverage Check
+    def _check_database_coverage_ai(self, x):
+        """Check database coverage using AI-powered semantic matching"""
+        try:
+            city = x.get("city", "Unknown")
+            primary_params = x.get("primary_search_parameters", [])
+            secondary_params = x.get("secondary_filter_parameters", [])
+
+            logger.info(f"🔍 AI-powered database coverage check for {city}")
+            logger.info(f"📋 Search parameters: {primary_params + secondary_params}")
+
+            # Use AI to extract cuisine types and atmosphere preferences
+            search_preferences = self._extract_search_preferences_ai(primary_params + secondary_params)
+
+            logger.info(f"🤖 AI extracted preferences: {search_preferences}")
+
+            # Check existing coverage with AI-enhanced matching
+            coverage = self._check_database_with_ai_matching(city, search_preferences)
+
+            # Log coverage results
+            logger.info(f"📊 Database coverage: {coverage['total_restaurants']} total, {coverage['preference_matches']} preference matches")
+
+            return {
+                **x,
+                "database_coverage": coverage,
+                "search_preferences": search_preferences,
+                "has_sufficient_data": coverage["sufficient_coverage"],
+                "should_supplement_search": not coverage["sufficient_coverage"] or coverage["total_restaurants"] < 8
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error in AI database coverage check: {e}")
+            return {
+                **x,
+                "database_coverage": {"has_data": False, "total_restaurants": 0},
+                "search_preferences": {},
+                "has_sufficient_data": False,
+                "should_supplement_search": True
+            }
+
     # MODIFIED STEP 3: Conditional Search Based on AI Database Coverage
     def _rag_enhanced_search_step(self, x):
         """Enhanced search that considers AI-analyzed database coverage"""
