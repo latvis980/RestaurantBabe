@@ -59,7 +59,7 @@ class LangChainOrchestrator:
 
     def _build_pipeline(self):
         """Build the LangChain pipeline with Supabase Update Agent integration"""
-        logger.info("🚀 BUILDING PIPELINE - VERSION 2025-07-26-FIXED")
+        logger.info("🚀 BUILDING PIPELINE - VERSION 2025-07-26-PIPE-OPERATOR")
 
         # Step 1: Analyze Query (with country detection)
         self.analyze_query = RunnableLambda(
@@ -124,32 +124,6 @@ class LangChainOrchestrator:
         )
         logger.info(f"✅ Step 9 defined: {self.format_output}")
 
-        # Before creating the chain, log what we have:
-        middle_steps = [
-            self.check_database,
-            self.search,
-            self.scrape,
-            self.supabase_update,
-            self.analyze_results,
-            self.edit,
-            self.follow_up_search,
-            self.format_output,
-        ]
-
-        logger.info(f"🔍 DEBUGGING: analyze_query = {self.analyze_query}")
-        logger.info(f"🔍 DEBUGGING: middle_steps count = {len(middle_steps)}")
-        logger.info(f"🔍 DEBUGGING: All steps defined: {[step is not None for step in middle_steps]}")
-
-        # Check for None values
-        none_steps = [i for i, step in enumerate(middle_steps) if step is None]
-        if none_steps:
-            logger.error(f"❌ None values found at indices: {none_steps}")
-            for i in none_steps:
-                step_names = ["check_database", "search", "scrape", "supabase_update", "analyze_results", "edit", "follow_up_search", "format_output"]
-                logger.error(f"❌ Step {i} ({step_names[i]}) is None!")
-        else:
-            logger.info("✅ All middle steps are properly defined (no None values)")
-
         # Verify all methods exist
         method_checks = [
             ("_analyze_query_with_country_detection", hasattr(self, "_analyze_query_with_country_detection")),
@@ -170,21 +144,52 @@ class LangChainOrchestrator:
         else:
             logger.info("✅ All required methods exist")
 
-        logger.info(f"🔧 About to create RunnableSequence with first={self.analyze_query} and {len(middle_steps)} middle steps")
-
-        # Create the complete chain
+        # Create the complete chain using MODERN PIPE OPERATOR SYNTAX
         try:
-            self.chain = RunnableSequence(
-                first=self.analyze_query,
-                middle=middle_steps,
-                name="restaurant_recommendation_chain"
+            logger.info("🔧 Creating RunnableSequence using pipe operator (recommended LangChain approach)")
+
+            # Use the modern pipe operator approach (most reliable)
+            self.chain = (
+                self.analyze_query |
+                self.check_database |
+                self.search |
+                self.scrape |
+                self.supabase_update |
+                self.analyze_results |
+                self.edit |
+                self.follow_up_search |
+                self.format_output
             )
-            logger.info("✅ RunnableSequence created successfully!")
+
+            logger.info(f"✅ RunnableSequence created successfully using pipe operator!")
+            logger.info(f"✅ Chain type: {type(self.chain)}")
+
         except Exception as e:
-            logger.error(f"❌ Failed to create RunnableSequence: {e}")
-            logger.error(f"❌ first={self.analyze_query}")
-            logger.error(f"❌ middle={middle_steps}")
-            raise
+            logger.error(f"❌ Failed to create RunnableSequence with pipe operator: {e}")
+
+            # Fallback: try the list constructor
+            try:
+                logger.info("🔄 Trying fallback: RunnableSequence with list constructor")
+                all_steps = [
+                    self.analyze_query,
+                    self.check_database,
+                    self.search,
+                    self.scrape,
+                    self.supabase_update,
+                    self.analyze_results,
+                    self.edit,
+                    self.follow_up_search,
+                    self.format_output,
+                ]
+
+                from langchain_core.runnables import RunnableSequence
+                self.chain = RunnableSequence(*all_steps)
+
+                logger.info(f"✅ Fallback successful! Chain type: {type(self.chain)}")
+
+            except Exception as fallback_error:
+                logger.error(f"❌ Fallback also failed: {fallback_error}")
+                raise
 
     # NEW STEP 1: Enhanced Query Analysis with AI Country Detection
     def _analyze_query_with_country_detection(self, x):
