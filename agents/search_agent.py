@@ -11,7 +11,6 @@ import concurrent.futures
 from typing import Dict, List, Any, Optional
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
-from utils.database import save_data
 import logging
 
 logger = logging.getLogger("restaurant-recommender.search_agent")
