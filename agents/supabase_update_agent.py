@@ -76,76 +76,62 @@ CUISINE TAG GUIDELINES:
 - Common tag categories:
   * Cuisine: italian, french, japanese, mexican, indian, etc.
   * Style: fine dining, casual, bistro, trattoria, steakhouse, etc.
-  * Specialties: pasta, pizza, sushi, tacos, burgers, seafood, etc.
-  * Atmosphere: romantic, family-friendly, cozy, modern, traditional, etc.
-  * Features: wine bar, cocktails, rooftop, outdoor seating, etc.
-  * Chef-driven: chef's table, chef's cuisine, celebrity chef, etc.
+  * Specialties: pasta, pizza, seafood, steaks, cocktails, wine, etc.
+  * Atmosphere: romantic, family-friendly, trendy, cozy, etc.
+  * Features: outdoor seating, live music, chef's table, etc.
 
-IMPORTANT RULES:
-- Always extract restaurants even if information is incomplete
-- Combine multiple mentions of the same restaurant
-- Preserve original descriptions without editing
-- Be thorough with cuisine tags - one restaurant should have 5-10 relevant tags
-- If address is partial or unclear, still include it
-- If no address mentioned, use null
+CITY: {{city}}
+COUNTRY: {{country}}
+SOURCES: {{sources}}
 
-SCRAPED CONTENT:
+CONTENT TO PROCESS:
 {{scraped_content}}
-
-SOURCES (URLs):
-{{sources}}
-
-Return only the JSON array, no other text.""")
+""")
 
     def process_scraped_content(self, scraped_content: str, sources: List[str], city: str, country: str) -> List[Dict[str, Any]]:
         """
         Process scraped content and extract restaurant information using AI
-
-        Args:
-            scraped_content: Combined text content from all scraped sources
-            sources: List of source URLs
-            city: City where restaurants are located
-            country: Country where restaurants are located
-
-        Returns:
-            List of processed restaurant data dictionaries
         """
         try:
-            logger.info(f"🔄 Processing scraped content for {city}, {country}")
+            logger.info(f"🤖 Processing scraped content for {city}, {country}")
             logger.info(f"📄 Content length: {len(scraped_content)} chars from {len(sources)} sources")
 
-            # Process content with LLM
-            response = self.llm.invoke([
-                HumanMessage(content=self.processing_prompt.format(
-                    scraped_content=scraped_content,
-                    sources=sources
-                ))
-            ])
+            # Prepare the prompt
+            formatted_prompt = self.processing_prompt.format(
+                city=city,
+                country=country,
+                sources="\n".join(sources),
+                scraped_content=scraped_content
+            )
+
+            # Call OpenAI
+            response = self.llm.invoke([HumanMessage(content=formatted_prompt)])
 
             # Parse JSON response
             try:
                 restaurants_data = json.loads(response.content)
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse LLM response as JSON: {e}")
-                logger.error(f"LLM Response: {response.content[:500]}...")
-                return []
+            except json.JSONDecodeError:
+                # Try to extract JSON from response if it's wrapped in other text
+                content = response.content
+                start_idx = content.find('[')
+                end_idx = content.rfind(']') + 1
+                if start_idx != -1 and end_idx != 0:
+                    restaurants_data = json.loads(content[start_idx:end_idx])
+                else:
+                    logger.error("❌ Failed to parse JSON from OpenAI response")
+                    return []
 
-            # Validate that we got a list
             if not isinstance(restaurants_data, list):
-                logger.error(f"Expected list from LLM, got {type(restaurants_data)}")
+                logger.error("❌ OpenAI response is not a list")
                 return []
 
-            # Add city, country, and sources to each restaurant
+            # Add city/country to each restaurant and clean data
             for restaurant in restaurants_data:
                 restaurant['city'] = city
                 restaurant['country'] = country
                 restaurant['sources'] = sources
 
-                # Ensure cuisine_tags is a list
-                if not isinstance(restaurant.get('cuisine_tags'), list):
-                    restaurant['cuisine_tags'] = []
-
-                # Ensure mention_count is valid
+                # Ensure mention_count is a valid integer
                 if not isinstance(restaurant.get('mention_count'), int) or restaurant.get('mention_count') < 1:
                     restaurant['mention_count'] = 1
 
@@ -221,77 +207,80 @@ Return only the JSON array, no other text.""")
         except Exception as e:
             logger.error(f"❌ Error updating geodata: {e}")
 
-    def process_search_results(scraped_content: str, sources: List[str], city: str, country: str, config) -> List[Dict[str, Any]]:
-        """
-        Main function to process search results and update database
 
-        Args:
-            scraped_content: Combined scraped text content
-            sources: List of source URLs
-            city: City where restaurants are located  
-            country: Country where restaurants are located
-            config: Application configuration object
+# STANDALONE FUNCTIONS (these are what get imported by langchain_orchestrator.py)
 
-        Returns:
-            List of processed restaurant data
-        """
-        try:
-            agent = SupabaseUpdateAgent(config)
+def process_search_results(scraped_content: str, sources: List[str], city: str, country: str, config) -> List[Dict[str, Any]]:
+    """
+    Main function to process search results and update database
 
-            # Process scraped content
-            restaurants_data = agent.process_scraped_content(scraped_content, sources, city, country)
+    Args:
+        scraped_content: Combined scraped text content
+        sources: List of source URLs
+        city: City where restaurants are located  
+        country: Country where restaurants are located
+        config: Application configuration object
 
-            if restaurants_data:
-                # Save to database
-                success = agent.save_restaurants_to_supabase(restaurants_data)
-                if success:
-                    logger.info(f"✅ Successfully processed {len(restaurants_data)} restaurants for {city}")
-                    return restaurants_data
-                else:
-                    logger.error("❌ Failed to save restaurants to database")
-                    return []
+    Returns:
+        List of processed restaurant data
+    """
+    try:
+        agent = SupabaseUpdateAgent(config)
+
+        # Process scraped content
+        restaurants_data = agent.process_scraped_content(scraped_content, sources, city, country)
+
+        if restaurants_data:
+            # Save to database
+            success = agent.save_restaurants_to_supabase(restaurants_data)
+            if success:
+                logger.info(f"✅ Successfully processed {len(restaurants_data)} restaurants for {city}")
+                return restaurants_data
             else:
-                logger.warning("⚠️ No restaurants extracted from content")
+                logger.error("❌ Failed to save restaurants to database")
                 return []
-
-        except Exception as e:
-            logger.error(f"❌ Error in process_search_results: {e}")
+        else:
+            logger.warning("⚠️ No restaurants extracted from content")
             return []
 
-    # Additional helper function for checking existing data
-    def check_city_coverage(city: str, cuisine_type: str, config) -> Dict[str, Any]:
-        """
-        Check if we have good coverage for a city/cuisine combination
+    except Exception as e:
+        logger.error(f"❌ Error in process_search_results: {e}")
+        return []
 
-        Args:
-            city: City to check
-            cuisine_type: Cuisine type to check
-            config: Application configuration
 
-        Returns:
-            Dictionary with coverage information
-        """
-        try:
-            agent = SupabaseUpdateAgent(config)
-            existing_restaurants = agent.check_existing_restaurants(city, cuisine_type)
+def check_city_coverage(city: str, cuisine_type: str, config) -> Dict[str, Any]:
+    """
+    Check if we have good coverage for a city/cuisine combination
 
-            total_count = len(existing_restaurants)
-            cuisine_matches = len([r for r in existing_restaurants if cuisine_type.lower() in r.get('cuisine_tags', [])])
+    Args:
+        city: City to check
+        cuisine_type: Cuisine type to check
+        config: Application configuration
 
-            return {
-                'has_data': total_count > 0,
-                'total_restaurants': total_count,
-                'cuisine_matches': cuisine_matches,
-                'sufficient_coverage': cuisine_matches >= 5,  # Threshold for good coverage
-                'restaurants': existing_restaurants
-            }
+    Returns:
+        Dictionary with coverage information
+    """
+    try:
+        agent = SupabaseUpdateAgent(config)
+        existing_restaurants = agent.check_existing_restaurants(city, cuisine_type)
 
-        except Exception as e:
-            logger.error(f"❌ Error checking city coverage: {e}")
-            return {
-                'has_data': False,
-                'total_restaurants': 0,
-                'cuisine_matches': 0,
-                'sufficient_coverage': False,
-                'restaurants': []
-            }
+        total_count = len(existing_restaurants)
+        cuisine_matches = len([r for r in existing_restaurants if cuisine_type.lower() in r.get('cuisine_tags', [])])
+
+        return {
+            'has_data': total_count > 0,
+            'total_restaurants': total_count,
+            'cuisine_matches': cuisine_matches,
+            'sufficient_coverage': cuisine_matches >= 5,  # Threshold for good coverage
+            'restaurants': existing_restaurants
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Error checking city coverage: {e}")
+        return {
+            'has_data': False,
+            'total_restaurants': 0,
+            'cuisine_matches': 0,
+            'sufficient_coverage': False,
+            'restaurants': []
+        }
