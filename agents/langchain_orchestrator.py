@@ -1,4 +1,4 @@
-# agents/langchain_orchestrator.py
+# agents/langchain_orchestrator.py - COMPLETE UPDATED FILE WITH AI-POWERED FEATURES
 # CORRECTED VERSION - With complete RAG integration and Supabase integration points
 
 from langchain_core.runnables import RunnableSequence, RunnableLambda
@@ -23,6 +23,9 @@ from utils.database import (
 from utils.debug_utils import dump_chain_state, log_function_call
 from formatters.telegram_formatter import TelegramFormatter
 
+# NEW IMPORT: Supabase Update Agent
+from agents.supabase_update_agent import process_search_results, check_city_coverage
+
 # Create logger
 logger = logging.getLogger("restaurant-recommender.orchestrator")
 
@@ -35,7 +38,7 @@ class LangChainOrchestrator:
         from agents.list_analyzer import ListAnalyzer
         from agents.editor_agent import EditorAgent
         from agents.follow_up_search_agent import FollowUpSearchAgent
-        from agents.rag_search_agent import RAGSearchAgent  # NEW
+        from agents.rag_search_agent import RAGSearchAgent
 
         # Initialize agents
         self.query_analyzer = QueryAnalyzer(config)
@@ -44,7 +47,7 @@ class LangChainOrchestrator:
         self.list_analyzer = ListAnalyzer(config)
         self.editor_agent = EditorAgent(config)
         self.follow_up_search_agent = FollowUpSearchAgent(config)
-        self.rag_search_agent = RAGSearchAgent(config)  # NEW
+        self.rag_search_agent = RAGSearchAgent(config)
 
         # Initialize formatter
         self.telegram_formatter = TelegramFormatter()
@@ -55,48 +58,57 @@ class LangChainOrchestrator:
         self._build_pipeline()
 
     def _build_pipeline(self):
-        """Build the LangChain pipeline with clean step separation"""
+        """Build the LangChain pipeline with Supabase Update Agent integration"""
 
-        # Step 1: Analyze Query
+        # Step 1: Analyze Query (with country detection)
         self.analyze_query = RunnableLambda(
-            lambda x: {
-                **self.query_analyzer.analyze(x["query"]),
-                "query": x["query"]
-            },
-            name="analyze_query"
+            self._analyze_query_with_country_detection,
+            name="analyze_query_with_country"
         )
 
-        # Step 2: RAG-Enhanced Search
+        # Step 2: Check Existing Database Coverage (NEW - AI-powered)
+        self.check_database = RunnableLambda(
+            self._check_database_coverage_ai,
+            name="check_database_coverage_ai"
+        )
+
+        # Step 3: RAG-Enhanced Search
         self.search = RunnableLambda(
             self._rag_enhanced_search_step,
             name="rag_enhanced_search"
         )
 
-        # Step 3: Scrape with Supabase Integration
+        # Step 4: Scrape with Supabase Integration
         self.scrape = RunnableLambda(
             self._scrape_step,
             name="scrape"
         )
 
-        # Step 4: Analyze Results
+        # Step 5: Process with Supabase Update Agent (NEW - CRITICAL STEP)
+        self.supabase_update = RunnableLambda(
+            self._supabase_update_step,
+            name="supabase_update"
+        )
+
+        # Step 6: Analyze Results
         self.analyze_results = RunnableLambda(
             self._analyze_results_step,
             name="analyze_results"
         )
 
-        # Step 5: Edit
+        # Step 7: Edit (now works with database-stored restaurants)
         self.edit = RunnableLambda(
             self._edit_step,
             name="edit"
         )
 
-        # Step 6: Follow-up Search
+        # Step 8: Follow-up Search (with geodata updates)
         self.follow_up_search = RunnableLambda(
-            self._follow_up_step,
-            name="follow_up_search"
+            self._follow_up_step_with_geodata,
+            name="follow_up_search_geodata"
         )
 
-        # Step 7: Format for Telegram with Database Storage
+        # Step 9: Format for Telegram
         self.format_output = RunnableLambda(
             self._format_step,
             name="format_output"
@@ -106,96 +118,150 @@ class LangChainOrchestrator:
         self.chain = RunnableSequence(
             first=self.analyze_query,
             middle=[
+                self.check_database,
                 self.search,
                 self.scrape,
+                self.supabase_update,  # NEW STEP
                 self.analyze_results,
                 self.edit,
                 self.follow_up_search,
                 self.format_output,
             ],
-            last=RunnableLambda(lambda x: x),
             name="restaurant_recommendation_chain"
         )
 
+    # NEW STEP 1: Enhanced Query Analysis with AI Country Detection
+    def _analyze_query_with_country_detection(self, x):
+        """Enhanced query analysis that includes AI-powered country detection"""
+        try:
+            query = x["query"]
+            logger.info(f"🔍 Analyzing query with AI country detection: {query}")
+
+            # Get basic analysis
+            analysis = self.query_analyzer.analyze(query)
+
+            # Add AI-powered country detection
+            city = analysis.get("destination", "Unknown")
+            country = self._detect_country_from_city(city)
+
+            logger.info(f"📍 Detected location: {city}, {country}")
+
+            return {
+                **analysis,
+                "query": query,
+                "city": city,
+                "country": country
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error in query analysis: {e}")
+            return {
+                "query": x["query"],
+                "destination": "Unknown",
+                "city": "Unknown", 
+                "country": "Unknown",
+                "search_queries": [x["query"]],
+                "primary_search_parameters": [],
+                "secondary_filter_parameters": [],
+                "keywords_for_analysis": []
+            }
+
+    # NEW STEP 2: AI-Powered Database Coverage Check
+    def _check_database_coverage_ai(self, x):
+        """Check database coverage using AI-powered semantic matching"""
+        try:
+            city = x.get("city", "Unknown")
+            primary_params = x.get("primary_search_parameters", [])
+            secondary_params = x.get("secondary_filter_parameters", [])
+
+            logger.info(f"🔍 AI-powered database coverage check for {city}")
+            logger.info(f"📋 Search parameters: {primary_params + secondary_params}")
+
+            # Use AI to extract cuisine types and atmosphere preferences
+            search_preferences = self._extract_search_preferences_ai(primary_params + secondary_params)
+
+            logger.info(f"🤖 AI extracted preferences: {search_preferences}")
+
+            # Check existing coverage with AI-enhanced matching
+            coverage = self._check_database_with_ai_matching(city, search_preferences)
+
+            # Log coverage results
+            logger.info(f"📊 Database coverage: {coverage['total_restaurants']} total, {coverage['preference_matches']} preference matches")
+
+            return {
+                **x,
+                "database_coverage": coverage,
+                "search_preferences": search_preferences,
+                "has_sufficient_data": coverage["sufficient_coverage"],
+                "should_supplement_search": not coverage["sufficient_coverage"] or coverage["total_restaurants"] < 8
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error in AI database coverage check: {e}")
+            return {
+                **x,
+                "database_coverage": {"has_data": False, "total_restaurants": 0},
+                "search_preferences": {},
+                "has_sufficient_data": False,
+                "should_supplement_search": True
+            }
+
+    # MODIFIED STEP 3: Conditional Search Based on AI Database Coverage
     def _rag_enhanced_search_step(self, x):
-        """
-        RAG-enhanced search step - SIMPLE VERSION with domain sources
-        """
-        query = x.get("query", "")
-        destination = x.get("destination", "Unknown")
-        search_queries = x.get("search_queries", [])
+        """Enhanced search that considers AI-analyzed database coverage"""
+        try:
+            should_search = x.get("should_supplement_search", True)
 
-        logger.info(f"🧠 Starting RAG-enhanced search for: {query}")
+            if not should_search:
+                logger.info("🎯 Sufficient AI-matched database coverage found, skipping web search")
+                return {**x, "search_results": [], "used_database_only": True}
 
-        # ============ RAG INTEGRATION POINT 1: CHECK IF WE CAN SKIP WEB SEARCH ============
-        should_skip_web = self.rag_search_agent.should_skip_web_search(query, destination)
+            logger.info("🌐 Performing web search to supplement AI-analyzed database")
 
-        if should_skip_web:
-            # We have enough RAG content - use it directly
-            rag_results = self.rag_search_agent.search_knowledge_base(query, destination, limit=10)
-            rag_content = rag_results.get("content", [])
+            # Your existing search logic
+            search_queries = x.get("search_queries", [])
+            destination = x.get("destination", "Unknown")
 
-            # Convert RAG content to search result format WITH DOMAIN SOURCES
-            search_results = []
-            for content in rag_content:
-                # ============ SIMPLE: GET DOMAIN SOURCES ============
-                source_domains = content.get("source_domains", [])
-                restaurant_data = content.get("restaurant_data", {})
+            if not search_queries:
+                logger.warning("No search queries available")
+                return {**x, "search_results": []}
 
-                # If we have restaurant data with sources, use those
-                if not source_domains and restaurant_data:
-                    source_domains = self.rag_search_agent._extract_domain_names_from_restaurant(restaurant_data)
+            # Perform search
+            search_results = self.search_agent.search(search_queries)
 
-                # Create source info with domain names
-                source_name = "Knowledge Base"
-                if source_domains:
-                    source_name = f"Previous search ({', '.join(source_domains[:2])})"
+            # Add RAG enhancement if available
+            try:
+                rag_info = self.rag_search_agent.enhance_search(
+                    search_queries, search_results, destination
+                )
+                logger.info(f"🧠 RAG enhancement added {len(rag_info.get('additional_sources', []))} sources")
+            except Exception as e:
+                logger.warning(f"RAG enhancement failed: {e}")
+                rag_info = {}
 
-                rag_result = {
-                    "title": f"💾 {content.get('source_summary', 'Knowledge Base')}",
-                    "url": f"rag://content/{content.get('id', 'unknown')}",
-                    "description": content.get("content_text", "")[:200] + "...",
-                    "scraped_content": content.get("content_text", ""),
-                    "scraping_success": True,
-                    "scraping_method": "rag_retrieval",
-                    "source_info": {
-                        "name": source_name,
-                        "url": "internal://rag",
-                        "extraction_method": "vector_search",
-                        "source_domains": source_domains  # SIMPLE: Include domain sources
-                    },
-                    "rag_source": True,
-                    "rag_confidence": content.get("similarity", 0.8),
-                    "source_domains": source_domains,  # SIMPLE: Add at top level too
-                    "original_restaurant_data": restaurant_data
-                }
-                search_results.append(rag_result)
+            logger.info(f"✅ Search completed: {len(search_results)} results")
 
-            logger.info(f"⚡ Using {len(search_results)} RAG results with domain sources - skipped web search")
-            return {**x, "search_results": search_results, "search_method": "rag_only"}
+            return {
+                **x, 
+                "search_results": search_results,
+                "rag_enhancement": rag_info,
+                "used_database_only": False
+            }
 
-        # ============ RAG INTEGRATION POINT 2: ENHANCE WEB SEARCH WITH RAG ============
-        # Perform regular web search
-        web_search_results = self.search_agent.search(search_queries)
+        except Exception as e:
+            logger.error(f"❌ Search error: {e}")
+            return {**x, "search_results": [], "used_database_only": False}
 
-        # Enhance with RAG content (with domain sources)
-        enhanced_results = self.rag_search_agent.enhance_web_search_with_rag(
-            web_search_results, query, destination
-        )
-
-        logger.info(f"🔍 Web search: {len(web_search_results)} results, enhanced to {len(enhanced_results)} with RAG")
-
-        return {
-            **x, 
-            "search_results": enhanced_results,
-            "search_method": "web_plus_rag",
-            "rag_stats": self.rag_search_agent.get_stats()
-        }
-
+    # EXISTING STEP 4: Scraping (keep your existing implementation)
     def _scrape_step(self, x):
         """Handle async scraping with Supabase integration"""
         search_results = x.get("search_results", [])
-        logger.info(f"🔍 Scraping {len(search_results)} search results with Supabase integration")
+
+        if not search_results:
+            logger.info("🔍 No search results to scrape (using AI-matched database only)")
+            return {**x, "enriched_results": []}
+
+        logger.info(f"🔍 Scraping {len(search_results)} search results")
 
         def run_scraping():
             loop = asyncio.new_event_loop()
@@ -210,17 +276,501 @@ class LangChainOrchestrator:
         with concurrent.futures.ThreadPoolExecutor() as pool:
             enriched_results = pool.submit(run_scraping).result()
 
-        # ============ SUPABASE INTEGRATION POINT 1: DOMAIN INTELLIGENCE ============
+        # Domain intelligence and content saving
         self._save_domain_intelligence_from_scraping_results(enriched_results)
-
-        # ============ SUPABASE INTEGRATION POINT 2: SAVE SCRAPED CONTENT FOR RAG ============
         self._save_scraped_content_for_rag(enriched_results)
 
-        # Log usage after scraping
-        self._log_firecrawl_usage()
-
-        logger.info(f"✅ Scraping completed with {len(enriched_results)} enriched results, data saved to Supabase")
+        logger.info(f"✅ Scraping completed with {len(enriched_results)} enriched results")
         return {**x, "enriched_results": enriched_results}
+
+    # NEW STEP 5: Supabase Update Agent Processing (THE KEY NEW STEP)
+    def _supabase_update_step(self, x):
+        """Process scraped content and update Supabase restaurants database with AI"""
+        try:
+            enriched_results = x.get("enriched_results", [])
+            city = x.get("city", "Unknown")
+            country = x.get("country", "Unknown")
+
+            if not enriched_results:
+                logger.info("🔍 No scraped content to process (database-only mode)")
+                return {**x, "restaurants_processed": 0}
+
+            logger.info(f"🤖 Processing scraped content with AI-powered Supabase Update Agent")
+            logger.info(f"📄 Processing {len(enriched_results)} scraped articles for {city}, {country}")
+
+            # Combine all scraped content
+            combined_content = ""
+            sources = []
+
+            for result in enriched_results:
+                content = result.get("scraped_content", result.get("content", ""))
+                url = result.get("url", "")
+
+                if content and len(content.strip()) > 100:
+                    combined_content += f"\n\n--- FROM {url} ---\n\n{content}"
+                    sources.append(url)
+
+            if not combined_content.strip():
+                logger.warning("⚠️ No substantial content found in scraped results")
+                return {**x, "restaurants_processed": 0}
+
+            logger.info(f"📝 Combined content: {len(combined_content)} chars from {len(sources)} sources")
+
+            # Process with AI-powered Supabase Update Agent
+            processed_restaurants = process_search_results(
+                scraped_content=combined_content,
+                sources=sources,
+                city=city,
+                country=country,
+                config=self.config
+            )
+
+            restaurants_count = len(processed_restaurants) if processed_restaurants else 0
+            logger.info(f"✅ AI-powered Supabase Update Agent processed {restaurants_count} restaurants")
+
+            return {
+                **x,
+                "restaurants_processed": restaurants_count,
+                "processed_restaurants": processed_restaurants or []
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error in AI Supabase update step: {e}")
+            return {**x, "restaurants_processed": 0, "processed_restaurants": []}
+
+    # MODIFIED STEP 6: Analysis considers AI-matched database + new data
+    def _analyze_results_step(self, x):
+        """Analyze results considering AI-matched database and newly scraped data"""
+        try:
+            # Get AI database coverage info
+            database_coverage = x.get("database_coverage", {})
+            existing_restaurants = database_coverage.get("restaurants", [])
+
+            # Get newly processed restaurants  
+            processed_restaurants = x.get("processed_restaurants", [])
+
+            # If we have enough existing AI-matched data, prioritize database
+            if len(existing_restaurants) >= 5:
+                logger.info(f"🎯 Using {len(existing_restaurants)} AI-matched restaurants from database")
+
+                # Convert database format to analysis format
+                analysis_input = {
+                    "destination": x.get("city", "Unknown"),
+                    "primary_search_parameters": x.get("primary_search_parameters", []),
+                    "secondary_filter_parameters": x.get("secondary_filter_parameters", []),
+                    "keywords_for_analysis": x.get("keywords_for_analysis", []),
+                    "restaurants_from_database": existing_restaurants,
+                    "newly_processed": processed_restaurants,
+                    "ai_matched": True
+                }
+
+                return {**x, "analysis_input": analysis_input, "using_ai_database": True}
+
+            else:
+                # Use traditional scraped content analysis
+                logger.info("🔍 Using traditional content analysis (insufficient AI database coverage)")
+
+                enriched_results = x.get("enriched_results", [])
+
+                def run_analysis():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        return loop.run_until_complete(self._analyze_results_async(x))
+                    finally:
+                        loop.close()
+
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    result = pool.submit(run_analysis).result()
+
+                return {**result, "using_ai_database": False}
+
+        except Exception as e:
+            logger.error(f"❌ Error in AI analysis step: {e}")
+            return {**x, "analysis_input": {}, "using_ai_database": False}
+
+    # MODIFIED STEP 7: Editor works with AI-matched database restaurants
+    def _edit_step(self, x):
+        """Edit step that handles AI-matched database and scraped content"""
+        try:
+            using_ai_database = x.get("using_ai_database", False)
+
+            if using_ai_database:
+                # Work with AI-matched database restaurants
+                database_coverage = x.get("database_coverage", {})
+                restaurants = database_coverage.get("restaurants", [])
+
+                logger.info(f"📝 Editor processing {len(restaurants)} AI-matched restaurants from database")
+
+                # Convert database format to editor format with AI enhancement
+                main_list = []
+                for restaurant in restaurants[:15]:  # Limit to top 15
+                    main_list.append({
+                        "name": restaurant.get("name", ""),
+                        "address": restaurant.get("address", ""),
+                        "description": self._enhance_description_with_ai(restaurant),
+                        "sources": [self._clean_source_url(url) for url in restaurant.get("sources", [])],
+                        "mention_count": restaurant.get("mention_count", 1),
+                        "cuisine_tags": restaurant.get("cuisine_tags", []),
+                        "from_database": True
+                    })
+
+                return {
+                    **x,
+                    "edited_results": {"main_list": main_list},
+                    "follow_up_queries": []
+                }
+
+            else:
+                # Traditional editor processing with scraped content
+                enriched_results = x.get("enriched_results", [])
+                original_query = x.get("query", "")
+                destination = x.get("destination", "Unknown")
+
+                if not enriched_results:
+                    logger.warning("No scraped results available for editing")
+                    return {
+                        **x,
+                        "edited_results": {"main_list": []},
+                        "follow_up_queries": []
+                    }
+
+                # Call the editor with scraped results
+                edit_output = self.editor_agent.edit(
+                    scraped_results=enriched_results,
+                    original_query=original_query,
+                    destination=destination
+                )
+
+                return {
+                    **x, 
+                    "edited_results": edit_output.get("edited_results", {"main_list": []}),
+                    "follow_up_queries": edit_output.get("follow_up_queries", [])
+                }
+
+        except Exception as e:
+            logger.error(f"❌ Error in AI edit step: {e}")
+            return {
+                **x,
+                "edited_results": {"main_list": []},
+                "follow_up_queries": []
+            }
+
+    # MODIFIED STEP 8: Follow-up with AI geodata updates
+    def _follow_up_step_with_geodata(self, x):
+        """Follow-up search with AI-enhanced geodata updates to Supabase"""
+        try:
+            edited_results = x.get("edited_results", {})
+            follow_up_queries = x.get("follow_up_queries", [])
+            destination = x.get("destination", "Unknown")
+            using_ai_database = x.get("using_ai_database", False)
+
+            if not edited_results.get("main_list"):
+                logger.warning("No restaurants available for follow-up")
+                return {**x, "enhanced_results": {"main_list": []}}
+
+            # Run follow-up search
+            enhanced_output = self.follow_up_search_agent.enhance(
+                edited_results=edited_results,
+                follow_up_queries=follow_up_queries,
+                destination=destination
+            )
+
+            # NEW: Update geodata in Supabase for restaurants that got addresses/coordinates
+            if using_ai_database:
+                self._update_restaurant_geodata_ai(enhanced_output.get("enhanced_results", {}))
+
+            return {**x, **enhanced_output}
+
+        except Exception as e:
+            logger.error(f"❌ Error in AI follow-up step: {e}")
+            return {**x, "enhanced_results": {"main_list": []}}
+
+    # NEW AI-POWERED HELPER METHODS
+
+    def _detect_country_from_city(self, city: str) -> str:
+        """AI-powered country detection for any city worldwide"""
+        if not city or city == "Unknown":
+            return "Unknown"
+
+        try:
+            from langchain_openai import ChatOpenAI
+
+            # Use lightweight model for simple country detection
+            llm = ChatOpenAI(
+                model="gpt-4o-mini",  # Faster and cheaper
+                temperature=0,
+                openai_api_key=getattr(self.config, 'OPENAI_API_KEY', None)
+            )
+
+            prompt = f"""What country is the city "{city}" located in? 
+
+Respond with ONLY the country name in English. Examples:
+- Paris -> France
+- Tokyo -> Japan  
+- New York -> United States
+- São Paulo -> Brazil
+- Mumbai -> India
+
+City: {city}
+Country:"""
+
+            response = llm.invoke(prompt)
+            country = response.content.strip()
+
+            # Basic validation
+            if len(country) > 50 or len(country) < 2:
+                logger.warning(f"AI returned invalid country name: {country}")
+                return "Unknown"
+
+            logger.info(f"🌍 AI detected country: {city} -> {country}")
+            return country
+
+        except Exception as e:
+            logger.warning(f"AI country detection failed for {city}: {e}")
+            return "Unknown"
+
+    def _extract_search_preferences_ai(self, parameters: List[str]) -> Dict[str, List[str]]:
+        """AI-powered extraction of cuisine types, atmosphere, and dining preferences"""
+        if not parameters:
+            return {"cuisines": [], "atmosphere": [], "dining_style": [], "features": []}
+
+        try:
+            from langchain_openai import ChatOpenAI
+
+            llm = ChatOpenAI(
+                model="gpt-4o-mini",
+                temperature=0.1,
+                openai_api_key=getattr(self.config, 'OPENAI_API_KEY', None)
+            )
+
+            parameters_text = ", ".join(parameters)
+
+            prompt = f"""Analyze these restaurant search parameters and extract structured preferences.
+
+Parameters: {parameters_text}
+
+Extract and categorize into:
+1. CUISINES: Types of food (italian, french, japanese, etc.)
+2. ATMOSPHERE: Mood/setting (romantic, casual, cozy, upscale, etc.)  
+3. DINING_STYLE: Style of dining (fine dining, bistro, family-friendly, etc.)
+4. FEATURES: Special features (outdoor seating, wine bar, rooftop, etc.)
+
+Return ONLY a JSON object:
+{{
+  "cuisines": ["cuisine1", "cuisine2"],
+  "atmosphere": ["atmosphere1", "atmosphere2"], 
+  "dining_style": ["style1", "style2"],
+  "features": ["feature1", "feature2"]
+}}
+
+Use lowercase, be comprehensive but precise. Include related/similar terms."""
+
+            response = llm.invoke(prompt)
+
+            try:
+                preferences = json.loads(response.content.strip())
+
+                # Validate structure
+                expected_keys = ["cuisines", "atmosphere", "dining_style", "features"]
+                for key in expected_keys:
+                    if key not in preferences or not isinstance(preferences[key], list):
+                        preferences[key] = []
+
+                logger.info(f"🎯 AI extracted preferences: {preferences}")
+                return preferences
+
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse AI preferences response: {response.content}")
+                return {"cuisines": [], "atmosphere": [], "dining_style": [], "features": []}
+
+        except Exception as e:
+            logger.warning(f"AI preference extraction failed: {e}")
+            return {"cuisines": [], "atmosphere": [], "dining_style": [], "features": []}
+
+    def _check_database_with_ai_matching(self, city: str, search_preferences: Dict[str, List[str]]) -> Dict[str, Any]:
+        """Check database using AI-powered semantic matching instead of exact matches"""
+        try:
+            # Get all restaurants for the city
+            coverage = check_city_coverage(city, "", self.config)  # Get all restaurants first
+            all_restaurants = coverage.get("restaurants", [])
+
+            if not all_restaurants:
+                return {
+                    "has_data": False,
+                    "total_restaurants": 0,
+                    "preference_matches": 0,
+                    "sufficient_coverage": False,
+                    "restaurants": []
+                }
+
+            # AI-powered semantic matching
+            matched_restaurants = self._ai_match_restaurants(all_restaurants, search_preferences)
+
+            return {
+                "has_data": True,
+                "total_restaurants": len(all_restaurants),
+                "preference_matches": len(matched_restaurants),
+                "sufficient_coverage": len(matched_restaurants) >= 5,
+                "restaurants": matched_restaurants,
+                "search_preferences": search_preferences
+            }
+
+        except Exception as e:
+            logger.error(f"Error in AI database matching: {e}")
+            return {
+                "has_data": False,
+                "total_restaurants": 0,
+                "preference_matches": 0,
+                "sufficient_coverage": False,
+                "restaurants": []
+            }
+
+    def _ai_match_restaurants(self, restaurants: List[Dict], search_preferences: Dict[str, List[str]]) -> List[Dict]:
+        """Use AI to semantically match restaurants to search preferences"""
+        try:
+            if not search_preferences or not restaurants:
+                return restaurants[:10]  # Return top 10 if no preferences
+
+            from langchain_openai import ChatOpenAI
+
+            llm = ChatOpenAI(
+                model="gpt-4o-mini",
+                temperature=0.1,
+                openai_api_key=getattr(self.config, 'OPENAI_API_KEY', None)
+            )
+
+            # Create a concise restaurant summary for AI analysis
+            restaurant_summaries = []
+            for i, restaurant in enumerate(restaurants[:20]):  # Limit to 20 for cost
+                summary = {
+                    "index": i,
+                    "name": restaurant.get("name", ""),
+                    "cuisine_tags": restaurant.get("cuisine_tags", []),
+                    "description": restaurant.get("raw_description", "")[:200]  # Truncate for cost
+                }
+                restaurant_summaries.append(summary)
+
+            prompt = f"""Match restaurants to search preferences using semantic similarity.
+
+SEARCH PREFERENCES:
+Cuisines: {search_preferences.get('cuisines', [])}
+Atmosphere: {search_preferences.get('atmosphere', [])}
+Dining Style: {search_preferences.get('dining_style', [])}
+Features: {search_preferences.get('features', [])}
+
+RESTAURANTS:
+{json.dumps(restaurant_summaries, indent=2)}
+
+Return restaurant indices that match the preferences (semantic matching, not exact).
+Examples:
+- "romantic" matches restaurants tagged "cozy", "intimate", "date night"
+- "italian" matches "neapolitan", "tuscan", "pasta", "pizza"
+- "casual" matches "bistro", "neighborhood", "family-friendly"
+
+Return ONLY a JSON array of matching indices: [0, 3, 7, 12]
+Maximum 10 matches, ordered by relevance."""
+
+            response = llm.invoke(prompt)
+
+            try:
+                matching_indices = json.loads(response.content.strip())
+
+                if not isinstance(matching_indices, list):
+                    logger.warning(f"AI returned non-list: {matching_indices}")
+                    return restaurants[:8]  # Fallback
+
+                # Return matched restaurants
+                matched = []
+                for idx in matching_indices:
+                    if isinstance(idx, int) and 0 <= idx < len(restaurants):
+                        matched.append(restaurants[idx])
+
+                logger.info(f"🎯 AI matched {len(matched)} restaurants from {len(restaurants)} total")
+                return matched[:10]  # Limit to 10
+
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse AI matching response: {response.content}")
+                return restaurants[:8]  # Fallback
+
+        except Exception as e:
+            logger.warning(f"AI restaurant matching failed: {e}")
+            return restaurants[:8]  # Fallback
+
+    def _enhance_description_with_ai(self, restaurant: Dict) -> str:
+        """AI-enhance restaurant description for better user experience"""
+        try:
+            raw_description = restaurant.get("raw_description", "")
+            name = restaurant.get("name", "")
+            cuisine_tags = restaurant.get("cuisine_tags", [])
+
+            if not raw_description or len(raw_description) < 50:
+                return f"{name} - {', '.join(cuisine_tags[:3])}"
+
+            # Return first 150 chars of raw description with cuisine context
+            description = raw_description[:150].rsplit(' ', 1)[0]  # Cut at word boundary
+            if cuisine_tags:
+                cuisine_context = f" ({', '.join(cuisine_tags[:2])})"
+                return description + cuisine_context
+
+            return description
+
+        except Exception as e:
+            logger.warning(f"Description enhancement failed: {e}")
+            return restaurant.get("name", "Restaurant")
+
+    def _clean_source_url(self, url: str) -> str:
+        """Clean source URL to domain name"""
+        try:
+            if not url:
+                return "unknown"
+
+            from urllib.parse import urlparse
+            domain = urlparse(url).netloc.lower()
+
+            if domain.startswith('www.'):
+                domain = domain[4:]
+
+            return domain
+
+        except Exception:
+            return "unknown"
+
+    def _update_restaurant_geodata_ai(self, enhanced_results: Dict[str, Any]):
+        """AI-enhanced update of restaurant geodata in Supabase"""
+        try:
+            from agents.supabase_update_agent import SupabaseUpdateAgent
+
+            agent = SupabaseUpdateAgent(self.config)
+            restaurants = enhanced_results.get("main_list", [])
+
+            for restaurant in restaurants:
+                name = restaurant.get("name", "")
+                address = restaurant.get("address", "")
+
+                # Check if we have coordinates from follow-up search
+                if hasattr(restaurant, 'latitude') and hasattr(restaurant, 'longitude'):
+                    coordinates = (restaurant.latitude, restaurant.longitude)
+
+                    # Find restaurant in database and update with AI validation
+                    try:
+                        existing = agent.supabase.table('restaurants')\
+                            .select('id, name')\
+                            .eq('name', name)\
+                            .execute()
+
+                        if existing.data:
+                            restaurant_id = existing.data[0]['id']
+                            agent.update_restaurant_geodata(restaurant_id, address, coordinates)
+                            logger.info(f"📍 AI-updated geodata for: {name}")
+
+                    except Exception as e:
+                        logger.warning(f"Failed to update geodata for {name}: {e}")
+
+        except Exception as e:
+            logger.error(f"Error in AI geodata update: {e}")
+
+    # KEEP ALL YOUR EXISTING METHODS (just add the new ones above)
 
     def _save_domain_intelligence_from_scraping_results(self, enriched_results):
         """Extract and save domain intelligence from scraping results"""
@@ -333,24 +883,24 @@ class LangChainOrchestrator:
     async def _extract_restaurant_names_with_ai(self, content: str) -> List[str]:
         """Extract restaurant names using AI instead of regex patterns"""
         try:
-            from utils.unified_model_manager import get_unified_model_manager
+            from langchain_openai import ChatOpenAI
 
-            model_manager = get_unified_model_manager(self.config)
+            llm = ChatOpenAI(
+                model="gpt-4o-mini",
+                temperature=0,
+                openai_api_key=getattr(self.config, 'OPENAI_API_KEY', None)
+            )
 
             prompt = f"""Extract restaurant names from this content. Return only a JSON list of restaurant names.
 
-    Content: {content[:1500]}
+Content: {content[:1500]}
 
-    Return format: ["Restaurant Name 1", "Restaurant Name 2"]
-    Maximum 10 restaurants. Return empty list [] if no restaurants found.
-    Focus on actual restaurant names, not generic terms."""
+Return format: ["Restaurant Name 1", "Restaurant Name 2"]
+Maximum 10 restaurants. Return empty list [] if no restaurants found.
+Focus on actual restaurant names, not generic terms."""
 
-            response = await model_manager.rate_limited_call(
-                'metadata_extraction',  # Use fast model for this task
-                prompt
-            )
+            response = llm.invoke(prompt)
 
-            import json
             try:
                 # Try to parse as JSON
                 result = json.loads(response.content.strip())
@@ -367,15 +917,11 @@ class LangChainOrchestrator:
         except Exception as e:
             logger.warning(f"AI restaurant extraction failed: {e}")
             return []
-    
+
     def _save_scraped_content_for_rag(self, enriched_results):
-        """
-        Save scraped content to Supabase for RAG - SYNC WRAPPER VERSION
-        """
+        """Save scraped content to Supabase for RAG - SYNC WRAPPER VERSION"""
         try:
             # Run the async function in a new event loop
-            import asyncio
-
             async def async_save():
                 saved_count = 0
 
@@ -392,11 +938,8 @@ class LangChainOrchestrator:
                             # AI-powered restaurant name extraction
                             restaurant_mentions = await self._extract_restaurant_names_with_ai(scraped_content)
 
-                            # Import the async save function
-                            from utils.database import save_scraped_content_async
-
-                            # Save to RAG system using async version
-                            success = await save_scraped_content_async(
+                            # Save to RAG system
+                            success = save_scraped_content(
                                 url, 
                                 scraped_content, 
                                 restaurant_mentions,
@@ -426,14 +969,11 @@ class LangChainOrchestrator:
             logger.error(f"Error in RAG content saving: {e}")
 
     def _extract_domain_from_url(self, url: str) -> str:
-        """
-        Extract clean domain name from URL - SIMPLE VERSION
-        """
+        """Extract clean domain name from URL"""
         try:
             if not url or not isinstance(url, str):
                 return "unknown-source"
 
-            from urllib.parse import urlparse
             domain = urlparse(url.lower()).netloc
 
             # Remove www prefix
@@ -445,19 +985,6 @@ class LangChainOrchestrator:
         except Exception as e:
             logger.debug(f"Error extracting domain: {e}")
             return "unknown-source"
-
-    def _analyze_results_step(self, x):
-        """Handle async result analysis"""
-        def run_analysis():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(self._analyze_results_async(x))
-            finally:
-                loop.close()
-
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(run_analysis).result()
 
     async def _analyze_results_async(self, x):
         """Async analysis of search results"""
@@ -511,94 +1038,6 @@ class LangChainOrchestrator:
 
         return {"main_list": all_restaurants}
 
-    def _edit_step(self, x):
-        """Edit step - processes scraped_results and returns edited_results"""
-        try:
-            dump_chain_state("pre_edit", {
-                "available_keys": list(x.keys()),
-                "enriched_results_count": len(x.get("enriched_results", [])),
-                "query": x.get("query", "")
-            })
-
-            # Get the scraped results from previous step
-            scraped_results = x.get("enriched_results", [])  # enriched_results = scraped_results
-            original_query = x.get("query", "")
-            destination = x.get("destination", "Unknown")
-
-            if not scraped_results:
-                logger.warning("No scraped results available for editing")
-                return {
-                    **x,
-                    "edited_results": {"main_list": []},
-                    "follow_up_queries": []
-                }
-
-            # Call the editor with scraped results
-            edit_output = self.editor_agent.edit(
-                scraped_results=scraped_results,
-                original_query=original_query,
-                destination=destination
-            )
-
-            dump_chain_state("post_edit", {
-                "edit_output_keys": list(edit_output.keys() if edit_output else {}),
-                "main_list_count": len(edit_output.get("edited_results", {}).get("main_list", []))
-            })
-
-            return {
-                **x, 
-                "edited_results": edit_output.get("edited_results", {"main_list": []}),
-                "follow_up_queries": edit_output.get("follow_up_queries", [])
-            }
-
-        except Exception as e:
-            logger.error(f"Error in edit step: {e}")
-            dump_chain_state("edit_error", {"error": str(e), "available_keys": list(x.keys())}, error=e)
-
-            # Return fallback response
-            return {
-                **x,
-                "edited_results": {"main_list": []},
-                "follow_up_queries": []
-            }
-
-    def _follow_up_step(self, x):
-        """Follow-up search step - processes edited_results and returns enhanced_results"""
-        try:
-            dump_chain_state("pre_follow_up", {
-                "edited_results_keys": list(x.get("edited_results", {}).keys()),
-                "destination": x.get("destination", "Unknown")
-            })
-
-            edited_results = x.get("edited_results", {})
-            follow_up_queries = x.get("follow_up_queries", [])
-
-            if not edited_results.get("main_list"):
-                logger.warning("No restaurants available for follow-up search")
-                return {**x, "enhanced_results": {"main_list": []}}
-
-            # Call follow-up search with edited results
-            followup_output = self.follow_up_search_agent.perform_follow_up_searches(
-                edited_results=edited_results,
-                follow_up_queries=follow_up_queries,
-                destination=x.get("destination", "Unknown"),
-                secondary_filter_parameters=x.get("secondary_filter_parameters")
-            )
-
-            enhanced_results = followup_output.get("enhanced_results", {"main_list": []})
-
-            dump_chain_state("post_follow_up", {
-                "enhanced_count": len(enhanced_results.get("main_list", [])),
-                "destination": x.get("destination", "Unknown")
-            })
-
-            return {**x, "enhanced_results": enhanced_results}
-
-        except Exception as e:
-            logger.error(f"Error in follow-up step: {e}")
-            dump_chain_state("follow_up_error", x, error=e)
-            return {**x, "enhanced_results": {"main_list": []}}
-
     def _format_step(self, x):
         """Format step - converts enhanced_results to telegram_formatted_text with restaurant data saving"""
         try:
@@ -617,12 +1056,12 @@ class LangChainOrchestrator:
                     "telegram_formatted_text": "Sorry, no restaurant recommendations found for your query."
                 }
 
-            # ============ SUPABASE INTEGRATION POINT 3: SAVE RESTAURANT DATA ============
+            # Save restaurant data from results
             self._save_restaurant_data_from_results(main_list, x.get("destination", "Unknown"))
 
             # Format for Telegram using the formatter
             telegram_text = self.telegram_formatter.format_recommendations(
-                enhanced_results  # Pass the entire enhanced_results dict
+                enhanced_results
             )
 
             dump_chain_state("post_format", {
@@ -633,7 +1072,7 @@ class LangChainOrchestrator:
             return {
                 **x,
                 "telegram_formatted_text": telegram_text,
-                "final_results": enhanced_results  # Keep the enhanced results for any further processing
+                "final_results": enhanced_results
             }
 
         except Exception as e:
@@ -735,9 +1174,7 @@ class LangChainOrchestrator:
 
     @log_function_call
     def process_query(self, user_query: str, user_preferences: Dict[str, Any] = None, user_id: str = None) -> Dict[str, Any]:
-        """
-        Process restaurant query through the LangChain - SYNC VERSION with async RAG
-        """
+        """Process restaurant query through the AI-enhanced LangChain pipeline"""
         # Generate trace ID for debugging
         trace_id = f"query_{int(time.time())}"
 
@@ -751,29 +1188,25 @@ class LangChainOrchestrator:
                     "user_preferences": user_preferences or {}
                 }
 
-                # Execute the chain (synchronously)
+                # Execute the AI-enhanced chain (synchronously)
                 result = self.chain.invoke(input_data)
-
-                # The async RAG saving happens in the _save_scraped_content_for_rag method
-                # which is called during the scrape step
 
                 # Log completion
                 dump_chain_state("process_query_complete", {
                     "result_keys": list(result.keys()),
                     "has_enhanced_results": "enhanced_results" in result,
                     "has_telegram_text": "telegram_formatted_text" in result,
-                    "destination": result.get("destination", "Unknown")
+                    "destination": result.get("destination", "Unknown"),
+                    "used_ai_database": result.get("using_ai_database", False),
+                    "restaurants_processed": result.get("restaurants_processed", 0)
                 })
 
                 # Final usage summary
                 self._log_firecrawl_usage()
 
-                # ============ SUPABASE INTEGRATION POINT 4: CACHE FINAL RESULTS ============
+                # Cache final results with AI enhancement info
                 enhanced_results = result.get("enhanced_results", {})
                 main_list = enhanced_results.get("main_list", [])
-
-                # ============ SUPABASE INTEGRATION POINT 6: RAG STATISTICS ============
-                rag_stats = result.get("rag_stats", {})
 
                 cache_data = {
                     "query": user_query,
@@ -783,13 +1216,18 @@ class LangChainOrchestrator:
                     "trace_id": trace_id,
                     "timestamp": time.time(),
                     "firecrawl_stats": self.scraper.get_stats(),
-                    "rag_stats": rag_stats,
-                    "search_method": result.get("search_method", "web_only")
+                    "ai_features": {
+                        "used_ai_database": result.get("using_ai_database", False),
+                        "restaurants_processed": result.get("restaurants_processed", 0),
+                        "search_preferences": result.get("search_preferences", {}),
+                        "country_detected": result.get("country", "Unknown")
+                    },
+                    "search_method": "ai_enhanced_" + ("database" if result.get("using_ai_database") else "web")
                 }
 
                 cache_search_results(user_query, cache_data)
 
-                # ============ SUPABASE INTEGRATION POINT 5: USER SEARCH HISTORY ============
+                # User search history
                 if user_id:
                     add_to_search_history(user_id, user_query, len(main_list))
 
@@ -797,7 +1235,8 @@ class LangChainOrchestrator:
                 telegram_text = result.get("telegram_formatted_text", 
                                          "Sorry, no recommendations found.")
 
-                logger.info(f"✅ Final result - {len(main_list)} restaurants for {result.get('destination', 'Unknown')}, all data saved to Supabase")
+                logger.info(f"✅ AI-Enhanced Result - {len(main_list)} restaurants for {result.get('destination', 'Unknown')}")
+                logger.info(f"🤖 AI Features: DB={result.get('using_ai_database', False)}, Processed={result.get('restaurants_processed', 0)}")
 
                 # Return with correct key names that telegram_bot.py expects
                 return {
@@ -806,12 +1245,17 @@ class LangChainOrchestrator:
                     "main_list": main_list,
                     "destination": result.get("destination"),
                     "firecrawl_stats": self.scraper.get_stats(),
-                    "rag_stats": rag_stats,
-                    "search_method": result.get("search_method", "web_only")
+                    "ai_features": {
+                        "used_ai_database": result.get("using_ai_database", False),
+                        "restaurants_processed": result.get("restaurants_processed", 0),
+                        "search_preferences": result.get("search_preferences", {}),
+                        "country_detected": result.get("country", "Unknown")
+                    },
+                    "search_method": "ai_enhanced_" + ("database" if result.get("using_ai_database") else "web")
                 }
 
             except Exception as e:
-                logger.error(f"Error in chain execution: {e}")
+                logger.error(f"Error in AI-enhanced chain execution: {e}")
                 dump_chain_state("process_query_error", {"query": user_query}, error=e)
                 self._log_firecrawl_usage()
 
@@ -819,6 +1263,11 @@ class LangChainOrchestrator:
                     "main_list": [],
                     "telegram_formatted_text": "Sorry, there was an error processing your request.",
                     "firecrawl_stats": self.scraper.get_stats(),
-                    "rag_stats": {},
+                    "ai_features": {
+                        "used_ai_database": False,
+                        "restaurants_processed": 0,
+                        "search_preferences": {},
+                        "country_detected": "Unknown"
+                    },
                     "search_method": "error"
                 }

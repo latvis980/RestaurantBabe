@@ -1,4 +1,4 @@
-# agents/follow_up_search_agent.py
+# agents/follow_up_search_agent.py - CORRECTED VERSION
 
 import logging
 import googlemaps
@@ -12,6 +12,7 @@ class FollowUpSearchAgent:
     Follow-up search agent that handles:
     1. Address verification using Google Maps API
     2. Rating filtering and restaurant rejection based on Google ratings
+    3. Saving coordinates back to database
     """
 
     def __init__(self, config):
@@ -36,6 +37,17 @@ class FollowUpSearchAgent:
             "rating",
             "user_ratings_total"
         ]
+
+    @log_function_call
+    def enhance(self, edited_results, follow_up_queries=None, destination="Unknown"):
+        """
+        Main method called by orchestrator - backward compatibility wrapper
+        """
+        return self.perform_follow_up_searches(
+            edited_results=edited_results,
+            follow_up_queries=follow_up_queries,
+            destination=destination
+        )
 
     @log_function_call
     def perform_follow_up_searches(
@@ -67,6 +79,7 @@ class FollowUpSearchAgent:
         # Process each restaurant
         verified_restaurants = []
         rejected_count = 0
+        coordinates_saved_count = 0
 
         for restaurant in main_list:
             result = self._verify_and_filter_restaurant(restaurant, destination)
@@ -77,6 +90,9 @@ class FollowUpSearchAgent:
                 logger.info(f"❌ Rejected: {restaurant.get('name', 'Unknown')} (low rating)")
             else:
                 verified_restaurants.append(result)
+                # Count if coordinates were added
+                if result.get("coordinates_saved_to_db"):
+                    coordinates_saved_count += 1
 
         final_result = {"enhanced_results": {"main_list": verified_restaurants}}
 
@@ -84,6 +100,7 @@ class FollowUpSearchAgent:
         logger.info(f"   - Original count: {len(main_list)}")
         logger.info(f"   - Passed filter: {len(verified_restaurants)}")
         logger.info(f"   - Rejected: {rejected_count}")
+        logger.info(f"   - Coordinates saved to DB: {coordinates_saved_count}")
 
         # Log overall statistics
         dump_chain_state("follow_up_search_complete", {
@@ -91,6 +108,7 @@ class FollowUpSearchAgent:
             "original_count": len(main_list),
             "final_count": len(verified_restaurants),
             "rejected_count": rejected_count,
+            "coordinates_saved_count": coordinates_saved_count,
             "min_rating": self.min_acceptable_rating
         })
 
@@ -99,15 +117,8 @@ class FollowUpSearchAgent:
     def _verify_and_filter_restaurant(self, restaurant: Dict[str, Any], destination: str) -> Optional[Dict[str, Any]]:
         """
         Verify address and filter restaurant based on Google rating.
-
-        Args:
-            restaurant: Restaurant data
-            destination: City from original query
-
-        Returns:
-            Updated restaurant data if it passes the rating filter, None if rejected
+        NOW ALSO SAVES COORDINATES BACK TO DATABASE.
         """
-
         # Make a copy to avoid modifying the original
         updated_restaurant = restaurant.copy()
 
@@ -120,6 +131,8 @@ class FollowUpSearchAgent:
 
         # Search Google Maps for restaurant info
         maps_info = self._search_google_maps(restaurant_name, destination)
+
+        coordinates_saved = False
 
         if maps_info:
             # Check rating first - reject if below threshold
@@ -146,7 +159,7 @@ class FollowUpSearchAgent:
 
             # Update address if it was requiring verification
             address = restaurant.get("address", "")
-            if address == "Requires verification" and maps_info.get("formatted_address"):
+            if address in ["Requires verification", "Address verification needed", "", None] and maps_info.get("formatted_address"):
                 updated_restaurant["address"] = maps_info["formatted_address"]
 
                 # Remove "address" from missing_info if present
@@ -157,17 +170,30 @@ class FollowUpSearchAgent:
 
                 logger.info(f"✅ Address verified for {restaurant_name}: {maps_info['formatted_address']}")
 
-                # Log successful address verification
-                dump_chain_state("address_verified", {
-                    "restaurant": restaurant_name,
-                    "destination": destination,
-                    "verified_address": maps_info["formatted_address"],
-                    "rating": rating if rating else "N/A"
-                })
+            # ADD COORDINATES TO USER RESULTS
+            geometry = maps_info.get("geometry", {})
+            location = geometry.get("location", {})
+            if location.get("lat") and location.get("lng"):
+                updated_restaurant["latitude"] = location["lat"]
+                updated_restaurant["longitude"] = location["lng"]
+                updated_restaurant["coordinates"] = [location["lat"], location["lng"]]
+
+                # 🆕 NEW: SAVE COORDINATES BACK TO DATABASE
+                coordinates_saved = self._update_database_with_geodata(restaurant_name, destination, maps_info)
 
             # Add Google Maps URL if available
             if maps_info.get("url"):
                 updated_restaurant["google_maps_url"] = maps_info["url"]
+
+            # Log successful verification
+            dump_chain_state("address_verified", {
+                "restaurant": restaurant_name,
+                "destination": destination,
+                "verified_address": maps_info.get("formatted_address"),
+                "coordinates": [location.get("lat"), location.get("lng")] if location.get("lat") else None,
+                "rating": rating if rating else "N/A",
+                "saved_to_database": coordinates_saved
+            })
 
         else:
             # No Maps data found - keep restaurant but log it
@@ -176,6 +202,9 @@ class FollowUpSearchAgent:
                 "restaurant": restaurant_name,
                 "destination": destination
             })
+
+        # Add flag to track database updates
+        updated_restaurant["coordinates_saved_to_db"] = coordinates_saved
 
         return updated_restaurant
 
@@ -241,3 +270,48 @@ class FollowUpSearchAgent:
         except Exception as e:
             logger.error(f"Unexpected error searching Google Maps for {restaurant_name} in {city}: {e}")
             return None
+
+    def _update_database_with_geodata(self, restaurant_name: str, city: str, maps_info: Dict[str, Any]) -> bool:
+        """Save address and coordinates back to the Supabase database"""
+        try:
+            # SAFER IMPORT: Import here to avoid circular dependencies
+            from utils.database import get_supabase_manager
+
+            # Get the supabase manager directly
+            supabase_manager = get_supabase_manager()
+
+            # Extract coordinates from Google Maps geometry
+            geometry = maps_info.get("geometry", {})
+            location = geometry.get("location", {})
+
+            if location.get("lat") and location.get("lng"):
+                coordinates = (float(location["lat"]), float(location["lng"]))
+                address = maps_info.get("formatted_address", "")
+
+                # Find the restaurant in database
+                existing_restaurants = supabase_manager.supabase.table('restaurants')\
+                    .select('id, name')\
+                    .eq('name', restaurant_name)\
+                    .eq('city', city)\
+                    .execute()
+
+                if existing_restaurants.data:
+                    restaurant_id = existing_restaurants.data[0]['id']
+
+                    # Update with coordinates and address
+                    supabase_manager.update_restaurant_geodata(restaurant_id, address, coordinates)
+
+                    logger.info(f"📍 Saved coordinates to database: {restaurant_name} at {coordinates}")
+                    return True
+
+                else:
+                    logger.warning(f"Restaurant not found in database: {restaurant_name} in {city}")
+                    return False
+
+            else:
+                logger.warning(f"No valid coordinates found for {restaurant_name}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error updating database with geodata: {e}")
+            return False
