@@ -345,8 +345,14 @@ class LangChainOrchestrator:
         return {**x, "enriched_results": enriched_results}
 
     # NEW STEP 5: Supabase Update Agent Processing (THE KEY NEW STEP)
+    # Fixed section for langchain_orchestrator.py - Replace the _supabase_update_step method
+
+    # NEW STEP 5: Supabase Update Agent Processing (THE KEY FIXED STEP)
     def _supabase_update_step(self, x):
-        """Process scraped content and update Supabase restaurants database with AI"""
+        """
+        Process ALL scraped content and update Supabase restaurants database with AI
+        This step happens BEFORE the editor agent, saving ALL restaurants found
+        """
         try:
             enriched_results = x.get("enriched_results", [])
             city = x.get("city", "Unknown")
@@ -354,9 +360,9 @@ class LangChainOrchestrator:
 
             if not enriched_results:
                 logger.info("🔍 No scraped content to process (database-only mode)")
-                return {**x, "restaurants_processed": 0}
+                return {**x, "restaurants_processed": 0, "all_restaurants_saved": []}
 
-            logger.info(f"🤖 Processing scraped content with AI-powered Supabase Update Agent")
+            logger.info(f"🤖 Processing ALL scraped content with AI-powered Supabase Update Agent")
             logger.info(f"📄 Processing {len(enriched_results)} scraped articles for {city}, {country}")
 
             # Combine all scraped content
@@ -373,12 +379,15 @@ class LangChainOrchestrator:
 
             if not combined_content.strip():
                 logger.warning("⚠️ No substantial content found in scraped results")
-                return {**x, "restaurants_processed": 0}
+                return {**x, "restaurants_processed": 0, "all_restaurants_saved": []}
 
             logger.info(f"📝 Combined content: {len(combined_content)} chars from {len(sources)} sources")
 
-            # Process with AI-powered Supabase Update Agent
-            processed_restaurants = process_search_results(
+            # FIXED: Use the correct import and function name
+            from agents.supabase_update_agent import process_all_scraped_restaurants
+
+            # Process ALL scraped content and save to database
+            processing_result = process_all_scraped_restaurants(
                 scraped_content=combined_content,
                 sources=sources,
                 city=city,
@@ -386,18 +395,13 @@ class LangChainOrchestrator:
                 config=self.config
             )
 
-            restaurants_count = len(processed_restaurants) if processed_restaurants else 0
-            logger.info(f"✅ AI-powered Supabase Update Agent processed {restaurants_count} restaurants")
+            restaurants_processed = processing_result.get('restaurants_processed', [])
+            save_stats = processing_result.get('save_statistics', {})
+            total_count = processing_result.get('total_restaurants', 0)
 
-            return {
-                **x,
-                "restaurants_processed": restaurants_count,
-                "processed_restaurants": processed_restaurants or []
-            }
-
-        except Exception as e:
-            logger.error(f"❌ Error in AI Supabase update step: {e}")
-            return {**x, "restaurants_processed": 0, "processed_restaurants": []}
+            logger.info(f"✅ AI-powered Supabase Update Agent processed {total_count} restaurants")
+            logger.info(f"   - New restaurants added: {save_stats.get('new_restaurants', 0)}")
+            logger.info(f
 
     # MODIFIED STEP 6: Analysis considers AI-matched database + new data
     def _analyze_results_step(self, x):
