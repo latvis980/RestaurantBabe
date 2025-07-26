@@ -24,7 +24,7 @@ from utils.debug_utils import dump_chain_state, log_function_call
 from formatters.telegram_formatter import TelegramFormatter
 
 # NEW IMPORT: Supabase Update Agent
-from agents.supabase_update_agent import process_search_results, check_city_coverage
+from agents.supabase_update_agent import process_all_scraped_restaurants, check_city_coverage, update_city_geodata
 
 # Create logger
 logger = logging.getLogger("restaurant-recommender.orchestrator")
@@ -345,7 +345,8 @@ class LangChainOrchestrator:
         return {**x, "enriched_results": enriched_results}
 
 
-    # NEW STEP 5: Supabase Update Agent Processing (THE KEY FIXED STEP)
+    # Replace your existing _supabase_update_step method with this fixed version
+
     def _supabase_update_step(self, x):
         """
         Process ALL scraped content and update Supabase restaurants database with AI
@@ -381,9 +382,6 @@ class LangChainOrchestrator:
 
             logger.info(f"📝 Combined content: {len(combined_content)} chars from {len(sources)} sources")
 
-            # FIXED: Import and call the correct function
-            from agents.supabase_update_agent import process_all_scraped_restaurants
-
             # Process ALL scraped content and save to database
             processing_result = process_all_scraped_restaurants(
                 scraped_content=combined_content,
@@ -416,6 +414,60 @@ class LangChainOrchestrator:
             import traceback
             traceback.print_exc()
             return {**x, "restaurants_processed": 0, "processed_restaurants": [], "all_restaurants_saved": []}
+
+    def _analyze_results_step(self, x):
+        """Analyze results considering AI-matched database and newly scraped data"""
+        try:
+            # Get AI database coverage info
+            database_coverage = x.get("database_coverage", {})
+            existing_restaurants = database_coverage.get("restaurants", [])
+            enriched_results = x.get("enriched_results", [])
+
+            if existing_restaurants and not enriched_results:
+                # Pure database mode - return existing restaurants
+                logger.info(f"📊 Using AI-matched database restaurants: {len(existing_restaurants)}")
+                return {
+                    **x,
+                    "using_ai_database": True,
+                    "recommendations": {"main_list": existing_restaurants[:15]}
+                }
+
+            elif enriched_results:
+                # Traditional analysis with scraped content
+                logger.info(f"📊 Analyzing {len(enriched_results)} scraped results")
+
+                # Run async analysis in thread pool
+                def run_analysis():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        return loop.run_until_complete(self._analyze_results_async(x))
+                    finally:
+                        loop.close()
+
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    result = pool.submit(run_analysis).result()
+
+                return {
+                    **result,
+                    "using_ai_database": False
+                }
+
+            else:
+                logger.warning("No data available for analysis")
+                return {
+                    **x,
+                    "using_ai_database": False,
+                    "recommendations": {"main_list": []}
+                }
+
+        except Exception as e:
+            logger.error(f"❌ Error in analysis step: {e}")
+            return {
+                **x,
+                "using_ai_database": False,
+                "recommendations": {"main_list": []}
+            }
 
     # MODIFIED STEP 7: Editor works with AI-matched database restaurants
     def _edit_step(self, x):
@@ -509,8 +561,6 @@ class LangChainOrchestrator:
             logger.info(f"🗺️ Starting city-wide geodata update for {city}, {country}")
 
             try:
-                from agents.supabase_update_agent import update_city_geodata
-
                 geodata_stats = update_city_geodata(
                     city=city,
                     country=country,
