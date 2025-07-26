@@ -220,3 +220,78 @@ Return only the JSON array, no other text.""")
             logger.info(f"📍 Updated geodata for restaurant ID: {restaurant_id}")
         except Exception as e:
             logger.error(f"❌ Error updating geodata: {e}")
+
+    def process_search_results(scraped_content: str, sources: List[str], city: str, country: str, config) -> List[Dict[str, Any]]:
+        """
+        Main function to process search results and update database
+
+        Args:
+            scraped_content: Combined scraped text content
+            sources: List of source URLs
+            city: City where restaurants are located  
+            country: Country where restaurants are located
+            config: Application configuration object
+
+        Returns:
+            List of processed restaurant data
+        """
+        try:
+            agent = SupabaseUpdateAgent(config)
+
+            # Process scraped content
+            restaurants_data = agent.process_scraped_content(scraped_content, sources, city, country)
+
+            if restaurants_data:
+                # Save to database
+                success = agent.save_restaurants_to_supabase(restaurants_data)
+                if success:
+                    logger.info(f"✅ Successfully processed {len(restaurants_data)} restaurants for {city}")
+                    return restaurants_data
+                else:
+                    logger.error("❌ Failed to save restaurants to database")
+                    return []
+            else:
+                logger.warning("⚠️ No restaurants extracted from content")
+                return []
+
+        except Exception as e:
+            logger.error(f"❌ Error in process_search_results: {e}")
+            return []
+
+    # Additional helper function for checking existing data
+    def check_city_coverage(city: str, cuisine_type: str, config) -> Dict[str, Any]:
+        """
+        Check if we have good coverage for a city/cuisine combination
+
+        Args:
+            city: City to check
+            cuisine_type: Cuisine type to check
+            config: Application configuration
+
+        Returns:
+            Dictionary with coverage information
+        """
+        try:
+            agent = SupabaseUpdateAgent(config)
+            existing_restaurants = agent.check_existing_restaurants(city, cuisine_type)
+
+            total_count = len(existing_restaurants)
+            cuisine_matches = len([r for r in existing_restaurants if cuisine_type.lower() in r.get('cuisine_tags', [])])
+
+            return {
+                'has_data': total_count > 0,
+                'total_restaurants': total_count,
+                'cuisine_matches': cuisine_matches,
+                'sufficient_coverage': cuisine_matches >= 5,  # Threshold for good coverage
+                'restaurants': existing_restaurants
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error checking city coverage: {e}")
+            return {
+                'has_data': False,
+                'total_restaurants': 0,
+                'cuisine_matches': 0,
+                'sufficient_coverage': False,
+                'restaurants': []
+            }

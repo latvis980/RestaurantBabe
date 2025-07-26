@@ -319,7 +319,7 @@ class Database:
     # ============ STATISTICS AND MONITORING ============
 
     def get_database_stats(self) -> Dict[str, Any]:
-        """Get database statistics for monitoring"""
+        """Get database statistics for monitoring - FIXED VERSION"""
         try:
             stats = {}
 
@@ -331,15 +331,26 @@ class Database:
             domains_count = self.supabase.table('domain_intelligence').select('domain', count='exact').execute()
             stats['total_domains'] = domains_count.count
 
-            # Get top cities
-            cities_result = self.supabase.table('restaurants')\
-                .select('city', count='exact')\
-                .group_by('city')\
-                .order('count', desc=True)\
-                .limit(10)\
-                .execute()
+            # FIXED: Remove group_by which doesn't exist in current Supabase client
+            # Get cities using a simple approach
+            try:
+                cities_result = self.supabase.table('restaurants')\
+                    .select('city')\
+                    .execute()
 
-            stats['top_cities'] = cities_result.data
+                # Count cities manually
+                city_counts = {}
+                for row in cities_result.data:
+                    city = row.get('city', 'Unknown')
+                    city_counts[city] = city_counts.get(city, 0) + 1
+
+                # Sort by count and take top 10
+                top_cities = sorted(city_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+                stats['top_cities'] = [{'city': city, 'count': count} for city, count in top_cities]
+
+            except Exception as e:
+                logger.warning(f"Could not get city stats: {e}")
+                stats['top_cities'] = []
 
             # Coordinate coverage
             with_coords = self.supabase.table('restaurants')\
@@ -353,7 +364,7 @@ class Database:
                 'coverage_percentage': round((with_coords.count / restaurants_count.count * 100), 1) if restaurants_count.count > 0 else 0
             }
 
-            logger.info(f"📊 Database stats: {stats['total_restaurants']} restaurants, {stats['total_domains']} domains")
+            logger.info(f"📊 Database stats: {stats['total_restaurants']} restaurants, {stats['coordinate_coverage']['coverage_percentage']}% have coordinates")
             return stats
 
         except Exception as e:
