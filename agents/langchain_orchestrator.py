@@ -344,8 +344,6 @@ class LangChainOrchestrator:
         logger.info(f"✅ Scraping completed with {len(enriched_results)} enriched results")
         return {**x, "enriched_results": enriched_results}
 
-    # NEW STEP 5: Supabase Update Agent Processing (THE KEY NEW STEP)
-    # Fixed section for langchain_orchestrator.py - Replace the _supabase_update_step method
 
     # NEW STEP 5: Supabase Update Agent Processing (THE KEY FIXED STEP)
     def _supabase_update_step(self, x):
@@ -383,7 +381,7 @@ class LangChainOrchestrator:
 
             logger.info(f"📝 Combined content: {len(combined_content)} chars from {len(sources)} sources")
 
-            # FIXED: Use the correct import and function name
+            # FIXED: Import and call the correct function
             from agents.supabase_update_agent import process_all_scraped_restaurants
 
             # Process ALL scraped content and save to database
@@ -401,58 +399,23 @@ class LangChainOrchestrator:
 
             logger.info(f"✅ AI-powered Supabase Update Agent processed {total_count} restaurants")
             logger.info(f"   - New restaurants added: {save_stats.get('new_restaurants', 0)}")
-            logger.info(f
+            logger.info(f"   - Updated restaurants: {save_stats.get('updated_restaurants', 0)}")
+            logger.info(f"   - Failed saves: {save_stats.get('failed_saves', 0)}")
+            logger.info(f"   - Total cuisine tags added: {save_stats.get('total_tags_added', 0)}")
 
-    # MODIFIED STEP 6: Analysis considers AI-matched database + new data
-    def _analyze_results_step(self, x):
-        """Analyze results considering AI-matched database and newly scraped data"""
-        try:
-            # Get AI database coverage info
-            database_coverage = x.get("database_coverage", {})
-            existing_restaurants = database_coverage.get("restaurants", [])
-
-            # Get newly processed restaurants  
-            processed_restaurants = x.get("processed_restaurants", [])
-
-            # If we have enough existing AI-matched data, prioritize database
-            if len(existing_restaurants) >= 5:
-                logger.info(f"🎯 Using {len(existing_restaurants)} AI-matched restaurants from database")
-
-                # Convert database format to analysis format
-                analysis_input = {
-                    "destination": x.get("city", "Unknown"),
-                    "primary_search_parameters": x.get("primary_search_parameters", []),
-                    "secondary_filter_parameters": x.get("secondary_filter_parameters", []),
-                    "keywords_for_analysis": x.get("keywords_for_analysis", []),
-                    "restaurants_from_database": existing_restaurants,
-                    "newly_processed": processed_restaurants,
-                    "ai_matched": True
-                }
-
-                return {**x, "analysis_input": analysis_input, "using_ai_database": True}
-
-            else:
-                # Use traditional scraped content analysis
-                logger.info("🔍 Using traditional content analysis (insufficient AI database coverage)")
-
-                enriched_results = x.get("enriched_results", [])
-
-                def run_analysis():
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    try:
-                        return loop.run_until_complete(self._analyze_results_async(x))
-                    finally:
-                        loop.close()
-
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    result = pool.submit(run_analysis).result()
-
-                return {**result, "using_ai_database": False}
+            return {
+                **x,
+                "restaurants_processed": total_count,
+                "processed_restaurants": restaurants_processed,
+                "save_statistics": save_stats,
+                "all_restaurants_saved": restaurants_processed  # Keep ALL restaurants for editor
+            }
 
         except Exception as e:
-            logger.error(f"❌ Error in AI analysis step: {e}")
-            return {**x, "analysis_input": {}, "using_ai_database": False}
+            logger.error(f"❌ Error in AI Supabase update step: {e}")
+            import traceback
+            traceback.print_exc()
+            return {**x, "restaurants_processed": 0, "processed_restaurants": [], "all_restaurants_saved": []}
 
     # MODIFIED STEP 7: Editor works with AI-matched database restaurants
     def _edit_step(self, x):
@@ -523,32 +486,55 @@ class LangChainOrchestrator:
 
     # MODIFIED STEP 8: Follow-up with AI geodata updates
     def _follow_up_step_with_geodata(self, x):
-        """Follow-up search with AI-enhanced geodata updates to Supabase"""
+        """Follow-up search with AI-enhanced geodata updates to Supabase for ALL restaurants"""
         try:
             edited_results = x.get("edited_results", {})
             follow_up_queries = x.get("follow_up_queries", [])
             destination = x.get("destination", "Unknown")
-            using_ai_database = x.get("using_ai_database", False)
+            city = x.get("city", "Unknown")
+            country = x.get("country", "Unknown")
 
             if not edited_results.get("main_list"):
                 logger.warning("No restaurants available for follow-up")
                 return {**x, "enhanced_results": {"main_list": []}}
 
-            # Run follow-up search
+            # Run follow-up search for final recommendations
             enhanced_output = self.follow_up_search_agent.enhance(
                 edited_results=edited_results,
                 follow_up_queries=follow_up_queries,
                 destination=destination
             )
 
-            # NEW: Update geodata in Supabase for restaurants that got addresses/coordinates
-            if using_ai_database:
-                self._update_restaurant_geodata_ai(enhanced_output.get("enhanced_results", {}))
+            # NEW: Update geodata for ALL restaurants in the city (not just recommendations)
+            logger.info(f"🗺️ Starting city-wide geodata update for {city}, {country}")
 
-            return {**x, **enhanced_output}
+            try:
+                from agents.supabase_update_agent import update_city_geodata
+
+                geodata_stats = update_city_geodata(
+                    city=city,
+                    country=country,
+                    config=self.config
+                )
+
+                logger.info(f"✅ City-wide geodata update complete:")
+                logger.info(f"   - Restaurants updated: {geodata_stats.get('updated_count', 0)}")
+                logger.info(f"   - Update failures: {geodata_stats.get('failed_count', 0)}")
+
+            except Exception as geo_error:
+                logger.warning(f"⚠️ Geodata update failed: {geo_error}")
+                geodata_stats = {'updated_count': 0, 'failed_count': 0}
+
+            return {
+                **x, 
+                **enhanced_output,
+                "geodata_update_stats": geodata_stats
+            }
 
         except Exception as e:
             logger.error(f"❌ Error in AI follow-up step: {e}")
+            import traceback
+            traceback.print_exc()
             return {**x, "enhanced_results": {"main_list": []}}
 
     # NEW AI-POWERED HELPER METHODS
