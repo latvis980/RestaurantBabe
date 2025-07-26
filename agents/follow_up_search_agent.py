@@ -274,11 +274,11 @@ class FollowUpSearchAgent:
     def _update_database_with_geodata(self, restaurant_name: str, city: str, maps_info: Dict[str, Any]) -> bool:
         """Save address and coordinates back to the Supabase database"""
         try:
-            # SAFER IMPORT: Import here to avoid circular dependencies
-            from utils.database import get_supabase_manager
+            # FIXED IMPORT: Use new database interface
+            from utils.database import get_database
 
-            # Get the supabase manager directly
-            supabase_manager = get_supabase_manager()
+            # Get the database directly
+            db = get_database()
 
             # Extract coordinates from Google Maps geometry
             geometry = maps_info.get("geometry", {})
@@ -289,7 +289,7 @@ class FollowUpSearchAgent:
                 address = maps_info.get("formatted_address", "")
 
                 # Find the restaurant in database
-                existing_restaurants = supabase_manager.supabase.table('restaurants')\
+                existing_restaurants = db.supabase.table('restaurants')\
                     .select('id, name')\
                     .eq('name', restaurant_name)\
                     .eq('city', city)\
@@ -299,7 +299,7 @@ class FollowUpSearchAgent:
                     restaurant_id = existing_restaurants.data[0]['id']
 
                     # Update with coordinates and address
-                    supabase_manager.update_restaurant_geodata(restaurant_id, address, coordinates)
+                    db.update_restaurant_geodata(restaurant_id, address, coordinates)
 
                     logger.info(f"📍 Saved coordinates to database: {restaurant_name} at {coordinates}")
                     return True
