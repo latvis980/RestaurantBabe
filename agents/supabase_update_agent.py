@@ -32,144 +32,249 @@ class SupabaseUpdateAgent:
         self.db = get_database()
         logger.info("✅ Database connection obtained for restaurant updates")
 
-        # Initialize OpenAI
-        openai_key = getattr(config, 'OPENAI_API_KEY', os.getenv("OPENAI_API_KEY"))
-        if not openai_key:
-            raise ValueError("OPENAI_API_KEY must be configured")
+        # Initialize Claude instead of OpenAI
+        anthropic_key = getattr(config, 'ANTHROPIC_API_KEY', os.getenv("ANTHROPIC_API_KEY"))
+        if not anthropic_key:
+            raise ValueError("ANTHROPIC_API_KEY must be configured")
 
-        self.llm = ChatOpenAI(
-            model="gpt-4o",
+        # Use Claude Sonnet 4 with large context window
+        from langchain_anthropic import ChatAnthropic
+
+        self.llm = ChatAnthropic(
+            model="claude-3-5-sonnet-20241022",  # Latest Claude with 200K context
             temperature=0.1,
-            openai_api_key=openai_key
+            anthropic_api_key=anthropic_key,
+            max_tokens=4000  # Enough for detailed JSON response
         )
-        logger.info("✅ OpenAI GPT-4o initialized for restaurant processing")
+        logger.info("✅ Claude Sonnet initialized for restaurant processing (200K context window)")
 
-        # Restaurant extraction and processing prompt
+        # Enhanced prompt for Claude (can handle much longer content)
         self.processing_prompt = ChatPromptTemplate.from_template("""
-You are a restaurant data processor. Your task is to extract and organize ALL restaurant information from scraped web content.
+    You are a restaurant data extraction specialist. Your task is to process web content about restaurants and food recommendations to build a comprehensive database.
 
-CRITICAL: Extract EVERY restaurant mentioned, even if mentioned only once. We want comprehensive coverage.
+    TASK: Extract ALL restaurants mentioned in the content from multiple web sources about {city}, {country}.
 
-INSTRUCTIONS:
-1. Identify ALL restaurants mentioned in the content from ALL sources
-2. For restaurants mentioned multiple times across sources, combine their descriptions under one entry
-3. For restaurants mentioned only once, include them as individual entries
-4. For each restaurant, extract:
-   - Name (clean, standardized format)
-   - Raw description (combine all mentions, preserve original text exactly as written)
-   - Address (if mentioned anywhere, otherwise null)
-   - Cuisine tags (be extremely thorough - extract multiple relevant tags)
+    INSTRUCTIONS:
+    1. Read through ALL the provided content carefully
+    2. Identify EVERY restaurant mentioned, even if only mentioned once
+    3. For restaurants mentioned multiple times across sources, combine their descriptions
+    4. Extract comprehensive information for each restaurant
+    5. Be thorough with cuisine tags - include cuisine type, style, atmosphere, specialties
 
-5. Return data as JSON array with this structure:
-[
-  {{
-    "name": "Restaurant Name",
-    "raw_description": "Combined descriptions from all mentions across sources...",
-    "address": "Full address if found or null",
-    "cuisine_tags": ["tag1", "tag2", "tag3", "tag4", "tag5", ...],
-    "mention_count": 2,
-    "source_urls": ["url1", "url2"]
-  }}
-]
+    EXTRACTION REQUIREMENTS:
+    - Name: Clean, standardized restaurant name
+    - Raw description: Combine ALL mentions, preserve original context and details
+    - Address: Full address if mentioned anywhere, otherwise null
+    - Cuisine tags: 5-15 comprehensive tags covering cuisine, style, atmosphere, features
+    - Mention count: How many sources mentioned this restaurant
 
-CUISINE TAG GUIDELINES - BE EXTREMELY THOROUGH:
-- Extract 5-15 tags per restaurant covering all aspects
-- Include cuisine type, dining style, specialties, atmosphere, features
-- Examples for an Italian restaurant: ["italian", "modern italian", "pasta", "pizza", "wine bar", "romantic", "fine dining", "chef's table", "natural wines", "cocktails", "neighborhood gem", "family-owned", "outdoor seating", "authentic", "traditional"]
-- Extract from context clues and descriptions
-- Include both specific (e.g., "neapolitan pizza", "sicilian cuisine") and general (e.g., "italian", "pizza") tags
-- Always use lowercase for tags
-- Common tag categories to extract:
-  * Cuisine: italian, french, japanese, mexican, indian, chinese, thai, mediterranean, etc.
-  * Style: fine dining, casual, bistro, trattoria, steakhouse, brasserie, taverna, etc.
-  * Specialties: pasta, pizza, seafood, steaks, burgers, sushi, ramen, cocktails, wine, coffee, etc.
-  * Atmosphere: romantic, family-friendly, trendy, cozy, elegant, rustic, modern, traditional, etc.
-  * Features: outdoor seating, live music, chef's table, wine cellar, rooftop, waterfront, etc.
-  * Price: affordable, mid-range, upscale, luxury, budget-friendly, etc.
-  * Service: michelin starred, chef-owned, locally sourced, organic, farm-to-table, etc.
+    CUISINE TAG EXAMPLES:
+    - Basic: ["italian", "pizza", "pasta"]  
+    - Comprehensive: ["italian", "neapolitan pizza", "traditional", "family-owned", "cozy", "authentic", "wood-fired", "casual dining", "neighborhood gem", "wine selection"]
 
-IMPORTANT: We want to save ALL restaurants found in the scraped content to build a comprehensive database.
+    OUTPUT FORMAT - Return ONLY valid JSON:
+    [
+      {{
+        "name": "Restaurant Name",
+        "raw_description": "Complete combined descriptions from all mentions with full context and details",
+        "address": "Full address if found, otherwise null",
+        "cuisine_tags": ["cuisine1", "style1", "atmosphere1", "feature1", "specialty1", ...],
+        "mention_count": 2,
+        "source_urls": ["url1", "url2"]
+      }}
+    ]
 
-CITY: {{city}}
-COUNTRY: {{country}}
-SOURCES: {{sources}}
+    CONTENT SOURCES:
+    {sources}
 
-CONTENT TO PROCESS:
-{{scraped_content}}
-""")
+    WEB CONTENT TO ANALYZE:
+    {scraped_content}
+
+    Please extract ALL restaurants and return comprehensive JSON data. Focus on building a complete database entry for each restaurant.
+    """)
 
     def process_scraped_content(self, scraped_content: str, sources: List[str], city: str, country: str) -> List[Dict[str, Any]]:
         """
-        Process scraped content and extract ALL restaurant information using AI
+        Process scraped content using Claude with large context window - can handle much longer content
         """
         try:
-            logger.info(f"🤖 Processing scraped content for {city}, {country}")
+            logger.info(f"🤖 Processing scraped content with Claude Sonnet for {city}, {country}")
             logger.info(f"📄 Content length: {len(scraped_content)} chars from {len(sources)} sources")
 
+            # Claude can handle much larger content, but let's still be reasonable
+            max_content_length = 150000  # 150K chars - well within Claude's limits
+            if len(scraped_content) > max_content_length:
+                logger.warning(f"⚠️ Content very long ({len(scraped_content)} chars), truncating to {max_content_length}")
+                scraped_content = scraped_content[:max_content_length] + "\n\n[Content truncated for processing]"
+
+            # Clean content
+            scraped_content = scraped_content.replace('\x00', '').strip()
+
             # Prepare the prompt
-            formatted_prompt = self.processing_prompt.format(
-                city=city,
-                country=country,
-                sources="\n".join(sources),
-                scraped_content=scraped_content
-            )
-
-            # Call OpenAI
-            response = self.llm.invoke([HumanMessage(content=formatted_prompt)])
-
-            # Parse JSON response
             try:
-                restaurants_data = json.loads(response.content)
-            except json.JSONDecodeError:
-                # Try to extract JSON from response if it's wrapped in other text
-                content = response.content
-                start_idx = content.find('[')
-                end_idx = content.rfind(']') + 1
-                if start_idx != -1 and end_idx != 0:
-                    restaurants_data = json.loads(content[start_idx:end_idx])
-                else:
-                    logger.error("❌ Failed to parse JSON from OpenAI response")
-                    logger.error(f"Response content: {content[:500]}...")
-                    return []
-
-            if not isinstance(restaurants_data, list):
-                logger.error("❌ OpenAI response is not a list")
+                formatted_prompt = self.processing_prompt.format(
+                    city=city,
+                    country=country,
+                    sources="\n".join(sources),  # Include all sources for Claude
+                    scraped_content=scraped_content
+                )
+            except Exception as e:
+                logger.error(f"❌ Error formatting prompt: {e}")
                 return []
 
-            # Add city/country to each restaurant and clean data
+            logger.info(f"📤 Sending request to Claude (prompt length: {len(formatted_prompt)} chars)")
+
+            # Call Claude
+            try:
+                response = self.llm.invoke([HumanMessage(content=formatted_prompt)])
+                logger.info(f"📥 Received response from Claude")
+            except Exception as e:
+                logger.error(f"❌ Claude API error: {e}")
+                return self._fallback_restaurant_extraction(scraped_content, city, country)
+
+            # Parse Claude's response
+            restaurants_data = self._parse_claude_response(response.content)
+
+            if not restaurants_data:
+                logger.warning("⚠️ No restaurants parsed from Claude response, trying fallback")
+                return self._fallback_restaurant_extraction(scraped_content, city, country)
+
+            # Process and clean the data
             for restaurant in restaurants_data:
                 restaurant['city'] = city
                 restaurant['country'] = country
 
-                # Ensure sources is always a list
+                # Ensure sources is properly set
                 if 'source_urls' in restaurant:
                     restaurant['sources'] = restaurant['source_urls']
                     del restaurant['source_urls']
                 else:
                     restaurant['sources'] = sources
 
-                # Ensure mention_count is a valid integer
+                # Validate and clean fields
                 if not isinstance(restaurant.get('mention_count'), int) or restaurant.get('mention_count') < 1:
                     restaurant['mention_count'] = 1
 
-                # Clean address field
-                if restaurant.get('address') in ['null', '', None]:
+                if restaurant.get('address') in ['null', '', None, 'null']:
                     restaurant['address'] = None
 
-                # Ensure cuisine_tags is a list
                 if not isinstance(restaurant.get('cuisine_tags'), list):
                     restaurant['cuisine_tags'] = []
 
-            logger.info(f"✅ Extracted {len(restaurants_data)} restaurants from content")
+                # Ensure raw_description is not empty
+                if not restaurant.get('raw_description'):
+                    restaurant['raw_description'] = f"Restaurant in {city} mentioned in food recommendations"
 
-            # Log some sample extractions for debugging
-            for i, restaurant in enumerate(restaurants_data[:3]):  # Show first 3
-                logger.info(f"Sample restaurant {i+1}: {restaurant['name']} - {len(restaurant.get('cuisine_tags', []))} tags")
+            logger.info(f"✅ Claude extracted {len(restaurants_data)} restaurants from content")
+
+            # Log sample for debugging
+            for i, restaurant in enumerate(restaurants_data[:3]):
+                logger.info(f"Sample {i+1}: {restaurant['name']} - {len(restaurant.get('cuisine_tags', []))} tags")
 
             return restaurants_data
 
         except Exception as e:
-            logger.error(f"❌ Error processing scraped content: {e}")
+            logger.error(f"❌ Error processing scraped content with Claude: {e}")
+            import traceback
+            traceback.print_exc()
+            return self._fallback_restaurant_extraction(scraped_content, city, country)
+
+    def _parse_claude_response(self, content: str) -> List[Dict[str, Any]]:
+        """Parse Claude's response - Claude is usually better at following JSON format"""
+        try:
+            # Claude typically returns clean JSON, try direct parsing first
+            restaurants_data = json.loads(content.strip())
+            if isinstance(restaurants_data, list):
+                logger.info(f"✅ Successfully parsed Claude JSON response")
+                return restaurants_data
+        except json.JSONDecodeError:
+            pass
+
+        try:
+            # Look for JSON array in the content
+            import re
+            json_match = re.search(r'\[.*?\]', content, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                restaurants_data = json.loads(json_str)
+                if isinstance(restaurants_data, list):
+                    logger.info(f"✅ Extracted JSON from Claude response")
+                    return restaurants_data
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+        try:
+            # Check for code blocks
+            code_block_match = re.search(r'```(?:json)?\s*(\[.*?\])\s*```', content, re.DOTALL)
+            if code_block_match:
+                json_str = code_block_match.group(1)
+                restaurants_data = json.loads(json_str)
+                if isinstance(restaurants_data, list):
+                    logger.info(f"✅ Extracted JSON from Claude code block")
+                    return restaurants_data
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+        logger.error(f"❌ Could not parse Claude response as JSON. Content: {content[:300]}...")
+        return []
+
+    def _fallback_restaurant_extraction(self, scraped_content: str, city: str, country: str) -> List[Dict[str, Any]]:
+        """Enhanced fallback extraction using multiple patterns"""
+        try:
+            logger.info("🔄 Using enhanced fallback restaurant extraction method")
+
+            import re
+
+            restaurants = []
+            found_names = set()
+
+            # Enhanced patterns for restaurant detection
+            patterns = [
+                # Restaurant + name patterns
+                r'(?:restaurant|ristorante|bistro|brasserie|tavern|trattoria|osteria)\s+([A-Z][a-zA-Z\s\'&\-\.]+)',
+                r'([A-Z][a-zA-Z\s\'&\-\.]+)\s+(?:restaurant|ristorante|bistro|brasserie)',
+
+                # Action + restaurant patterns  
+                r'(?:visit|try|dine\s+at|eat\s+at|go\s+to)\s+([A-Z][a-zA-Z\s\'&\-\.]+)',
+
+                # Quoted restaurant names
+                r'"([A-Z][a-zA-Z\s\'&\-\.]+)"',
+                r"'([A-Z][a-zA-Z\s\'&\-\.]+)'",
+
+                # Chef's restaurant patterns
+                r'(?:chef|owned\s+by)\s+[a-zA-Z]+\s+at\s+([A-Z][a-zA-Z\s\'&\-\.]+)',
+
+                # Location patterns
+                r'([A-Z][a-zA-Z\s\'&\-\.]+)\s+(?:in|on|at)\s+(?:[A-Z][a-zA-Z\s]+)',
+            ]
+
+            for pattern in patterns:
+                matches = re.findall(pattern, scraped_content, re.IGNORECASE)
+                for match in matches:
+                    name = match.strip().title()
+                    # Filter out common false positives
+                    if (len(name) >= 3 and len(name) <= 50 and 
+                        not any(word in name.lower() for word in ['the', 'and', 'with', 'from', 'this', 'that', 'some', 'many', 'best', 'top'])):
+                        found_names.add(name)
+
+            # Convert to restaurant objects
+            for name in list(found_names)[:15]:  # Limit to 15 restaurants
+                restaurants.append({
+                    'name': name,
+                    'raw_description': f"Restaurant mentioned in {city} food and dining content",
+                    'address': None,
+                    'cuisine_tags': ["restaurant", "dining"],
+                    'mention_count': 1,
+                    'city': city,
+                    'country': country,
+                    'sources': []
+                })
+
+            logger.info(f"🔄 Fallback extraction found {len(restaurants)} restaurants")
+            return restaurants
+
+        except Exception as e:
+            logger.error(f"❌ Fallback extraction failed: {e}")
             return []
 
     def save_all_restaurants_to_supabase(self, restaurants_data: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -250,11 +355,12 @@ CONTENT TO PROCESS:
             logger.info(f"🗺️ Starting geodata update for ALL restaurants in {city}, {country}")
 
             # Get all restaurants for this city that don't have coordinates
+            # Check for both PostGIS coordinates AND latitude/longitude columns
             restaurants_without_coords = self.db.supabase.table('restaurants')\
                 .select('id, name, address')\
                 .eq('city', city)\
                 .eq('country', country)\
-                .is_('coordinates', 'null')\
+                .or_('coordinates.is.null,latitude.is.null')\
                 .execute()
 
             if not restaurants_without_coords.data:

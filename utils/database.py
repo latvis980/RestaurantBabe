@@ -40,7 +40,7 @@ class Database:
     # ============ RESTAURANT METHODS ============
 
     def save_restaurant(self, restaurant_data: Dict[str, Any]) -> Optional[str]:
-        """Save restaurant with new simplified schema - FIXED coordinate format"""
+        """Save restaurant with new simplified schema - SAFER coordinate approach"""
         try:
             name = restaurant_data.get('name', '').strip()
             city = restaurant_data.get('city', '').strip()
@@ -59,9 +59,9 @@ class Database:
                 # Combine descriptions
                 new_description = restaurant_data.get('raw_description', '')
                 if new_description:
-                    combined_description = existing['raw_description'] + "\n\n--- NEW MENTION ---\n\n" + new_description
+                    combined_description = existing.get('raw_description', '') + "\n\n--- NEW MENTION ---\n\n" + new_description
                 else:
-                    combined_description = existing['raw_description']
+                    combined_description = existing.get('raw_description', '')
 
                 # Combine and deduplicate cuisine tags
                 existing_tags = existing.get('cuisine_tags', [])
@@ -77,13 +77,21 @@ class Database:
                     'raw_description': combined_description,
                     'cuisine_tags': combined_tags,
                     'sources': combined_sources,
-                    'mention_count': existing['mention_count'] + 1,
+                    'mention_count': existing.get('mention_count', 1) + 1,
                     'last_updated': datetime.now().isoformat(),
                     # Update address if we have a new one and existing is null
-                    'address': restaurant_data.get('address') if existing['address'] is None else existing['address'],
+                    'address': restaurant_data.get('address') if existing.get('address') is None else existing.get('address'),
                     # Update country if we have a new one and existing is null
                     'country': restaurant_data.get('country') if existing.get('country') is None else existing.get('country')
                 }
+
+                # Handle coordinates safely
+                if restaurant_data.get('coordinates'):
+                    coords = restaurant_data['coordinates']
+                    if isinstance(coords, (list, tuple)) and len(coords) == 2:
+                        lat, lng = coords
+                        update_data['latitude'] = lat
+                        update_data['longitude'] = lng
 
                 self.supabase.table('restaurants')\
                     .update(update_data)\
@@ -108,12 +116,13 @@ class Database:
                     'last_updated': datetime.now().isoformat()
                 }
 
-                # Add coordinates if available - FIXED FORMAT
+                # Handle coordinates safely during insert
                 if restaurant_data.get('coordinates'):
                     coords = restaurant_data['coordinates']
                     if isinstance(coords, (list, tuple)) and len(coords) == 2:
                         lat, lng = coords
-                        insert_data['coordinates'] = f"POINT({lng} {lat})"  # FIXED: lng first, then lat
+                        insert_data['latitude'] = lat
+                        insert_data['longitude'] = lng
 
                 result = self.supabase.table('restaurants').insert(insert_data).execute()
 
@@ -127,6 +136,20 @@ class Database:
 
         except Exception as e:
             logger.error(f"Error saving restaurant: {e}")
+            return None
+
+    def _geocode_address(self, address: str) -> Optional[Tuple[float, float]]:
+        """Geocode an address to get coordinates using the same approach as the older implementation"""
+        try:
+            if not self.geocoder:
+                return None
+
+            location = self.geocoder.geocode(address, timeout=10)
+            if location:
+                return (location.latitude, location.longitude)
+            return None
+        except Exception as e:
+            logger.error(f"Error geocoding address '{address}': {e}")
             return None
 
     def _find_existing_restaurant(self, name: str, city: str) -> Optional[Dict]:
@@ -178,14 +201,13 @@ class Database:
             return []
 
     def update_restaurant_geodata(self, restaurant_id: int, address: str, coordinates: Tuple[float, float]):
-        """Update restaurant with address and coordinates - FIXED coordinate format"""
+        """Update restaurant with address and coordinates - SAFER approach"""
         try:
             lat, lng = coordinates
 
-            # CRITICAL FIX: PostGIS expects POINT(longitude latitude), not POINT(latitude longitude)
+            # First update the address
             update_data = {
                 'address': address,
-                'coordinates': f"POINT({lng} {lat})",  # FIXED: lng first, then lat
                 'last_updated': datetime.now().isoformat()
             }
 
@@ -194,7 +216,31 @@ class Database:
                 .eq('id', restaurant_id)\
                 .execute()
 
-            logger.info(f"📍 Updated geodata for restaurant ID: {restaurant_id} with coords ({lat}, {lng})")
+            # Use RPC function for coordinates (safer than raw SQL)
+            try:
+                # Try using RPC first (if the function exists in your Supabase)
+                self.supabase.rpc('update_restaurant_coordinates', {
+                    'restaurant_id': restaurant_id,
+                    'lat': lat,
+                    'lng': lng
+                }).execute()
+                logger.info(f"📍 Updated geodata for restaurant ID: {restaurant_id} with coords ({lat}, {lng}) via RPC")
+            except Exception as rpc_error:
+                # Fallback: use the latitude/longitude columns approach like your old implementation
+                logger.warning(f"RPC failed, using fallback coordinate storage: {rpc_error}")
+
+                # Update with separate lat/lng columns (like your old working implementation)
+                coord_update = {
+                    'latitude': lat,
+                    'longitude': lng
+                }
+
+                self.supabase.table('restaurants')\
+                    .update(coord_update)\
+                    .eq('id', restaurant_id)\
+                    .execute()
+
+                logger.info(f"📍 Updated geodata for restaurant ID: {restaurant_id} with coords ({lat}, {lng}) via lat/lng columns")
 
         except Exception as e:
             logger.error(f"Error updating geodata: {e}")
