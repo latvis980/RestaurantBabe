@@ -133,7 +133,8 @@ class LangChainOrchestrator:
 
     def _scrape_and_save_step(self, x: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Scrape content and save to file, then send to Supabase Manager service
+        Scrape content using your sophisticated scraping system and save to file, 
+        then send to Supabase Manager service
         """
         try:
             logger.info("🔍 ENTERING SCRAPE AND SAVE STEP")
@@ -146,44 +147,48 @@ class LangChainOrchestrator:
                 logger.info("📄 No search results to scrape (database-only mode)")
                 return {**x, "enriched_results": [], "scraped_content_saved": False}
 
-            logger.info(f"🌐 Scraping {len(search_results)} URLs")
+            logger.info(f"🌐 Scraping {len(search_results)} URLs using sophisticated scraping system")
 
-            # Scrape all URLs
-            enriched_results = []
+            # Use your existing sophisticated scraping system (async)
+            def run_scraping():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    return loop.run_until_complete(
+                        self.scraper.scrape_search_results(search_results)
+                    )
+                finally:
+                    loop.close()
+
+            # Run the sophisticated scraper
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                enriched_results = pool.submit(run_scraping).result()
+
+            logger.info(f"✅ Sophisticated scraping completed: {len(enriched_results)} results")
+
+            # Combine scraped content for saving to Supabase Manager
             all_scraped_content = ""
             sources = []
+            content_saved = False
 
-            for result in search_results:
+            for result in enriched_results:
                 try:
-                    url = result.get('url', '')
-                    if not url:
-                        continue
+                    content = result.get("scraped_content", result.get("content", ""))
+                    url = result.get("url", "")
 
-                    logger.info(f"🌐 Scraping: {url}")
-                    scraped_content = self.scraper.scrape_url(url)
-
-                    if scraped_content and len(scraped_content.strip()) > 100:
-                        enriched_result = {
-                            **result,
-                            "scraped_content": scraped_content,
-                            "content_length": len(scraped_content)
-                        }
-                        enriched_results.append(enriched_result)
-
+                    if content and len(content.strip()) > 100:
                         # Combine content for saving
-                        all_scraped_content += f"\n\n--- FROM {url} ---\n\n{scraped_content}"
+                        all_scraped_content += f"\n\n--- FROM {url} ---\n\n{content}"
                         sources.append(url)
-
-                        logger.info(f"✅ Scraped {len(scraped_content)} chars from {url}")
+                        logger.info(f"✅ Got {len(content)} chars from {url}")
                     else:
                         logger.warning(f"⚠️ No substantial content from {url}")
 
                 except Exception as e:
-                    logger.error(f"❌ Error scraping {result.get('url', 'unknown')}: {e}")
+                    logger.error(f"❌ Error processing result from {result.get('url', 'unknown')}: {e}")
                     continue
 
             # Save scraped content to file and send to Supabase Manager
-            content_saved = False
             if all_scraped_content.strip():
                 try:
                     # Save to local file first (for backup/debugging)
