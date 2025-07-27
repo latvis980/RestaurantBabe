@@ -174,25 +174,25 @@ Return ONLY valid JSON:
     def _analyze_query_intent(self, query: str, destination: str) -> Dict[str, Any]:
         """Use AI to analyze query intent and extract key concepts"""
         try:
-            # Fix: Use invoke with proper parameters instead of the template directly
-            response = self.intent_analysis_prompt.invoke({
+            # Fix: Create the chain properly by combining prompt and LLM
+            chain = self.intent_analysis_prompt | self.llm
+
+            response = chain.invoke({
                 "query": query,
                 "destination": destination
             })
 
             # Get the content from the response
-            if hasattr(response, 'content'):
-                content = response.content.strip()
-            elif hasattr(response, 'text'):
-                content = response.text.strip()
-            else:
-                content = str(response).strip()
+            content = response.content.strip()
 
             # Parse the AI response
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
                 content = content.split("```")[1].split("```")[0].strip()
+
+            if not content:
+                raise ValueError("Empty response from AI")
 
             analysis = json.loads(content)
 
@@ -325,8 +325,10 @@ Return ONLY valid JSON:
             description = restaurant.get('raw_description', '')[:500]  # Truncate for efficiency
             name = restaurant.get('name', 'Unknown')
 
-            # Fix: Create the chain properly
-            response = self.relevance_analysis_prompt.invoke({
+            # Fix: Create the chain properly by combining prompt and LLM
+            chain = self.relevance_analysis_prompt | self.llm
+
+            response = chain.invoke({
                 "search_context": search_context,
                 "key_concepts": ", ".join(key_concepts),
                 "restaurant_name": name,
@@ -335,18 +337,16 @@ Return ONLY valid JSON:
             })
 
             # Get content from response
-            if hasattr(response, 'content'):
-                content = response.content.strip()
-            elif hasattr(response, 'text'):
-                content = response.text.strip()
-            else:
-                content = str(response).strip()
+            content = response.content.strip()
 
             # Parse response
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
                 content = content.split("```")[1].split("```")[0].strip()
+
+            if not content:
+                raise ValueError("Empty response from AI")
 
             relevance_data = json.loads(content)
 

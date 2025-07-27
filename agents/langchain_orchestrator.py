@@ -175,7 +175,6 @@ class LangChainOrchestrator:
             logger.error(f"❌ Error in database coverage check: {e}")
             return {**x, "has_database_content": False, "database_results": []}
 
-
     def _fallback_database_check(self, x):
         """Fallback database check using the original method"""
         destination = x.get("destination", "Unknown")
@@ -221,6 +220,14 @@ class LangChainOrchestrator:
             search_terms = x.get("search_terms", [])
             language = x.get("language", "en")
 
+            # If no search terms from query analyzer, create them from the original query
+            if not search_terms:
+                query = x.get("query", "")
+                if query and destination != "Unknown":
+                    # Simple search term extraction
+                    search_terms = [query.replace(f" in {destination.lower()}", "").strip()]
+                    logger.info(f"🔧 Created search terms from query: {search_terms}")
+
             if destination == "Unknown" or not search_terms:
                 logger.warning("Missing destination or search terms for web search")
                 return {**x, "search_results": []}
@@ -232,7 +239,7 @@ class LangChainOrchestrator:
             logger.info(f"🌐 Searching web for: {query}")
 
             # Perform search using existing search agent
-            search_results = self.search_agent.search(query, destination, language)
+            search_results = self.search_agent.search([query])  # Pass as list
 
             logger.info(f"✅ Web search completed: {len(search_results)} results")
 
