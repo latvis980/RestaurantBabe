@@ -40,7 +40,7 @@ class Database:
     # ============ RESTAURANT METHODS ============
 
     def save_restaurant(self, restaurant_data: Dict[str, Any]) -> Optional[str]:
-        """Save restaurant with new simplified schema"""
+        """Save restaurant with new simplified schema - FIXED coordinate format"""
         try:
             name = restaurant_data.get('name', '').strip()
             city = restaurant_data.get('city', '').strip()
@@ -80,7 +80,9 @@ class Database:
                     'mention_count': existing['mention_count'] + 1,
                     'last_updated': datetime.now().isoformat(),
                     # Update address if we have a new one and existing is null
-                    'address': restaurant_data.get('address') if existing['address'] is None else existing['address']
+                    'address': restaurant_data.get('address') if existing['address'] is None else existing['address'],
+                    # Update country if we have a new one and existing is null
+                    'country': restaurant_data.get('country') if existing.get('country') is None else existing.get('country')
                 }
 
                 self.supabase.table('restaurants')\
@@ -106,11 +108,12 @@ class Database:
                     'last_updated': datetime.now().isoformat()
                 }
 
-                # Add coordinates if available
+                # Add coordinates if available - FIXED FORMAT
                 if restaurant_data.get('coordinates'):
                     coords = restaurant_data['coordinates']
                     if isinstance(coords, (list, tuple)) and len(coords) == 2:
-                        insert_data['coordinates'] = f"POINT({coords[1]} {coords[0]})"  # lon, lat for PostGIS
+                        lat, lng = coords
+                        insert_data['coordinates'] = f"POINT({lng} {lat})"  # FIXED: lng first, then lat
 
                 result = self.supabase.table('restaurants').insert(insert_data).execute()
 
@@ -175,11 +178,14 @@ class Database:
             return []
 
     def update_restaurant_geodata(self, restaurant_id: int, address: str, coordinates: Tuple[float, float]):
-        """Update restaurant with address and coordinates"""
+        """Update restaurant with address and coordinates - FIXED coordinate format"""
         try:
+            lat, lng = coordinates
+
+            # CRITICAL FIX: PostGIS expects POINT(longitude latitude), not POINT(latitude longitude)
             update_data = {
                 'address': address,
-                'coordinates': f"POINT({coordinates[1]} {coordinates[0]})",  # lon, lat for PostGIS
+                'coordinates': f"POINT({lng} {lat})",  # FIXED: lng first, then lat
                 'last_updated': datetime.now().isoformat()
             }
 
@@ -188,7 +194,7 @@ class Database:
                 .eq('id', restaurant_id)\
                 .execute()
 
-            logger.info(f"📍 Updated geodata for restaurant ID: {restaurant_id}")
+            logger.info(f"📍 Updated geodata for restaurant ID: {restaurant_id} with coords ({lat}, {lng})")
 
         except Exception as e:
             logger.error(f"Error updating geodata: {e}")

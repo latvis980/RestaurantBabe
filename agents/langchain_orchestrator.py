@@ -347,15 +347,25 @@ class LangChainOrchestrator:
 
     # Replace your existing _supabase_update_step method with this fixed version
 
+    # Add this debug version to your _supabase_update_step method in langchain_orchestrator.py
+    # This will help us see why the AI processing isn't running
+
     def _supabase_update_step(self, x):
         """
         Process ALL scraped content and update Supabase restaurants database with AI
         This step happens BEFORE the editor agent, saving ALL restaurants found
         """
         try:
+            logger.info("🚀 ENTERING SUPABASE UPDATE STEP - DEBUG VERSION")
+
             enriched_results = x.get("enriched_results", [])
             city = x.get("city", "Unknown")
             country = x.get("country", "Unknown")
+
+            logger.info(f"🔍 Debug info:")
+            logger.info(f"   - enriched_results count: {len(enriched_results)}")
+            logger.info(f"   - city: {city}")
+            logger.info(f"   - country: {country}")
 
             if not enriched_results:
                 logger.info("🔍 No scraped content to process (database-only mode)")
@@ -368,9 +378,11 @@ class LangChainOrchestrator:
             combined_content = ""
             sources = []
 
-            for result in enriched_results:
+            for i, result in enumerate(enriched_results):
                 content = result.get("scraped_content", result.get("content", ""))
                 url = result.get("url", "")
+
+                logger.info(f"   Article {i+1}: {len(content)} chars from {url}")
 
                 if content and len(content.strip()) > 100:
                     combined_content += f"\n\n--- FROM {url} ---\n\n{content}"
@@ -381,6 +393,7 @@ class LangChainOrchestrator:
                 return {**x, "restaurants_processed": 0, "all_restaurants_saved": []}
 
             logger.info(f"📝 Combined content: {len(combined_content)} chars from {len(sources)} sources")
+            logger.info(f"🚀 CALLING process_all_scraped_restaurants function")
 
             # Process ALL scraped content and save to database
             processing_result = process_all_scraped_restaurants(

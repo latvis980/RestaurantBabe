@@ -1,4 +1,4 @@
-# agents/supabase_update_agent.py - COMPLETE FIXED VERSION
+# agents/supabase_update_agent.py - COMPLETE WORKING VERSION
 import os
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
@@ -376,6 +376,9 @@ def process_all_scraped_restaurants(scraped_content: str, sources: List[str], ci
         Dictionary with processing statistics and restaurant data
     """
     try:
+        logger.info(f"🚀 STARTING AI-POWERED SUPABASE UPDATE AGENT")
+        logger.info(f"📄 Processing content for {city}, {country}")
+
         agent = SupabaseUpdateAgent(config)
 
         # Process scraped content to extract ALL restaurants
@@ -404,6 +407,8 @@ def process_all_scraped_restaurants(scraped_content: str, sources: List[str], ci
 
     except Exception as e:
         logger.error(f"❌ Error in process_all_scraped_restaurants: {e}")
+        import traceback
+        traceback.print_exc()
         return {
             'success': False,
             'restaurants_processed': [],
