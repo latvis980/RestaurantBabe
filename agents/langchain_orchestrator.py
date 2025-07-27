@@ -523,23 +523,33 @@ class LangChainOrchestrator:
             logger.info("📱 ENTERING FORMAT STEP")
 
             final_recommendations = x.get("final_recommendations", "")
+            analysis_result = x.get("analysis_result", {})
+            restaurants = analysis_result.get("restaurants", [])
 
-            if not final_recommendations:
+            if not final_recommendations and not restaurants:
                 return {**x, "formatted_response": "No restaurant recommendations could be generated."}
 
-            formatted_response = self.telegram_formatter.format_restaurant_recommendations(
-                content=final_recommendations,
-                city=x.get("city", "Unknown"),
-                restaurant_count=x.get("restaurant_count", 0),
-                source=x.get("analysis_result", {}).get("source", "unknown")
-            )
+            # If we have a formatted text response, use it directly
+            if final_recommendations and isinstance(final_recommendations, str):
+                logger.info("✅ Using pre-formatted response")
+                return {**x, "formatted_response": final_recommendations}
 
-            logger.info("✅ Formatting complete")
+            # Otherwise, format using TelegramFormatter
+            if restaurants:
+                logger.info(f"📋 Formatting {len(restaurants)} restaurants using TelegramFormatter")
 
-            return {
-                **x,
-                "formatted_response": formatted_response
-            }
+                # Prepare data in the format TelegramFormatter expects
+                recommendations_data = {
+                    "main_list": restaurants
+                }
+
+                # Use the correct method name - format_recommendations, not format_restaurant_recommendations
+                formatted_response = self.telegram_formatter.format_recommendations(recommendations_data)
+
+                logger.info("✅ Formatting complete")
+                return {**x, "formatted_response": formatted_response}
+            else:
+                return {**x, "formatted_response": "No restaurant recommendations could be generated."}
 
         except Exception as e:
             logger.error(f"❌ Error in format step: {e}")
