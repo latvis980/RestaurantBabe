@@ -110,20 +110,25 @@ class LangChainOrchestrator:
             logger.info("🧠 CHECKING DATABASE WITH INTELLIGENT SEARCH")
 
             destination = x.get("destination", "Unknown")
-            original_query = x.get("original_query", "")
+            # Fix: Use the correct key for the query
+            search_query = x.get("query", "")
 
             if destination == "Unknown":
                 logger.info("⚠️ No destination detected, will search web")
                 return {**x, "has_database_content": False, "database_results": []}
 
-            logger.info(f"🔍 Intelligent search for: '{original_query}' in {destination}")
+            if not search_query.strip():
+                logger.warning("⚠️ No search query found")
+                return {**x, "has_database_content": False, "database_results": []}
+
+            logger.info(f"🔍 Intelligent search for: '{search_query}' in {destination}")
 
             # Use intelligent database search
             try:
                 from utils.intelligent_db_search import search_restaurants_intelligently
 
                 relevant_restaurants, should_scrape = search_restaurants_intelligently(
-                    query=original_query,
+                    query=search_query,
                     destination=destination,
                     config=self.config,
                     min_results=2,  # Need at least 2 relevant results
@@ -170,80 +175,66 @@ class LangChainOrchestrator:
             logger.error(f"❌ Error in database coverage check: {e}")
             return {**x, "has_database_content": False, "database_results": []}
 
-    # Add this method to your agents/langchain_orchestrator.py class
 
     def _fallback_database_check(self, x):
-        """Fallback database check using the original method when intelligent search isn't available"""
-        try:
-            logger.info("🔄 USING FALLBACK DATABASE CHECK")
+        """Fallback database check using the original method"""
+        destination = x.get("destination", "Unknown")
 
-            destination = x.get("destination", "Unknown")
+        if destination == "Unknown":
+            return {**x, "has_database_content": False, "database_results": []}
 
-            if destination == "Unknown":
-                logger.info("⚠️ No destination detected, will search web")
-                return {**x, "has_database_content": False, "database_results": []}
+        # Extract city from destination (simple parsing)
+        city = destination
+        if "," in destination:
+            city = destination.split(",")[0].strip()
 
-            # Extract city from destination (simple parsing)
-            city = destination
-            if "," in destination:
-                city = destination.split(",")[0].strip()
+        logger.info(f"🔍 Basic database check for: {city}")
 
-            logger.info(f"🔍 Basic database check for: {city}")
+        # Query database for existing restaurants
+        from utils.database import get_database
+        db = get_database()
+        database_restaurants = db.get_restaurants_by_city(city, limit=50)
 
-            # Query database for existing restaurants using the basic method
-            try:
-                database_restaurants = get_restaurants_by_city(city, limit=50)
-
-                # Use lower threshold for basic search since it's less targeted
-                if database_restaurants and len(database_restaurants) >= 5:
-                    logger.info(f"✅ Found {len(database_restaurants)} restaurants in database (fallback)")
-                    return {
-                        **x, 
-                        "has_database_content": True, 
-                        "database_results": database_restaurants[:8],  # Limit to 8 for processing
-                        "skip_web_search": False  # Always allow web search in fallback mode
-                    }
-                else:
-                    logger.info(f"📭 Only {len(database_restaurants)} restaurants in database - not enough (fallback)")
-                    return {
-                        **x, 
-                        "has_database_content": False, 
-                        "database_results": [],
-                        "skip_web_search": False
-                    }
-
-            except Exception as e:
-                logger.error(f"❌ Error in fallback database query: {e}")
-                return {
-                    **x, 
-                    "has_database_content": False, 
-                    "database_results": [],
-                    "skip_web_search": False
-                }
-
-        except Exception as e:
-            logger.error(f"❌ Error in fallback database check: {e}")
+        # Use lower threshold for basic search since it's less targeted
+        if database_restaurants and len(database_restaurants) >= 5:
+            logger.info(f"✅ Found {len(database_restaurants)} restaurants in database")
+            return {
+                **x, 
+                "has_database_content": True, 
+                "database_results": database_restaurants[:8]  # Limit to 8 for processing
+            }
+        else:
+            logger.info(f"📭 Only {len(database_restaurants)} restaurants in database - not enough")
             return {**x, "has_database_content": False, "database_results": []}
 
     def _search_step(self, x):
-        """Search step - only runs if no database content"""
+        """Enhanced search step that can skip web search if database provided enough results"""
         try:
-            # Check if we should skip search (database branch)
-            if x.get("has_database_content", False):
-                logger.info("⏭️ SKIPPING SEARCH - using database content")
+            logger.info("🔍 SEARCH STEP")
+
+            # Check if we should skip web search
+            if x.get("skip_web_search", False):
+                logger.info("⏭️ Skipping web search - database provided sufficient results")
                 return {**x, "search_results": []}
 
-            logger.info("🔍 RUNNING WEB SEARCH")
+            destination = x.get("destination", "Unknown")
+            search_terms = x.get("search_terms", [])
+            language = x.get("language", "en")
 
-            search_queries = x.get("search_queries", [])
-
-            if not search_queries:
-                logger.warning("⚠️ No search queries available")
+            if destination == "Unknown" or not search_terms:
+                logger.warning("Missing destination or search terms for web search")
                 return {**x, "search_results": []}
 
-            search_results = self.search_agent.search(search_queries)
+            # Build search query
+            primary_term = search_terms[0] if search_terms else "restaurants"
+            query = f"{primary_term} in {destination}"
 
-            logger.info(f"🌐 Found {len(search_results)} search results")
+            logger.info(f"🌐 Searching web for: {query}")
+
+            # Perform search using existing search agent
+            search_results = self.search_agent.search(query, destination, language)
+
+            logger.info(f"✅ Web search completed: {len(search_results)} results")
 
             return {**x, "search_results": search_results}
 

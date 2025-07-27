@@ -174,13 +174,21 @@ Return ONLY valid JSON:
     def _analyze_query_intent(self, query: str, destination: str) -> Dict[str, Any]:
         """Use AI to analyze query intent and extract key concepts"""
         try:
-            response = self.llm.invoke({
+            # Fix: Use invoke with proper parameters instead of the template directly
+            response = self.intent_analysis_prompt.invoke({
                 "query": query,
                 "destination": destination
             })
 
+            # Get the content from the response
+            if hasattr(response, 'content'):
+                content = response.content.strip()
+            elif hasattr(response, 'text'):
+                content = response.text.strip()
+            else:
+                content = str(response).strip()
+
             # Parse the AI response
-            content = response.content.strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
@@ -198,13 +206,63 @@ Return ONLY valid JSON:
 
         except Exception as e:
             logger.error(f"❌ Error analyzing query intent: {e}")
-            # Fallback analysis
-            return {
-                "search_intent": "general_dining",
-                "specificity_level": "general",
-                "key_concepts": [query.lower()],
-                "search_context": f"Restaurants related to: {query}"
-            }
+            # Fallback analysis with more specific handling
+            return self._create_fallback_analysis(query)
+
+    def _create_fallback_analysis(self, query: str) -> Dict[str, Any]:
+        """Create a fallback analysis when AI fails"""
+        query_lower = query.lower()
+
+        # Basic cuisine detection
+        cuisine_keywords = {
+            "persian": ["persian", "iranian"],
+            "italian": ["italian", "pasta", "pizza"],
+            "japanese": ["japanese", "sushi", "ramen"],
+            "chinese": ["chinese"],
+            "indian": ["indian", "curry"],
+            "thai": ["thai"],
+            "mexican": ["mexican", "tacos"],
+            "french": ["french"],
+            "israeli": ["israeli"],
+            "turkish": ["turkish"],
+            "korean": ["korean"],
+            "lebanese": ["lebanese"],
+            "vietnamese": ["vietnamese"]
+        }
+
+        detected_cuisines = []
+        for cuisine, keywords in cuisine_keywords.items():
+            if any(keyword in query_lower for keyword in keywords):
+                detected_cuisines.append(cuisine)
+
+        # Determine intent based on detected elements
+        if detected_cuisines:
+            search_intent = "cuisine_specific"
+            specificity_level = "very_specific"
+            key_concepts = detected_cuisines + ["restaurants", "dining"]
+            search_context = f"Restaurants serving {' or '.join(detected_cuisines)} cuisine"
+        elif "bar" in query_lower or "cocktail" in query_lower:
+            search_intent = "bar_drinks"
+            specificity_level = "very_specific"
+            key_concepts = ["cocktails", "bar", "drinks"]
+            search_context = "Bars specializing in cocktails and mixed drinks"
+        elif "brunch" in query_lower:
+            search_intent = "meal_specific"
+            specificity_level = "very_specific"
+            key_concepts = ["brunch", "breakfast", "coffee"]
+            search_context = "Restaurants serving brunch and breakfast"
+        else:
+            search_intent = "general_dining"
+            specificity_level = "general"
+            key_concepts = ["restaurants", "dining"]
+            search_context = f"General restaurants related to: {query}"
+
+        return {
+            "search_intent": search_intent,
+            "specificity_level": specificity_level,
+            "key_concepts": key_concepts,
+            "search_context": search_context
+        }
 
     def _find_semantically_relevant_restaurants(
         self, 
@@ -267,10 +325,8 @@ Return ONLY valid JSON:
             description = restaurant.get('raw_description', '')[:500]  # Truncate for efficiency
             name = restaurant.get('name', 'Unknown')
 
-            # Use the relevance analysis prompt
-            chain = self.relevance_analysis_prompt | self.llm
-
-            response = chain.invoke({
+            # Fix: Create the chain properly
+            response = self.relevance_analysis_prompt.invoke({
                 "search_context": search_context,
                 "key_concepts": ", ".join(key_concepts),
                 "restaurant_name": name,
@@ -278,8 +334,15 @@ Return ONLY valid JSON:
                 "description": description
             })
 
+            # Get content from response
+            if hasattr(response, 'content'):
+                content = response.content.strip()
+            elif hasattr(response, 'text'):
+                content = response.text.strip()
+            else:
+                content = str(response).strip()
+
             # Parse response
-            content = response.content.strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
@@ -297,11 +360,52 @@ Return ONLY valid JSON:
 
         except Exception as e:
             logger.error(f"Error in AI relevance evaluation: {e}")
-            return {
-                "relevance_score": 0,
-                "reasoning": "Failed to analyze",
-                "matching_aspects": []
-            }
+            # Fallback to simple keyword matching
+            return self._fallback_relevance_evaluation(restaurant, key_concepts)
+
+    def _fallback_relevance_evaluation(
+        self, 
+        restaurant: Dict[str, Any], 
+        key_concepts: List[str]
+    ) -> Dict[str, Any]:
+        """Fallback relevance evaluation using keyword matching"""
+
+        cuisine_tags = [tag.lower() for tag in restaurant.get('cuisine_tags', [])]
+        description = restaurant.get('raw_description', '').lower()
+        name = restaurant.get('name', '').lower()
+
+        score = 0
+        matching_aspects = []
+
+        # Check each key concept
+        for concept in key_concepts:
+            concept_lower = concept.lower()
+
+            # Direct tag match (highest score)
+            if concept_lower in cuisine_tags:
+                score += 3
+                matching_aspects.append(f"cuisine tag: {concept}")
+            # Name match
+            elif concept_lower in name:
+                score += 2
+                matching_aspects.append(f"name contains: {concept}")
+            # Description match
+            elif concept_lower in description:
+                score += 1
+                matching_aspects.append(f"description mentions: {concept}")
+
+        # Normalize score to 0-10 scale
+        max_possible_score = len(key_concepts) * 3
+        if max_possible_score > 0:
+            normalized_score = min(10, (score / max_possible_score) * 10)
+        else:
+            normalized_score = 0
+
+        return {
+            "relevance_score": int(normalized_score),
+            "reasoning": f"Keyword matching found {len(matching_aspects)} matches",
+            "matching_aspects": matching_aspects
+        }
 
     def _final_ranking_and_filtering(
         self, 
