@@ -9,7 +9,7 @@ import asyncio
 import logging
 import concurrent.futures
 
-from utils.database import get_restaurants_by_city, cache_search_results
+from utils.database import get_restaurants_by_city
 from utils.debug_utils import dump_chain_state, log_function_call
 from formatters.telegram_formatter import TelegramFormatter
 
@@ -214,6 +214,11 @@ class LangChainOrchestrator:
             self._log_firecrawl_usage()
 
             logger.info(f"✅ Scraped {len(enriched_results)} articles")
+
+            # NEW: Save scraped content for Supabase manager
+            if enriched_results:
+                self._save_scraped_content_for_processing(x, enriched_results)
+
             return {**x, "enriched_results": enriched_results}
 
         except Exception as e:
@@ -362,6 +367,143 @@ class LangChainOrchestrator:
                 **x,
                 "telegram_formatted_text": "Sorry, there was an error formatting the restaurant recommendations."
             }
+
+    def _save_scraped_content_for_processing(self, x, enriched_results):
+        """Save scraped content to TXT file for Supabase manager processing"""
+        try:
+            import tempfile
+            import json
+            from datetime import datetime
+
+            # Extract metadata from pipeline context
+            query = x.get("query", "")
+            destination = x.get("destination", "Unknown")
+
+            # Parse destination into city/country
+            city = destination
+            country = "Unknown"
+            if "," in destination:
+                parts = [p.strip() for p in destination.split(",")]
+                city = parts[0]
+                if len(parts) > 1:
+                    country = parts[1]
+
+            # Prepare metadata for Supabase manager
+            metadata = {
+                "query": query,
+                "city": city,
+                "country": country,
+                "destination": destination,
+                "timestamp": datetime.now().isoformat(),
+                "source": "web_scraping",
+                "total_articles": len(enriched_results),
+                "search_queries": x.get("search_queries", [])
+            }
+
+            # Create timestamp for filenames
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            # Use configured path or temp directory
+            if hasattr(self.config, 'SCRAPED_CONTENT_PATH'):
+                base_path = self.config.SCRAPED_CONTENT_PATH
+            else:
+                base_path = tempfile.gettempdir()
+
+            # Ensure directory exists
+            os.makedirs(base_path, exist_ok=True)
+
+            # Save RAW CONTENT as TXT file
+            content_filename = f"scraped_content_{city}_{timestamp}.txt"
+            content_filepath = os.path.join(base_path, content_filename)
+
+            # Combine all scraped content into one text file
+            with open(content_filepath, 'w', encoding='utf-8') as f:
+                f.write("=" * 80 + "\n")
+                f.write("SCRAPED RESTAURANT CONTENT\n")
+                f.write("=" * 80 + "\n\n")
+                f.write(f"Query: {query}\n")
+                f.write(f"City: {city}\n")
+                f.write(f"Country: {country}\n")
+                f.write(f"Timestamp: {metadata['timestamp']}\n")
+                f.write(f"Total Articles: {len(enriched_results)}\n")
+                f.write(f"Search Queries: {', '.join(metadata['search_queries'])}\n")
+                f.write("\n" + "=" * 80 + "\n\n")
+
+                # Add each scraped article
+                for i, article in enumerate(enriched_results, 1):
+                    url = article.get('url', 'Unknown URL')
+                    title = article.get('title', 'No title')
+                    content = article.get('content', '')
+
+                    f.write(f"ARTICLE {i}:\n")
+                    f.write(f"URL: {url}\n")
+                    f.write(f"Title: {title}\n")
+                    f.write("-" * 40 + "\n")
+
+                    if content:
+                        f.write(content)
+                    else:
+                        f.write("[No content available]")
+
+                    f.write("\n\n" + "=" * 40 + "\n\n")
+
+            # Save METADATA as separate JSON file
+            metadata_filename = f"metadata_{city}_{timestamp}.json"
+            metadata_filepath = os.path.join(base_path, metadata_filename)
+
+            with open(metadata_filepath, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"💾 Saved scraped content: {content_filepath}")
+            logger.info(f"📊 Content: {len(enriched_results)} articles for {city}")
+
+            # Send to Supabase manager if URL configured
+            if hasattr(self.config, 'SUPABASE_MANAGER_URL') and self.config.SUPABASE_MANAGER_URL:
+                self._send_to_supabase_manager(content_filepath, metadata_filepath, metadata)
+
+        except Exception as e:
+            logger.error(f"❌ Error saving scraped content: {e}")
+
+    def _send_to_supabase_manager(self, content_filepath, metadata_filepath, metadata):
+        """Send scraped content and metadata files to Supabase manager service"""
+        try:
+            import requests
+
+            supabase_manager_url = self.config.SUPABASE_MANAGER_URL
+
+            logger.info(f"📤 Sending content to Supabase manager: {supabase_manager_url}")
+
+            # Send both files to Supabase manager
+            with open(content_filepath, 'rb') as content_file, \
+                 open(metadata_filepath, 'rb') as metadata_file:
+
+                files = {
+                    'content_file': (os.path.basename(content_filepath), content_file, 'text/plain'),
+                    'metadata_file': (os.path.basename(metadata_filepath), metadata_file, 'application/json')
+                }
+
+                response = requests.post(
+                    f"{supabase_manager_url}/process_content",
+                    files=files,
+                    timeout=30
+                )
+
+            if response.status_code == 200:
+                logger.info("✅ Successfully sent content to Supabase manager")
+
+                # Delete local files after successful send
+                try:
+                    os.remove(content_filepath)
+                    os.remove(metadata_filepath)
+                    logger.info(f"🗑️ Deleted local files")
+                except:
+                    pass
+            else:
+                logger.error(f"❌ Failed to send to Supabase manager: {response.status_code}")
+
+        except Exception as e:
+            logger.error(f"❌ Error sending to Supabase manager: {e}")
+            logger.info(f"📁 Content saved locally: {content_filepath}")
 
     def _log_firecrawl_usage(self):
         """Log Firecrawl usage statistics"""
