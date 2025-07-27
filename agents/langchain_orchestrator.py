@@ -416,7 +416,7 @@ class LangChainOrchestrator:
                 logger.info(f"📊 Database analysis: {len(database_results)} restaurants")
 
             else:
-                # Use scraped content
+                # Use scraped content with correct ListAnalyzer method
                 logger.info("📊 Analyzing scraped content")
                 enriched_results = x.get("enriched_results", [])
 
@@ -424,17 +424,25 @@ class LangChainOrchestrator:
                     logger.warning("⚠️ No content to analyze")
                     return {**x, "analysis_result": {"restaurants": [], "source": "none", "total_found": 0}}
 
-                combined_content = ""
-                for result in enriched_results:
-                    content = result.get("scraped_content", "")
-                    if content:
-                        combined_content += f"\n\n{content}"
+                # Use the correct method name: analyze_search_results (async)
+                def run_analysis():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        return loop.run_until_complete(
+                            self.list_analyzer.analyze_search_results(
+                                search_results=enriched_results,
+                                primary_search_parameters=x.get("analysis_result", {}).get("primary_search_parameters", []),
+                                secondary_filter_parameters=x.get("analysis_result", {}).get("secondary_filter_parameters", []),
+                                keywords_for_analysis=x.get("analysis_result", {}).get("keywords_for_analysis", []),
+                                destination=x.get("city", "Unknown")
+                            )
+                        )
+                    finally:
+                        loop.close()
 
-                analysis_result = self.list_analyzer.analyze_scraped_content(
-                    content=combined_content,
-                    city=x.get("city", "Unknown"),
-                    country=x.get("country", "Unknown")
-                )
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    analysis_result = pool.submit(run_analysis).result()
 
                 logger.info(f"📊 Content analysis: {analysis_result.get('total_found', 0)} restaurants")
 
@@ -494,20 +502,29 @@ class LangChainOrchestrator:
 
             city = x.get("city")
             country = x.get("country")
+            analysis_result = x.get("analysis_result", {})
+            restaurants = analysis_result.get("restaurants", [])
 
             if not city:
                 logger.info("⚠️ No city for follow-up search")
                 return {**x, "follow_up_complete": False}
 
-            # Just do a quick follow-up search for additional context
-            follow_up_query = f"best restaurants {city} {country} 2024 guide"
+            if not restaurants:
+                logger.info("⚠️ No restaurants for follow-up search")
+                return {**x, "follow_up_complete": False}
 
-            logger.info(f"🔍 Follow-up search: {follow_up_query}")
+            # Use the correct method name: enhance (not search_additional_info)
+            logger.info(f"🔍 Running follow-up enhancement for {len(restaurants)} restaurants")
 
-            follow_up_results = self.follow_up_search_agent.search_additional_info(
-                city=city,
-                country=country,
-                restaurants=x.get("analysis_result", {}).get("restaurants", [])
+            # Prepare edited_results format that FollowUpSearchAgent expects
+            edited_results = {
+                "main_list": restaurants
+            }
+
+            follow_up_results = self.follow_up_search_agent.enhance(
+                edited_results=edited_results,
+                follow_up_queries=[],  # Empty for now
+                destination=f"{city}, {country}" if country != "Unknown" else city
             )
 
             logger.info(f"✅ Follow-up search complete")
