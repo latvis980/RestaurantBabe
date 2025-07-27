@@ -268,6 +268,7 @@ class LangChainOrchestrator:
 
             logger.info(f"🔍 Analyzing query: {query}")
 
+            # Use the correct method name - analyze_query, not analyze
             analysis_result = self.query_analyzer.analyze_query(query)
 
             if not analysis_result:
