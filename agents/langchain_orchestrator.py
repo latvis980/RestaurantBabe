@@ -1,6 +1,7 @@
 # agents/langchain_orchestrator.py
 # OPTIMIZED VERSION - Database branches + scraped content handling
 
+import os
 from langchain_core.runnables import RunnableSequence, RunnableLambda
 from langchain_core.tracers.context import tracing_v2_enabled
 import time
@@ -104,9 +105,77 @@ class LangChainOrchestrator:
         )
 
     def _check_database_coverage(self, x):
-        """Check if we have restaurants in database for this destination"""
+        """Enhanced database check that uses intelligent search to find relevant restaurants"""
         try:
-            logger.info("🗃️ CHECKING DATABASE COVERAGE")
+            logger.info("🧠 CHECKING DATABASE WITH INTELLIGENT SEARCH")
+
+            destination = x.get("destination", "Unknown")
+            original_query = x.get("original_query", "")
+
+            if destination == "Unknown":
+                logger.info("⚠️ No destination detected, will search web")
+                return {**x, "has_database_content": False, "database_results": []}
+
+            logger.info(f"🔍 Intelligent search for: '{original_query}' in {destination}")
+
+            # Use intelligent database search
+            try:
+                from utils.intelligent_db_search import search_restaurants_intelligently
+
+                relevant_restaurants, should_scrape = search_restaurants_intelligently(
+                    query=original_query,
+                    destination=destination,
+                    config=self.config,
+                    min_results=2,  # Need at least 2 relevant results
+                    max_results=8   # Maximum to return from database
+                )
+
+                if relevant_restaurants and not should_scrape:
+                    logger.info(
+                        f"✅ Found {len(relevant_restaurants)} relevant restaurants in database - "
+                        "skipping web scraping"
+                    )
+                    return {
+                        **x, 
+                        "has_database_content": True, 
+                        "database_results": relevant_restaurants,
+                        "skip_web_search": True  # Flag to skip web search
+                    }
+                elif relevant_restaurants and should_scrape:
+                    logger.info(
+                        f"📊 Found {len(relevant_restaurants)} relevant restaurants but need more - "
+                        "will supplement with web scraping"
+                    )
+                    return {
+                        **x, 
+                        "has_database_content": True, 
+                        "database_results": relevant_restaurants,
+                        "skip_web_search": False  # Continue to web search for more results
+                    }
+                else:
+                    logger.info("📭 No relevant restaurants found in database - will search web")
+                    return {
+                        **x, 
+                        "has_database_content": False, 
+                        "database_results": [],
+                        "skip_web_search": False
+                    }
+
+            except ImportError:
+                logger.warning("⚠️ Intelligent search not available, falling back to basic search")
+                # Fallback to the original method if intelligent search isn't available
+                return self._fallback_database_check(x)
+
+        except Exception as e:
+            logger.error(f"❌ Error in database coverage check: {e}")
+            return {**x, "has_database_content": False, "database_results": []}
+
+    # Add this method to your agents/langchain_orchestrator.py class
+
+    def _fallback_database_check(self, x):
+        """Fallback database check using the original method when intelligent search isn't available"""
+        try:
+            logger.info("🔄 USING FALLBACK DATABASE CHECK")
 
             destination = x.get("destination", "Unknown")
 
@@ -119,41 +188,42 @@ class LangChainOrchestrator:
             if "," in destination:
                 city = destination.split(",")[0].strip()
 
-            logger.info(f"🔍 Checking database for: {city}")
+            logger.info(f"🔍 Basic database check for: {city}")
 
-            # Query database for existing restaurants
-            from utils.database import get_database
-            db = get_database()
-            database_restaurants = db.get_restaurants_by_city(city, limit=50)
+            # Query database for existing restaurants using the basic method
+            try:
+                database_restaurants = get_restaurants_by_city(city, limit=50)
 
-            # Decide if we have enough content (threshold: 3+ restaurants)
-            if database_restaurants and len(database_restaurants) >= 3:
-                logger.info(f"✅ Found {len(database_restaurants)} restaurants in database")
-                logger.info("📊 Using DATABASE BRANCH - skipping web search")
+                # Use lower threshold for basic search since it's less targeted
+                if database_restaurants and len(database_restaurants) >= 5:
+                    logger.info(f"✅ Found {len(database_restaurants)} restaurants in database (fallback)")
+                    return {
+                        **x, 
+                        "has_database_content": True, 
+                        "database_results": database_restaurants[:8],  # Limit to 8 for processing
+                        "skip_web_search": False  # Always allow web search in fallback mode
+                    }
+                else:
+                    logger.info(f"📭 Only {len(database_restaurants)} restaurants in database - not enough (fallback)")
+                    return {
+                        **x, 
+                        "has_database_content": False, 
+                        "database_results": [],
+                        "skip_web_search": False
+                    }
+
+            except Exception as e:
+                logger.error(f"❌ Error in fallback database query: {e}")
                 return {
-                    **x,
-                    "has_database_content": True,
-                    "database_results": database_restaurants,
-                    "content_source": "database"
-                }
-            else:
-                logger.info(f"⚠️ Only {len(database_restaurants) if database_restaurants else 0} restaurants in database")
-                logger.info("🌐 Using WEB SEARCH BRANCH")
-                return {
-                    **x,
-                    "has_database_content": False,
+                    **x, 
+                    "has_database_content": False, 
                     "database_results": [],
-                    "content_source": "web_search"
+                    "skip_web_search": False
                 }
 
         except Exception as e:
-            logger.error(f"❌ Error checking database: {e}")
-            return {
-                **x,
-                "has_database_content": False,
-                "database_results": [],
-                "content_source": "web_search"
-            }
+            logger.error(f"❌ Error in fallback database check: {e}")
+            return {**x, "has_database_content": False, "database_results": []}
 
     def _search_step(self, x):
         """Search step - only runs if no database content"""
