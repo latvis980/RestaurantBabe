@@ -248,7 +248,7 @@ class LangChainOrchestrator:
                 response = requests.post(
                     f"{supabase_manager_url}/process_scraped_content",
                     json=payload,
-                    timeout=30
+                    timeout=180
                 )
 
                 if response.status_code == 200:
