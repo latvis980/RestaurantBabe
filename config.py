@@ -18,6 +18,7 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")  # Use service_role key for server operations
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")  # For admin operations
+SUPABASE_MANAGER_URL = os.getenv("SUPABASE_MANAGER_URL")
 
 # OpenAI API settings (for components that need highest quality)
 OPENAI_MODEL = "gpt-4o"  # Always using GPT-4o as requested
