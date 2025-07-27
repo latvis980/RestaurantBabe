@@ -63,7 +63,6 @@ OPENAI_MAX_TOKENS_BY_COMPONENT = {
     'conversation': 1024,          # Telegram chat  
     'editor_agent': 4096,          # Restaurant formatting
     'firecrawl_scraper': 6144,     # Restaurant extraction
-    'list_analyzer': 8192,         # Final analysis (Claude)
     'default': 2048                # Fallback
 }
 
