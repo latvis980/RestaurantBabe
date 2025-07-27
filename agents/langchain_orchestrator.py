@@ -547,6 +547,77 @@ class LangChainOrchestrator:
             logger.error(f"❌ Pipeline error: {e}")
             return f"Sorry, I encountered an error while processing your request: {str(e)}"
 
+    def process_query(self, user_query: str, user_preferences: Dict[str, Any] = None, user_id: str = None) -> Dict[str, Any]:
+        """
+        Process restaurant query and return formatted results for telegram bot
+
+        This method maintains compatibility with your existing telegram bot code.
+        Returns the expected dictionary structure with telegram_formatted_text.
+        """
+        try:
+            logger.info(f"🚀 PROCESSING QUERY: {user_query}")
+
+            # Run the pipeline
+            result = self.pipeline.invoke({"query": user_query})
+
+            # Extract key information
+            formatted_response = result.get("formatted_response", "")
+            analysis_result = result.get("analysis_result", {})
+            restaurants = analysis_result.get("restaurants", [])
+            city = result.get("city", "Unknown")
+            country = result.get("country", "Unknown")
+            source = analysis_result.get("source", "unknown")
+
+            # Build response in expected format for telegram bot
+            response = {
+                "telegram_formatted_text": formatted_response or "Sorry, no recommendations found.",
+                "main_list": restaurants,
+                "destination": f"{city}, {country}" if country != "Unknown" else city,
+                "enhanced_results": result.get("enriched_results", []),
+                "ai_features": {
+                    "used_ai_database": source == "database",
+                    "restaurants_processed": result.get("scraped_content_saved", False),
+                    "search_preferences": user_preferences or {},
+                    "country_detected": country
+                },
+                "search_method": f"simplified_{source}",
+                "firecrawl_stats": {
+                    "total_scraped": len(result.get("scraped_sources", [])),
+                    "successful_extractions": len(result.get("enriched_results", [])),
+                    "credits_used": 0  # No longer tracking since we moved to background processing
+                }
+            }
+
+            logger.info(f"✅ Query processed successfully")
+            logger.info(f"   - Destination: {response['destination']}")
+            logger.info(f"   - Restaurants found: {len(restaurants)}")
+            logger.info(f"   - Source: {source}")
+
+            return response
+
+        except Exception as e:
+            logger.error(f"❌ Error in process_query: {e}")
+
+            # Return error response in expected format
+            return {
+                "telegram_formatted_text": "Sorry, there was an error processing your request.",
+                "main_list": [],
+                "destination": "Unknown",
+                "enhanced_results": [],
+                "ai_features": {
+                    "used_ai_database": False,
+                    "restaurants_processed": False,
+                    "search_preferences": user_preferences or {},
+                    "country_detected": "Unknown"
+                },
+                "search_method": "error",
+                "firecrawl_stats": {
+                    "total_scraped": 0,
+                    "successful_extractions": 0,
+                    "credits_used": 0
+                }
+            }
+
     # Legacy methods for backward compatibility with existing code
     def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Legacy invoke method for compatibility"""
