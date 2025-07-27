@@ -1,4 +1,4 @@
-# scrape_test.py - Updated to show FULL content of all scraped articles
+# scrape_test.py - Updated for new pipeline without list_analyzer
 import asyncio
 import time
 import tempfile
@@ -15,26 +15,27 @@ class ScrapeTest:
     Simple test to see the complete scraping process:
     - What search results are found
     - Which ones get scraped successfully  
-    - What content is actually scraped (now showing FULL content)
-    - What goes to list_analyzer
+    - What content is actually scraped (showing FULL content)
+    - What goes to editor_agent (not list_analyzer anymore)
 
-    Updated to use orchestrator singleton pattern and show full content
+    Updated for new pipeline: scrape → editor → follow_up → format
     """
 
     def __init__(self, config, orchestrator):
         self.config = config
-        self.orchestrator = orchestrator  # Now receives the singleton instance
+        self.orchestrator = orchestrator  # Receives the singleton instance
         self.admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
 
         # Initialize pipeline components - get from the orchestrator to ensure consistency
         self.query_analyzer = orchestrator.query_analyzer
         self.search_agent = orchestrator.search_agent
         self.scraper = orchestrator.scraper
+        self.editor_agent = orchestrator.editor_agent  # Changed from list_analyzer to editor_agent
 
     async def test_scraping_process(self, restaurant_query: str, bot=None) -> str:
         """
         Run complete scraping process and dump results to file
-        Now shows FULL content of all scraped articles
+        Shows FULL content of all scraped articles and what goes to editor
 
         Args:
             restaurant_query: The restaurant query to test (e.g., "best brunch in Lisbon")
@@ -52,10 +53,11 @@ class ScrapeTest:
 
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write("=" * 80 + "\n")
-            f.write("RESTAURANT SCRAPING PROCESS TEST - FULL CONTENT\n")
+            f.write("RESTAURANT SCRAPING PROCESS TEST - NEW PIPELINE\n")
             f.write("=" * 80 + "\n\n")
             f.write(f"Test Date: {datetime.now().isoformat()}\n")
             f.write(f"Query: {restaurant_query}\n")
+            f.write(f"Pipeline: scrape → editor → follow_up → format\n")
             f.write(f"Orchestrator: Singleton instance\n\n")
 
             try:
@@ -141,31 +143,74 @@ class ScrapeTest:
                 f.write(f"  Total Content: {total_content_length:,} characters\n")
                 f.write(f"  Average per successful scrape: {total_content_length // max(successful_scrapes, 1):,} chars\n")
 
-                # Step 4: What goes to List Analyzer
-                f.write("\nSTEP 4: LIST ANALYZER INPUT\n")
+                # Step 4: What goes to Editor Agent (instead of List Analyzer)
+                f.write("\nSTEP 4: EDITOR AGENT INPUT\n")
                 f.write("-" * 40 + "\n")
 
-                # Prepare the exact input that would go to list_analyzer
-                analyzer_input = {
-                    "scraped_articles": scraped_results,
-                    "keywords_for_analysis": query_analysis.get("primary_search_parameters", []),
-                    "primary_search_parameters": query_analysis.get("primary_search_parameters", []),
-                    "secondary_filter_parameters": query_analysis.get("secondary_filter_parameters", []),
+                # Prepare the exact input that would go to editor_agent
+                editor_input = {
+                    "scraped_results": scraped_results,  # Raw scraped content
+                    "original_query": restaurant_query,
                     "destination": query_analysis.get("destination", "Unknown")
                 }
 
-                f.write(f"Articles sent to analyzer: {len(analyzer_input['scraped_articles'])}\n")
-                f.write(f"Keywords for analysis: {analyzer_input['keywords_for_analysis']}\n")
-                f.write(f"Primary parameters: {analyzer_input['primary_search_parameters']}\n")
-                f.write(f"Secondary parameters: {analyzer_input['secondary_filter_parameters']}\n")
-                f.write(f"Destination: {analyzer_input['destination']}\n\n")
+                f.write(f"Articles sent to editor: {len(editor_input['scraped_results'])}\n")
+                f.write(f"Original query: {editor_input['original_query']}\n")
+                f.write(f"Destination: {editor_input['destination']}\n")
+                f.write(f"Editor function: editor_agent.edit(scraped_results=..., original_query=..., destination=...)\n\n")
+
+                # Step 5: Test Editor Processing (optional)
+                f.write("STEP 5: EDITOR PROCESSING TEST\n")
+                f.write("-" * 40 + "\n")
+
+                try:
+                    start_time = time.time()
+
+                    # Call editor with scraped results
+                    editor_output = self.editor_agent.edit(
+                        scraped_results=scraped_results,
+                        original_query=restaurant_query,
+                        destination=query_analysis.get("destination", "Unknown")
+                    )
+
+                    editing_time = round(time.time() - start_time, 2)
+
+                    f.write(f"Processing Time: {editing_time}s\n")
+
+                    edited_results = editor_output.get("edited_results", {})
+                    main_list = edited_results.get("main_list", [])
+                    follow_up_queries = editor_output.get("follow_up_queries", [])
+
+                    f.write(f"Restaurants extracted: {len(main_list)}\n")
+                    f.write(f"Follow-up queries generated: {len(follow_up_queries)}\n")
+
+                    # Show extracted restaurants
+                    if main_list:
+                        f.write("\nExtracted Restaurants:\n")
+                        for i, restaurant in enumerate(main_list[:5], 1):  # Show first 5
+                            f.write(f"  {i}. {restaurant.get('name', 'Unknown')}\n")
+                            f.write(f"     Address: {restaurant.get('address', 'Unknown')}\n")
+                            f.write(f"     Description: {restaurant.get('description', 'No description')[:100]}...\n")
+                            f.write(f"     Sources: {restaurant.get('sources', [])}\n")
+
+                        if len(main_list) > 5:
+                            f.write(f"  ... and {len(main_list) - 5} more restaurants\n")
+
+                    if follow_up_queries:
+                        f.write(f"\nFollow-up Queries:\n")
+                        for i, query in enumerate(follow_up_queries, 1):
+                            f.write(f"  {i}. {query}\n")
+
+                except Exception as e:
+                    f.write(f"❌ Editor processing failed: {str(e)}\n")
+                    editing_time = 0
 
                 # Now, show the FULL content of all articles
                 f.write("\n" + "=" * 80 + "\n")
                 f.write("FULL CONTENT OF ALL SCRAPED ARTICLES\n")
                 f.write("=" * 80 + "\n\n")
 
-                for i, article in enumerate(analyzer_input['scraped_articles'], 1):
+                for i, article in enumerate(editor_input['scraped_results'], 1):
                     f.write(f"\nARTICLE {i}:\n")
                     f.write(f"  URL: {article.get('url', 'Unknown')}\n")
                     f.write(f"  Title: {article.get('title', 'No title')}\n")
@@ -188,15 +233,18 @@ class ScrapeTest:
                     f.write(f"  {key}: {value}\n")
 
                 # Overall timing
-                total_time = analysis_time + search_time + scraping_time
+                total_time = analysis_time + search_time + scraping_time + (editing_time if 'editing_time' in locals() else 0)
                 f.write(f"\nOVERALL TIMING:\n")
                 f.write(f"  Query Analysis: {analysis_time}s\n")
                 f.write(f"  Web Search: {search_time}s\n")
                 f.write(f"  Intelligent Scraping: {scraping_time}s\n")
+                if 'editing_time' in locals():
+                    f.write(f"  Editor Processing: {editing_time}s\n")
                 f.write(f"  Total: {total_time}s\n\n")
 
                 f.write("=" * 80 + "\n")
                 f.write("TEST COMPLETED SUCCESSFULLY\n")
+                f.write(f"Pipeline: Query → Search → Scrape → Editor → Follow-up → Format\n")
                 f.write("=" * 80 + "\n")
 
             except Exception as e:
@@ -219,8 +267,8 @@ class ScrapeTest:
                 f"🧪 <b>Scraping Process Test Complete</b>\n\n"
                 f"📝 Query: <code>{query}</code>\n"
                 f"✅ Successful scrapes: {successful_count}\n"
-                f"🔧 Orchestrator: Singleton instance\n"
-                f"🎯 Focus: Complete pipeline analysis\n\n"
+                f"🔧 Pipeline: scrape → editor → follow_up → format\n"
+                f"🎯 Focus: Complete pipeline analysis (no list_analyzer)\n\n"
                 f"{'✅ Content extracted successfully' if successful_count > 0 else '❌ No content extracted'}\n\n"
                 f"📄 Detailed scraping analysis attached with FULL content of all articles."
             )
