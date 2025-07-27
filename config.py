@@ -19,15 +19,26 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")  # Use service_role key for server operations
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")  # For admin operations
 
-# SUPABASE MANAGER SERVICE SETTINGS (FIXED!)
+# EXTERNAL SUPABASE MANAGER SERVICE SETTINGS (NEW!)
 # This is the URL of your separate Supabase Manager service on Railway
 SUPABASE_MANAGER_URL = os.environ.get("SUPABASE_MANAGER_URL", "https://restobabesupabasemanager-production.up.railway.app")
 SUPABASE_MANAGER_API_KEY = os.environ.get("SUPABASE_MANAGER_API_KEY", "")  # Optional API key for authentication
 
+# Search agent specific settings (REQUIRED by search_agent.py)
+EXCLUDED_RESTAURANT_SOURCES = [
+    "tripadvisor.com", "tripadvisor.co.uk", "tripadvisor.fr", "tripadvisor.de",
+    "yelp.com", "yelp.co.uk", "yelp.fr", "yelp.de",
+    "zomato.com", "zomato.co.uk", "zomato.fr",
+    "opentable.com", "opentable.co.uk", "opentable.fr",
+    "foursquare.com", "swarm.foursquare.com"
+]
+
+BRAVE_SEARCH_COUNT = 20
+SEARCH_EVALUATION_MODEL = "gpt-4o-mini"
+SEARCH_EVALUATION_TEMPERATURE = 0.2
+
 # OpenAI API settings (for components that need highest quality)
 OPENAI_MODEL = "gpt-4o"  # Always using GPT-4o as requested
-SEARCH_EVALUATION_MODEL = "gpt-4o-mini"  # Using GPT-4o-mini for search evaluation
-SEARCH_EVALUATION_TEMPERATURE = 0.2
 OPENAI_TEMPERATURE = 0.2
 OPENAI_MAX_RETRIES = 1          # Aggressive - prevent delays
 OPENAI_TIMEOUT = 45.0           # Shorter timeout
@@ -39,7 +50,6 @@ DEEPSEEK_REASONER_MODEL = "deepseek-reasoner"  # DeepSeek Reasoner for complex t
 
 # Brave Search settings  
 BRAVE_SEARCH_API_KEY = BRAVE_API_KEY  # Alias for consistency
-BRAVE_SEARCH_COUNT = 20          # Number of results to fetch per search
 BRAVE_SEARCH_TIMEOUT = 30.0      # Timeout for search requests
 
 # Tavily Search settings (backup search engine)
@@ -85,6 +95,12 @@ BLOCKED_DOMAINS = [
     "opentable.com", "opentable.co.uk", "opentable.fr",
     "foursquare.com", "swarm.foursquare.com"
 ]
+
+# Search agent specific settings (REQUIRED by search_agent.py)
+EXCLUDED_RESTAURANT_SOURCES = BLOCKED_DOMAINS  # Alias for search agent compatibility
+BRAVE_SEARCH_COUNT = 20          # Number of results to fetch per search
+SEARCH_EVALUATION_MODEL = "gpt-4o-mini"  # Using GPT-4o-mini for search evaluation
+SEARCH_EVALUATION_TEMPERATURE = 0.2
 
 # Quality control settings
 MIN_CONTENT_LENGTH = 200        # Minimum scraped content length to consider valid

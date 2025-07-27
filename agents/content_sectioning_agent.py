@@ -6,7 +6,7 @@ This completely replaces the old slow content sectioning agent while
 maintaining the same interface for backward compatibility.
 
 Key improvements:
-- 90% faster processing (10-30 seconds vs 3-5 minutes)
+- 90% faster processing (10-30 seconds vs 4-5 minutes)
 - 90% cost reduction vs OpenAI
 - Smart caching for repeated content
 - Aggressive pre-filtering to avoid processing junk
