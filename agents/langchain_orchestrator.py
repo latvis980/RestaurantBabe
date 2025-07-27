@@ -187,9 +187,11 @@ class LangChainOrchestrator:
             # Check if we should skip scraping (database branch)
             if x.get("has_database_content", False):
                 logger.info("⏭️ SKIPPING SCRAPING - using database content")
+                logger.info("⏭️ → NO FILES SENT TO SUPABASE MANAGER (using existing data)")
                 return {**x, "enriched_results": []}
 
             logger.info("🕷️ RUNNING WEB SCRAPING")
+            logger.info("🕷️ → WILL SEND FILES TO SUPABASE MANAGER AFTER SCRAPING")
 
             search_results = x.get("search_results", [])
 
@@ -217,7 +219,10 @@ class LangChainOrchestrator:
 
             # NEW: Save scraped content for Supabase manager
             if enriched_results:
-                self._save_scraped_content_for_processing(x, enriched_results)
+                logger.info("💾 Proceeding to save scraped content...")
+                self._save_scraped_content_for_processing_simple(x, enriched_results)
+            else:
+                logger.warning("⚠️ No enriched results to save")
 
             return {**x, "enriched_results": enriched_results}
 
@@ -368,12 +373,15 @@ class LangChainOrchestrator:
                 "telegram_formatted_text": "Sorry, there was an error formatting the restaurant recommendations."
             }
 
-    def _save_scraped_content_for_processing(self, x, enriched_results):
-        """Save scraped content to TXT file for Supabase manager processing"""
+    def _save_scraped_content_for_processing_simple(self, x, enriched_results):
+        """Save scraped content and send to Supabase manager (working version)"""
         try:
-            import tempfile
-            import json
+            logger.info("💾 ENTERING SIMPLE SAVE SCRAPED CONTENT")
+            logger.info(f"💾 Enriched results count: {len(enriched_results)}")
+
             from datetime import datetime
+            import threading
+            import requests
 
             # Extract metadata from pipeline context
             query = x.get("query", "")
@@ -387,6 +395,123 @@ class LangChainOrchestrator:
                 city = parts[0]
                 if len(parts) > 1:
                     country = parts[1]
+
+            # Combine all scraped content for saving
+            all_scraped_content = ""
+            sources = []
+
+            for result in enriched_results:
+                try:
+                    content = result.get("scraped_content", result.get("content", ""))
+                    url = result.get("url", "")
+
+                    if content and len(content.strip()) > 100:
+                        all_scraped_content += f"\n\n--- FROM {url} ---\n\n{content}"
+                        sources.append(url)
+                        logger.info(f"✅ Got {len(content)} chars from {url}")
+                    else:
+                        logger.warning(f"⚠️ No substantial content from {url}")
+
+                except Exception as e:
+                    logger.error(f"❌ Error processing result: {e}")
+                    continue
+
+            if not all_scraped_content.strip():
+                logger.warning("⚠️ No content to save")
+                return
+
+            # Save to local file first (for backup/debugging)
+            try:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"scraped_{city.replace(' ', '_')}_{timestamp}.txt"
+
+                os.makedirs("scraped_content", exist_ok=True)
+                file_path = os.path.join("scraped_content", filename)
+
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(all_scraped_content)
+
+                logger.info(f"💾 Saved scraped content to: {file_path}")
+
+            except Exception as e:
+                logger.error(f"❌ Error saving local file: {e}")
+
+            # Send to Supabase Manager service (async, don't wait for response)
+            def send_to_supabase_manager():
+                try:
+                    supabase_manager_url = getattr(self.config, 'SUPABASE_MANAGER_URL', '')
+
+                    if not supabase_manager_url:
+                        logger.warning("⚠️ SUPABASE_MANAGER_URL not configured - skipping background update")
+                        return
+
+                    logger.info(f"📤 Sending content to Supabase Manager: {supabase_manager_url}")
+
+                    # Prepare payload (same format as working version)
+                    payload = {
+                        'content': all_scraped_content,
+                        'metadata': {
+                            'city': city,
+                            'country': country,
+                            'sources': sources,
+                            'query': query,
+                            'scraped_at': datetime.now().isoformat()
+                        }
+                    }
+
+                    # Send to the correct endpoint
+                    response = requests.post(
+                        f"{supabase_manager_url}/process_scraped_content",
+                        json=payload,
+                        timeout=180
+                    )
+
+                    if response.status_code == 200:
+                        logger.info("✅ Successfully sent content to Supabase Manager")
+                    else:
+                        logger.warning(f"⚠️ Supabase Manager returned status {response.status_code}")
+                        logger.warning(f"Response: {response.text}")
+
+                except Exception as e:
+                    logger.error(f"❌ Error sending to Supabase Manager: {e}")
+
+            # Run in background thread so it doesn't block user response
+            thread = threading.Thread(target=send_to_supabase_manager, daemon=True)
+            thread.start()
+            logger.info("📤 Started background thread to send content to Supabase Manager")
+
+        except Exception as e:
+            logger.error(f"❌ Error in simple save scraped content: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+
+    def _save_scraped_content_for_processing(self, x, enriched_results):
+        """Save scraped content to TXT file for Supabase manager processing"""
+        try:
+            logger.info("💾 ENTERING SAVE SCRAPED CONTENT")
+            logger.info(f"💾 Enriched results count: {len(enriched_results)}")
+
+            import tempfile
+            import json
+            from datetime import datetime
+
+            # Extract metadata from pipeline context
+            query = x.get("query", "")
+            destination = x.get("destination", "Unknown")
+
+            logger.info(f"💾 Query: {query}")
+            logger.info(f"💾 Destination: {destination}")
+
+            # Parse destination into city/country
+            city = destination
+            country = "Unknown"
+            if "," in destination:
+                parts = [p.strip() for p in destination.split(",")]
+                city = parts[0]
+                if len(parts) > 1:
+                    country = parts[1]
+
+            logger.info(f"💾 Parsed city: {city}, country: {country}")
 
             # Prepare metadata for Supabase manager
             metadata = {
@@ -406,15 +531,20 @@ class LangChainOrchestrator:
             # Use configured path or temp directory
             if hasattr(self.config, 'SCRAPED_CONTENT_PATH'):
                 base_path = self.config.SCRAPED_CONTENT_PATH
+                logger.info(f"💾 Using configured path: {base_path}")
             else:
                 base_path = tempfile.gettempdir()
+                logger.info(f"💾 Using temp directory: {base_path}")
 
             # Ensure directory exists
             os.makedirs(base_path, exist_ok=True)
+            logger.info(f"💾 Directory created/verified: {base_path}")
 
             # Save RAW CONTENT as TXT file
             content_filename = f"scraped_content_{city}_{timestamp}.txt"
             content_filepath = os.path.join(base_path, content_filename)
+
+            logger.info(f"💾 Content file path: {content_filepath}")
 
             # Combine all scraped content into one text file
             with open(content_filepath, 'w', encoding='utf-8') as f:
@@ -447,26 +577,38 @@ class LangChainOrchestrator:
 
                     f.write("\n\n" + "=" * 40 + "\n\n")
 
+            logger.info(f"💾 Content file written successfully")
+
             # Save METADATA as separate JSON file
             metadata_filename = f"metadata_{city}_{timestamp}.json"
             metadata_filepath = os.path.join(base_path, metadata_filename)
 
+            logger.info(f"💾 Metadata file path: {metadata_filepath}")
+
             with open(metadata_filepath, 'w', encoding='utf-8') as f:
                 json.dump(metadata, f, indent=2, ensure_ascii=False)
 
+            logger.info(f"💾 Metadata file written successfully")
             logger.info(f"💾 Saved scraped content: {content_filepath}")
             logger.info(f"📊 Content: {len(enriched_results)} articles for {city}")
 
             # Send to Supabase manager if URL configured
             supabase_manager_url = getattr(self.config, 'SUPABASE_MANAGER_URL', '')
+            logger.info(f"💾 Checking Supabase Manager URL: '{supabase_manager_url}'")
+
             if supabase_manager_url:
                 logger.info(f"📤 Found Supabase Manager URL: {supabase_manager_url}")
                 self._send_to_supabase_manager(content_filepath, metadata_filepath, metadata)
             else:
                 logger.warning("⚠️ No SUPABASE_MANAGER_URL configured - content saved locally only")
+                logger.info(f"📁 Files saved locally:")
+                logger.info(f"📁 - Content: {content_filepath}")
+                logger.info(f"📁 - Metadata: {metadata_filepath}")
 
         except Exception as e:
             logger.error(f"❌ Error saving scraped content: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
 
     def _send_to_supabase_manager(self, content_filepath, metadata_filepath, metadata):
         """Send scraped content and metadata files to Supabase manager service"""
