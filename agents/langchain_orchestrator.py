@@ -458,8 +458,12 @@ class LangChainOrchestrator:
             logger.info(f"📊 Content: {len(enriched_results)} articles for {city}")
 
             # Send to Supabase manager if URL configured
-            if hasattr(self.config, 'SUPABASE_MANAGER_URL') and self.config.SUPABASE_MANAGER_URL:
+            supabase_manager_url = getattr(self.config, 'SUPABASE_MANAGER_URL', '')
+            if supabase_manager_url:
+                logger.info(f"📤 Found Supabase Manager URL: {supabase_manager_url}")
                 self._send_to_supabase_manager(content_filepath, metadata_filepath, metadata)
+            else:
+                logger.warning("⚠️ No SUPABASE_MANAGER_URL configured - content saved locally only")
 
         except Exception as e:
             logger.error(f"❌ Error saving scraped content: {e}")
