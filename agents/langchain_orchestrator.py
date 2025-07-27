@@ -9,7 +9,7 @@ import asyncio
 import logging
 import concurrent.futures
 
-from utils.database import save_data, get_restaurants_by_city
+from utils.database import get_restaurants_by_city, cache_search_results
 from utils.debug_utils import dump_chain_state, log_function_call
 from formatters.telegram_formatter import TelegramFormatter
 
@@ -122,7 +122,9 @@ class LangChainOrchestrator:
             logger.info(f"🔍 Checking database for: {city}")
 
             # Query database for existing restaurants
-            database_restaurants = get_restaurants_by_city(city, self.config)
+            from utils.database import get_database
+            db = get_database()
+            database_restaurants = db.get_restaurants_by_city(city, limit=50)
 
             # Decide if we have enough content (threshold: 3+ restaurants)
             if database_restaurants and len(database_restaurants) >= 3:
@@ -414,17 +416,17 @@ class LangChainOrchestrator:
                 if content_source == "web_search":
                     self._log_firecrawl_usage()
 
-                # Save process record
-                process_record = {
-                    "query": user_query,
-                    "destination": result.get("destination", "Unknown"),
-                    "content_source": content_source,
-                    "trace_id": trace_id,
-                    "timestamp": time.time(),
-                    "firecrawl_stats": self.scraper.get_stats() if content_source == "web_search" else {}
-                }
+                # Save process record (simplified - just log it)
+                logger.info(f"📊 Process completed: {user_query} → {result.get('destination', 'Unknown')} → {content_source}")
 
-                save_data(self.config.DB_TABLE_PROCESSES, process_record, self.config)
+                # Could save to database here if needed:
+                # process_record = {
+                #     "query": user_query,
+                #     "destination": result.get("destination", "Unknown"),
+                #     "content_source": content_source,
+                #     "trace_id": trace_id,
+                #     "timestamp": time.time()
+                # }
 
                 # Extract results with correct key names
                 telegram_text = result.get("telegram_formatted_text", 
