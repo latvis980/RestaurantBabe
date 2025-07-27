@@ -1,5 +1,5 @@
 # agents/langchain_orchestrator.py
-# OPTIMIZED VERSION - Database branches + scraped content handling, no RAG/Supabase
+# OPTIMIZED VERSION - Database branches + scraped content handling
 
 from langchain_core.runnables import RunnableSequence, RunnableLambda
 from langchain_core.tracers.context import tracing_v2_enabled
