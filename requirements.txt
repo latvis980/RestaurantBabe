@@ -23,12 +23,6 @@ pyTelegramBotAPI>=4.20.0
 # Google Maps integration
 googlemaps>=4.10.0
 
-sentence-transformers==3.0.1
-transformers>=4.30.0
-huggingface-hub==0.24.6
-torch>=2.0.0
-numpy>=1.24.0
-
 # Observability
 langsmith
 
