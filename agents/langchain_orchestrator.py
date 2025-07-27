@@ -268,25 +268,32 @@ class LangChainOrchestrator:
 
             logger.info(f"🔍 Analyzing query: {query}")
 
-            # Use the correct method name - analyze_query, not analyze
-            analysis_result = self.query_analyzer.analyze_query(query)
+            # Use the correct method name - analyze() with query as parameter
+            analysis_result = self.query_analyzer.analyze(query)
 
             if not analysis_result:
                 raise ValueError("Query analysis failed")
 
             logger.info(f"✅ Query analysis complete:")
-            logger.info(f"   - City: {analysis_result.get('city')}")
-            logger.info(f"   - Country: {analysis_result.get('country')}")
-            logger.info(f"   - Cuisine: {analysis_result.get('cuisine_type')}")
+            logger.info(f"   - Destination: {analysis_result.get('destination')}")
+            logger.info(f"   - Primary params: {analysis_result.get('primary_search_parameters')}")
+
+            # Map the analysis result to expected format
+            city = analysis_result.get("destination", "Unknown")
+            # Extract city from destination if it contains comma
+            if "," in city:
+                city_parts = city.split(",")
+                city = city_parts[0].strip()
+                country = city_parts[1].strip() if len(city_parts) > 1 else "Unknown"
+            else:
+                country = "Unknown"
 
             return {
                 **x,
                 "original_query": query,
-                "city": analysis_result.get("city"),
-                "country": analysis_result.get("country"),
-                "cuisine_type": analysis_result.get("cuisine_type"),
-                "price_range": analysis_result.get("price_range"),
-                "dining_style": analysis_result.get("dining_style"),
+                "city": city,
+                "country": country,
+                "cuisine_type": analysis_result.get("primary_search_parameters", []),
                 "analysis_result": analysis_result
             }
 
@@ -343,27 +350,41 @@ class LangChainOrchestrator:
 
             logger.info("🌐 No database content found - proceeding with web search")
 
-            city = x.get("city", "Unknown")
-            country = x.get("country", "Unknown")
-            cuisine_type = x.get("cuisine_type", "")
-            original_query = x.get("original_query", "")
+            # Get search queries from the analysis result
+            analysis_result = x.get("analysis_result", {})
+            search_queries = analysis_result.get("search_queries", [])
 
-            # Build a simple search query
-            search_query = f"best restaurants {city}"
-            if country:
-                search_query += f" {country}"
-            if cuisine_type:
-                search_query += f" {cuisine_type}"
+            # If no search queries from analysis, build a simple one
+            if not search_queries:
+                city = x.get("city", "Unknown")
+                country = x.get("country", "Unknown")
+                cuisine_type = x.get("cuisine_type")
 
-            logger.info(f"🔍 Search query: {search_query}")
+                # Handle cuisine_type whether it's a string or list
+                if isinstance(cuisine_type, list):
+                    cuisine_str = " ".join(cuisine_type) if cuisine_type else ""
+                else:
+                    cuisine_str = cuisine_type or ""
 
-            search_results = self.search_agent.search(search_query)
+                # Build search query
+                search_query = f"best restaurants {city}"
+                if country and country != "Unknown":
+                    search_query += f" {country}"
+                if cuisine_str:
+                    search_query += f" {cuisine_str}"
+
+                search_queries = [search_query]
+
+            logger.info(f"🔍 Search queries: {search_queries}")
+
+            # IMPORTANT: Pass the list of queries, not individual strings
+            search_results = self.search_agent.search(search_queries)
 
             logger.info(f"🌐 Search returned {len(search_results)} results")
 
             return {
                 **x,
-                "search_query": search_query,
+                "search_queries": search_queries,
                 "search_results": search_results
             }
 
