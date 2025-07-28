@@ -1,5 +1,5 @@
 # agents/langchain_orchestrator.py
-# OPTIMIZED VERSION - Database branches + scraped content handling
+# UPDATED VERSION - Now uses DatabaseSearchAgent while preserving all existing features
 
 import os
 from langchain_core.runnables import RunnableSequence, RunnableLambda
@@ -21,13 +21,15 @@ class LangChainOrchestrator:
     def __init__(self, config):
         # Import agents with correct file names
         from agents.query_analyzer import QueryAnalyzer
+        from agents.database_search_agent import DatabaseSearchAgent  # NEW AGENT
         from agents.search_agent import BraveSearchAgent
         from agents.optimized_scraper import WebScraper
         from agents.editor_agent import EditorAgent
         from agents.follow_up_search_agent import FollowUpSearchAgent
 
-        # Initialize agents (no list_analyzer - it's redundant)
+        # Initialize agents
         self.query_analyzer = QueryAnalyzer(config)
+        self.database_search_agent = DatabaseSearchAgent(config)  # NEW AGENT
         self.search_agent = BraveSearchAgent(config)
         self.scraper = WebScraper(config)
         self.editor_agent = EditorAgent(config)
@@ -42,7 +44,7 @@ class LangChainOrchestrator:
         self._build_pipeline()
 
     def _build_pipeline(self):
-        """Build pipeline with database branches"""
+        """Build pipeline with database agent integration"""
 
         # Step 1: Analyze Query
         self.analyze_query = RunnableLambda(
@@ -53,7 +55,7 @@ class LangChainOrchestrator:
             name="analyze_query"
         )
 
-        # Step 2: Check Database Coverage
+        # Step 2: Database Search and Decision (UPDATED - uses DatabaseSearchAgent)
         self.check_database = RunnableLambda(
             self._check_database_coverage,
             name="check_database"
@@ -105,12 +107,16 @@ class LangChainOrchestrator:
         )
 
     def _check_database_coverage(self, x):
-        """Enhanced database check that uses intelligent search to find relevant restaurants"""
+        """
+        UPDATED: Enhanced database check that uses DatabaseSearchAgent and intelligent search.
+
+        This method now delegates database logic to DatabaseSearchAgent while maintaining
+        compatibility with intelligent search features and all existing functionality.
+        """
         try:
             logger.info("🧠 CHECKING DATABASE WITH INTELLIGENT SEARCH")
 
             destination = x.get("destination", "Unknown")
-            # Fix: Use the correct key for the query
             search_query = x.get("query", "")
 
             if destination == "Unknown":
@@ -123,7 +129,7 @@ class LangChainOrchestrator:
 
             logger.info(f"🔍 Intelligent search for: '{search_query}' in {destination}")
 
-            # Use intelligent database search
+            # Try intelligent database search first (if available)
             try:
                 from utils.intelligent_db_search import search_restaurants_intelligently
 
@@ -144,7 +150,8 @@ class LangChainOrchestrator:
                         **x, 
                         "has_database_content": True, 
                         "database_results": relevant_restaurants,
-                        "skip_web_search": True  # Flag to skip web search
+                        "skip_web_search": True,  # Flag to skip web search
+                        "content_source": "database"
                     }
                 elif relevant_restaurants and should_scrape:
                     logger.info(
@@ -155,56 +162,85 @@ class LangChainOrchestrator:
                         **x, 
                         "has_database_content": True, 
                         "database_results": relevant_restaurants,
-                        "skip_web_search": False  # Continue to web search for more results
+                        "skip_web_search": False,  # Continue to web search for more results
+                        "content_source": "database_plus_web"
                     }
                 else:
-                    logger.info("📭 No relevant restaurants found in database - will search web")
-                    return {
-                        **x, 
-                        "has_database_content": False, 
-                        "database_results": [],
-                        "skip_web_search": False
-                    }
+                    logger.info("📭 No relevant restaurants found in intelligent search - trying DatabaseSearchAgent")
+                    # Fall through to DatabaseSearchAgent
 
             except ImportError:
-                logger.warning("⚠️ Intelligent search not available, falling back to basic search")
-                # Fallback to the original method if intelligent search isn't available
-                return self._fallback_database_check(x)
+                logger.warning("⚠️ Intelligent search not available, using DatabaseSearchAgent")
+                # Fall through to DatabaseSearchAgent
+
+            # Use DatabaseSearchAgent as fallback or primary method
+            logger.info("🗃️ Using DatabaseSearchAgent for evaluation")
+            database_result = self.database_search_agent.search_and_evaluate(x)
+
+            # Merge result with pipeline state and add any missing fields
+            result = {**x, **database_result}
+
+            # Ensure skip_web_search flag is set correctly
+            if result.get("has_database_content", False):
+                result["skip_web_search"] = True
+            else:
+                result["skip_web_search"] = False
+
+            return result
 
         except Exception as e:
             logger.error(f"❌ Error in database coverage check: {e}")
-            return {**x, "has_database_content": False, "database_results": []}
+            # Fallback to basic database check
+            return self._fallback_database_check(x)
 
     def _fallback_database_check(self, x):
         """Fallback database check using the original method"""
-        destination = x.get("destination", "Unknown")
+        try:
+            destination = x.get("destination", "Unknown")
 
-        if destination == "Unknown":
-            return {**x, "has_database_content": False, "database_results": []}
+            if destination == "Unknown":
+                return {**x, "has_database_content": False, "database_results": []}
 
-        # Extract city from destination (simple parsing)
-        city = destination
-        if "," in destination:
-            city = destination.split(",")[0].strip()
+            # Extract city from destination (simple parsing)
+            city = destination
+            if "," in destination:
+                city = destination.split(",")[0].strip()
 
-        logger.info(f"🔍 Basic database check for: {city}")
+            logger.info(f"🔍 Basic database check for: {city}")
 
-        # Query database for existing restaurants
-        from utils.database import get_database
-        db = get_database()
-        database_restaurants = db.get_restaurants_by_city(city, limit=50)
+            # Query database for existing restaurants
+            from utils.database import get_database
+            db = get_database()
+            database_restaurants = db.get_restaurants_by_city(city, limit=50)
 
-        # Use lower threshold for basic search since it's less targeted
-        if database_restaurants and len(database_restaurants) >= 5:
-            logger.info(f"✅ Found {len(database_restaurants)} restaurants in database")
+            # Use lower threshold for basic search since it's less targeted
+            if database_restaurants and len(database_restaurants) >= 5:
+                logger.info(f"✅ Found {len(database_restaurants)} restaurants in database")
+                return {
+                    **x, 
+                    "has_database_content": True, 
+                    "database_results": database_restaurants[:8],  # Limit to 8 for processing
+                    "content_source": "database",
+                    "skip_web_search": True
+                }
+            else:
+                logger.info(f"📭 Only {len(database_restaurants) if database_restaurants else 0} restaurants in database - not enough")
+                return {
+                    **x, 
+                    "has_database_content": False, 
+                    "database_results": [],
+                    "content_source": "web_search",
+                    "skip_web_search": False
+                }
+        except Exception as e:
+            logger.error(f"❌ Error in fallback database check: {e}")
             return {
                 **x, 
-                "has_database_content": True, 
-                "database_results": database_restaurants[:8]  # Limit to 8 for processing
+                "has_database_content": False, 
+                "database_results": [],
+                "content_source": "web_search",
+                "skip_web_search": False
             }
-        else:
-            logger.info(f"📭 Only {len(database_restaurants)} restaurants in database - not enough")
-            return {**x, "has_database_content": False, "database_results": []}
 
     def _search_step(self, x):
         """Enhanced search step that can skip web search if database provided enough results"""
@@ -285,7 +321,7 @@ class LangChainOrchestrator:
 
             logger.info(f"✅ Scraped {len(enriched_results)} articles")
 
-            # NEW: Save scraped content for Supabase manager
+            # Save scraped content for Supabase manager
             if enriched_results:
                 logger.info("💾 Proceeding to save scraped content...")
                 self._save_scraped_content_for_processing_simple(x, enriched_results)
@@ -728,94 +764,4 @@ class LangChainOrchestrator:
             logger.info("=" * 50)
             logger.info(f"URLs scraped: {stats.get('total_scraped', 0)}")
             logger.info(f"Successful extractions: {stats.get('successful_extractions', 0)}")
-            logger.info(f"Credits used: {stats.get('credits_used', 0)}")
-            logger.info("=" * 50)
-        except Exception as e:
-            logger.error(f"Error logging Firecrawl usage: {e}")
-
-    @log_function_call
-    def process_query(self, user_query: str, user_preferences: dict = None) -> dict:
-        """
-        Process a restaurant query through the complete pipeline.
-
-        Args:
-            user_query: The user's restaurant request
-            user_preferences: Optional user preferences dict
-
-        Returns:
-            Dict with telegram_formatted_text and other results
-        """
-
-        # Generate trace ID for debugging
-        trace_id = f"query_{int(time.time())}"
-
-        with tracing_v2_enabled(project_name="restaurant-recommender"):
-            try:
-                logger.info(f"🚀 STARTING RECOMMENDATION PIPELINE")
-                logger.info(f"Query: {user_query}")
-
-                # Prepare input data
-                input_data = {
-                    "query": user_query,
-                    "user_preferences": user_preferences or {}
-                }
-
-                # Execute the chain
-                result = self.chain.invoke(input_data)
-
-                # Log completion
-                content_source = result.get("content_source", "unknown")
-                logger.info("✅ PIPELINE COMPLETE")
-                logger.info(f"📊 Content source: {content_source}")
-
-                # Final usage summary (only if we used scraping)
-                if content_source == "web_search":
-                    self._log_firecrawl_usage()
-
-                # Save process record (simplified - just log it)
-                logger.info(f"📊 Process completed: {user_query} → {result.get('destination', 'Unknown')} → {content_source}")
-
-                # Could save to database here if needed:
-                # process_record = {
-                #     "query": user_query,
-                #     "destination": result.get("destination", "Unknown"),
-                #     "content_source": content_source,
-                #     "trace_id": trace_id,
-                #     "timestamp": time.time()
-                # }
-
-                # Extract results with correct key names
-                telegram_text = result.get("telegram_formatted_text", 
-                                         "Sorry, no recommendations found.")
-
-                enhanced_results = result.get("enhanced_results", {})
-                main_list = enhanced_results.get("main_list", [])
-
-                logger.info(f"📊 Final result: {len(main_list)} restaurants for {result.get('destination', 'Unknown')}")
-                logger.info(f"📊 Source: {content_source}")
-
-                # Return with correct key names that telegram_bot.py expects
-                return {
-                    "telegram_formatted_text": telegram_text,
-                    "enhanced_results": enhanced_results,
-                    "main_list": main_list,
-                    "destination": result.get("destination"),
-                    "content_source": content_source,
-                    "firecrawl_stats": self.scraper.get_stats() if content_source == "web_search" else {}
-                }
-
-            except Exception as e:
-                logger.error(f"❌ Error in chain execution: {e}")
-                dump_chain_state("process_query_error", {"query": user_query}, error=e)
-
-                # Log usage even on error
-                try:
-                    self._log_firecrawl_usage()
-                except:
-                    pass
-
-                return {
-                    "main_list": [],
-                    "telegram_formatted_text": "Sorry, there was an error processing your request.",
-                    "firecrawl_stats": self.scraper.get_stats()
-                }
+            logger.info(f

@@ -92,18 +92,17 @@ CLAUDE_MODEL = "claude-3-5-sonnet-20241022"  # Latest Claude Sonnet 4
 CLAUDE_TEMPERATURE = 0.2
 CLAUDE_MAX_TOKENS = 8192
 
-# RAG and Vector Search Settings (NEW)
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # Fast, good quality
-EMBEDDING_DIMENSION = 384  # Dimension for all-MiniLM-L6-v2
-SIMILARITY_THRESHOLD = 0.7  # For semantic search
-CHUNK_MAX_LENGTH = 1000  # Maximum characters per content chunk
-CHUNK_OVERLAP = 100  # Overlap between chunks
-DEFAULT_CREDIBILITY_SCORE = 0.5
-MIN_CREDIBILITY_FOR_RECOMMENDATION = 0.6
-CACHE_EXPIRY_DAYS = 30
-DOMAIN_FAILURE_LIMIT = 5
-DOMAIN_SUCCESS_THRESHOLD = 0.6
+# Add these lines to config.py in the appropriate section
 
+# Database Search Agent Settings (NEW)
+MIN_DATABASE_RESTAURANTS = 3  # Minimum restaurants needed to use database instead of web search
+DATABASE_AI_EVALUATION = False  # Enable AI evaluation of database results (future feature)
+MIN_ACCEPTABLE_RATING = 4.1  # Minimum Google rating for restaurant filtering (used by follow_up_search_agent)
+
+# Keep these - they're used in domain intelligence
+DOMAIN_FAILURE_LIMIT = 5
+DOMAIN_SUCCESS_THRESHOLD = 0.7  # Used in domain intelligence
+CACHE_EXPIRY_DAYS = 7  # Used for general caching
 # Restaurant Data Settings (NEW)
 MAX_RESTAURANTS_PER_QUERY = 10
 CACHE_EXPIRY_DAYS = 7
