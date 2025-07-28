@@ -3,7 +3,7 @@
 Unified Database Search Agent - Combines database queries with AI-powered semantic search.
 
 This agent handles:
-1. Semantic search using OpenAI embeddings
+1. Semantic search using DeepSeek embeddings
 2. AI evaluation of restaurant relevance
 3. Intelligent decision making about web search necessity
 4. All previous database search functionality
@@ -13,7 +13,8 @@ import logging
 import json
 import numpy as np
 from typing import Dict, List, Any, Optional, Tuple
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_community.chat_models import ChatDeepSeek
+from langchain_community.embeddings import DeepSeekEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from utils.debug_utils import dump_chain_state, log_function_call
 
@@ -32,14 +33,14 @@ class DatabaseSearchAgent:
         self.minimum_restaurant_threshold = getattr(config, 'MIN_DATABASE_RESTAURANTS', 3)
         self.ai_evaluation_enabled = getattr(config, 'DATABASE_AI_EVALUATION', True)  # Enable by default
 
-        # Initialize OpenAI components for semantic search
-        self.llm = ChatOpenAI(
-            model=config.OPENAI_MODEL,
-            temperature=0.1  # Low temperature for consistent analysis
+        # Initialize Deepseek components for semantic search
+        self.llm = ChatDeepSeek(
+            model_name=config.DEEPSEEK_MODEL,
+            temperature=0.1
         )
 
-        self.embeddings = OpenAIEmbeddings(
-            model="text-embedding-3-small"  # Efficient embedding model
+        self.embeddings = DeepSeekEmbeddings(
+            model_name="deepseek-embedding-001"  # Replace with actual model name
         )
 
         # Setup AI prompts

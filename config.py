@@ -13,6 +13,8 @@ GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
 # NEW: DeepSeek API configuration for ultra-fast processing
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_MODEL = "deepseek-chat"
+DEEPSEEK_EMBEDDING_MODEL = "deepseek-embedding-model-name"
 
 # SUPABASE SETTINGS (NEW - replacing PostgreSQL)
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
