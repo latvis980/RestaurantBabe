@@ -6,8 +6,8 @@ langchain-mistralai>=0.1.0  # Keep for other agents if needed
 langchain-anthropic>=0.1.0  # NEW: Add for Claude Sonnet 4
 openai>=1.0.0
 anthropic>=0.25.0  # Official Anthropic Python client
-langchain-community>=0.3.27 
-langchain-deepseek>=0.1
+langchain-community >= 0.3.22
+langchain-deepseek
 
 # SUPABASE INTEGRATION (replacing PostgreSQL)
 supabase>=2.10.0
