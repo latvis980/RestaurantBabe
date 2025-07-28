@@ -416,7 +416,7 @@ Return JSON:
             "skip_web_search": False
         }
 
-    # ============ UTILITY METHODS ============
+    # ============ UTILITY METHODS ==============
 
     def get_stats(self) -> Dict[str, Any]:
         """Get statistics about database search performance"""
