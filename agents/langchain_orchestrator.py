@@ -1,5 +1,5 @@
 # agents/langchain_orchestrator.py
-# UPDATED VERSION - Now uses DatabaseSearchAgent while preserving all existing features
+# UPDATED VERSION - Now preserves raw query throughout pipeline while maintaining all existing features
 
 import os
 from langchain_core.runnables import RunnableSequence, RunnableLambda
@@ -44,13 +44,14 @@ class LangChainOrchestrator:
         self._build_pipeline()
 
     def _build_pipeline(self):
-        """Build pipeline with database agent integration"""
+        """Build pipeline with database agent integration and raw query preservation"""
 
-        # Step 1: Analyze Query
+        # Step 1: Analyze Query (UPDATED to preserve raw query)
         self.analyze_query = RunnableLambda(
             lambda x: {
                 **self.query_analyzer.analyze(x["query"]),
-                "query": x["query"]
+                "query": x["query"],
+                "raw_query": x["query"]  # Preserve original query
             },
             name="analyze_query"
         )
@@ -108,24 +109,36 @@ class LangChainOrchestrator:
 
     def _check_database_coverage(self, x):
         """
-        SIMPLIFIED: Pure routing method that delegates ALL database logic to DatabaseSearchAgent.
+        UPDATED: Enhanced to pass raw query to DatabaseSearchAgent.
 
+        SIMPLIFIED: Pure routing method that delegates ALL database logic to DatabaseSearchAgent.
         The orchestrator only handles routing - no business logic here.
         """
         try:
             logger.info("🗃️ ROUTING TO DATABASE SEARCH AGENT")
 
-            # Delegate everything to the DatabaseSearchAgent
-            database_result = self.database_search_agent.search_and_evaluate(x)
+            # Pass the raw query along with other data
+            query_data_with_raw = {
+                **x,
+                "raw_query": x.get("raw_query", x.get("query", ""))  # Ensure raw query is passed
+            }
 
-            # Simple merge and return - no logic here
-            return {**x, **database_result}
+            # Delegate everything to the DatabaseSearchAgent
+            database_result = self.database_search_agent.search_and_evaluate(query_data_with_raw)
+
+            # Simple merge and return - no logic here, but preserve raw query
+            return {
+                **x, 
+                **database_result,
+                "raw_query": x.get("raw_query", x.get("query", ""))  # Preserve raw query
+            }
 
         except Exception as e:
             logger.error(f"❌ Error routing to database search agent: {e}")
             # Simple fallback - no complex logic in orchestrator
             return {
                 **x,
+                "raw_query": x.get("raw_query", x.get("query", "")),  # Preserve raw query even on error
                 "has_database_content": False,
                 "database_results": [],
                 "content_source": "web_search",
@@ -174,7 +187,11 @@ class LangChainOrchestrator:
 
             logger.info(f"✅ Web search completed: {len(search_results)} results")
 
-            return {**x, "search_results": search_results}
+            return {
+                **x, 
+                "raw_query": x.get("raw_query", x.get("query", "")),  # Preserve raw query
+                "search_results": search_results
+            }
 
         except Exception as e:
             logger.error(f"❌ Error in search step: {e}")
@@ -223,19 +240,24 @@ class LangChainOrchestrator:
             else:
                 logger.warning("⚠️ No enriched results to save")
 
-            return {**x, "enriched_results": enriched_results}
+            return {
+                **x, 
+                "raw_query": x.get("raw_query", x.get("query", "")),  # Preserve raw query
+                "enriched_results": enriched_results
+            }
 
         except Exception as e:
             logger.error(f"❌ Error in scraping step: {e}")
             return {**x, "enriched_results": []}
 
     def _edit_step(self, x):
-        """Edit step - handles both database restaurants and scraped content"""
+        """Edit step - handles both database restaurants and scraped content (UPDATED with raw query)"""
         try:
             logger.info("✏️ ENTERING EDIT STEP")
 
             has_database_content = x.get("has_database_content", False)
             original_query = x.get("query", "")
+            raw_query = x.get("raw_query", original_query)  # Get raw query
             destination = x.get("destination", "Unknown")
 
             if has_database_content:
@@ -248,15 +270,16 @@ class LangChainOrchestrator:
                     logger.warning("⚠️ No database results to process")
                     return {
                         **x,
+                        "raw_query": raw_query,  # Preserve raw query
                         "edited_results": {"main_list": []},
                         "follow_up_queries": []
                     }
 
-                # Call editor with database restaurants
+                # Call editor with database restaurants and raw query
                 edit_output = self.editor_agent.edit(
                     scraped_results=None,
                     database_restaurants=database_results,
-                    original_query=original_query,
+                    original_query=raw_query,  # Pass raw query instead of processed query
                     destination=destination
                 )
 
@@ -272,22 +295,24 @@ class LangChainOrchestrator:
                     logger.warning("⚠️ No scraped results to process")
                     return {
                         **x,
+                        "raw_query": raw_query,  # Preserve raw query
                         "edited_results": {"main_list": []},
                         "follow_up_queries": []
                     }
 
-                # Call editor with scraped content
+                # Call editor with scraped content and raw query
                 edit_output = self.editor_agent.edit(
                     scraped_results=scraped_results,
                     database_restaurants=None,
-                    original_query=original_query,
+                    original_query=raw_query,  # Pass raw query instead of processed query
                     destination=destination
                 )
 
                 logger.info(f"✅ Processed {len(edit_output.get('edited_results', {}).get('main_list', []))} restaurants from scraped content")
 
             return {
-                **x, 
+                **x,
+                "raw_query": raw_query,  # Preserve raw query
                 "edited_results": edit_output.get("edited_results", {"main_list": []}),
                 "follow_up_queries": edit_output.get("follow_up_queries", [])
             }
@@ -297,6 +322,7 @@ class LangChainOrchestrator:
             dump_chain_state("edit_error", {"error": str(e), "available_keys": list(x.keys())}, error=e)
             return {
                 **x,
+                "raw_query": x.get("raw_query", x.get("query", "")),  # Preserve raw query
                 "edited_results": {"main_list": []},
                 "follow_up_queries": []
             }
@@ -327,7 +353,11 @@ class LangChainOrchestrator:
 
             logger.info(f"✅ Follow-up complete: {len(enhanced_results.get('main_list', []))} restaurants remain after filtering")
 
-            return {**x, "enhanced_results": enhanced_results}
+            return {
+                **x, 
+                "raw_query": x.get("raw_query", x.get("query", "")),  # Preserve raw query
+                "enhanced_results": enhanced_results
+            }
 
         except Exception as e:
             logger.error(f"❌ Error in follow-up step: {e}")
@@ -360,6 +390,7 @@ class LangChainOrchestrator:
 
             return {
                 **x,
+                "raw_query": x.get("raw_query", x.get("query", "")),  # Preserve raw query
                 "telegram_formatted_text": telegram_text,
                 "final_results": enhanced_results
             }
@@ -685,9 +716,10 @@ class LangChainOrchestrator:
                 logger.info(f"🚀 STARTING RECOMMENDATION PIPELINE")
                 logger.info(f"Query: {user_query}")
 
-                # Prepare input data
+                # Prepare input data (UPDATED to include raw query from the start)
                 input_data = {
                     "query": user_query,
+                    "raw_query": user_query,  # Add raw query from the beginning
                     "user_preferences": user_preferences or {}
                 }
 
@@ -732,6 +764,7 @@ class LangChainOrchestrator:
                     "main_list": main_list,
                     "destination": result.get("destination"),
                     "content_source": content_source,
+                    "raw_query": result.get("raw_query", user_query),  # Include raw query in response
                     "firecrawl_stats": self.scraper.get_stats() if content_source == "web_search" else {}
                 }
 
@@ -748,5 +781,6 @@ class LangChainOrchestrator:
                 return {
                     "main_list": [],
                     "telegram_formatted_text": "Sorry, there was an error processing your request.",
+                    "raw_query": user_query,  # Include raw query even on error
                     "firecrawl_stats": self.scraper.get_stats()
                 }
