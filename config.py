@@ -10,6 +10,17 @@ MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")  # Keep for other agents if 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")  # For Claude
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
 
+# Location-based search settings
+GOOGLE_MAPS_KEY2 = os.environ.get("GOOGLE_MAPS_KEY2")
+LOCATION_SEARCH_RADIUS_KM = 2.0
+MAX_LOCATION_RESULTS = 8
+
+# AI source mapping settings  
+AI_SOURCE_MAPPING_ENABLED = True
+DEFAULT_FOOD_SOURCES = ["michelin", "timeout"]
+DEFAULT_WINE_SOURCES = ["raisin", "wine-list"] 
+DEFAULT_COFFEE_SOURCES = ["sprudge", "coffee-review"]
+
 # NEW: DeepSeek API configuration for ultra-fast processing
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"

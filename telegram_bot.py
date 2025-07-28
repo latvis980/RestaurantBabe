@@ -12,6 +12,9 @@ from langchain_core.prompts import ChatPromptTemplate
 import config
 from utils.orchestrator_manager import get_orchestrator
 
+from utils.telegram_location_handler import TelegramLocationHandler, LocationData
+from agents.location_analyzer import LocationAnalyzer
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -34,6 +37,12 @@ user_conversations = {}
 # CANCEL COMMAND FUNCTIONALITY
 # Track active searches and their cancellation events
 active_searches = {}  # user_id -> {"thread": thread_object, "cancel_event": Event, "chat_id": chat_id}
+
+location_handler = TelegramLocationHandler()
+location_analyzer = None  # Will be initialized in main()
+
+# Track users waiting for location input
+users_awaiting_location = {}  # user_id -> {"query": str, "timestamp": float}
 
 def create_cancel_event(user_id, chat_id):
     """Create a cancellation event for a user's search"""
@@ -190,6 +199,83 @@ def handle_cancel(message):
     add_to_conversation(user_id, "Search cancelled by user", is_user=False)
 
     logger.info(f"Successfully cancelled search for user {user_id} after {search_duration}s")
+
+@bot.message_handler(content_types=['location'])
+def handle_location_message(message):
+    """Handle GPS location messages from users"""
+    try:
+        user_id = message.from_user.id
+
+        # Extract GPS coordinates
+        latitude = message.location.latitude
+        longitude = message.location.longitude
+
+        logger.info(f"Received GPS location from user {user_id}: {latitude}, {longitude}")
+
+        # Validate coordinates
+        if not location_handler.validate_gps_coordinates(latitude, longitude):
+            bot.reply_to(
+                message,
+                "❌ The location coordinates seem invalid. Could you try sending your location again or describe where you are?",
+                parse_mode='HTML'
+            )
+            return
+
+        # Process GPS location
+        location_data = location_handler.process_gps_location(latitude, longitude)
+
+        # Check if user was waiting for location input
+        if user_id in users_awaiting_location:
+            # Get the original query
+            awaiting_data = users_awaiting_location[user_id]
+            original_query = awaiting_data["query"]
+
+            # Remove from waiting list
+            del users_awaiting_location[user_id]
+
+            # Confirm location received
+            bot.reply_to(
+                message,
+                f"📍 <b>Perfect! I received your location.</b>\n\n"
+                f"🔍 Now searching for: <i>{original_query}</i>\n\n"
+                "⏱ This might take a minute while I find the best nearby places...",
+                parse_mode='HTML'
+            )
+
+            # Start location-based search
+            threading.Thread(
+                target=perform_location_search,
+                args=(original_query, location_data, message.chat.id, user_id),
+                daemon=True
+            ).start()
+
+        else:
+            # User sent location without context - ask what they're looking for
+            bot.reply_to(
+                message,
+                f"📍 <b>Great! I have your location.</b>\n\n"
+                f"📌 <i>{location_handler.format_location_summary(location_data)}</i>\n\n"
+                "What type of restaurants or bars are you looking for nearby?\n\n"
+                "<i>Examples: \"natural wine bars\", \"good coffee\", \"romantic dinner\"</i>",
+                parse_mode='HTML'
+            )
+
+            # Store location for next message
+            user_conversations[user_id] = user_conversations.get(user_id, [])
+            user_conversations[user_id].append({
+                "role": "system",
+                "message": f"User shared GPS location: {latitude}, {longitude}",
+                "timestamp": time.time(),
+                "location_data": location_data
+            })
+
+    except Exception as e:
+        logger.error(f"Error handling location message: {e}")
+        bot.reply_to(
+            message,
+            "😔 Sorry, I had trouble processing your location. Could you try again or describe where you are?",
+            parse_mode='HTML'
+        )
 
 # PRESERVED TEST COMMANDS - These are critical for debugging!
 
@@ -432,9 +518,11 @@ def perform_restaurant_search(search_query, chat_id, user_id):
         # Always clean up the search tracking
         cleanup_search(user_id)
 
+# COMPLETE MESSAGE HANDLER - Replace the existing @bot.message_handler(func=lambda message: True) in telegram_bot.py
+
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
-    """Handle all text messages with AI conversation management"""
+    """Handle all text messages with location-aware conversation management"""
     try:
         user_id = message.from_user.id
         user_message = message.text.strip()
@@ -445,7 +533,7 @@ def handle_message(message):
         if user_id in active_searches:
             bot.reply_to(
                 message,
-                "⏳ I'm currently searching for restaurants for you! Please wait for the results or type /cancel to stop the search.",
+                "⏳ I'm currently searching for places for you! Please wait for the results or type /cancel to stop the search.",
                 parse_mode='HTML'
             )
             return
@@ -456,62 +544,31 @@ def handle_message(message):
         # Send typing indicator
         bot.send_chat_action(message.chat.id, 'typing')
 
-        # Create conversation analysis prompt
-        conversation_prompt = ChatPromptTemplate.from_messages([
-            ("system", CONVERSATION_PROMPT),
-            ("human", "Conversation history:\n{conversation_history}\n\nCurrent message: {user_message}")
-        ])
+        # STEP 1: Check if user has shared location in recent conversation
+        recent_location = get_recent_location_from_conversation(user_id)
 
-        # Get AI decision
-        conversation_chain = conversation_prompt | conversation_ai
-        response = conversation_chain.invoke({
-            "conversation_history": format_conversation_history(user_id),
-            "user_message": user_message
-        })
+        # STEP 2: Analyze message for location intent
+        location_analysis = location_analyzer.analyze_message(user_message)
+        search_type = location_analyzer.determine_search_type(location_analysis)
 
-        # Parse AI response
-        content = response.content.strip()
-        if "```json" in content:
-            content = content.split("```json")[1].split("```")[0].strip()
-        elif "```" in content:
-            content = content.split("```")[1].split("```")[0].strip()
+        logger.debug(f"Location analysis for user {user_id}: {search_type}")
 
-        try:
-            ai_decision = json.loads(content)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse AI decision: {e}")
-            # Fallback response
-            ai_decision = {
-                "action": "CLARIFY",
-                "bot_response": "I'd love to help you find restaurants! Could you tell me what city you're interested in and what type of dining you're looking for?"
-            }
+        # STEP 3: Route based on analysis
+        if search_type == "location_search":
+            # User has specific location in message - proceed with location search
+            handle_location_search_request(message, location_analysis)
 
-        action = ai_decision.get("action")
-        bot_response = ai_decision.get("bot_response", "How can I help you find restaurants?")
+        elif search_type == "request_location":
+            # User wants location search but needs to specify location
+            handle_location_request(message, location_analysis)
 
-        if action == "SEARCH":
-            search_query = ai_decision.get("search_query")
-            if search_query:
-                # Add bot response to conversation before search
-                add_to_conversation(user_id, bot_response, is_user=False)
+        elif search_type == "general_search":
+            # Use existing general search pipeline
+            handle_general_search(message, location_analysis)
 
-                # Send the bot response
-                bot.reply_to(message, bot_response, parse_mode='HTML')
-
-                # Perform the search in background
-                threading.Thread(
-                    target=perform_restaurant_search,
-                    args=(search_query, message.chat.id, user_id),
-                    daemon=True
-                ).start()
-            else:
-                # Fallback if no search query
-                add_to_conversation(user_id, bot_response, is_user=False)
-                bot.reply_to(message, bot_response, parse_mode='HTML')
         else:
-            # CLARIFY or REDIRECT - just send the bot response
-            add_to_conversation(user_id, bot_response, is_user=False)
-            bot.reply_to(message, bot_response, parse_mode='HTML')
+            # Need clarification or off-topic
+            handle_clarification_needed(message, location_analysis)
 
     except Exception as e:
         logger.error(f"Error handling message: {e}")
@@ -521,9 +578,200 @@ def handle_message(message):
             parse_mode='HTML'
         )
 
+def get_recent_location_from_conversation(user_id):
+    """Check if user shared location in recent conversation"""
+    if user_id not in user_conversations:
+        return None
+
+    # Look for recent location data (within last 10 messages)
+    recent_messages = user_conversations[user_id][-10:]
+
+    for msg in reversed(recent_messages):
+        if msg.get("location_data"):
+            # Check if location is recent (within last 30 minutes)
+            if time.time() - msg["timestamp"] < 1800:  # 30 minutes
+                return msg["location_data"]
+
+    return None
+
+def handle_location_search_request(message, location_analysis):
+    """Handle requests with specific location mentioned"""
+    user_id = message.from_user.id
+    location_detected = location_analysis.get("location_detected")
+    cuisine_preference = location_analysis.get("cuisine_preference", "restaurants")
+
+    # Confirm and start search
+    response_text = f"🔍 <b>Perfect! Searching for {cuisine_preference} in {location_detected}.</b>\n\n"
+    response_text += "⏱ This might take a minute while I find the best places and verify them with reputable sources..."
+
+    bot.reply_to(message, response_text, parse_mode='HTML')
+    add_to_conversation(user_id, response_text, is_user=False)
+
+    # Create location data from text
+    location_data = location_handler.extract_location_from_text(message.text)
+
+    # Start location search
+    threading.Thread(
+        target=perform_location_search,
+        args=(message.text, location_data, message.chat.id, user_id),
+        daemon=True
+    ).start()
+
+def handle_location_request(message, location_analysis):
+    """Handle requests that need location specification"""
+    user_id = message.from_user.id
+    cuisine_preference = location_analysis.get("cuisine_preference", "restaurants")
+
+    # Determine query type for customized location request
+    query_type = "general"
+    if "wine" in cuisine_preference.lower():
+        query_type = "wine"
+    elif "coffee" in cuisine_preference.lower():
+        query_type = "coffee"
+    elif any(word in cuisine_preference.lower() for word in ["fine", "romantic", "fancy"]):
+        query_type = "fine_dining"
+
+    # Ask for location
+    location_request_msg = location_handler.create_location_request_message(query_type)
+    bot.reply_to(message, location_request_msg, parse_mode='HTML')
+    add_to_conversation(user_id, location_request_msg, is_user=False)
+
+    # Mark user as awaiting location
+    users_awaiting_location[user_id] = {
+        "query": cuisine_preference,
+        "timestamp": time.time()
+    }
+
+def handle_general_search(message, location_analysis):
+    """Handle general restaurant searches (existing pipeline)"""
+    user_id = message.from_user.id
+
+    # Use existing conversation AI logic
+    conversation_prompt = ChatPromptTemplate.from_messages([
+        ("system", CONVERSATION_PROMPT),
+        ("human", "Conversation history:\n{conversation_history}\n\nCurrent message: {user_message}")
+    ])
+
+    conversation_chain = conversation_prompt | conversation_ai
+    response = conversation_chain.invoke({
+        "conversation_history": format_conversation_history(user_id),
+        "user_message": message.text
+    })
+
+    # Parse AI response (existing logic)
+    content = response.content.strip()
+    if "```json" in content:
+        content = content.split("```json")[1].split("```")[0].strip()
+    elif "```" in content:
+        content = content.split("```")[1].split("```")[0].strip()
+
+    try:
+        ai_decision = json.loads(content)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse AI decision: {e}")
+        ai_decision = {
+            "action": "CLARIFY",
+            "bot_response": "I'd love to help you find restaurants! Could you tell me what city you're interested in and what type of dining you're looking for?"
+        }
+
+    # Handle existing search logic
+    action = ai_decision.get("action")
+    bot_response = ai_decision.get("bot_response", "How can I help you find restaurants?")
+
+    if action == "SEARCH":
+        search_query = ai_decision.get("search_query")
+        if search_query:
+            add_to_conversation(user_id, bot_response, is_user=False)
+            bot.reply_to(message, bot_response, parse_mode='HTML')
+
+            # Use existing search pipeline
+            threading.Thread(
+                target=perform_restaurant_search,
+                args=(search_query, message.chat.id, user_id),
+                daemon=True
+            ).start()
+        else:
+            add_to_conversation(user_id, bot_response, is_user=False)
+            bot.reply_to(message, bot_response, parse_mode='HTML')
+    else:
+        add_to_conversation(user_id, bot_response, is_user=False)
+        bot.reply_to(message, bot_response, parse_mode='HTML')
+
+def handle_clarification_needed(message, location_analysis):
+    """Handle messages that need clarification"""
+    user_id = message.from_user.id
+    suggested_response = location_analysis.get("suggested_response", 
+        "I specialize in restaurant recommendations! What type of dining are you looking for and in which city?")
+
+    bot.reply_to(message, suggested_response, parse_mode='HTML')
+    add_to_conversation(user_id, suggested_response, is_user=False)
+
+def perform_location_search(query, location_data, chat_id, user_id):
+    """
+    Perform location-based restaurant search
+    This will be implemented when we create the location search pipeline
+    """
+    try:
+        # Create cancel event for this search
+        cancel_event = create_cancel_event(user_id, chat_id)
+
+        # Send processing message
+        processing_msg = bot.send_message(
+            chat_id,
+            "🔍 <b>Searching for nearby restaurants...</b>\n\n"
+            "📍 Checking database for existing recommendations\n"
+            "🗺️ Searching Google Maps for venues\n"
+            "📰 Verifying with reputable food sources\n\n"
+            "<i>This takes 1-2 minutes for thorough verification</i>",
+            parse_mode='HTML'
+        )
+
+        # TODO: Implement actual location search pipeline
+        # For now, send placeholder response
+        time.sleep(3)  # Simulate processing
+
+        if is_search_cancelled(user_id):
+            return
+
+        # Delete processing message
+        bot.delete_message(chat_id, processing_msg.message_id)
+
+        # Send placeholder result
+        result_message = (
+            "📍 <b>Location-based search coming soon!</b>\n\n"
+            f"🔍 <b>Query:</b> {query}\n"
+            f"📌 <b>Location:</b> {location_handler.format_location_summary(location_data)}\n\n"
+            "⚡ <i>The location search pipeline will be implemented next!</i>\n\n"
+            "For now, you can try a general search by mentioning a specific city."
+        )
+
+        bot.send_message(chat_id, result_message, parse_mode='HTML')
+        add_to_conversation(user_id, result_message, is_user=False)
+
+    except Exception as e:
+        logger.error(f"Error in location search process: {e}")
+
+        try:
+            if processing_msg:
+                bot.delete_message(chat_id, processing_msg.message_id)
+        except:
+            pass
+
+        if not is_search_cancelled(user_id):
+            bot.send_message(
+                chat_id,
+                "😔 Sorry, I encountered an error while searching for nearby restaurants. Please try again!",
+                parse_mode='HTML'
+            )
+    finally:
+        cleanup_search(user_id)
+
+# UPDATED MAIN FUNCTION (add location_analyzer initialization)
 def main():
-    """Main function to start the bot"""
-    logger.info("Starting Restaurant Babe Telegram Bot...")
+    """Main function to start the bot with location support"""
+    global location_analyzer
+
+    logger.info("Starting Restaurant Babe Telegram Bot with Location Support...")
 
     # Verify bot token works
     try:
@@ -533,12 +781,21 @@ def main():
         logger.error(f"Failed to start bot: {e}")
         return
 
+    # Initialize location analyzer
+    try:
+        location_analyzer = LocationAnalyzer(config)
+        logger.info("✅ Location Analyzer initialized")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize Location Analyzer: {e}")
+        return
+
     # Verify orchestrator is available
     try:
         orchestrator_instance = get_orchestrator()
         logger.info("✅ Orchestrator singleton confirmed available")
         logger.info("🎯 Admin commands available: /test_scrape, /test_search")
         logger.info("🛑 Cancel command available: /cancel")
+        logger.info("📍 Location support: GPS pins + text descriptions")
     except RuntimeError as e:
         logger.error(f"❌ Orchestrator not initialized: {e}")
         logger.error("Make sure main.py calls setup_orchestrator() before starting the bot")
@@ -547,7 +804,7 @@ def main():
     # Start polling with error handling
     while True:
         try:
-            logger.info("Starting bot polling...")
+            logger.info("Starting bot polling with location support...")
             bot.infinity_polling(
                 timeout=10, 
                 long_polling_timeout=5,
@@ -562,8 +819,5 @@ def main():
                 logger.error(f"Telegram API error: {e}")
                 time.sleep(5)
         except Exception as e:
-            logger.error(f"Unexpected bot error: {e}")
+            logger.error(f"Unexpected error in bot polling: {e}")
             time.sleep(5)
-
-if __name__ == "__main__":
-    main()
