@@ -90,16 +90,16 @@ class LangChainOrchestrator:
             name="format_telegram"
         )
 
-        # Build the complete chain
-        self.chain = RunnableSequence([
-            self.analyze_query,
-            self.check_database,
-            self.search,
-            self.scrape,
-            self.edit,
-            self.follow_up,
+        # Build the complete chain - FIX: Remove the list wrapper
+        self.chain = (
+            self.analyze_query |
+            self.check_database |
+            self.search |
+            self.scrape |
+            self.edit |
+            self.follow_up |
             self.format_telegram
-        ])
+        )
 
     def _log_firecrawl_usage(self):
         """Log Firecrawl usage statistics"""
