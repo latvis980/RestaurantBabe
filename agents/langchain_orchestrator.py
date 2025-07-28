@@ -1,4 +1,6 @@
-# agents/langchain_orchestrator.py - COMPLETE VERSION with proper raw query handling
+# agents/langchain_orchestrator.py
+# UPDATED VERSION - Now preserves raw query throughout pipeline while maintaining all existing features
+
 import os
 from langchain_core.runnables import RunnableSequence, RunnableLambda
 from langchain_core.tracers.context import tracing_v2_enabled
@@ -19,7 +21,7 @@ class LangChainOrchestrator:
     def __init__(self, config):
         # Import agents with correct file names
         from agents.query_analyzer import QueryAnalyzer
-        from agents.database_search_agent import DatabaseSearchAgent
+        from agents.database_search_agent import DatabaseSearchAgent  # NEW AGENT
         from agents.search_agent import BraveSearchAgent
         from agents.optimized_scraper import WebScraper
         from agents.editor_agent import EditorAgent
@@ -27,7 +29,7 @@ class LangChainOrchestrator:
 
         # Initialize agents
         self.query_analyzer = QueryAnalyzer(config)
-        self.database_search_agent = DatabaseSearchAgent(config)
+        self.database_search_agent = DatabaseSearchAgent(config)  # NEW AGENT
         self.search_agent = BraveSearchAgent(config)
         self.scraper = WebScraper(config)
         self.editor_agent = EditorAgent(config)
@@ -42,19 +44,19 @@ class LangChainOrchestrator:
         self._build_pipeline()
 
     def _build_pipeline(self):
-        """Build pipeline with database agent integration and proper raw query preservation"""
+        """Build pipeline with database agent integration and raw query preservation"""
 
-        # Step 1: Analyze Query (UPDATED to handle both queries properly)
+        # Step 1: Analyze Query (UPDATED to preserve raw query)
         self.analyze_query = RunnableLambda(
             lambda x: {
-                **self.query_analyzer.analyze(x["query"]),  # Analyze the search query
-                "query": x["query"],  # Keep search query for actual searching
-                "raw_query": x["raw_query"]  # Preserve original user input
+                **self.query_analyzer.analyze(x["query"]),
+                "query": x["query"],
+                "raw_query": x["query"]  # Preserve original query
             },
             name="analyze_query"
         )
 
-        # Step 2: Database Search and Decision
+        # Step 2: Database Search and Decision (UPDATED - uses DatabaseSearchAgent)
         self.check_database = RunnableLambda(
             self._check_database_coverage,
             name="check_database"
@@ -66,165 +68,51 @@ class LangChainOrchestrator:
             name="search"
         )
 
-        # Step 4: Scraping (conditional - only if search was performed)
+        # Step 4: Scrape (conditional - only if search happened)
         self.scrape = RunnableLambda(
-            self._scraping_step,
+            self._scrape_step,
             name="scrape"
         )
 
-        # Step 5: Edit results (handles both database and scraped results)
+        # Step 5: Edit (handles both database restaurants and scraped content)
         self.edit = RunnableLambda(
             self._edit_step,
             name="edit"
         )
 
-        # Step 6: Follow-up search for additional details
-        self.follow_up = RunnableLambda(
+        # Step 6: Follow-up Search
+        self.follow_up_search = RunnableLambda(
             self._follow_up_step,
-            name="follow_up"
+            name="follow_up_search"
         )
 
         # Step 7: Format for Telegram
-        self.format_telegram = RunnableLambda(
+        self.format_output = RunnableLambda(
             self._format_step,
-            name="format_telegram"
+            name="format_output"
         )
 
-        # Build the complete chain - FIX: Remove the list wrapper
-        self.chain = (
-            self.analyze_query |
-            self.check_database |
-            self.search |
-            self.scrape |
-            self.edit |
-            self.follow_up |
-            self.format_telegram
+        # Create the complete chain
+        self.chain = RunnableSequence(
+            first=self.analyze_query,
+            middle=[
+                self.check_database,
+                self.search,
+                self.scrape,
+                self.edit,
+                self.follow_up_search,
+                self.format_output,
+            ],
+            last=RunnableLambda(lambda x: x),
+            name="restaurant_recommendation_chain"
         )
-
-    def _log_firecrawl_usage(self):
-        """Log Firecrawl usage statistics"""
-        try:
-            stats = self.scraper.get_stats()
-            total_usage = stats.get('total_usage', 0)
-            total_cost = stats.get('total_cost', 0.0)
-
-            if total_usage > 0:
-                logger.info(f"💰 Firecrawl Usage: {total_usage} credits, ${total_cost:.3f}")
-        except Exception as e:
-            logger.debug(f"Could not log Firecrawl usage: {e}")
-
-    def _save_scraped_content_for_processing_simple(self, x, enriched_results):
-        """Simplified version - logs the data that could be saved to Supabase"""
-        try:
-            # Log what would be saved (for monitoring purposes)
-            destination = x.get('destination', 'Unknown')
-            raw_query = x.get('raw_query', x.get('query', ''))
-
-            logger.info(f"📊 Scraped content summary: {len(enriched_results)} articles for {destination}")
-            logger.info(f"📝 Raw user query: {raw_query}")
-
-            # In the future, this could save to Supabase for ML training
-            # supabase_manager.save_scraped_content(destination, raw_query, enriched_results)
-
-        except Exception as e:
-            logger.error(f"Error in content saving: {e}")
-
-    # UPDATED: New process_query method signature to handle both queries
-    def process_query(self, user_query, raw_user_query=None, user_preferences=None):
-        """
-        Process a restaurant query through the complete pipeline.
-
-        UPDATED: Now handles both formatted search query and raw user input.
-
-        Args:
-            user_query: The formatted search query (e.g., "best ramen restaurants in Tokyo")
-            raw_user_query: The original user input (e.g., "Looking for good ramen places in Tokyo for lunch tomorrow")
-            user_preferences: Optional user preferences dict
-
-        Returns:
-            Dict with telegram_formatted_text and other results
-        """
-
-        # Generate trace ID for debugging
-        trace_id = f"query_{int(time.time())}"
-
-        with tracing_v2_enabled(project_name="restaurant-recommender"):
-            try:
-                logger.info(f"🚀 STARTING RECOMMENDATION PIPELINE")
-                logger.info(f"🎯 Search Query: {user_query}")
-                logger.info(f"📝 Raw User Query: {raw_user_query or 'Not provided'}")
-
-                # Prepare input data - UPDATED to include both queries
-                input_data = {
-                    "query": user_query,  # Used for search engine queries
-                    "raw_query": raw_user_query or user_query,  # Used for AI evaluation
-                    "user_preferences": user_preferences or {}
-                }
-
-                # Execute the chain
-                result = self.chain.invoke(input_data)
-
-                # Log completion
-                content_source = result.get("content_source", "unknown")
-                logger.info("✅ PIPELINE COMPLETE")
-                logger.info(f"📊 Content source: {content_source}")
-
-                # Final usage summary (only if we used scraping)
-                if content_source == "web_search":
-                    self._log_firecrawl_usage()
-
-                # Save process record (simplified - just log it)
-                logger.info(f"📊 Process completed: {user_query} → {result.get('destination', 'Unknown')} → {content_source}")
-
-                # Extract results with correct key names
-                telegram_text = result.get("telegram_formatted_text", 
-                                         "Sorry, no recommendations found.")
-                enhanced_results = result.get("enhanced_results", {})
-                main_list = enhanced_results.get("main_list", [])
-
-                logger.info(f"📊 Final result: {len(main_list)} restaurants for {result.get('destination', 'Unknown')}")
-                logger.info(f"📊 Source: {content_source}")
-
-                # Return with correct key names that telegram_bot.py expects
-                return {
-                    "telegram_formatted_text": telegram_text,
-                    "enhanced_results": enhanced_results,
-                    "main_list": main_list,
-                    "destination": result.get("destination"),
-                    "content_source": content_source,
-                    "raw_query": result.get("raw_query", raw_user_query or user_query),
-                    "search_query": user_query,  # Add search query to response
-                    "firecrawl_stats": self.scraper.get_stats() if content_source == "web_search" else {}
-                }
-
-            except Exception as e:
-                logger.error(f"❌ Error in chain execution: {e}")
-                dump_chain_state("process_query_error", {"query": user_query, "raw_query": raw_user_query}, error=e)
-
-                # Log usage even on error
-                try:
-                    self._log_firecrawl_usage()
-                except:
-                    pass
-
-                return {
-                    "main_list": [],
-                    "telegram_formatted_text": "Sorry, there was an error processing your request.",
-                    "raw_query": raw_user_query or user_query,
-                    "search_query": user_query,
-                    "firecrawl_stats": self.scraper.get_stats()
-                }
-
-    # BACKWARD COMPATIBILITY: Keep old method signature working
-    def process_restaurant_query(self, user_query, user_preferences=None):
-        """Backward compatibility method - treats user_query as both search and raw query"""
-        return self.process_query(user_query, user_query, user_preferences)
 
     def _check_database_coverage(self, x):
         """
+        UPDATED: Enhanced to pass raw query to DatabaseSearchAgent.
+
         SIMPLIFIED: Pure routing method that delegates ALL database logic to DatabaseSearchAgent.
         The orchestrator only handles routing - no business logic here.
-        UPDATED: Ensures raw query is passed through properly.
         """
         try:
             logger.info("🗃️ ROUTING TO DATABASE SEARCH AGENT")
@@ -276,19 +164,28 @@ class LangChainOrchestrator:
             search_terms = x.get("search_terms", [])
             language = x.get("language", "en")
 
-            # If no search terms from query analyzer, create them from the search query (not raw query)
+            # If no search terms from query analyzer, create them from the original query
             if not search_terms:
-                query = x.get("query", "")  # Use formatted search query for actual searching
+                query = x.get("query", "")
                 if query and destination != "Unknown":
-                    search_terms = [f"{query}"]
+                    # Simple search term extraction
+                    search_terms = [query.replace(f" in {destination.lower()}", "").strip()]
+                    logger.info(f"🔧 Created search terms from query: {search_terms}")
 
-            logger.info(f"🔍 Searching for: {search_terms}")
+            if destination == "Unknown" or not search_terms:
+                logger.warning("Missing destination or search terms for web search")
+                return {**x, "search_results": []}
 
-            start_time = time.time()
-            search_results = self.search_agent.search(search_terms)
-            search_time = time.time() - start_time
+            # Build search query
+            primary_term = search_terms[0] if search_terms else "restaurants"
+            query = f"{primary_term} in {destination}"
 
-            logger.info(f"✅ Found {len(search_results)} search results in {search_time:.1f}s")
+            logger.info(f"🌐 Searching web for: {query}")
+
+            # Perform search using existing search agent
+            search_results = self.search_agent.search([query])  # Pass as list
+
+            logger.info(f"✅ Web search completed: {len(search_results)} results")
 
             return {
                 **x, 
@@ -298,31 +195,30 @@ class LangChainOrchestrator:
 
         except Exception as e:
             logger.error(f"❌ Error in search step: {e}")
-            dump_chain_state("search_error", x, error=e)
             return {**x, "search_results": []}
 
-    def _scraping_step(self, x):
-        """Scraping step using WebScraper with intelligent strategies (UPDATED with raw query preservation)"""
+    def _scrape_step(self, x):
+        """Scrape step - only runs if search happened"""
         try:
-            logger.info("🕷️ ENTERING SCRAPING STEP")
+            # Check if we should skip scraping (database branch)
+            if x.get("has_database_content", False):
+                logger.info("⏭️ SKIPPING SCRAPING - using database content")
+                logger.info("⏭️ → NO FILES SENT TO SUPABASE MANAGER (using existing data)")
+                return {**x, "enriched_results": []}
+
+            logger.info("🕷️ RUNNING WEB SCRAPING")
+            logger.info("🕷️ → WILL SEND FILES TO SUPABASE MANAGER AFTER SCRAPING")
 
             search_results = x.get("search_results", [])
 
             if not search_results:
-                logger.info("⏭️ No search results to scrape")
-                return {
-                    **x, 
-                    "raw_query": x.get("raw_query", x.get("query", "")),  # Preserve raw query
-                    "enriched_results": []
-                }
+                logger.warning("⚠️ No search results to scrape")
+                return {**x, "enriched_results": []}
 
-            logger.info(f"🕷️ Scraping {len(search_results)} URLs with intelligent strategies")
-
-            # Run scraping in separate event loop
             def run_scraping():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
                 try:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
                     return loop.run_until_complete(
                         self.scraper.scrape_search_results(search_results)
                     )
@@ -355,17 +251,14 @@ class LangChainOrchestrator:
             return {**x, "enriched_results": []}
 
     def _edit_step(self, x):
-        """Edit step - handles both database restaurants and scraped content (UPDATED with proper raw query usage)"""
+        """Edit step - handles both database restaurants and scraped content (UPDATED with raw query)"""
         try:
             logger.info("✏️ ENTERING EDIT STEP")
 
             has_database_content = x.get("has_database_content", False)
-            search_query = x.get("query", "")  # The formatted search query
-            raw_query = x.get("raw_query", search_query)  # The original user input
+            original_query = x.get("query", "")
+            raw_query = x.get("raw_query", original_query)  # Get raw query
             destination = x.get("destination", "Unknown")
-
-            logger.info(f"🔍 Using RAW QUERY for AI evaluation: {raw_query}")
-            logger.info(f"🎯 Search query was: {search_query}")
 
             if has_database_content:
                 # DATABASE BRANCH: Format existing restaurants
@@ -382,12 +275,11 @@ class LangChainOrchestrator:
                         "follow_up_queries": []
                     }
 
-                # Call editor with database restaurants and RAW QUERY
-                # Raw query validation is built into the editor prompts
+                # Call editor with database restaurants and raw query
                 edit_output = self.editor_agent.edit(
                     scraped_results=None,
                     database_restaurants=database_results,
-                    original_query=raw_query,  # Use RAW QUERY for AI evaluation
+                    original_query=raw_query,  # Pass raw query instead of processed query
                     destination=destination
                 )
 
@@ -408,12 +300,11 @@ class LangChainOrchestrator:
                         "follow_up_queries": []
                     }
 
-                # Call editor with scraped content and RAW QUERY
-                # Raw query validation is built into the editor prompts
+                # Call editor with scraped content and raw query
                 edit_output = self.editor_agent.edit(
                     scraped_results=scraped_results,
                     database_restaurants=None,
-                    original_query=raw_query,  # Use RAW QUERY for AI evaluation
+                    original_query=raw_query,  # Pass raw query instead of processed query
                     destination=destination
                 )
 
@@ -485,7 +376,6 @@ class LangChainOrchestrator:
                 logger.warning("⚠️ No restaurants to format for Telegram")
                 return {
                     **x,
-                    "raw_query": x.get("raw_query", x.get("query", "")),  # Preserve raw query
                     "telegram_formatted_text": "Sorry, no restaurant recommendations found for your query."
                 }
 
@@ -510,221 +400,387 @@ class LangChainOrchestrator:
             dump_chain_state("format_error", x, error=e)
             return {
                 **x,
-                "raw_query": x.get("raw_query", x.get("query", "")),  # Preserve raw query
                 "telegram_formatted_text": "Sorry, there was an error formatting the restaurant recommendations."
             }
 
-    # Additional utility methods
-
-    def get_orchestrator_stats(self):
-        """Get comprehensive stats from all components"""
+    def _save_scraped_content_for_processing_simple(self, x, enriched_results):
+        """Save scraped content and send to Supabase manager (working version)"""
         try:
-            stats = {
-                "orchestrator": {
-                    "pipeline_steps": 7,
-                    "raw_query_support": True
-                },
-                "query_analyzer": {
-                    "enabled": True
-                },
-                "database_search": self.database_search_agent.get_stats(),
-                "search_agent": {
-                    "enabled": True
-                },
-                "scraper": self.scraper.get_stats(),
-                "editor": self.editor_agent.get_editor_stats() if hasattr(self.editor_agent, 'get_editor_stats') else {"enabled": True},
-                "follow_up_search": {
-                    "enabled": True
-                },
-                "telegram_formatter": {
-                    "enabled": True
-                }
-            }
-            return stats
-        except Exception as e:
-            logger.error(f"Error getting orchestrator stats: {e}")
-            return {"error": str(e)}
+            logger.info("💾 ENTERING SIMPLE SAVE SCRAPED CONTENT")
+            logger.info(f"💾 Enriched results count: {len(enriched_results)}")
 
-    def health_check(self):
-        """Perform health check on all components"""
-        try:
-            health = {
-                "orchestrator": "healthy",
-                "agents": {}
-            }
+            from datetime import datetime
+            import threading
+            import requests
 
-            # Check each agent
-            agents = [
-                ("query_analyzer", self.query_analyzer),
-                ("database_search_agent", self.database_search_agent),
-                ("search_agent", self.search_agent),
-                ("scraper", self.scraper),
-                ("editor_agent", self.editor_agent),
-                ("follow_up_search_agent", self.follow_up_search_agent)
-            ]
+            # Extract metadata from pipeline context
+            query = x.get("query", "")
+            destination = x.get("destination", "Unknown")
 
-            for name, agent in agents:
+            # Parse destination into city/country
+            city = destination
+            country = "Unknown"
+            if "," in destination:
+                parts = [p.strip() for p in destination.split(",")]
+                city = parts[0]
+                if len(parts) > 1:
+                    country = parts[1]
+
+            # Combine all scraped content for saving
+            all_scraped_content = ""
+            sources = []
+
+            for result in enriched_results:
                 try:
-                    if hasattr(agent, 'health_check'):
-                        agent.health_check()
-                    health["agents"][name] = "healthy"
+                    content = result.get("scraped_content", result.get("content", ""))
+                    url = result.get("url", "")
+
+                    if content and len(content.strip()) > 100:
+                        all_scraped_content += f"\n\n--- FROM {url} ---\n\n{content}"
+                        sources.append(url)
+                        logger.info(f"✅ Got {len(content)} chars from {url}")
+                    else:
+                        logger.warning(f"⚠️ No substantial content from {url}")
+
                 except Exception as e:
-                    health["agents"][name] = f"error: {str(e)}"
+                    logger.error(f"❌ Error processing result: {e}")
+                    continue
 
-            return health
-        except Exception as e:
-            return {"orchestrator": f"error: {str(e)}"}
+            if not all_scraped_content.strip():
+                logger.warning("⚠️ No content to save")
+                return
 
-    def update_config(self, new_config):
-        """Update configuration for all agents"""
-        try:
-            self.config = new_config
-
-            # Update each agent's config if they support it
-            agents = [
-                self.query_analyzer,
-                self.database_search_agent, 
-                self.search_agent,
-                self.scraper,
-                self.editor_agent,
-                self.follow_up_search_agent
-            ]
-
-            for agent in agents:
-                if hasattr(agent, 'update_config'):
-                    agent.update_config(new_config)
-
-            logger.info("✅ Configuration updated for all agents")
-
-        except Exception as e:
-            logger.error(f"❌ Error updating configuration: {e}")
-
-    def reset_stats(self):
-        """Reset statistics for all components"""
-        try:
-            # Reset stats for each component that supports it
-            if hasattr(self.scraper, 'reset_stats'):
-                self.scraper.reset_stats()
-            if hasattr(self.database_search_agent, 'reset_stats'):
-                self.database_search_agent.reset_stats()
-
-            logger.info("✅ Statistics reset for all components")
-
-        except Exception as e:
-            logger.error(f"❌ Error resetting statistics: {e}")
-
-    # Legacy compatibility methods
-    def get_search_agent_stats(self):
-        """Legacy method for backward compatibility"""
-        return self.search_agent.get_stats() if hasattr(self.search_agent, 'get_stats') else {}
-
-    def get_scraper_stats(self):
-        """Legacy method for backward compatibility"""
-        return self.scraper.get_stats()
-
-    def set_database_threshold(self, new_threshold):
-        """Set minimum database threshold"""
-        if hasattr(self.database_search_agent, 'set_minimum_threshold'):
-            self.database_search_agent.set_minimum_threshold(new_threshold)
-
-    def enable_database_ai_evaluation(self, enabled=True):
-        """Enable/disable AI evaluation in database search"""
-        if hasattr(self.database_search_agent, 'enable_ai_evaluation'):
-            self.database_search_agent.enable_ai_evaluation(enabled)
-
-    # Debugging and monitoring methods
-    def get_pipeline_status(self):
-        """Get status of the entire pipeline"""
-        try:
-            status = {
-                "pipeline_built": bool(self.chain),
-                "agents_initialized": {
-                    "query_analyzer": bool(self.query_analyzer),
-                    "database_search": bool(self.database_search_agent),
-                    "search_agent": bool(self.search_agent),
-                    "scraper": bool(self.scraper),
-                    "editor_agent": bool(self.editor_agent),
-                    "follow_up_search": bool(self.follow_up_search_agent)
-                },
-                "formatter_initialized": bool(self.telegram_formatter)
-            }
-            return status
-        except Exception as e:
-            return {"error": str(e)}
-
-    def test_chain_steps(self, test_query="test query"):
-        """Test individual chain steps for debugging"""
-        try:
-            test_data = {
-                "query": test_query,
-                "raw_query": test_query,
-                "user_preferences": {}
-            }
-
-            results = {}
-
-            # Test each step individually
+            # Save to local file first (for backup/debugging)
             try:
-                results["analyze_query"] = "✅" if self.analyze_query else "❌"
-            except:
-                results["analyze_query"] = "❌"
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"scraped_{city.replace(' ', '_')}_{timestamp}.txt"
 
-            try:
-                results["check_database"] = "✅" if self.check_database else "❌"
-            except:
-                results["check_database"] = "❌"
+                os.makedirs("scraped_content", exist_ok=True)
+                file_path = os.path.join("scraped_content", filename)
 
-            try:
-                results["search"] = "✅" if self.search else "❌"
-            except:
-                results["search"] = "❌"
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(all_scraped_content)
 
-            try:
-                results["scrape"] = "✅" if self.scrape else "❌"
-            except:
-                results["scrape"] = "❌"
+                logger.info(f"💾 Saved scraped content to: {file_path}")
 
-            try:
-                results["edit"] = "✅" if self.edit else "❌"
-            except:
-                results["edit"] = "❌"
+            except Exception as e:
+                logger.error(f"❌ Error saving local file: {e}")
 
-            try:
-                results["follow_up"] = "✅" if self.follow_up else "❌"
-            except:
-                results["follow_up"] = "❌"
+            # Send to Supabase Manager service (async, don't wait for response)
+            def send_to_supabase_manager():
+                try:
+                    supabase_manager_url = getattr(self.config, 'SUPABASE_MANAGER_URL', '')
 
-            try:
-                results["format_telegram"] = "✅" if self.format_telegram else "❌"
-            except:
-                results["format_telegram"] = "❌"
+                    if not supabase_manager_url:
+                        logger.warning("⚠️ SUPABASE_MANAGER_URL not configured - skipping background update")
+                        return
 
-            return results
+                    logger.info(f"📤 Sending content to Supabase Manager: {supabase_manager_url}")
+
+                    # Prepare payload (same format as working version)
+                    payload = {
+                        'content': all_scraped_content,
+                        'metadata': {
+                            'city': city,
+                            'country': country,
+                            'sources': sources,
+                            'query': query,
+                            'scraped_at': datetime.now().isoformat()
+                        }
+                    }
+
+                    # Send to the correct endpoint
+                    response = requests.post(
+                        f"{supabase_manager_url}/process_scraped_content",
+                        json=payload,
+                        timeout=180
+                    )
+
+                    if response.status_code == 200:
+                        logger.info("✅ Successfully sent content to Supabase Manager")
+                    else:
+                        logger.warning(f"⚠️ Supabase Manager returned status {response.status_code}")
+                        logger.warning(f"Response: {response.text}")
+
+                except Exception as e:
+                    logger.error(f"❌ Error sending to Supabase Manager: {e}")
+
+            # Run in background thread so it doesn't block user response
+            thread = threading.Thread(target=send_to_supabase_manager, daemon=True)
+            thread.start()
+            logger.info("📤 Started background thread to send content to Supabase Manager")
 
         except Exception as e:
-            return {"error": str(e)}
+            logger.error(f"❌ Error in simple save scraped content: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
 
-    def get_memory_usage(self):
-        """Get approximate memory usage of components"""
+    def _save_scraped_content_for_processing(self, x, enriched_results):
+        """Save scraped content to TXT file for Supabase manager processing"""
         try:
-            import sys
+            logger.info("💾 ENTERING SAVE SCRAPED CONTENT")
+            logger.info(f"💾 Enriched results count: {len(enriched_results)}")
 
-            components = {
-                "query_analyzer": sys.getsizeof(self.query_analyzer),
-                "database_search_agent": sys.getsizeof(self.database_search_agent),
-                "search_agent": sys.getsizeof(self.search_agent),
-                "scraper": sys.getsizeof(self.scraper),
-                "editor_agent": sys.getsizeof(self.editor_agent),
-                "follow_up_search_agent": sys.getsizeof(self.follow_up_search_agent),
-                "telegram_formatter": sys.getsizeof(self.telegram_formatter),
-                "chain": sys.getsizeof(self.chain) if self.chain else 0
+            import tempfile
+            import json
+            from datetime import datetime
+
+            # Extract metadata from pipeline context
+            query = x.get("query", "")
+            destination = x.get("destination", "Unknown")
+
+            logger.info(f"💾 Query: {query}")
+            logger.info(f"💾 Destination: {destination}")
+
+            # Parse destination into city/country
+            city = destination
+            country = "Unknown"
+            if "," in destination:
+                parts = [p.strip() for p in destination.split(",")]
+                city = parts[0]
+                if len(parts) > 1:
+                    country = parts[1]
+
+            logger.info(f"💾 Parsed city: {city}, country: {country}")
+
+            # Prepare metadata for Supabase manager
+            metadata = {
+                "query": query,
+                "city": city,
+                "country": country,
+                "destination": destination,
+                "timestamp": datetime.now().isoformat(),
+                "source": "web_scraping",
+                "total_articles": len(enriched_results),
+                "search_queries": x.get("search_queries", [])
             }
 
-            total = sum(components.values())
-            components["total_bytes"] = total
-            components["total_mb"] = round(total / (1024 * 1024), 2)
+            # Create timestamp for filenames
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-            return components
+            # Use configured path or temp directory
+            if hasattr(self.config, 'SCRAPED_CONTENT_PATH'):
+                base_path = self.config.SCRAPED_CONTENT_PATH
+                logger.info(f"💾 Using configured path: {base_path}")
+            else:
+                base_path = tempfile.gettempdir()
+                logger.info(f"💾 Using temp directory: {base_path}")
+
+            # Ensure directory exists
+            os.makedirs(base_path, exist_ok=True)
+            logger.info(f"💾 Directory created/verified: {base_path}")
+
+            # Save RAW CONTENT as TXT file
+            content_filename = f"scraped_content_{city}_{timestamp}.txt"
+            content_filepath = os.path.join(base_path, content_filename)
+
+            logger.info(f"💾 Content file path: {content_filepath}")
+
+            # Combine all scraped content into one text file
+            with open(content_filepath, 'w', encoding='utf-8') as f:
+                f.write("=" * 80 + "\n")
+                f.write("SCRAPED RESTAURANT CONTENT\n")
+                f.write("=" * 80 + "\n\n")
+                f.write(f"Query: {query}\n")
+                f.write(f"City: {city}\n")
+                f.write(f"Country: {country}\n")
+                f.write(f"Timestamp: {metadata['timestamp']}\n")
+                f.write(f"Total Articles: {len(enriched_results)}\n")
+                f.write(f"Search Queries: {', '.join(metadata['search_queries'])}\n")
+                f.write("\n" + "=" * 80 + "\n\n")
+
+                # Add each scraped article
+                for i, article in enumerate(enriched_results, 1):
+                    url = article.get('url', 'Unknown URL')
+                    title = article.get('title', 'No title')
+                    content = article.get('content', '')
+
+                    f.write(f"ARTICLE {i}:\n")
+                    f.write(f"URL: {url}\n")
+                    f.write(f"Title: {title}\n")
+                    f.write("-" * 40 + "\n")
+
+                    if content:
+                        f.write(content)
+                    else:
+                        f.write("[No content available]")
+
+                    f.write("\n\n" + "=" * 40 + "\n\n")
+
+            logger.info(f"💾 Content file written successfully")
+
+            # Save METADATA as separate JSON file
+            metadata_filename = f"metadata_{city}_{timestamp}.json"
+            metadata_filepath = os.path.join(base_path, metadata_filename)
+
+            logger.info(f"💾 Metadata file path: {metadata_filepath}")
+
+            with open(metadata_filepath, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"💾 Metadata file written successfully")
+            logger.info(f"💾 Saved scraped content: {content_filepath}")
+            logger.info(f"📊 Content: {len(enriched_results)} articles for {city}")
+
+            # Send to Supabase manager if URL configured
+            supabase_manager_url = getattr(self.config, 'SUPABASE_MANAGER_URL', '')
+            logger.info(f"💾 Checking Supabase Manager URL: '{supabase_manager_url}'")
+
+            if supabase_manager_url:
+                logger.info(f"📤 Found Supabase Manager URL: {supabase_manager_url}")
+                self._send_to_supabase_manager(content_filepath, metadata_filepath, metadata)
+            else:
+                logger.warning("⚠️ No SUPABASE_MANAGER_URL configured - content saved locally only")
+                logger.info(f"📁 Files saved locally:")
+                logger.info(f"📁 - Content: {content_filepath}")
+                logger.info(f"📁 - Metadata: {metadata_filepath}")
 
         except Exception as e:
-            return {"error": str(e)}
+            logger.error(f"❌ Error saving scraped content: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+
+    def _send_to_supabase_manager(self, content_filepath, metadata_filepath, metadata):
+        """Send scraped content and metadata files to Supabase manager service"""
+        try:
+            import requests
+
+            supabase_manager_url = self.config.SUPABASE_MANAGER_URL
+
+            logger.info(f"📤 Sending content to Supabase manager: {supabase_manager_url}")
+
+            # Send both files to Supabase manager
+            with open(content_filepath, 'rb') as content_file, \
+                 open(metadata_filepath, 'rb') as metadata_file:
+
+                files = {
+                    'content_file': (os.path.basename(content_filepath), content_file, 'text/plain'),
+                    'metadata_file': (os.path.basename(metadata_filepath), metadata_file, 'application/json')
+                }
+
+                response = requests.post(
+                    f"{supabase_manager_url}/process_content",
+                    files=files,
+                    timeout=30
+                )
+
+            if response.status_code == 200:
+                logger.info("✅ Successfully sent content to Supabase manager")
+
+                # Delete local files after successful send
+                try:
+                    os.remove(content_filepath)
+                    os.remove(metadata_filepath)
+                    logger.info(f"🗑️ Deleted local files")
+                except:
+                    pass
+            else:
+                logger.error(f"❌ Failed to send to Supabase manager: {response.status_code}")
+
+        except Exception as e:
+            logger.error(f"❌ Error sending to Supabase manager: {e}")
+            logger.info(f"📁 Content saved locally: {content_filepath}")
+
+    def _log_firecrawl_usage(self):
+        """Log Firecrawl usage statistics"""
+        try:
+            stats = self.scraper.get_stats()
+            logger.info("=" * 50)
+            logger.info("FIRECRAWL USAGE REPORT")
+            logger.info("=" * 50)
+            logger.info(f"URLs scraped: {stats.get('total_scraped', 0)}")
+            logger.info(f"Successful extractions: {stats.get('successful_extractions', 0)}")
+            logger.info(f"Credits used: {stats.get('credits_used', 0)}")
+            logger.info("=" * 50)
+        except Exception as e:
+            logger.error(f"Error logging Firecrawl usage: {e}")
+
+    @log_function_call
+    def process_query(self, user_query: str, user_preferences: dict = None) -> dict:
+        """
+        Process a restaurant query through the complete pipeline.
+
+        Args:
+            user_query: The user's restaurant request
+            user_preferences: Optional user preferences dict
+
+        Returns:
+            Dict with telegram_formatted_text and other results
+        """
+
+        # Generate trace ID for debugging
+        trace_id = f"query_{int(time.time())}"
+
+        with tracing_v2_enabled(project_name="restaurant-recommender"):
+            try:
+                logger.info(f"🚀 STARTING RECOMMENDATION PIPELINE")
+                logger.info(f"Query: {user_query}")
+
+                # Prepare input data (UPDATED to include raw query from the start)
+                input_data = {
+                    "query": user_query,
+                    "raw_query": user_query,  # Add raw query from the beginning
+                    "user_preferences": user_preferences or {}
+                }
+
+                # Execute the chain
+                result = self.chain.invoke(input_data)
+
+                # Log completion
+                content_source = result.get("content_source", "unknown")
+                logger.info("✅ PIPELINE COMPLETE")
+                logger.info(f"📊 Content source: {content_source}")
+
+                # Final usage summary (only if we used scraping)
+                if content_source == "web_search":
+                    self._log_firecrawl_usage()
+
+                # Save process record (simplified - just log it)
+                logger.info(f"📊 Process completed: {user_query} → {result.get('destination', 'Unknown')} → {content_source}")
+
+                # Could save to database here if needed:
+                # process_record = {
+                #     "query": user_query,
+                #     "destination": result.get("destination", "Unknown"),
+                #     "content_source": content_source,
+                #     "trace_id": trace_id,
+                #     "timestamp": time.time()
+                # }
+
+                # Extract results with correct key names
+                telegram_text = result.get("telegram_formatted_text", 
+                                         "Sorry, no recommendations found.")
+
+                enhanced_results = result.get("enhanced_results", {})
+                main_list = enhanced_results.get("main_list", [])
+
+                logger.info(f"📊 Final result: {len(main_list)} restaurants for {result.get('destination', 'Unknown')}")
+                logger.info(f"📊 Source: {content_source}")
+
+                # Return with correct key names that telegram_bot.py expects
+                return {
+                    "telegram_formatted_text": telegram_text,
+                    "enhanced_results": enhanced_results,
+                    "main_list": main_list,
+                    "destination": result.get("destination"),
+                    "content_source": content_source,
+                    "raw_query": result.get("raw_query", user_query),  # Include raw query in response
+                    "firecrawl_stats": self.scraper.get_stats() if content_source == "web_search" else {}
+                }
+
+            except Exception as e:
+                logger.error(f"❌ Error in chain execution: {e}")
+                dump_chain_state("process_query_error", {"query": user_query}, error=e)
+
+                # Log usage even on error
+                try:
+                    self._log_firecrawl_usage()
+                except:
+                    pass
+
+                return {
+                    "main_list": [],
+                    "telegram_formatted_text": "Sorry, there was an error processing your request.",
+                    "raw_query": user_query,  # Include raw query even on error
+                    "firecrawl_stats": self.scraper.get_stats()
+                }

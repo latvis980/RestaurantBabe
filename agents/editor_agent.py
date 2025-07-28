@@ -1,4 +1,4 @@
-# agents/editor_agent.py - SIMPLIFIED VERSION with raw query validation in prompts only
+# agents/editor_agent.py - WORKING VERSION with diplomatic raw query validation
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tracers.context import tracing_v2_enabled
@@ -17,70 +17,22 @@ class EditorAgent:
         )
         self.config = config
 
-        # SIMPLIFIED: Database restaurant processing with raw query validation built into prompt
+        # Database restaurant processing - diplomatic approach like a hotel concierge
         self.database_formatting_prompt = """
-You are an AI assistant that formats restaurant recommendations from a database for users.
+You are an expert restaurant concierge who formats database restaurant recommendations for users.
 
-ORIGINAL USER REQUEST: "{{original_query}}"
-DESTINATION: {{destination}}
+YOU HAVE TWO JOBS:
+1. Format the restaurants in a clean, engaging way
+2. Be diplomatic about matches - like a skilled concierge, explain your choices even if they're not 100% perfect matches
 
-YOUR TASK:
-1. Format these database restaurants for the user
-2. ONLY include restaurants that truly match the user's original request
-3. Create engaging descriptions highlighting what makes each place special
-4. Remove restaurants that don't fit the user's actual needs
+CONCIERGE APPROACH:
+- If restaurants don't perfectly match ALL user requirements, still include them but explain diplomatically why you chose them
+- Use phrases like "While this may not have X specifically mentioned, it offers Y which makes it worth considering"
+- Be honest about uncertainties: "though I cannot confirm if they have vegan options, their modern approach suggests they likely accommodate dietary preferences"
+- Focus on positive aspects and potential matches rather than strict filtering
 
-FILTERING RULES:
-- Check each restaurant against the user's ORIGINAL REQUEST (not just the destination)
-- Remove restaurants that don't match the user's style, cuisine, or occasion preferences
-- If user mentions specific needs (romantic, family-friendly, budget, etc.), only include matching restaurants
-- Focus on restaurants that would genuinely satisfy the user's intent
-
-OUTPUT FORMAT (keep it simple like before):
-Return ONLY valid JSON:
-{{
-  "restaurants": [
-    {{
-      "name": "Restaurant Name",
-      "address": "Address or 'Address verification needed'",
-      "description": "Engaging 20-35 word description highlighting unique features",
-      "sources": ["domain1.com", "domain2.com"]
-    }}
-  ]
-}}
-
-QUALITY STANDARDS:
-- Descriptions should be specific and engaging
-- Include signature dishes, atmosphere, or special features when available
-- Remove generic phrases like "great food" or "nice atmosphere"
-- Focus on what makes each restaurant special for this user's needs
-"""
-
-        # SIMPLIFIED: Scraped content processing with raw query validation built into prompt
-        self.scraped_content_prompt = """
-You are an AI assistant that processes restaurant recommendations from web scraping results.
-
-ORIGINAL USER REQUEST: "{{original_query}}"
-DESTINATION: {{destination}}
-
-YOUR TASK:
-1. Extract restaurants from scraped content that match the user's original request
-2. ONLY include restaurants that truly fit what the user is looking for
-3. Create detailed descriptions from the source content
-4. Group information if restaurants appear in multiple sources
-
-FILTERING RULES:
-- Check each restaurant against the user's ORIGINAL REQUEST
-- Remove restaurants that don't match the user's stated preferences
-- If user asks for specific cuisine, occasion, or style - only include matching places
-- Focus on restaurants that would genuinely satisfy the user's intent
-
-CONSOLIDATION RULES:
-- If a restaurant appears in multiple sources, combine all information
-- Use the most complete address found across sources
-- If addresses conflict or are missing, mark for verification
-- Create detailed descriptions that highlight what makes each restaurant special
-- Avoid generic phrases like "great food" or "nice atmosphere"
+ORIGINAL USER REQUEST: {original_query}
+DESTINATION: {destination}
 
 OUTPUT FORMAT (keep it simple):
 Return ONLY valid JSON:
@@ -88,8 +40,52 @@ Return ONLY valid JSON:
   "restaurants": [
     {{
       "name": "Restaurant Name",
+      "address": "Address or 'Address verification needed'",
+      "description": "Engaging 20-35 word description highlighting features, with diplomatic notes about potential matches to user needs",
+      "sources": ["domain1.com", "domain2.com"]
+    }}
+  ]
+}}
+
+DESCRIPTION GUIDELINES:
+- Include what makes each restaurant special
+- Diplomatically address user requirements (even if uncertain)
+- Use concierge language: "likely offers", "known for", "specializes in", "worth considering for"
+- Be specific about confirmed features, diplomatic about uncertain ones
+"""
+
+        # Scraped content processing - diplomatic approach
+        self.scraped_content_prompt = """
+You are an expert restaurant concierge who processes web content to recommend restaurants.
+
+YOU HAVE TWO JOBS:
+1. Extract restaurant recommendations from the content  
+2. Be diplomatic about matches - explain your choices even if they're not perfect matches
+
+CONCIERGE APPROACH:
+- Include restaurants that fully or for most part match user needs, but explain diplomatically why
+- Use phrases like "While not explicitly mentioned as X, their focus on Y suggests they would accommodate Z"
+- Be honest about what you can/cannot confirm from the content
+- Focus on potential and positive aspects rather than strict requirements
+
+ORIGINAL USER REQUEST: {original_query}
+DESTINATION: {destination}
+
+CONSOLIDATION RULES:
+- If a restaurant appears in multiple sources, combine all information
+- Use the most complete address found across sources
+- If addresses conflict or are missing, mark for verification
+- Create descriptions that highlight strengths while diplomatically addressing user needs
+- Avoid generic phrases like "great food" or "nice atmosphere"
+
+OUTPUT FORMAT:
+Return ONLY valid JSON:
+{{
+  "restaurants": [
+    {{
+      "name": "Restaurant Name",
       "address": "Complete address OR 'Requires verification'",
-      "description": "Detailed 15-30 word description highlighting unique features",
+      "description": "Diplomatic 15-30 word description explaining why this restaurant suits the user, even if not a perfect match",
       "sources": ["domain1.com", "domain2.com"]
     }}
   ]
@@ -97,35 +93,35 @@ Return ONLY valid JSON:
 
 IMPORTANT:
 - Never include Tripadvisor, Yelp, Opentable, or Google in sources
-- Focus on unique selling points in descriptions (signature dishes, style, atmosphere)
-- Be specific about cuisine types, specialties, or notable features
-- If multiple locations exist, include only the main/original location
+- Be diplomatic but honest in descriptions
+- Include restaurants that partially match rather than having an empty list
+- Use concierge language to explain your reasoning
 """
 
-        # Create prompt templates
+        # Create prompt templates - FIX: Use single curly braces for template variables
         self.database_prompt = ChatPromptTemplate.from_messages([
             ("system", self.database_formatting_prompt),
             ("human", """
-Original user request: {{original_query}}
-Destination: {{destination}}
+Original user request: {original_query}
+Destination: {destination}
 
 Database restaurants to format:
-{{database_restaurants}}
+{database_restaurants}
 
-Format these restaurants, but ONLY include ones that match the user's original request.
+Format these restaurants using the diplomatic concierge approach. Include restaurants even if they don't perfectly match all requirements, but explain your reasoning diplomatically.
 """)
         ])
 
         self.scraped_prompt = ChatPromptTemplate.from_messages([
             ("system", self.scraped_content_prompt),
             ("human", """
-Original user request: {{original_query}}
-Destination: {{destination}}
+Original user request: {original_query}
+Destination: {destination}
 
 Scraped content from multiple sources:
-{{scraped_content}}
+{scraped_content}
 
-Extract restaurants that match the user's original request and return as JSON.
+Extract restaurants using the diplomatic concierge approach. Include good options even if they don't perfectly match all user requirements, but explain your reasoning.
 """)
         ])
 
@@ -137,7 +133,7 @@ Extract restaurants that match the user's original request and return as JSON.
     def edit(self, scraped_results=None, database_restaurants=None, original_query="", destination="Unknown"):
         """
         Main method that handles both database restaurants and scraped content.
-        SIMPLIFIED: Raw query validation is built into the prompts, no separate verification step.
+        Uses diplomatic concierge approach for raw query validation.
 
         Args:
             scraped_results: List of scraped articles (traditional mode)
@@ -184,14 +180,14 @@ Extract restaurants that match the user's original request and return as JSON.
                 logger.warning("No substantial database content to process")
                 return self._fallback_response()
 
-            # Get AI formatting (with raw query validation built into prompt)
+            # Get AI formatting with diplomatic approach
             response = self.database_chain.invoke({
                 "original_query": original_query,
                 "destination": destination,
                 "database_restaurants": database_content
             })
 
-            # Process AI output (simplified)
+            # Process AI output
             result = self._post_process_results(response.content, "database", destination)
 
             logger.info(f"✅ Successfully formatted {len(result['edited_results']['main_list'])} database restaurants")
@@ -214,14 +210,14 @@ Extract restaurants that match the user's original request and return as JSON.
                 logger.warning("No substantial scraped content found")
                 return self._fallback_response()
 
-            # Get AI processing (with raw query validation built into prompt)
+            # Get AI processing with diplomatic approach
             response = self.scraped_chain.invoke({
                 "original_query": original_query,
                 "destination": destination,
                 "scraped_content": scraped_content
             })
 
-            # Process AI output (simplified)
+            # Process AI output
             result = self._post_process_results(response.content, "scraped", destination)
 
             logger.info(f"✅ Successfully processed {len(result['edited_results']['main_list'])} scraped restaurants")
@@ -288,23 +284,35 @@ Content: {content[:3000]}...
 
     def _post_process_results(self, ai_output, source_type, destination):
         """
-        SIMPLIFIED: Single post-processing method for both database and scraped results
+        Process AI output for both database and scraped results
         Uses the original simple JSON structure
         """
         try:
+            logger.info(f"🔍 Processing AI output from {source_type}")
+
             # Parse JSON response
             if isinstance(ai_output, str):
                 content = ai_output.strip()
+
+                # Handle different response formats
                 if "```json" in content:
                     content = content.split("```json")[1].split("```")[0].strip()
                 elif "```" in content:
-                    content = content.split("```")[1].split("```")[0].strip()
+                    parts = content.split("```")
+                    if len(parts) >= 3:
+                        content = parts[1].strip()
+
+                # Check if it's actually JSON
+                if not content.startswith('{') and not content.startswith('['):
+                    logger.error(f"AI output doesn't look like JSON: {content[:200]}...")
+                    return self._fallback_response()
 
                 parsed_data = json.loads(content)
             else:
                 parsed_data = ai_output
 
             restaurants = parsed_data.get("restaurants", [])
+            logger.info(f"📋 Parsed {len(restaurants)} restaurants from AI response")
 
             # Simple validation and cleaning
             cleaned_restaurants = []
@@ -313,6 +321,7 @@ Content: {content[:3000]}...
             for restaurant in restaurants:
                 name = restaurant.get("name", "").strip()
                 if not name or name.lower() in seen_names:
+                    logger.debug(f"Skipping duplicate or empty restaurant: {name}")
                     continue
 
                 seen_names.add(name.lower())
@@ -326,10 +335,15 @@ Content: {content[:3000]}...
                 }
 
                 # Validate description
-                if len(cleaned_restaurant["description"]) < 10:
+                description_length = len(cleaned_restaurant["description"])
+                if description_length < 10:
                     logger.warning(f"Short description for {name}: {cleaned_restaurant['description']}")
+                elif description_length > 200:
+                    logger.warning(f"Long description for {name}: {description_length} chars")
 
                 cleaned_restaurants.append(cleaned_restaurant)
+
+            logger.info(f"✅ Cleaned and validated {len(cleaned_restaurants)} restaurants")
 
             # Generate follow-up queries for address verification
             follow_up_queries = self._generate_follow_up_queries(cleaned_restaurants, destination)
@@ -397,5 +411,5 @@ Content: {content[:3000]}...
         return {
             "editor_agent_enabled": True,
             "model_used": "gpt-4o",
-            "validation": "built_into_prompts"
+            "validation": "diplomatic_concierge_approach"
         }

@@ -1,14 +1,18 @@
 # agents/database_search_agent.py
 """
-OPTIMIZED Database Search Agent - Single API call approach
+Unified Database Search Agent - Combines database queries with AI-powered semantic search.
 
-This optimization compiles all restaurant data into one text analysis
-instead of individual restaurant evaluations, reducing API calls from 6+ to 1.
+This agent handles:
+1. Semantic search using DeepSeek
+2. AI evaluation of restaurant relevance
+3. Intelligent decision making about web search necessity
+4. All previous database search functionality
 """
 
 import logging
 import json
-from typing import Dict, List, Any, Optional
+import numpy as np
+from typing import Dict, List, Any, Optional, Tuple
 from langchain_deepseek import ChatDeepSeek
 from langchain_core.prompts import ChatPromptTemplate
 from utils.debug_utils import dump_chain_state, log_function_call
@@ -17,101 +21,135 @@ logger = logging.getLogger(__name__)
 
 class DatabaseSearchAgent:
     """
-    OPTIMIZED agent that analyzes all restaurants in a single AI call
-    instead of individual evaluations.
+    Unified agent that handles database restaurant searches with semantic AI capabilities.
+    Decides whether database content is sufficient or if web search is needed.
     """
 
     def __init__(self, config):
         self.config = config
-        self.minimum_restaurant_threshold = getattr(config, 'MIN_DATABASE_RESTAURANTS', 3)
 
-        # Initialize DeepSeek for single batch analysis
+        # Basic settings
+        self.minimum_restaurant_threshold = getattr(config, 'MIN_DATABASE_RESTAURANTS', 3)
+        self.ai_evaluation_enabled = getattr(config, 'DATABASE_AI_EVALUATION', True)  # Enable by default
+
+        # Initialize Deepseek components for semantic search
         self.llm = ChatDeepSeek(
             model_name=config.DEEPSEEK_MODEL,
             temperature=0.1
         )
 
-        # Setup optimized prompts
+        # Setup AI prompts
         self._setup_prompts()
-        logger.info("🚀 Optimized DatabaseSearchAgent initialized (single API call approach)")
+
+    
+        logger.info(f"DatabaseSearchAgent initialized with semantic search capabilities")
 
     def _setup_prompts(self):
-        """Setup optimized prompts for batch analysis"""
+        """Setup AI prompts for different analysis tasks"""
 
-        # Single batch analysis prompt - analyzes ALL restaurants at once
-        self.batch_analysis_prompt = ChatPromptTemplate.from_template("""
-USER QUERY: {{raw_query}}
-LOCATION: {{destination}}
+        # Query intent analysis
+        self.intent_analysis_prompt = ChatPromptTemplate.from_template("""
+You are an expert at understanding restaurant search queries. Analyze the user's intent and extract key information.
 
-You are analyzing restaurants from our database to see which ones match the user's query.
+USER QUERY: "{query}"
+DESTINATION: "{destination}"
 
-RESTAURANT LIST:
-{{restaurants_text}}
+Analyze this query and extract:
 
-TASK: Analyze this list and return the restaurant IDs that best match the user's query.
+1. **search_intent**: What is the user primarily looking for? (cuisine_specific, atmosphere_specific, meal_specific, bar_drinks, general_dining, special_occasion)
 
-MATCHING CRITERIA:
-- Cuisine type relevance (direct matches, related cuisines)
-- Atmosphere and dining style 
-- Special features mentioned (wine lists, vegan options, price range, etc.)
-- Quality indicators from descriptions
+2. **specificity_level**: How specific is the request? (very_specific, moderately_specific, general)
 
-SCORING:
-- Perfect match (9-10): Direct cuisine match + special features match
-- High relevance (7-8): Strong cuisine or feature match
-- Moderate relevance (5-6): Some connection to query
-- Low relevance (3-4): Weak connection
-- Not relevant (0-2): No meaningful connection
+3. **key_concepts**: List the 3-5 most important concepts the user cares about
 
-Return ONLY valid JSON with the top matches:
+4. **search_context**: Brief description of what would make a restaurant relevant
+
+IMPORTANT: Focus on the user's actual intent, not just keywords. Consider synonyms, related concepts, and implicit meanings.
+
+Return ONLY valid JSON:
 {{
-    "selected_restaurants": [
-        {{
-            "id": "restaurant_id",
-            "name": "restaurant_name", 
-            "relevance_score": 8,
-            "reasoning": "why this restaurant matches"
-        }}
-    ],
-    "total_analyzed": number_of_restaurants_analyzed,
-    "query_analysis": "brief analysis of what user is looking for"
+    "search_intent": "...",
+    "specificity_level": "...",
+    "key_concepts": ["concept1", "concept2", "concept3"],
+    "search_context": "..."
 }}
-
-IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality over quantity.
 """)
 
-        # Quality evaluation prompt - decides if results are sufficient
-        self.quality_evaluation_prompt = ChatPromptTemplate.from_template("""
-USER QUERY: {{raw_query}}
-LOCATION: {{destination}}
+        # Restaurant relevance evaluation
+        self.relevance_analysis_prompt = ChatPromptTemplate.from_template("""
+USER QUERY INTENT: {search_context}
+KEY CONCEPTS: {key_concepts}
 
-DATABASE RESULTS ({{restaurant_count}} restaurants found):
-{{restaurants_summary}}
+RESTAURANT TO EVALUATE:
+Name: {restaurant_name}
+Cuisine Tags: {cuisine_tags}
+Description: {description}
 
-Evaluate if these database results sufficiently answer the user's query.
+Analyze how well this restaurant matches the user's search intent.
 
 Consider:
+- Direct cuisine/style matches
+- Semantic similarity (e.g., "middle eastern" relates to "israeli")
+- Implied characteristics from description
+- Atmosphere and dining style
+- Menu specialties and focus
+
+Rate the relevance on a scale of 0-10:
+- 0-2: Not relevant at all
+- 3-4: Slightly relevant 
+- 5-6: Moderately relevant
+- 7-8: Highly relevant
+- 9-10: Perfect match
+
+Return ONLY valid JSON:
+{{
+    "relevance_score": 0-10,
+    "reasoning": "Brief explanation of why this score was given",
+    "matching_aspects": ["list", "of", "matching", "elements"]
+}}
+""")
+
+        # Results quality evaluation
+        self.quality_evaluation_prompt = ChatPromptTemplate.from_template("""
+User Query: {raw_query}
+Location: {destination}
+
+Found {restaurant_count} restaurants:
+{restaurants_summary}
+
+Evaluate if these results sufficiently answer the user's query.
+Consider:
 - Do the restaurants match the query intent?
-- Is there enough variety for the user?
-- Are the descriptions detailed enough?
-- Would web search likely find significantly better options?
+- Is the variety appropriate?
+- Are descriptions detailed enough?
+- Would web search add significant value?
 
 Return JSON:
 {{
     "sufficient": true/false,
     "confidence": 0-10,
-    "reasoning": "explanation of decision",
-    "missing_aspects": ["what might be missing if insufficient"]
+    "reasoning": "explanation",
+    "missing_aspects": ["what's missing if insufficient"]
 }}
 """)
 
     @log_function_call
     def search_and_evaluate(self, query_analysis: Dict[str, Any]) -> Dict[str, Any]:
         """
-        OPTIMIZED: Main method using single API call approach
+        Main method: Search database with semantic matching and decide if results are sufficient.
+
+        Args:
+            query_analysis: Output from QueryAnalyzer containing destination, raw_query, etc.
+
+        Returns:
+            Dict containing:
+            - has_database_content: bool
+            - database_results: List[Dict] (if has_database_content=True)
+            - content_source: str ("database" or "web_search")
+            - evaluation_details: Dict (for debugging/monitoring)
         """
         try:
-            logger.info("🗃️ STARTING OPTIMIZED DATABASE SEARCH (single API call)")
+            logger.info("🗃️ STARTING SEMANTIC DATABASE SEARCH AND EVALUATION")
 
             # Extract data from query analysis
             destination = query_analysis.get("destination", "Unknown")
@@ -121,205 +159,398 @@ Return JSON:
                 logger.info("⚠️ No destination detected, will use web search")
                 return self._create_web_search_response("no_destination")
 
-            # Get all restaurants for the city
-            all_restaurants = self._get_restaurants_for_city(destination)
-
-            if not all_restaurants:
-                logger.info("📭 No restaurants found in database for this city")
-                return self._create_web_search_response("no_restaurants_in_city")
-
-            logger.info(f"📊 Database query returned {len(all_restaurants)} restaurants for {destination}")
-
-            # OPTIMIZATION: Analyze all restaurants in a single API call
-            selected_restaurants = self._batch_analyze_restaurants(
-                all_restaurants, 
-                raw_query, 
-                destination
+            # Perform semantic search
+            relevant_restaurants, should_scrape = self._search_database_intelligently(
+                query=raw_query,
+                destination=destination,
+                min_results=self.minimum_restaurant_threshold,
+                max_results=8
             )
 
-            if not selected_restaurants:
-                logger.info("📭 No relevant restaurants found after batch analysis")
+            if not relevant_restaurants:
+                logger.info("📭 No relevant restaurants found in database")
                 return self._create_web_search_response("no_relevant_results")
 
             # Evaluate quality of results
             quality_evaluation = self._evaluate_results_quality(
-                selected_restaurants,
-                raw_query,
-                destination
+                restaurants=relevant_restaurants,
+                raw_query=raw_query,
+                destination=destination
             )
 
             # Make final decision
-            if quality_evaluation["sufficient"]:
-                logger.info(f"✅ DATABASE SUFFICIENT: {len(selected_restaurants)} relevant restaurants found")
-                return self._create_database_response(selected_restaurants, quality_evaluation)
+            if quality_evaluation["sufficient"] and not should_scrape:
+                logger.info(f"✅ DATABASE SUFFICIENT: {len(relevant_restaurants)} relevant restaurants found")
+                return self._create_database_response(relevant_restaurants, quality_evaluation)
             else:
                 logger.info(f"🌐 WEB SEARCH NEEDED: {quality_evaluation.get('reasoning', 'Insufficient results')}")
                 return self._create_web_search_response(quality_evaluation.get("reasoning", "insufficient_quality"))
 
         except Exception as e:
-            logger.error(f"❌ Error in optimized database search: {e}")
-            return self._create_web_search_response(f"database_error: {str(e)}")
+            logger.error(f"❌ Error in semantic database search: {e}")
+            dump_chain_state("database_search_error", {
+                "error": str(e),
+                "destination": query_analysis.get("destination", "Unknown")
+            })
+            return self._create_web_search_response("error")
 
-    def _get_restaurants_for_city(self, city: str) -> List[Dict[str, Any]]:
+    def _search_database_intelligently(
+        self, 
+        query: str, 
+        destination: str, 
+        min_results: int = 2,
+        max_results: int = 8
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """
+        AI-powered semantic search for relevant restaurants
+        """
+        try:
+            logger.info(f"🤖 AI semantic search: '{query}' in {destination}")
+
+            # Extract city from destination
+            city = self._extract_city(destination)
+
+            # Get all restaurants for the city
+            all_restaurants = self._get_all_city_restaurants(city)
+
+            if not all_restaurants:
+                logger.info(f"📭 No restaurants in database for {city}")
+                return [], True
+
+            # Analyze the query intent
+            query_analysis = self._analyze_query_intent(query, destination)
+            logger.info(f"🧠 Query analysis: {query_analysis.get('search_intent')} - {query_analysis.get('specificity_level')}")
+
+            # Find relevant restaurants using AI analysis
+            relevant_restaurants = self._find_semantically_relevant_restaurants(
+                all_restaurants, query_analysis, max_results * 2  # Get more for better filtering
+            )
+
+            # Apply final filtering and ranking
+            final_restaurants = self._final_ranking_and_filtering(
+                relevant_restaurants, query_analysis, max_results
+            )
+
+            # Determine if web scraping is needed
+            should_scrape = len(final_restaurants) < min_results
+
+            logger.info(
+                f"📊 Semantic search results: {len(final_restaurants)}/{len(all_restaurants)} restaurants relevant, "
+                f"scraping needed: {should_scrape}"
+            )
+
+            return final_restaurants, should_scrape
+
+        except Exception as e:
+            logger.error(f"❌ Error in semantic database search: {e}")
+            return [], True
+
+    def _extract_city(self, destination: str) -> str:
+        """Extract city name from destination string"""
+        if "," in destination:
+            return destination.split(",")[0].strip()
+        return destination.strip()
+
+    def _get_all_city_restaurants(self, city: str) -> List[Dict[str, Any]]:
         """Get all restaurants for a city from database"""
         try:
+            # Import database utility and search
             from utils.database import get_database
             db = get_database()
 
-            # Get restaurants ordered by mention count (most mentioned first)
-            restaurants = db.get_restaurants_by_city(city, limit=100)
-            return restaurants
+            # Query with generous limit to get full picture
+            database_restaurants = db.get_restaurants_by_city(city, limit=100)
+
+            logger.info(f"📊 Database query returned {len(database_restaurants) if database_restaurants else 0} restaurants for {city}")
+
+            return database_restaurants or []
 
         except Exception as e:
-            logger.error(f"Error getting restaurants for {city}: {e}")
+            logger.error(f"❌ Error searching database for {city}: {e}")
             return []
 
-    def _batch_analyze_restaurants(
-        self, 
-        restaurants: List[Dict[str, Any]], 
-        raw_query: str, 
-        destination: str
-    ) -> List[Dict[str, Any]]:
-        """
-        OPTIMIZATION: Analyze ALL restaurants in a single API call
-        instead of individual evaluations
-        """
+    def _analyze_query_intent(self, query: str, destination: str) -> Dict[str, Any]:
+        """Use AI to analyze query intent and extract key concepts"""
         try:
-            # Compile all restaurant data into a single text for analysis
-            restaurants_text = self._compile_restaurants_for_analysis(restaurants)
+            # Create the chain by combining prompt and LLM
+            chain = self.intent_analysis_prompt | self.llm
 
-            logger.info(f"🧠 Batch analyzing {len(restaurants)} restaurants in single API call...")
-
-            # Create the analysis chain
-            chain = self.batch_analysis_prompt | self.llm
-
-            # Single API call to analyze all restaurants
             response = chain.invoke({
-                "raw_query": raw_query,
-                "destination": destination,
-                "restaurants_text": restaurants_text
+                "query": query,
+                "destination": destination
             })
 
-            # Parse the response
+            # Get the content from the response
             content = response.content.strip()
+
+            # Parse the AI response
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
                 content = content.split("```")[1].split("```")[0].strip()
 
-            analysis_result = json.loads(content)
+            if not content:
+                raise ValueError("Empty response from AI")
 
-            # Map the selected restaurant IDs back to full restaurant data
-            selected_restaurants = self._map_selected_restaurants(
-                analysis_result.get("selected_restaurants", []),
-                restaurants
-            )
+            analysis = json.loads(content)
 
-            logger.info(f"✅ Batch analysis complete: {len(selected_restaurants)} restaurants selected")
+            # Validate required fields
+            required_fields = ["search_intent", "specificity_level", "key_concepts", "search_context"]
+            for field in required_fields:
+                if field not in analysis:
+                    raise ValueError(f"Missing required field: {field}")
 
-            return selected_restaurants
+            return analysis
 
         except Exception as e:
-            logger.error(f"Error in batch restaurant analysis: {e}")
-            # Fallback to simple keyword matching if AI analysis fails
-            return self._fallback_keyword_matching(restaurants, raw_query)
+            logger.error(f"❌ Error analyzing query intent: {e}")
+            # Fallback analysis
+            return self._create_fallback_analysis(query)
 
-    def _compile_restaurants_for_analysis(self, restaurants: List[Dict[str, Any]]) -> str:
-        """
-        Compile all restaurant data into optimized text format for single AI analysis
-        """
-        compiled_text = []
+    def _create_fallback_analysis(self, query: str) -> Dict[str, Any]:
+        """Create a fallback analysis when AI fails"""
+        query_lower = query.lower()
 
-        for restaurant in restaurants:
-            # Extract key information
-            restaurant_id = restaurant.get('id', 'unknown')
-            name = restaurant.get('name', 'Unknown')
-            cuisine_tags = ', '.join(restaurant.get('cuisine_tags', []))
-            description = restaurant.get('raw_description', '')[:300]  # Truncate to save tokens
-            mention_count = restaurant.get('mention_count', 1)
+        # Basic cuisine detection
+        cuisine_keywords = {
+            "persian": ["persian", "iranian"],
+            "italian": ["italian", "pasta", "pizza"],
+            "japanese": ["japanese", "sushi", "ramen"],
+            "chinese": ["chinese"],
+            "indian": ["indian", "curry"],
+            "thai": ["thai"],
+            "mexican": ["mexican", "tacos"],
+            "french": ["french"],
+            "israeli": ["israeli"],
+            "turkish": ["turkish"],
+            "korean": ["korean"],
+            "lebanese": ["lebanese"],
+            "vietnamese": ["vietnamese"]
+        }
 
-            # Format for analysis (keep it concise)
-            restaurant_entry = f"ID: {restaurant_id} | {name} | Tags: {cuisine_tags} | Mentions: {mention_count} | Desc: {description}"
-            compiled_text.append(restaurant_entry)
+        detected_cuisines = []
+        for cuisine, keywords in cuisine_keywords.items():
+            if any(keyword in query_lower for keyword in keywords):
+                detected_cuisines.append(cuisine)
 
-        return "\n".join(compiled_text)
+        # Determine intent based on detected elements
+        if detected_cuisines:
+            search_intent = "cuisine_specific"
+            specificity_level = "very_specific"
+            key_concepts = detected_cuisines + ["restaurants", "dining"]
+            search_context = f"Restaurants serving {' or '.join(detected_cuisines)} cuisine"
+        elif "bar" in query_lower or "cocktail" in query_lower:
+            search_intent = "bar_drinks"
+            specificity_level = "very_specific"
+            key_concepts = ["cocktails", "bar", "drinks"]
+            search_context = "Bars specializing in cocktails and mixed drinks"
+        elif "brunch" in query_lower:
+            search_intent = "meal_specific"
+            specificity_level = "very_specific"
+            key_concepts = ["brunch", "breakfast", "coffee"]
+            search_context = "Restaurants serving brunch and breakfast"
+        else:
+            search_intent = "general_dining"
+            specificity_level = "general"
+            key_concepts = ["restaurants", "dining"]
+            search_context = f"General restaurants related to: {query}"
 
-    def _map_selected_restaurants(
-        self, 
-        selected_data: List[Dict[str, Any]], 
-        all_restaurants: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """
-        Map AI-selected restaurant IDs back to full restaurant data
-        """
-        selected_restaurants = []
+        return {
+            "search_intent": search_intent,
+            "specificity_level": specificity_level,
+            "key_concepts": key_concepts,
+            "search_context": search_context
+        }
 
-        # Create a lookup dict for fast access
-        restaurant_lookup = {str(r.get('id')): r for r in all_restaurants}
-
-        for selection in selected_data:
-            restaurant_id = str(selection.get('id', ''))
-
-            if restaurant_id in restaurant_lookup:
-                restaurant = restaurant_lookup[restaurant_id].copy()
-
-                # Add AI analysis metadata
-                restaurant['_ai_relevance_score'] = selection.get('relevance_score', 5)
-                restaurant['_ai_reasoning'] = selection.get('reasoning', '')
-
-                selected_restaurants.append(restaurant)
-            else:
-                logger.warning(f"Restaurant ID {restaurant_id} not found in lookup")
-
-        # Sort by relevance score
-        selected_restaurants.sort(key=lambda r: r.get('_ai_relevance_score', 0), reverse=True)
-
-        return selected_restaurants
-
-    def _fallback_keyword_matching(
+    def _find_semantically_relevant_restaurants(
         self, 
         restaurants: List[Dict[str, Any]], 
-        raw_query: str
+        query_analysis: Dict[str, Any],
+        max_candidates: int
     ) -> List[Dict[str, Any]]:
-        """
-        Fallback keyword matching if AI analysis fails
-        """
-        logger.info("🔄 Using fallback keyword matching")
+        """Use AI to evaluate each restaurant's relevance to the query"""
 
-        query_words = raw_query.lower().split()
-        matched_restaurants = []
+        relevant_restaurants = []
+        search_context = query_analysis.get("search_context", "")
+        key_concepts = query_analysis.get("key_concepts", [])
 
-        for restaurant in restaurants:
-            score = 0
+        logger.info(f"🔍 Evaluating {len(restaurants)} restaurants for relevance...")
 
-            # Check name
-            name = restaurant.get('name', '').lower()
-            for word in query_words:
-                if word in name:
-                    score += 2
+        # Process restaurants in batches to avoid hitting rate limits
+        batch_size = 5
+        for i in range(0, len(restaurants), batch_size):
+            batch = restaurants[i:i + batch_size]
 
-            # Check cuisine tags
-            cuisine_tags = [tag.lower() for tag in restaurant.get('cuisine_tags', [])]
-            for word in query_words:
-                for tag in cuisine_tags:
-                    if word in tag or tag in word:
-                        score += 3
+            for restaurant in batch:
+                try:
+                    # Evaluate restaurant relevance
+                    relevance_data = self._evaluate_restaurant_relevance(
+                        restaurant, search_context, key_concepts
+                    )
 
-            # Check description
-            description = restaurant.get('raw_description', '').lower()
-            for word in query_words:
-                if word in description:
-                    score += 1
+                    relevance_score = relevance_data.get("relevance_score", 0)
 
-            if score >= 2:  # Minimum threshold
-                restaurant_copy = restaurant.copy()
-                restaurant_copy['_ai_relevance_score'] = min(10, score)
-                restaurant_copy['_ai_reasoning'] = f"Keyword matching (score: {score})"
-                matched_restaurants.append(restaurant_copy)
+                    # Only include restaurants with meaningful relevance
+                    if relevance_score >= 5:  # Moderate relevance threshold
+                        restaurant_copy = restaurant.copy()
+                        restaurant_copy['_ai_relevance_score'] = relevance_score
+                        restaurant_copy['_ai_reasoning'] = relevance_data.get("reasoning", "")
+                        restaurant_copy['_matching_aspects'] = relevance_data.get("matching_aspects", [])
+                        relevant_restaurants.append(restaurant_copy)
 
-        # Sort by score and return top matches
-        matched_restaurants.sort(key=lambda r: r.get('_ai_relevance_score', 0), reverse=True)
-        return matched_restaurants[:8]
+                except Exception as e:
+                    logger.warning(f"Error evaluating restaurant {restaurant.get('name', 'unknown')}: {e}")
+                    continue
+
+            # Early exit if we have enough highly relevant results
+            if len([r for r in relevant_restaurants if r['_ai_relevance_score'] >= 8]) >= max_candidates:
+                break
+
+        logger.info(f"✅ Found {len(relevant_restaurants)} semantically relevant restaurants")
+        return relevant_restaurants
+
+    def _evaluate_restaurant_relevance(
+        self, 
+        restaurant: Dict[str, Any], 
+        search_context: str, 
+        key_concepts: List[str]
+    ) -> Dict[str, Any]:
+        """Use AI to evaluate how relevant a restaurant is to the search query"""
+
+        try:
+            # Prepare restaurant data for analysis
+            cuisine_tags = restaurant.get('cuisine_tags', [])
+            description = restaurant.get('raw_description', '')[:500]  # Truncate for efficiency
+            name = restaurant.get('name', 'Unknown')
+
+            # Create the chain by combining prompt and LLM
+            chain = self.relevance_analysis_prompt | self.llm
+
+            response = chain.invoke({
+                "search_context": search_context,
+                "key_concepts": ", ".join(key_concepts),
+                "restaurant_name": name,
+                "cuisine_tags": ", ".join(cuisine_tags),
+                "description": description
+            })
+
+            # Get content from response
+            content = response.content.strip()
+
+            # Parse response
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+
+            if not content:
+                raise ValueError("Empty response from AI")
+
+            relevance_data = json.loads(content)
+
+            # Validate score
+            score = relevance_data.get("relevance_score", 0)
+            if not isinstance(score, (int, float)) or score < 0 or score > 10:
+                score = 0
+
+            relevance_data["relevance_score"] = score
+            return relevance_data
+
+        except Exception as e:
+            logger.error(f"Error in AI relevance evaluation: {e}")
+            # Fallback to simple keyword matching
+            return self._fallback_relevance_evaluation(restaurant, key_concepts)
+
+    def _fallback_relevance_evaluation(
+        self, 
+        restaurant: Dict[str, Any], 
+        key_concepts: List[str]
+    ) -> Dict[str, Any]:
+        """Fallback relevance evaluation using keyword matching"""
+
+        cuisine_tags = [tag.lower() for tag in restaurant.get('cuisine_tags', [])]
+        description = restaurant.get('raw_description', '').lower()
+        name = restaurant.get('name', '').lower()
+
+        score = 0
+        matching_aspects = []
+
+        # Check each key concept
+        for concept in key_concepts:
+            concept_lower = concept.lower()
+
+            # Direct tag match (highest score)
+            if concept_lower in cuisine_tags:
+                score += 3
+                matching_aspects.append(f"cuisine tag: {concept}")
+            # Name match
+            elif concept_lower in name:
+                score += 2
+                matching_aspects.append(f"name contains: {concept}")
+            # Description match
+            elif concept_lower in description:
+                score += 1
+                matching_aspects.append(f"description mentions: {concept}")
+
+        # Normalize score to 0-10 scale
+        max_possible_score = len(key_concepts) * 3
+        if max_possible_score > 0:
+            normalized_score = min(10, (score / max_possible_score) * 10)
+        else:
+            normalized_score = 0
+
+        return {
+            "relevance_score": int(normalized_score),
+            "reasoning": f"Keyword matching found {len(matching_aspects)} matches",
+            "matching_aspects": matching_aspects
+        }
+
+    def _final_ranking_and_filtering(
+        self, 
+        restaurants: List[Dict[str, Any]], 
+        query_analysis: Dict[str, Any],
+        max_results: int
+    ) -> List[Dict[str, Any]]:
+        """Apply final ranking combining AI relevance with other factors"""
+
+        if not restaurants:
+            return []
+
+        # Sort by AI relevance score first, then by mention count
+        restaurants.sort(
+            key=lambda r: (
+                r.get('_ai_relevance_score', 0),
+                r.get('mention_count', 1)
+            ),
+            reverse=True
+        )
+
+        # For very specific queries, be more strict
+        specificity = query_analysis.get("specificity_level", "general")
+        if specificity == "very_specific":
+            # Only keep restaurants with high relevance scores
+            restaurants = [r for r in restaurants if r.get('_ai_relevance_score', 0) >= 7]
+        elif specificity == "moderately_specific":
+            # Keep moderately relevant and above
+            restaurants = [r for r in restaurants if r.get('_ai_relevance_score', 0) >= 6]
+
+        # Remove AI scoring fields before returning
+        final_restaurants = []
+        for restaurant in restaurants[:max_results]:
+            cleaned = restaurant.copy()
+
+            # Log the AI reasoning for debugging
+            ai_score = cleaned.pop('_ai_relevance_score', 0)
+            ai_reasoning = cleaned.pop('_ai_reasoning', '')
+            matching_aspects = cleaned.pop('_matching_aspects', [])
+
+            logger.info(
+                f"🎯 Selected: {cleaned.get('name')} (score: {ai_score}) - {ai_reasoning}"
+            )
+
+            final_restaurants.append(cleaned)
+
+        return final_restaurants
 
     def _evaluate_results_quality(
         self,
@@ -327,14 +558,13 @@ Return JSON:
         raw_query: str,
         destination: str
     ) -> Dict[str, Any]:
-        """
-        Evaluate if results are sufficient (second API call if needed)
-        """
-        try:
-            # Format restaurants summary for evaluation
-            restaurants_summary = self._format_restaurants_for_evaluation(restaurants[:8])
+        """Use AI to assess if results are good enough to skip web search"""
 
-            # Create the evaluation chain
+        try:
+            # Format restaurants summary
+            restaurants_summary = self._format_restaurants_for_evaluation(restaurants[:10])  # Limit to 10 for evaluation
+
+            # Create the chain
             chain = self.quality_evaluation_prompt | self.llm
 
             response = chain.invoke({
@@ -352,6 +582,8 @@ Return JSON:
                 content = content.split("```")[1].split("```")[0].strip()
 
             evaluation = json.loads(content)
+
+            # Validate and enhance evaluation
             evaluation["restaurant_count"] = len(restaurants)
             evaluation["evaluation_method"] = "ai_quality_assessment"
 
@@ -359,7 +591,7 @@ Return JSON:
 
         except Exception as e:
             logger.error(f"Error in quality evaluation: {e}")
-            # Fallback evaluation
+            # Fallback to simple count-based evaluation
             return {
                 "sufficient": len(restaurants) >= self.minimum_restaurant_threshold,
                 "confidence": 5,
@@ -369,41 +601,32 @@ Return JSON:
             }
 
     def _format_restaurants_for_evaluation(self, restaurants: List[Dict[str, Any]]) -> str:
-        """Format restaurant data for quality evaluation"""
+        """Format restaurant data for AI evaluation"""
         formatted = []
         for i, rest in enumerate(restaurants, 1):
             name = rest.get('name', 'Unknown')
             tags = ', '.join(rest.get('cuisine_tags', [])[:3])
-            score = rest.get('_ai_relevance_score', 0)
-            reasoning = rest.get('_ai_reasoning', '')[:50]
-            formatted.append(f"{i}. {name} (Score: {score}) - {tags} - {reasoning}")
+            desc = rest.get('raw_description', '')[:100]
+            formatted.append(f"{i}. {name} - {tags} - {desc}...")
         return "\n".join(formatted)
+
 
     def _create_database_response(
         self, 
         database_restaurants: List[Dict[str, Any]], 
         evaluation_result: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Create response indicating database content should be used"""
-        # Clean up AI metadata before returning
-        cleaned_restaurants = []
-        for restaurant in database_restaurants:
-            cleaned = restaurant.copy()
-            # Remove AI analysis fields
-            cleaned.pop('_ai_relevance_score', None)
-            cleaned.pop('_ai_reasoning', None)
-            cleaned_restaurants.append(cleaned)
-
+        """Create response indicating database content should be used."""
         return {
             "has_database_content": True,
-            "database_results": cleaned_restaurants,
+            "database_results": database_restaurants,
             "content_source": "database",
             "evaluation_details": evaluation_result,
-            "skip_web_search": True
+            "skip_web_search": True  # Important flag for orchestrator
         }
 
     def _create_web_search_response(self, reason: str) -> Dict[str, Any]:
-        """Create response indicating web search should be used"""
+        """Create response indicating web search should be used."""
         return {
             "has_database_content": False,
             "database_results": [],
@@ -416,22 +639,28 @@ Return JSON:
             "skip_web_search": False
         }
 
-    # ============ UTILITY METHODS ============
-
     def get_stats(self) -> Dict[str, Any]:
-        """Get statistics about database search performance"""
+        """Get statistics about database search performance."""
         try:
             from utils.database import get_database
             db = get_database()
             stats = db.get_database_stats()
-            stats["optimization"] = "single_api_call_batch_analysis"
+
+            # Add semantic search specific stats
+            stats["semantic_search_enabled"] = self.ai_evaluation_enabled
+        
             return stats
         except Exception as e:
             logger.error(f"Error getting database stats: {e}")
             return {"error": str(e)}
 
     def set_minimum_threshold(self, new_threshold: int):
-        """Update the minimum restaurant threshold"""
+        """Update the minimum restaurant threshold."""
         old_threshold = self.minimum_restaurant_threshold
         self.minimum_restaurant_threshold = new_threshold
         logger.info(f"Updated minimum restaurant threshold: {old_threshold} → {new_threshold}")
+
+    def enable_ai_evaluation(self, enabled: bool = True):
+        """Enable or disable AI evaluation."""
+        self.ai_evaluation_enabled = enabled
+        logger.info(f"AI evaluation {'enabled' if enabled else 'disabled'}")

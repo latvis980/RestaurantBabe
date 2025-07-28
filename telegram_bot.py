@@ -1,4 +1,4 @@
-# telegram_bot.py - UPDATED with raw query preservation
+# telegram_bot.py - Updated with /cancel command functionality
 import telebot
 import logging
 import time
@@ -28,7 +28,7 @@ conversation_ai = ChatOpenAI(
     temperature=0.3
 )
 
-# Simple conversation history storage - UPDATED to store raw user inputs
+# Simple conversation history storage
 user_conversations = {}
 
 # CANCEL COMMAND FUNCTIONALITY
@@ -58,27 +58,6 @@ def is_search_cancelled(user_id):
         return active_searches[user_id]["cancel_event"].is_set()
     return False
 
-# NEW FUNCTION: Get compiled raw query from conversation history
-def get_compiled_raw_query(user_id):
-    """
-    Compile the user's raw input from recent conversation messages.
-    This captures the user's actual intent in their own words.
-    """
-    if user_id not in user_conversations:
-        return ""
-
-    # Get recent user messages (not bot responses)
-    recent_user_messages = [
-        msg["message"] for msg in user_conversations[user_id][-5:]  # Last 5 messages
-        if msg["role"] == "user"
-    ]
-
-    # Join them with spaces to create compiled raw query
-    compiled_raw_query = " ".join(recent_user_messages)
-
-    logger.info(f"Compiled raw query for user {user_id}: {compiled_raw_query}")
-    return compiled_raw_query
-
 # Welcome message (unchanged)
 WELCOME_MESSAGE = (
     "🍸 Hello! I'm an AI assistant Restaurant Babe, and I know all about the most delicious and trendy restaurants, cafes, bakeries, bars, and coffee shops around the world.\n\n"
@@ -88,8 +67,7 @@ WELCOME_MESSAGE = (
     "<i>Where can I find the most delicious plov in Tashkent?</i>\n"
     "<i>Recommend places with brunch and specialty coffee in Barcelona.</i>\n"
     "<i>Best cocktail bars in Paris's Marais district</i>\n\n"
-    "I will check with my restaurant critic friends and provide the best recommendations. "
-    "This might take a couple of minutes because I search very carefully and thoroughly verify the results. But there won't be any random places in my list.\n\n"
+    "I will check with my restaurant critic friends and provide the best recommendations. This might take a couple of minutes because I search very carefully and thoroughly verify the results. But there won't be any random places in my list.\n\n"
     "💡 <b>Tip:</b> If you change your mind while I'm searching, just type /cancel to stop the current search.\n\n"
     "Shall we begin?"
 )
@@ -361,25 +339,14 @@ def handle_test_search(message):
 
     threading.Thread(target=run_search_test, daemon=True).start()
 
-# UPDATED FUNCTION: Now preserves both raw query and search query
 def perform_restaurant_search(search_query, chat_id, user_id):
-    """
-    Perform restaurant search using orchestrator with cancellation support.
-    UPDATED: Now preserves both the raw user query and formatted search query.
-    """
+    """Perform restaurant search using orchestrator with cancellation support"""
     cancel_event = None
     processing_msg = None
 
     try:
         # Create cancellation event for this search
         cancel_event = create_cancel_event(user_id, chat_id)
-
-        # IMPORTANT: Get the compiled raw query from conversation history
-        compiled_raw_query = get_compiled_raw_query(user_id)
-
-        logger.info(f"🔍 Search initiated for user {user_id}")
-        logger.info(f"📝 Raw user query: {compiled_raw_query}")
-        logger.info(f"🎯 Formatted search query: {search_query}")
 
         # Send processing message
         processing_msg = bot.send_message(
@@ -389,6 +356,8 @@ def perform_restaurant_search(search_query, chat_id, user_id):
             parse_mode='HTML'
         )
 
+        logger.info(f"Started restaurant search for user {user_id}: {search_query}")
+
         # Check for cancellation before starting the actual search
         if is_search_cancelled(user_id):
             logger.info(f"Search cancelled before processing for user {user_id}")
@@ -397,13 +366,11 @@ def perform_restaurant_search(search_query, chat_id, user_id):
         # Get orchestrator using singleton pattern
         orchestrator_instance = get_orchestrator()
 
-        # UPDATED: Pass both raw query and search query to orchestrator
-        # The orchestrator will use search_query for actual searching, 
-        # but preserve compiled_raw_query for AI evaluation
-        result = orchestrator_instance.process_query(
-            user_query=search_query,  # Used for search engine queries
-            raw_user_query=compiled_raw_query  # Used for AI evaluation and matching
-        )
+        # The orchestrator doesn't support cancellation directly, but we can check periodically
+        # For now, we'll run the search and check cancellation afterward
+        # In a future update, you could modify the orchestrator to accept a cancel_event
+
+        result = orchestrator_instance.process_query(search_query)
 
         # Check if cancelled after processing
         if is_search_cancelled(user_id):
@@ -531,7 +498,7 @@ def handle_message(message):
                 # Send the bot response
                 bot.reply_to(message, bot_response, parse_mode='HTML')
 
-                # UPDATED: Now the search function will handle both raw and formatted queries
+                # Perform the search in background
                 threading.Thread(
                     target=perform_restaurant_search,
                     args=(search_query, message.chat.id, user_id),
@@ -592,13 +559,10 @@ def main():
                 logger.error("Another bot instance is running! Stopping this instance.")
                 break
             else:
-                logger.error(f"Bot error: {e}")
+                logger.error(f"Telegram API error: {e}")
                 time.sleep(5)
-        except KeyboardInterrupt:
-            logger.info("Bot stopped by user")
-            break
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
+            logger.error(f"Unexpected bot error: {e}")
             time.sleep(5)
 
 if __name__ == "__main__":
