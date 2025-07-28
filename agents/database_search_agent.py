@@ -35,6 +35,8 @@ class DatabaseSearchAgent:
         """
         Main method: Search database and decide if results are sufficient.
 
+        This method handles ALL database logic including intelligent search.
+
         Args:
             query_analysis: Output from QueryAnalyzer containing destination, etc.
 
@@ -44,17 +46,123 @@ class DatabaseSearchAgent:
             - database_results: List[Dict] (if has_database_content=True)
             - content_source: str ("database" or "web_search")
             - evaluation_details: Dict (for debugging/monitoring)
+            - skip_web_search: bool (routing flag for orchestrator)
         """
         try:
             logger.info("🗃️ STARTING DATABASE SEARCH AND EVALUATION")
 
-            # Extract destination from query analysis
+            # Extract destination and query from query analysis
             destination = query_analysis.get("destination", "Unknown")
             original_query = query_analysis.get("query", "")
 
             if destination == "Unknown":
                 logger.info("⚠️ No destination detected, will use web search")
                 return self._create_web_search_response("no_destination")
+
+            if not original_query.strip():
+                logger.warning("⚠️ No search query found")
+                return self._create_web_search_response("no_query")
+
+            # Try intelligent database search first (if available)
+            try:
+                intelligent_result = self._try_intelligent_search(original_query, destination)
+                if intelligent_result:
+                    return intelligent_result
+
+            except ImportError:
+                logger.info("🗃️ Intelligent search not available, using standard database search")
+            except Exception as e:
+                logger.warning(f"⚠️ Intelligent search failed: {e}, falling back to standard search")
+
+            # Standard database search and evaluation
+            return self._standard_database_search(destination, original_query, query_analysis)
+
+        except Exception as e:
+            logger.error(f"❌ Error in database search agent: {e}")
+            dump_chain_state("database_search_error", {
+                "error": str(e),
+                "destination": query_analysis.get("destination", "Unknown")
+            })
+            return self._create_web_search_response("error")
+
+    def _try_intelligent_search(self, search_query: str, destination: str) -> Optional[Dict[str, Any]]:
+        """
+        Try intelligent database search (if available).
+
+        Returns:
+            Dict with search results if successful, None if should fall back to standard search
+        """
+        try:
+            from utils.intelligent_db_search import search_restaurants_intelligently
+
+            logger.info(f"🧠 Trying intelligent search for: '{search_query}' in {destination}")
+
+            relevant_restaurants, should_scrape = search_restaurants_intelligently(
+                query=search_query,
+                destination=destination,
+                config=self.config,
+                min_results=2,  # Need at least 2 relevant results
+                max_results=8   # Maximum to return from database
+            )
+
+            if relevant_restaurants and not should_scrape:
+                logger.info(f"✅ Intelligent search found {len(relevant_restaurants)} restaurants - skipping web search")
+                return {
+                    "has_database_content": True, 
+                    "database_results": relevant_restaurants,
+                    "skip_web_search": True,
+                    "content_source": "database",
+                    "evaluation_details": {
+                        "sufficient": True,
+                        "reason": f"intelligent_search_found_{len(relevant_restaurants)}_restaurants",
+                        "details": {
+                            "method": "intelligent_search",
+                            "restaurant_count": len(relevant_restaurants),
+                            "should_scrape": should_scrape
+                        }
+                    }
+                }
+            elif relevant_restaurants and should_scrape:
+                logger.info(f"📊 Intelligent search found {len(relevant_restaurants)} restaurants but needs web search supplement")
+                return {
+                    "has_database_content": True, 
+                    "database_results": relevant_restaurants,
+                    "skip_web_search": False,
+                    "content_source": "database_plus_web",
+                    "evaluation_details": {
+                        "sufficient": False,
+                        "reason": f"intelligent_search_needs_supplement",
+                        "details": {
+                            "method": "intelligent_search",
+                            "restaurant_count": len(relevant_restaurants),
+                            "should_scrape": should_scrape
+                        }
+                    }
+                }
+            else:
+                logger.info("📭 No relevant restaurants found in intelligent search - trying standard search")
+                return None  # Fall back to standard search
+
+        except ImportError:
+            raise  # Re-raise ImportError to be caught by caller
+        except Exception as e:
+            logger.warning(f"⚠️ Intelligent search error: {e}")
+            return None  # Fall back to standard search
+
+    def _standard_database_search(self, destination: str, original_query: str, query_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Standard database search and evaluation logic.
+
+        Args:
+            destination: City/location to search
+            original_query: Original user query
+            query_analysis: Full query analysis from QueryAnalyzer
+
+        Returns:
+            Dict with search results and evaluation
+        """
+        try:
+            logger.info(f"🔍 Standard database search for: {destination}")
 
             # Search database for restaurants
             database_restaurants = self._search_database(destination)
@@ -75,12 +183,9 @@ class DatabaseSearchAgent:
                 return self._create_web_search_response(evaluation_result["reason"])
 
         except Exception as e:
-            logger.error(f"❌ Error in database search agent: {e}")
-            dump_chain_state("database_search_error", {
-                "error": str(e),
-                "destination": query_analysis.get("destination", "Unknown")
-            })
-            return self._create_web_search_response("error")
+            logger.error(f"❌ Error in standard database search: {e}")
+            return self._create_web_search_response(f"standard_search_error: {str(e)}")
+
 
     def _search_database(self, destination: str) -> List[Dict[str, Any]]:
         """
@@ -228,7 +333,9 @@ class DatabaseSearchAgent:
         return {
             "has_database_content": True,
             "database_results": database_restaurants,
-            "content_source": "database",
+            "content_source": evaluation_result.get("details", {}).get("method") == "intelligent_search" 
+                            and "database" or "database",
+            "skip_web_search": True,
             "evaluation_details": evaluation_result
         }
 
@@ -238,6 +345,7 @@ class DatabaseSearchAgent:
             "has_database_content": False,
             "database_results": [],
             "content_source": "web_search",
+            "skip_web_search": False,
             "evaluation_details": {
                 "sufficient": False,
                 "reason": reason,
