@@ -13,8 +13,7 @@ import logging
 import json
 import numpy as np
 from typing import Dict, List, Any, Optional, Tuple
-from langchain_community.chat_models import ChatDeepSeek
-from langchain_community.embeddings import DeepSeekEmbeddings
+from langchain_deepseek import ChatDeepSeek, DeepSeekEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from utils.debug_utils import dump_chain_state, log_function_call
 
