@@ -3,7 +3,7 @@
 Unified Database Search Agent - Combines database queries with AI-powered semantic search.
 
 This agent handles:
-1. Semantic search using DeepSeek embeddings
+1. Semantic search using DeepSeek
 2. AI evaluation of restaurant relevance
 3. Intelligent decision making about web search necessity
 4. All previous database search functionality
@@ -14,7 +14,6 @@ import json
 import numpy as np
 from typing import Dict, List, Any, Optional, Tuple
 from langchain_deepseek import ChatDeepSeek
-from langchain_community.embeddings import DeepSeekEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from utils.debug_utils import dump_chain_state, log_function_call
 
@@ -39,16 +38,10 @@ class DatabaseSearchAgent:
             temperature=0.1
         )
 
-        self.embeddings = DeepSeekEmbeddings(
-            model_name="deepseek-embedding-001"  # Replace with actual model name
-        )
-
         # Setup AI prompts
         self._setup_prompts()
 
-        # Cache for embeddings to avoid repeated API calls
-        self._embedding_cache = {}
-
+    
         logger.info(f"DatabaseSearchAgent initialized with semantic search capabilities")
 
     def _setup_prompts(self):
@@ -617,42 +610,6 @@ Return JSON:
             formatted.append(f"{i}. {name} - {tags} - {desc}...")
         return "\n".join(formatted)
 
-    def _get_embedding(self, text: str) -> List[float]:
-        """Get embedding for text with caching"""
-        if text in self._embedding_cache:
-            return self._embedding_cache[text]
-
-        try:
-            embedding = self.embeddings.embed_query(text)
-            self._embedding_cache[text] = embedding
-            return embedding
-        except Exception as e:
-            logger.error(f"Error getting embedding: {e}")
-            return []
-
-    def _calculate_semantic_similarity(self, text1: str, text2: str) -> float:
-        """Calculate semantic similarity between two texts using embeddings"""
-        try:
-            emb1 = self._get_embedding(text1)
-            emb2 = self._get_embedding(text2)
-
-            if not emb1 or not emb2:
-                return 0.0
-
-            # Calculate cosine similarity
-            dot_product = np.dot(emb1, emb2)
-            norm1 = np.linalg.norm(emb1)
-            norm2 = np.linalg.norm(emb2)
-
-            if norm1 == 0 or norm2 == 0:
-                return 0.0
-
-            similarity = dot_product / (norm1 * norm2)
-            return max(0.0, similarity)  # Ensure non-negative
-
-        except Exception as e:
-            logger.error(f"Error calculating semantic similarity: {e}")
-            return 0.0
 
     def _create_database_response(
         self, 
@@ -691,8 +648,7 @@ Return JSON:
 
             # Add semantic search specific stats
             stats["semantic_search_enabled"] = self.ai_evaluation_enabled
-            stats["embedding_cache_size"] = len(self._embedding_cache)
-
+        
             return stats
         except Exception as e:
             logger.error(f"Error getting database stats: {e}")
@@ -708,9 +664,3 @@ Return JSON:
         """Enable or disable AI evaluation."""
         self.ai_evaluation_enabled = enabled
         logger.info(f"AI evaluation {'enabled' if enabled else 'disabled'}")
-
-    def clear_embedding_cache(self):
-        """Clear the embedding cache to free memory."""
-        cache_size = len(self._embedding_cache)
-        self._embedding_cache.clear()
-        logger.info(f"Cleared embedding cache ({cache_size} entries)")
