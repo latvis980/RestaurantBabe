@@ -39,10 +39,8 @@ class Database:
 
     # ============ RESTAURANT METHODS ============
 
-    # Replace the save_restaurant method in utils/database.py with this enhanced version:
-
     def save_restaurant(self, restaurant_data: Dict[str, Any]) -> Optional[str]:
-        """Save restaurant with automatic geocoding for new restaurants"""
+        """Save restaurant with new simplified schema - SAFER coordinate approach"""
         try:
             name = restaurant_data.get('name', '').strip()
             city = restaurant_data.get('city', '').strip()
@@ -55,7 +53,7 @@ class Database:
             existing = self._find_existing_restaurant(name, city)
 
             if existing:
-                # Update existing restaurant (existing logic)
+                # Update existing restaurant
                 restaurant_id = existing['id']
 
                 # Combine descriptions
@@ -81,32 +79,19 @@ class Database:
                     'sources': combined_sources,
                     'mention_count': existing.get('mention_count', 1) + 1,
                     'last_updated': datetime.now().isoformat(),
+                    # Update address if we have a new one and existing is null
                     'address': restaurant_data.get('address') if existing.get('address') is None else existing.get('address'),
+                    # Update country if we have a new one and existing is null
                     'country': restaurant_data.get('country') if existing.get('country') is None else existing.get('country')
                 }
 
-                # Handle coordinates safely - try to add if missing
-                has_existing_coords = existing.get('latitude') is not None and existing.get('longitude') is not None
-
-                if not has_existing_coords:
-                    # Try to get coordinates from new data or geocode
-                    coordinates = None
-
-                    if restaurant_data.get('coordinates'):
-                        coords = restaurant_data['coordinates']
-                        if isinstance(coords, (list, tuple)) and len(coords) == 2:
-                            coordinates = coords
-                    elif restaurant_data.get('latitude') and restaurant_data.get('longitude'):
-                        coordinates = (restaurant_data['latitude'], restaurant_data['longitude'])
-                    elif restaurant_data.get('address'):
-                        # NEW: Geocode the address
-                        coordinates = self._geocode_address(restaurant_data['address'])
-                        if coordinates:
-                            logger.info(f"📍 Geocoded existing restaurant {name}: {coordinates}")
-
-                    if coordinates:
-                        update_data['latitude'] = coordinates[0]
-                        update_data['longitude'] = coordinates[1]
+                # Handle coordinates safely
+                if restaurant_data.get('coordinates'):
+                    coords = restaurant_data['coordinates']
+                    if isinstance(coords, (list, tuple)) and len(coords) == 2:
+                        lat, lng = coords
+                        update_data['latitude'] = lat
+                        update_data['longitude'] = lng
 
                 self.supabase.table('restaurants')\
                     .update(update_data)\
@@ -117,7 +102,7 @@ class Database:
                 return str(restaurant_id)
 
             else:
-                # Insert new restaurant - ENHANCED WITH GEOCODING
+                # Insert new restaurant
                 insert_data = {
                     'name': name,
                     'raw_description': restaurant_data.get('raw_description', ''),
@@ -131,38 +116,19 @@ class Database:
                     'last_updated': datetime.now().isoformat()
                 }
 
-                # ENHANCED: Handle coordinates with automatic geocoding
-                coordinates = None
-
-                # Check if coordinates already provided
+                # Handle coordinates safely during insert
                 if restaurant_data.get('coordinates'):
                     coords = restaurant_data['coordinates']
                     if isinstance(coords, (list, tuple)) and len(coords) == 2:
-                        coordinates = coords
-                        logger.debug(f"📍 Using provided coordinates for {name}")
-                elif restaurant_data.get('latitude') and restaurant_data.get('longitude'):
-                    coordinates = (restaurant_data['latitude'], restaurant_data['longitude'])
-                    logger.debug(f"📍 Using provided lat/lng for {name}")
-                elif restaurant_data.get('address'):
-                    # NEW: Automatic geocoding for new restaurants with addresses
-                    logger.info(f"🔍 Geocoding new restaurant: {name} at {restaurant_data['address']}")
-                    coordinates = self._geocode_address(restaurant_data['address'])
-                    if coordinates:
-                        logger.info(f"✅ Geocoded new restaurant {name}: {coordinates}")
-                    else:
-                        logger.warning(f"⚠️ Failed to geocode {name} at {restaurant_data['address']}")
-
-                # Add coordinates to insert data if available
-                if coordinates:
-                    insert_data['latitude'] = coordinates[0]
-                    insert_data['longitude'] = coordinates[1]
+                        lat, lng = coords
+                        insert_data['latitude'] = lat
+                        insert_data['longitude'] = lng
 
                 result = self.supabase.table('restaurants').insert(insert_data).execute()
 
                 if result.data:
                     restaurant_id = result.data[0]['id']
-                    coord_msg = f" with coordinates {coordinates}" if coordinates else " (no coordinates)"
-                    logger.info(f"➕ Inserted new restaurant: {name}{coord_msg}")
+                    logger.info(f"➕ Inserted new restaurant: {name}")
                     return str(restaurant_id)
                 else:
                     logger.error(f"Failed to insert restaurant: {name}")
@@ -171,50 +137,6 @@ class Database:
         except Exception as e:
             logger.error(f"Error saving restaurant: {e}")
             return None
-
-    # ALSO ADD: Enhanced geocoding with restaurant-specific queries
-    def _geocode_address(self, address: str, restaurant_name: str = None, city: str = None) -> Optional[Tuple[float, float]]:
-        """Enhanced geocoding with restaurant-specific search patterns"""
-        try:
-            if not self.geocoder:
-                return None
-
-            # Try multiple search patterns for better accuracy
-            search_queries = []
-
-            if restaurant_name and city:
-                # Restaurant-specific queries work better
-                search_queries.extend([
-                    f"{restaurant_name}, {address}",
-                    f"{restaurant_name}, {city}",
-                    f"{restaurant_name} restaurant, {city}"
-                ])
-
-            # Add the plain address
-            search_queries.append(address)
-
-            # Try each query until we get a result
-            for query in search_queries:
-                try:
-                    location = self.geocoder.geocode(query, timeout=10)
-                    if location:
-                        logger.debug(f"📍 Geocoded '{query}' → {location.latitude}, {location.longitude}")
-                        return (location.latitude, location.longitude)
-                except Exception as e:
-                    logger.debug(f"Geocoding failed for '{query}': {e}")
-                    continue
-
-            logger.warning(f"⚠️ All geocoding attempts failed for: {address}")
-            return None
-
-        except Exception as e:
-            logger.error(f"Error geocoding address '{address}': {e}")
-            return None
-
-    # UPDATE: Also enhance the main geocode_address method signature
-    def geocode_address(self, address: str, restaurant_name: str = None, city: str = None) -> Optional[Tuple[float, float]]:
-        """Public geocoding method with enhanced restaurant-specific search"""
-        return self._geocode_address(address, restaurant_name, city)
 
     def _geocode_address(self, address: str) -> Optional[Tuple[float, float]]:
         """Geocode an address to get coordinates using the same approach as the older implementation"""
