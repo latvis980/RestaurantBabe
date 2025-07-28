@@ -1,15 +1,16 @@
-# telegram_bot.py - Updated to use orchestrator singleton (preserving all test functionality)
+# telegram_bot.py - Updated with /cancel command functionality
 import telebot
 import logging
 import time
 import threading
 import json
 import asyncio
+from threading import Event
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 import config
-from utils.orchestrator_manager import get_orchestrator  # Updated import
+from utils.orchestrator_manager import get_orchestrator
 
 # Configure logging
 logging.basicConfig(
@@ -30,6 +31,33 @@ conversation_ai = ChatOpenAI(
 # Simple conversation history storage
 user_conversations = {}
 
+# CANCEL COMMAND FUNCTIONALITY
+# Track active searches and their cancellation events
+active_searches = {}  # user_id -> {"thread": thread_object, "cancel_event": Event, "chat_id": chat_id}
+
+def create_cancel_event(user_id, chat_id):
+    """Create a cancellation event for a user's search"""
+    cancel_event = Event()
+    active_searches[user_id] = {
+        "cancel_event": cancel_event,
+        "chat_id": chat_id,
+        "start_time": time.time()
+    }
+    logger.info(f"Created cancel event for user {user_id}")
+    return cancel_event
+
+def cleanup_search(user_id):
+    """Clean up search tracking for a user"""
+    if user_id in active_searches:
+        del active_searches[user_id]
+        logger.info(f"Cleaned up search tracking for user {user_id}")
+
+def is_search_cancelled(user_id):
+    """Check if search has been cancelled for this user"""
+    if user_id in active_searches:
+        return active_searches[user_id]["cancel_event"].is_set()
+    return False
+
 # Welcome message (unchanged)
 WELCOME_MESSAGE = (
     "🍸 Hello! I'm an AI assistant Restaurant Babe, and I know all about the most delicious and trendy restaurants, cafes, bakeries, bars, and coffee shops around the world.\n\n"
@@ -39,7 +67,8 @@ WELCOME_MESSAGE = (
     "<i>Where can I find the most delicious plov in Tashkent?</i>\n"
     "<i>Recommend places with brunch and specialty coffee in Barcelona.</i>\n"
     "<i>Best cocktail bars in Paris's Marais district</i>\n\n"
-    "I will check with my restaurant critic friends and provide the best recommendations. This might take a couple of minutes because I search very carefully and thoroughly verify the results. But there won't be any random places in my list.\n"
+    "I will check with my restaurant critic friends and provide the best recommendations. This might take a couple of minutes because I search very carefully and thoroughly verify the results. But there won't be any random places in my list.\n\n"
+    "💡 <b>Tip:</b> If you change your mind while I'm searching, just type /cancel to stop the current search.\n\n"
     "Shall we begin?"
 )
 
@@ -48,9 +77,9 @@ CONVERSATION_PROMPT = """
 You are Restaurant Babe, an expert AI assistant for restaurant recommendations worldwide. 
 
 CONVERSATION HISTORY:
-{conversation_history}
+{{conversation_history}}
 
-CURRENT USER MESSAGE: {user_message}
+CURRENT USER MESSAGE: {{user_message}}
 
 TASK: Analyze the conversation and decide what to do next. You need TWO pieces of information:
 1. LOCATION (city/neighborhood/area)  
@@ -115,7 +144,52 @@ def send_welcome(message):
     if user_id in user_conversations:
         del user_conversations[user_id]
 
+    # Cancel any active search for this user
+    if user_id in active_searches:
+        active_searches[user_id]["cancel_event"].set()
+        cleanup_search(user_id)
+
     bot.reply_to(message, WELCOME_MESSAGE, parse_mode='HTML')
+
+@bot.message_handler(commands=['cancel'])
+def handle_cancel(message):
+    """Handle /cancel command to stop current search"""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    logger.info(f"Cancel command received from user {user_id}")
+
+    # Check if user has an active search
+    if user_id not in active_searches:
+        bot.reply_to(
+            message,
+            "🤷‍♀️ I'm not currently searching for anything for you. Feel free to ask me about restaurants!",
+            parse_mode='HTML'
+        )
+        return
+
+    # Cancel the search
+    search_info = active_searches[user_id]
+    search_info["cancel_event"].set()
+
+    # Calculate how long the search was running
+    search_duration = round(time.time() - search_info["start_time"], 1)
+
+    # Send cancellation confirmation
+    bot.reply_to(
+        message,
+        f"✋ Search cancelled! I was searching for {search_duration} seconds.\n\n"
+        "What else would you like me to help you find?",
+        parse_mode='HTML'
+    )
+
+    # Clean up
+    cleanup_search(user_id)
+
+    # Add cancellation to conversation history
+    add_to_conversation(user_id, "Search cancelled by user", is_user=False)
+
+    logger.info(f"Successfully cancelled search for user {user_id} after {search_duration}s")
 
 # PRESERVED TEST COMMANDS - These are critical for debugging!
 
@@ -266,27 +340,63 @@ def handle_test_search(message):
     threading.Thread(target=run_search_test, daemon=True).start()
 
 def perform_restaurant_search(search_query, chat_id, user_id):
-    """Perform restaurant search using orchestrator - NO FORMATTING HERE"""
+    """Perform restaurant search using orchestrator with cancellation support"""
+    cancel_event = None
+    processing_msg = None
+
     try:
+        # Create cancellation event for this search
+        cancel_event = create_cancel_event(user_id, chat_id)
+
         # Send processing message
         processing_msg = bot.send_message(
             chat_id,
-            "🔍 Searching for the best recommendations... This may take a few minutes as I consult with my critic friends!",
+            "🔍 Searching for the best recommendations... This may take a few minutes as I consult with my critic friends!\n\n"
+            "💡 Type /cancel if you want to stop the search.",
             parse_mode='HTML'
         )
 
+        logger.info(f"Started restaurant search for user {user_id}: {search_query}")
+
+        # Check for cancellation before starting the actual search
+        if is_search_cancelled(user_id):
+            logger.info(f"Search cancelled before processing for user {user_id}")
+            return
+
         # Get orchestrator using singleton pattern
         orchestrator_instance = get_orchestrator()
+
+        # The orchestrator doesn't support cancellation directly, but we can check periodically
+        # For now, we'll run the search and check cancellation afterward
+        # In a future update, you could modify the orchestrator to accept a cancel_event
+
         result = orchestrator_instance.process_query(search_query)
 
-        # Get the pre-formatted text from orchestrator (NO formatting here!)
+        # Check if cancelled after processing
+        if is_search_cancelled(user_id):
+            logger.info(f"Search was cancelled during processing for user {user_id}")
+            # Delete processing message if search was cancelled
+            try:
+                if processing_msg:
+                    bot.delete_message(chat_id, processing_msg.message_id)
+            except:
+                pass
+            return
+
+        # Get the pre-formatted text from orchestrator
         telegram_text = result.get('telegram_formatted_text', 'Sorry, no recommendations found.')
 
         # Delete processing message
         try:
-            bot.delete_message(chat_id, processing_msg.message_id)
+            if processing_msg:
+                bot.delete_message(chat_id, processing_msg.message_id)
         except:
             pass
+
+        # Final cancellation check before sending results
+        if is_search_cancelled(user_id):
+            logger.info(f"Search cancelled before sending results for user {user_id}")
+            return
 
         # Send the results directly (already formatted by TelegramFormatter)
         bot.send_message(
@@ -306,17 +416,21 @@ def perform_restaurant_search(search_query, chat_id, user_id):
 
         # Delete processing message if it exists
         try:
-            if 'processing_msg' in locals():
+            if processing_msg:
                 bot.delete_message(chat_id, processing_msg.message_id)
         except:
             pass
 
-        # Send error message
-        bot.send_message(
-            chat_id,
-            "😔 Sorry, I encountered an error while searching for restaurants. Please try again with a different query!",
-            parse_mode='HTML'
-        )
+        # Only send error message if search wasn't cancelled
+        if not is_search_cancelled(user_id):
+            bot.send_message(
+                chat_id,
+                "😔 Sorry, I encountered an error while searching for restaurants. Please try again with a different query!",
+                parse_mode='HTML'
+            )
+    finally:
+        # Always clean up the search tracking
+        cleanup_search(user_id)
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
@@ -326,6 +440,15 @@ def handle_message(message):
         user_message = message.text.strip()
 
         logger.info(f"Received message from user {user_id}: {user_message}")
+
+        # Check if user has an active search
+        if user_id in active_searches:
+            bot.reply_to(
+                message,
+                "⏳ I'm currently searching for restaurants for you! Please wait for the results or type /cancel to stop the search.",
+                parse_mode='HTML'
+            )
+            return
 
         # Add user message to conversation history
         add_to_conversation(user_id, user_message, is_user=True)
@@ -415,6 +538,7 @@ def main():
         orchestrator_instance = get_orchestrator()
         logger.info("✅ Orchestrator singleton confirmed available")
         logger.info("🎯 Admin commands available: /test_scrape, /test_search")
+        logger.info("🛑 Cancel command available: /cancel")
     except RuntimeError as e:
         logger.error(f"❌ Orchestrator not initialized: {e}")
         logger.error("Make sure main.py calls setup_orchestrator() before starting the bot")
