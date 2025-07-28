@@ -45,20 +45,29 @@ class LocationAnalyzer:
         return """
 You are a location request analyzer for a restaurant recommendation system.
 
-Your job is to determine if a user message is requesting location-based restaurant/bar/cafe recommendations.
+Your job is to determine if a user message is requesting location-based (GPS/proximity) search vs general city-wide search.
 
-LOCATION-BASED REQUEST INDICATORS:
-- "near me", "nearby", "around here", "close to"
-- "in [neighborhood/area]", "at [location]" 
-- Street names, landmarks, districts
-- "where I am", "local", "in this area"
+CRITICAL DISTINCTION:
+- LOCATION_SEARCH = GPS-based proximity search (neighborhoods, "near me", specific addresses)
+- GENERAL_SEARCH = City-wide search using existing database/web pipeline
+
+LOCATION-BASED REQUEST INDICATORS (GPS/proximity search):
+- "near me", "nearby", "around here", "close to", "walking distance"
+- Neighborhoods/districts: "in SoHo", "in Chinatown", "in the Mission"
+- Street names: "on Broadway", "near Times Square"
+- "where I am", "local", "in this area", "in the neighborhood"
 - GPS coordinates or specific addresses
 
+GENERAL SEARCH INDICATORS (city-wide search):
+- City names: "in Paris", "in London", "in Newcastle", "in Tokyo"
+- Countries: "in France", "in Italy"
+- Large areas: "in Manhattan", "in Barcelona"
+
 ANALYSIS RULES:
-1. If the message requests restaurants/bars/cafes near a specific location → LOCATION_SEARCH
-2. If the message mentions location terms but is vague → REQUEST_LOCATION  
-3. If it's a general restaurant query without location context → GENERAL_SEARCH
-4. If completely off-topic → NOT_RESTAURANT
+1. GPS/Proximity requests → LOCATION_SEARCH
+2. Requests needing GPS location → REQUEST_LOCATION  
+3. City/country-wide requests → GENERAL_SEARCH
+4. Off-topic → NOT_RESTAURANT
 
 RESPONSE FORMAT (JSON only):
 {{
@@ -72,14 +81,24 @@ RESPONSE FORMAT (JSON only):
 
 EXAMPLES:
 
-"natural wine bars in Chinatown" →
+"natural wine bars in SoHo" →
 {{
     "request_type": "LOCATION_SEARCH",
-    "location_detected": "Chinatown", 
+    "location_detected": "SoHo", 
     "cuisine_preference": "natural wine bars",
     "confidence": 0.9,
-    "reasoning": "Clear location (Chinatown) and specific request (natural wine bars)",
-    "suggested_response": "I'll search for natural wine bars in Chinatown for you!"
+    "reasoning": "SoHo is a neighborhood - needs GPS proximity search",
+    "suggested_response": "I'll search for natural wine bars in SoHo for you!"
+}}
+
+"best pubs in Newcastle" →
+{{
+    "request_type": "GENERAL_SEARCH",
+    "location_detected": "Newcastle",
+    "cuisine_preference": "pubs",
+    "confidence": 0.9,
+    "reasoning": "Newcastle is a city - use existing city-wide search pipeline",
+    "suggested_response": "Perfect! Let me find the best pubs in Newcastle for you."
 }}
 
 "coffee shops near me" →
@@ -88,28 +107,28 @@ EXAMPLES:
     "location_detected": null,
     "cuisine_preference": "coffee shops", 
     "confidence": 0.8,
-    "reasoning": "User wants nearby coffee shops but hasn't specified exact location",
+    "reasoning": "User wants nearby coffee shops but needs to specify GPS location",
     "suggested_response": "I'd love to find coffee shops near you! Could you share your location or tell me what neighborhood you're in?"
-}}
-
-"best pasta in the city" →
-{{
-    "request_type": "REQUEST_LOCATION",
-    "location_detected": null,
-    "cuisine_preference": "pasta restaurants",
-    "confidence": 0.7, 
-    "reasoning": "Food request but 'the city' is too vague - need specific location",
-    "suggested_response": "I'd love to find great pasta places for you! Which city or neighborhood are you interested in?"
 }}
 
 "romantic restaurants in Paris" →
 {{
-    "request_type": "LOCATION_SEARCH", 
+    "request_type": "GENERAL_SEARCH", 
     "location_detected": "Paris",
     "cuisine_preference": "romantic restaurants",
     "confidence": 0.9,
-    "reasoning": "Clear location (Paris) with specific dining preference (romantic)",
-    "suggested_response": "Perfect! I'll find romantic restaurants in Paris for you."
+    "reasoning": "Paris is a city - use existing city-wide search pipeline",
+    "suggested_response": "Perfect! Let me find romantic restaurants in Paris for you."
+}}
+
+"sushi near Times Square" →
+{{
+    "request_type": "LOCATION_SEARCH",
+    "location_detected": "Times Square",
+    "cuisine_preference": "sushi",
+    "confidence": 0.9,
+    "reasoning": "Times Square is a specific landmark - needs GPS proximity search",
+    "suggested_response": "I'll search for sushi restaurants near Times Square for you!"
 }}
 """
 
@@ -159,26 +178,57 @@ EXAMPLES:
     def _fallback_analysis(self, message: str) -> Dict[str, Any]:
         """
         Fallback analysis if AI parsing fails
-        Uses simple keyword detection
+        Uses simple keyword detection - CONSERVATIVE approach
         """
         message_lower = message.lower()
 
-        # Simple location keyword detection
-        location_keywords = ["near", "in ", "at ", "close to", "around", "nearby"]
-        has_location = any(keyword in message_lower for keyword in location_keywords)
+        # GPS/proximity keywords that indicate location-based search
+        proximity_keywords = ["near me", "nearby", "around here", "close to", "walking distance", "in the neighborhood"]
+        has_proximity = any(keyword in message_lower for keyword in proximity_keywords)
 
-        # Simple food keyword detection  
-        food_keywords = ["restaurant", "bar", "cafe", "coffee", "wine", "food", "eat", "drink"]
+        # Neighborhood/district indicators (not cities)
+        neighborhood_patterns = [
+            r'\bin\s+(soho|chinatown|brooklyn|manhattan|times square|mission|castro)',
+            r'\bnear\s+[A-Z][a-z]+\s+(square|street|avenue|road)',
+        ]
+        has_neighborhood = any(re.search(pattern, message, re.IGNORECASE) for pattern in neighborhood_patterns)
+
+        # City keywords that indicate general search
+        city_keywords = ["in paris", "in london", "in tokyo", "in rome", "in barcelona", "in newcastle", "in lisbon"]
+        has_city = any(keyword in message_lower for keyword in city_keywords)
+
+        # Food keyword detection  
+        food_keywords = ["restaurant", "bar", "cafe", "coffee", "wine", "food", "eat", "drink", "pub"]
         has_food = any(keyword in message_lower for keyword in food_keywords)
 
-        if has_location and has_food:
+        if has_proximity and has_food:
             return {
                 "request_type": "REQUEST_LOCATION",
                 "location_detected": None,
                 "cuisine_preference": None,
+                "confidence": 0.6,
+                "reasoning": "Fallback analysis detected proximity + food keywords",
+                "suggested_response": "I'd love to help you find restaurants nearby! Could you share your location?",
+                "original_message": message
+            }
+        elif has_neighborhood and has_food:
+            return {
+                "request_type": "LOCATION_SEARCH",
+                "location_detected": None,
+                "cuisine_preference": None,
                 "confidence": 0.5,
-                "reasoning": "Fallback analysis detected location + food keywords",
-                "suggested_response": "I'd love to help you find restaurants! Could you tell me your specific location?",
+                "reasoning": "Fallback analysis detected neighborhood + food keywords",
+                "suggested_response": "I'll search for restaurants in that area for you!",
+                "original_message": message
+            }
+        elif has_city and has_food:
+            return {
+                "request_type": "GENERAL_SEARCH",
+                "location_detected": None,
+                "cuisine_preference": None,
+                "confidence": 0.7,
+                "reasoning": "Fallback analysis detected city + food keywords - use existing pipeline",
+                "suggested_response": "I can help with restaurant recommendations! Let me search the city for you.",
                 "original_message": message
             }
         elif has_food:
@@ -187,7 +237,7 @@ EXAMPLES:
                 "location_detected": None,
                 "cuisine_preference": None,
                 "confidence": 0.6,
-                "reasoning": "Fallback analysis detected food keywords only",
+                "reasoning": "Fallback analysis detected food keywords only - default to general search",
                 "suggested_response": "I can help with restaurant recommendations! Which city are you interested in?",
                 "original_message": message
             }
