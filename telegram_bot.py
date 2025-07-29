@@ -708,62 +708,138 @@ def handle_clarification_needed(message, location_analysis):
 
 def perform_location_search(query, location_data, chat_id, user_id):
     """
-    Perform location-based restaurant search
-    This will be implemented when we create the location search pipeline
+    Perform location-based restaurant search using the location orchestrator
     """
+    processing_msg = None
+
     try:
         # Create cancel event for this search
         cancel_event = create_cancel_event(user_id, chat_id)
+
+        # Function to check cancellation
+        def is_cancelled():
+            return is_search_cancelled(user_id)
 
         # Send processing message
         processing_msg = bot.send_message(
             chat_id,
             "🔍 <b>Searching for nearby restaurants...</b>\n\n"
-            "📍 Checking database for existing recommendations\n"
-            "🗺️ Searching Google Maps for venues\n"
-            "📰 Verifying with reputable food sources\n\n"
-            "<i>This takes 1-2 minutes for thorough verification</i>",
+            "📍 Getting your precise location\n"
+            "🗄️ Checking our restaurant database\n" 
+            "📰 Searching with reputable food sources\n\n"
+            "<i>This takes 1-2 minutes for thorough verification</i>\n\n"
+            "💡 Type /cancel to stop the search",
             parse_mode='HTML'
         )
 
-        # TODO: Implement actual location search pipeline
-        # For now, send placeholder response
-        time.sleep(3)  # Simulate processing
+        logger.info(f"🎯 Started location search for user {user_id}: {query}")
 
-        if is_search_cancelled(user_id):
+        # Check for early cancellation
+        if is_cancelled():
+            logger.info(f"Location search cancelled before processing for user {user_id}")
+            return
+
+        # Initialize location orchestrator
+        from agents.location_orchestrator import LocationOrchestrator
+        location_orchestrator = LocationOrchestrator(config)
+
+        # Run the location search pipeline
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        try:
+            result = loop.run_until_complete(
+                location_orchestrator.process_location_query(
+                    query=query,
+                    location_data=location_data,
+                    cancel_check_fn=is_cancelled
+                )
+            )
+        finally:
+            loop.close()
+
+        # Check if cancelled during processing
+        if is_cancelled():
+            logger.info(f"Location search was cancelled during processing for user {user_id}")
+            try:
+                if processing_msg:
+                    bot.delete_message(chat_id, processing_msg.message_id)
+            except:
+                pass
             return
 
         # Delete processing message
-        bot.delete_message(chat_id, processing_msg.message_id)
-
-        # Send placeholder result
-        result_message = (
-            "📍 <b>Location-based search coming soon!</b>\n\n"
-            f"🔍 <b>Query:</b> {query}\n"
-            f"📌 <b>Location:</b> {location_handler.format_location_summary(location_data)}\n\n"
-            "⚡ <i>The location search pipeline will be implemented next!</i>\n\n"
-            "For now, you can try a general search by mentioning a specific city."
-        )
-
-        bot.send_message(chat_id, result_message, parse_mode='HTML')
-        add_to_conversation(user_id, result_message, is_user=False)
-
-    except Exception as e:
-        logger.error(f"Error in location search process: {e}")
-
         try:
             if processing_msg:
                 bot.delete_message(chat_id, processing_msg.message_id)
         except:
             pass
 
+        # Check if search was successful
+        if not result.get('success', False):
+            error_text = result.get('telegram_formatted_text', 'Sorry, no results found.')
+            bot.send_message(chat_id, error_text, parse_mode='HTML')
+            add_to_conversation(user_id, error_text, is_user=False)
+            return
+
+        # Get the formatted response
+        response_text = result.get('telegram_formatted_text', '')
+        results_count = result.get('results_count', 0)
+        search_method = result.get('search_method', 'unknown')
+        processing_time = result.get('processing_time', 0)
+
+        # Final cancellation check before sending results
+        if is_cancelled():
+            logger.info(f"Location search cancelled before sending results for user {user_id}")
+            return
+
+        # Send the results
+        bot.send_message(
+            chat_id,
+            response_text,
+            parse_mode='HTML',
+            disable_web_page_preview=True
+        )
+
+        # Send a follow-up with search stats (optional)
+        stats_msg = (
+            f"✅ <b>Search completed!</b>\n"
+            f"📊 Found {results_count} results using {search_method}\n"
+            f"⏱ Processed in {processing_time:.1f} seconds"
+        )
+
+        bot.send_message(chat_id, stats_msg, parse_mode='HTML')
+
+        logger.info(f"✅ Successfully sent location search results to user {user_id}")
+
+        # Add to conversation history
+        add_to_conversation(user_id, f"Location search completed - {results_count} results found!", is_user=False)
+
+    except Exception as e:
+        logger.error(f"❌ Error in location search process: {e}")
+
+        # Delete processing message if it exists
+        try:
+            if processing_msg:
+                bot.delete_message(chat_id, processing_msg.message_id)
+        except:
+            pass
+
+        # Only send error message if search wasn't cancelled
         if not is_search_cancelled(user_id):
-            bot.send_message(
-                chat_id,
-                "😔 Sorry, I encountered an error while searching for nearby restaurants. Please try again!",
-                parse_mode='HTML'
+            error_msg = (
+                "😔 <b>Sorry, I encountered an error while searching for nearby restaurants.</b>\n\n"
+                "This could be due to:\n"
+                "• Location services temporarily unavailable\n"
+                "• No restaurants found in your area\n"
+                "• Network connectivity issues\n\n"
+                "Please try again with a different location or search term!"
             )
+            bot.send_message(chat_id, error_msg, parse_mode='HTML')
+
     finally:
+        # Always clean up the search tracking
         cleanup_search(user_id)
 
 # UPDATED MAIN FUNCTION (add location_analyzer initialization)
