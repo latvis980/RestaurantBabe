@@ -22,6 +22,7 @@ class LangChainOrchestrator:
         # Import agents with correct file names
         from agents.query_analyzer import QueryAnalyzer
         from agents.database_search_agent import DatabaseSearchAgent  # NEW AGENT
+        from agents.dbcontent_evaluation_agent import ContentEvaluationAgent  # NEW AGENT
         from agents.search_agent import BraveSearchAgent
         from agents.optimized_scraper import WebScraper
         from agents.editor_agent import EditorAgent
@@ -30,6 +31,7 @@ class LangChainOrchestrator:
         # Initialize agents
         self.query_analyzer = QueryAnalyzer(config)
         self.database_search_agent = DatabaseSearchAgent(config)  # NEW AGENT
+        self.dbcontent_evaluation_agent = ContentEvaluationAgent(config)  # NEW AGENT
         self.search_agent = BraveSearchAgent(config)
         self.scraper = WebScraper(config)
         self.editor_agent = EditorAgent(config)
@@ -44,49 +46,55 @@ class LangChainOrchestrator:
         self._build_pipeline()
 
     def _build_pipeline(self):
-        """Build pipeline with database agent integration and raw query preservation"""
+        """Build pipeline with ContentEvaluationAgent integration"""
 
-        # Step 1: Analyze Query (UPDATED to preserve raw query)
+        # Step 1: Analyze Query
         self.analyze_query = RunnableLambda(
             lambda x: {
                 **self.query_analyzer.analyze(x["query"]),
                 "query": x["query"],
-                "raw_query": x["query"]  # Preserve original query
+                "raw_query": x["query"]
             },
             name="analyze_query"
         )
 
-        # Step 2: Database Search and Decision (UPDATED - uses DatabaseSearchAgent)
+        # Step 2: Database Search
         self.check_database = RunnableLambda(
             self._check_database_coverage,
             name="check_database"
         )
 
-        # Step 3: Search (conditional - only if no database content)
+        # Step 3: Content Evaluation (NEW STEP)
+        self.evaluate_content = RunnableLambda(
+            self._evaluate_and_enhance_content,
+            name="evaluate_content"  
+        )
+
+        # Step 4: Search (conditional - now only if content evaluation says so)
         self.search = RunnableLambda(
             self._search_step,
             name="search"
         )
 
-        # Step 4: Scrape (conditional - only if search happened)
+        # Step 5: Scrape (conditional - only if search happened)
         self.scrape = RunnableLambda(
             self._scrape_step,
             name="scrape"
         )
 
-        # Step 5: Edit (handles both database restaurants and scraped content)
+        # Step 6: Edit (receives optimized content from evaluation agent)
         self.edit = RunnableLambda(
             self._edit_step,
             name="edit"
         )
 
-        # Step 6: Follow-up Search
+        # Step 7: Follow-up Search
         self.follow_up_search = RunnableLambda(
             self._follow_up_step,
             name="follow_up_search"
         )
 
-        # Step 7: Format for Telegram
+        # Step 8: Format for Telegram
         self.format_output = RunnableLambda(
             self._format_step,
             name="format_output"
@@ -97,6 +105,7 @@ class LangChainOrchestrator:
             first=self.analyze_query,
             middle=[
                 self.check_database,
+                self.evaluate_content,  # NEW STEP
                 self.search,
                 self.scrape,
                 self.edit,
@@ -150,7 +159,94 @@ class LangChainOrchestrator:
                 }
             }
 
-    # EXACT CODE FIX - Replace _search_step method in agents/langchain_orchestrator.py
+    def _evaluate_and_enhance_content(self, x):
+        """
+        NEW STEP: Route to ContentEvaluationAgent for intelligent content assessment
+        This is where the magic happens - decides if database content is sufficient
+        or if supplemental web search is needed
+        """
+        try:
+            logger.info("🧠 ROUTING TO CONTENT EVALUATION AGENT")
+
+            # Check if we have database content to evaluate
+            database_restaurants = x.get("database_results", [])
+            has_database_content = x.get("has_database_content", False)
+
+            if not has_database_content or not database_restaurants:
+                logger.info("📝 No database content to evaluate - proceeding to web search")
+                return {
+                    **x,
+                    "content_evaluation_result": {
+                        "content_source": "web_search",
+                        "web_search_triggered": True,
+                        "skip_database": True,
+                        "evaluation_summary": {"reason": "no_database_content"}
+                    },
+                    "skip_web_search": False  # Ensure web search happens
+                }
+
+            # Delegate to ContentEvaluationAgent
+            evaluation_result = self.dbcontent_evaluation_agent.evaluate_and_enhance(
+                database_restaurants=database_restaurants,
+                raw_query=x.get("raw_query", x.get("query", "")),
+                destination=x.get("destination", "Unknown"),
+                search_queries=x.get("search_queries", []),
+                primary_search_parameters=x.get("primary_search_parameters", []),
+                secondary_filter_parameters=x.get("secondary_filter_parameters", [])
+            )
+
+            # Update pipeline state based on evaluation
+            content_source = evaluation_result.get("content_source", "database")
+            web_search_triggered = evaluation_result.get("web_search_triggered", False)
+            optimized_content = evaluation_result.get("optimized_content", {})
+
+            logger.info(f"🧠 Content evaluation complete:")
+            logger.info(f"   📊 Content source: {content_source}")
+            logger.info(f"   🌐 Web search triggered: {web_search_triggered}")
+
+            # Prepare response with optimized content
+            response = {
+                **x,
+                "content_evaluation_result": evaluation_result,
+                "content_source": content_source,
+                "web_search_triggered": web_search_triggered,
+                "skip_web_search": not web_search_triggered,  # Control web search step
+            }
+
+            # Add optimized content to response
+            if content_source == "hybrid":
+                # Hybrid: has both database and supplemental web content
+                response.update({
+                    "database_results": optimized_content.get("database_restaurants", []),
+                    "supplemental_scraped_results": optimized_content.get("scraped_results", []),
+                    "has_database_content": True,
+                    "has_supplemental_content": True
+                })
+            elif content_source == "database":
+                # Database only: evaluation determined it's sufficient
+                response.update({
+                    "database_results": optimized_content.get("database_restaurants", []),
+                    "has_database_content": True,
+                    "has_supplemental_content": False
+                })
+            else:
+                # Web search: database was insufficient or missing
+                response.update({
+                    "skip_web_search": False,  # Ensure web search happens
+                    "has_database_content": False,
+                    "content_source": "web_search"
+                })
+
+            return response
+
+        except Exception as e:
+            logger.error(f"❌ Error in content evaluation step: {e}")
+            # Fallback: proceed with original database content
+            return {
+                **x,
+                "content_evaluation_error": str(e),
+                "skip_web_search": False  # Allow web search as fallback
+            }
 
     def _search_step(self, x):
         """
@@ -248,80 +344,65 @@ class LangChainOrchestrator:
             return {**x, "enriched_results": []}
 
     def _edit_step(self, x):
-        """Edit step - handles both database restaurants and scraped content (UPDATED with raw query)"""
+        """
+        UPDATED: Pure routing method that passes optimized content to EditorAgent
+        ContentEvaluationAgent has already done the intelligent routing
+        """
         try:
-            logger.info("✏️ ENTERING EDIT STEP")
+            logger.info("✏️ ROUTING TO EDITOR AGENT")
 
-            has_database_content = x.get("has_database_content", False)
-            original_query = x.get("query", "")
-            raw_query = x.get("raw_query", original_query)  # Get raw query
-            destination = x.get("destination", "Unknown")
+            # Get optimized content from evaluation step
+            content_evaluation = x.get("content_evaluation_result", {})
+            optimized_content = content_evaluation.get("optimized_content", {})
+            content_source = x.get("content_source", "unknown")
 
-            if has_database_content:
-                # DATABASE BRANCH: Format existing restaurants
-                logger.info("🗃️ Processing DATABASE restaurants")
+            # Prepare editor input with optimized content
+            editor_input = {
+                "raw_query": x.get("raw_query", x.get("query", "")),
+                "destination": x.get("destination", "Unknown"),
+                "content_source": content_source,
+                "evaluation_context": content_evaluation.get("evaluation_summary", {})
+            }
 
-                database_results = x.get("database_results", [])
+            # Add appropriate content based on what evaluation agent determined
+            if content_source == "hybrid":
+                # Hybrid: both database and supplemental web content
+                editor_input.update({
+                    "database_restaurants": optimized_content.get("database_restaurants", []),
+                    "scraped_results": optimized_content.get("scraped_results", []),
+                    "processing_mode": "hybrid"
+                })
+            elif content_source == "database":
+                # Database content deemed sufficient
+                editor_input.update({
+                    "database_restaurants": optimized_content.get("database_restaurants", []),
+                    "scraped_results": None,
+                    "processing_mode": "database_only"
+                })
+            elif content_source == "web_search":
+                # Use scraped content from web search
+                editor_input.update({
+                    "database_restaurants": None,
+                    "scraped_results": x.get("enriched_results", []),
+                    "processing_mode": "web_only"
+                })
 
-                if not database_results:
-                    logger.warning("⚠️ No database results to process")
-                    return {
-                        **x,
-                        "raw_query": raw_query,  # Preserve raw query
-                        "edited_results": {"main_list": []},
-                        "follow_up_queries": []
-                    }
-
-                # Call editor with database restaurants and raw query
-                edit_output = self.editor_agent.edit(
-                    scraped_results=None,
-                    database_restaurants=database_results,
-                    original_query=raw_query,  # Pass raw query instead of processed query
-                    destination=destination
-                )
-
-                logger.info(f"✅ Formatted {len(edit_output.get('edited_results', {}).get('main_list', []))} database restaurants")
-
-            else:
-                # WEB SEARCH BRANCH: Process scraped content
-                logger.info("🌐 Processing SCRAPED content")
-
-                scraped_results = x.get("enriched_results", [])
-
-                if not scraped_results:
-                    logger.warning("⚠️ No scraped results to process")
-                    return {
-                        **x,
-                        "raw_query": raw_query,  # Preserve raw query
-                        "edited_results": {"main_list": []},
-                        "follow_up_queries": []
-                    }
-
-                # Call editor with scraped content and raw query
-                edit_output = self.editor_agent.edit(
-                    scraped_results=scraped_results,
-                    database_restaurants=None,
-                    original_query=raw_query,  # Pass raw query instead of processed query
-                    destination=destination
-                )
-
-                logger.info(f"✅ Processed {len(edit_output.get('edited_results', {}).get('main_list', []))} restaurants from scraped content")
+            # Delegate to EditorAgent
+            edit_output = self.editor_agent.edit(**editor_input)
 
             return {
                 **x,
-                "raw_query": raw_query,  # Preserve raw query
                 "edited_results": edit_output.get("edited_results", {"main_list": []}),
                 "follow_up_queries": edit_output.get("follow_up_queries", [])
             }
 
         except Exception as e:
-            logger.error(f"❌ Error in edit step: {e}")
-            dump_chain_state("edit_error", {"error": str(e), "available_keys": list(x.keys())}, error=e)
+            logger.error(f"❌ Error routing to editor agent: {e}")
             return {
                 **x,
-                "raw_query": x.get("raw_query", x.get("query", "")),  # Preserve raw query
                 "edited_results": {"main_list": []},
-                "follow_up_queries": []
+                "follow_up_queries": [],
+                "editor_error": str(e)
             }
 
     def _follow_up_step(self, x):
