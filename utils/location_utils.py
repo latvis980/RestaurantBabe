@@ -10,7 +10,7 @@ Provides utility functions for location-based operations:
 
 import logging
 import math
-from typing import Tuple, Optional, List, Any
+from typing import Tuple, Optional, List. Any
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -261,6 +261,60 @@ class LocationUtils:
                 return ""
 
             return f"https://maps.google.com/maps?q={latitude},{longitude}&z={zoom}"
+
+        except Exception as e:
+            logger.error(f"Error creating Google Maps URL: {e}")
+            return ""
+
+    @staticmethod
+    def format_distance(distance_km: float) -> str:
+        """
+        Format distance for display
+
+        Args:
+            distance_km: Distance in kilometers
+
+        Returns:
+            Formatted distance string
+        """
+        try:
+            if distance_km < 0.1:
+                return "< 100m"
+            elif distance_km < 1.0:
+                return f"{int(distance_km * 1000)}m"
+            else:
+                return f"{distance_km:.1f}km"
+        except:
+            return "Unknown distance"
+
+    @staticmethod
+    def generate_google_maps_url(
+        latitude: float, 
+        longitude: float, 
+        name: str = ""
+    ) -> str:
+        """
+        Generate Google Maps URL for a location
+
+        Args:
+            latitude: Latitude value
+            longitude: Longitude value
+            name: Optional place name
+
+        Returns:
+            Google Maps URL
+        """
+        try:
+            if not LocationUtils.validate_coordinates(latitude, longitude):
+                return ""
+
+            if name:
+                # URL encode the name
+                import urllib.parse
+                encoded_name = urllib.parse.quote(name)
+                return f"https://maps.google.com/maps?q={encoded_name}@{latitude},{longitude}"
+            else:
+                return f"https://maps.google.com/maps?q={latitude},{longitude}"
 
         except Exception as e:
             logger.error(f"Error creating Google Maps URL: {e}")
