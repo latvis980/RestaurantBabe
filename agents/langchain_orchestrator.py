@@ -186,7 +186,7 @@ class LangChainOrchestrator:
                 }
 
             # Delegate to ContentEvaluationAgent
-            evaluation_result = self.dbcontent_evaluation_agent.evaluate_and_enhance(
+            evaluation_result = self.dcontent_evaluation_agent.evaluate_and_enhance(
                 database_restaurants=database_restaurants,
                 raw_query=x.get("raw_query", x.get("query", "")),
                 destination=x.get("destination", "Unknown"),
@@ -345,64 +345,80 @@ class LangChainOrchestrator:
 
     def _edit_step(self, x):
         """
-        UPDATED: Pure routing method that passes optimized content to EditorAgent
-        ContentEvaluationAgent has already done the intelligent routing
+        FIXED: Updated to use correct parameter names for EditorAgent
         """
         try:
             logger.info("✏️ ROUTING TO EDITOR AGENT")
 
-            # Get optimized content from evaluation step
-            content_evaluation = x.get("content_evaluation_result", {})
-            optimized_content = content_evaluation.get("optimized_content", {})
-            content_source = x.get("content_source", "unknown")
+            has_database_content = x.get("has_database_content", False)
+            raw_query = x.get("raw_query", x.get("query", ""))
+            destination = x.get("destination", "Unknown")
 
-            # Prepare editor input with optimized content
-            editor_input = {
-                "raw_query": x.get("raw_query", x.get("query", "")),
-                "destination": x.get("destination", "Unknown"),
-                "content_source": content_source,
-                "evaluation_context": content_evaluation.get("evaluation_summary", {})
-            }
+            if has_database_content:
+                # DATABASE BRANCH: Process database restaurants
+                logger.info("🗃️ Processing DATABASE restaurants")
 
-            # Add appropriate content based on what evaluation agent determined
-            if content_source == "hybrid":
-                # Hybrid: both database and supplemental web content
-                editor_input.update({
-                    "database_restaurants": optimized_content.get("database_restaurants", []),
-                    "scraped_results": optimized_content.get("scraped_results", []),
-                    "processing_mode": "hybrid"
-                })
-            elif content_source == "database":
-                # Database content deemed sufficient
-                editor_input.update({
-                    "database_restaurants": optimized_content.get("database_restaurants", []),
-                    "scraped_results": None,
-                    "processing_mode": "database_only"
-                })
-            elif content_source == "web_search":
-                # Use scraped content from web search
-                editor_input.update({
-                    "database_restaurants": None,
-                    "scraped_results": x.get("enriched_results", []),
-                    "processing_mode": "web_only"
-                })
+                database_results = x.get("database_results", [])
 
-            # Delegate to EditorAgent
-            edit_output = self.editor_agent.edit(**editor_input)
+                if not database_results:
+                    logger.warning("⚠️ No database results to process")
+                    return {
+                        **x,
+                        "raw_query": raw_query,
+                        "edited_results": {"main_list": []},
+                        "follow_up_queries": []
+                    }
+
+                # FIXED: Use correct parameter names
+                edit_output = self.editor_agent.edit(
+                    scraped_results=None,
+                    database_restaurants=database_results,
+                    original_query=raw_query,  # Use original_query instead of raw_query
+                    destination=destination
+                )
+
+                logger.info(f"✅ Formatted {len(edit_output.get('edited_results', {}).get('main_list', []))} database restaurants")
+
+            else:
+                # WEB SEARCH BRANCH: Process scraped content
+                logger.info("🌐 Processing SCRAPED content")
+
+                scraped_results = x.get("enriched_results", [])
+
+                if not scraped_results:
+                    logger.warning("⚠️ No scraped results to process")
+                    return {
+                        **x,
+                        "raw_query": raw_query,
+                        "edited_results": {"main_list": []},
+                        "follow_up_queries": []
+                    }
+
+                # FIXED: Use correct parameter names
+                edit_output = self.editor_agent.edit(
+                    scraped_results=scraped_results,
+                    database_restaurants=None,
+                    original_query=raw_query,  # Use original_query instead of raw_query
+                    destination=destination
+                )
+
+                logger.info(f"✅ Processed {len(edit_output.get('edited_results', {}).get('main_list', []))} restaurants from scraped content")
 
             return {
                 **x,
+                "raw_query": raw_query,
                 "edited_results": edit_output.get("edited_results", {"main_list": []}),
                 "follow_up_queries": edit_output.get("follow_up_queries", [])
             }
 
         except Exception as e:
-            logger.error(f"❌ Error routing to editor agent: {e}")
+            logger.error(f"❌ Error in edit step: {e}")
+            dump_chain_state("edit_error", {"error": str(e), "available_keys": list(x.keys())}, error=e)
             return {
                 **x,
+                "raw_query": x.get("raw_query", x.get("query", "")),
                 "edited_results": {"main_list": []},
-                "follow_up_queries": [],
-                "editor_error": str(e)
+                "follow_up_queries": []
             }
 
     def _follow_up_step(self, x):

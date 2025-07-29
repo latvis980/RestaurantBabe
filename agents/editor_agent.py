@@ -131,44 +131,115 @@ Extract restaurants using the diplomatic concierge approach. Include good option
         self.database_chain = self.database_prompt | self.model
         self.scraped_chain = self.scraped_prompt | self.model
 
-    @log_function_call
-    def edit(self, scraped_results=None, database_restaurants=None, original_query="", destination="Unknown"):
-        """
-        Main method that handles both database restaurants and scraped content.
-        Uses diplomatic concierge approach for raw query validation.
+    # Update your EditorAgent.edit() method in agents/editor_agent.py
 
-        Args:
-            scraped_results: List of scraped articles (traditional mode)
-            database_restaurants: List of database restaurant objects (new AI mode)
-            original_query: The user's original RAW search query (not formatted search query)
+    @log_function_call
+    def edit(self, scraped_results=None, database_restaurants=None, original_query="", destination="Unknown", 
+             raw_query=None, content_source=None, processing_mode=None, evaluation_context=None, **kwargs):
+        """
+        BACKWARD COMPATIBLE: Main method that handles both old and new calling patterns
+
+        LEGACY PARAMETERS (keep for backward compatibility):
+            scraped_results: List of scraped articles
+            database_restaurants: List of database restaurant objects  
+            original_query: The user's original query
             destination: The city/location being searched
+
+        NEW PARAMETERS (for ContentEvaluationAgent integration):
+            raw_query: User's raw query (takes precedence over original_query)
+            content_source: "database", "web_search", or "hybrid"
+            processing_mode: "database_only", "web_only", or "hybrid"
+            evaluation_context: Context from ContentEvaluationAgent
+            **kwargs: Additional context
 
         Returns:
             Dict with edited_results and follow_up_queries
         """
         try:
-            logger.info(f"✏️ Editor processing for destination: {destination}")
-            logger.info(f"📝 Original user query: {original_query}")
+            # Handle parameter compatibility
+            query = raw_query or original_query or ""
+            mode = processing_mode or self._determine_legacy_mode(scraped_results, database_restaurants)
+            source = content_source or self._determine_legacy_source(scraped_results, database_restaurants)
 
-            # Determine which mode to use
-            if database_restaurants:
-                return self._process_database_restaurants(database_restaurants, original_query, destination)
-            elif scraped_results:
-                return self._process_scraped_content(scraped_results, original_query, destination)
+            logger.info(f"✏️ Editor processing {mode} content for: {destination}")
+            logger.info(f"📝 Content source: {source}")
+            logger.info(f"🎯 Query: {query}")
+
+            # Route based on processing mode
+            if mode == "hybrid":
+                return self._process_hybrid_content(
+                    database_restaurants, scraped_results, query, destination, evaluation_context
+                )
+            elif mode == "database_only" or (database_restaurants and not scraped_results):
+                return self._process_database_restaurants(
+                    database_restaurants, query, destination
+                )
+            elif mode == "web_only" or (scraped_results and not database_restaurants):
+                return self._process_scraped_content(
+                    scraped_results, query, destination
+                )
             else:
-                logger.warning("No input provided to editor - neither database restaurants nor scraped results")
-                return self._fallback_response()
+                logger.warning(f"⚠️ No valid content to process")
+                return self._handle_empty_content(query, destination)
 
         except Exception as e:
-            logger.error(f"Error in editor: {e}")
+            logger.error(f"❌ Error in editor: {e}")
             dump_chain_state("editor_error", {
                 "error": str(e),
-                "query": original_query,
+                "query": query,
                 "destination": destination,
                 "has_database_restaurants": bool(database_restaurants),
                 "has_scraped_results": bool(scraped_results)
             })
             return self._fallback_response()
+
+    def _determine_legacy_mode(self, scraped_results, database_restaurants):
+        """Determine processing mode for legacy calls"""
+        if database_restaurants and scraped_results:
+            return "hybrid"
+        elif database_restaurants:
+            return "database_only"
+        elif scraped_results:
+            return "web_only"
+        else:
+            return "unknown"
+
+    def _determine_legacy_source(self, scraped_results, database_restaurants):
+        """Determine content source for legacy calls"""
+        if database_restaurants and scraped_results:
+            return "hybrid"
+        elif database_restaurants:
+            return "database"
+        elif scraped_results:
+            return "web_search"
+        else:
+            return "unknown"
+
+    def _handle_empty_content(self, query, destination):
+        """Handle cases where no content is available"""
+        logger.warning("⚠️ Editor: No content to process")
+        return {
+            "edited_results": {"main_list": []},
+            "follow_up_queries": [],
+            "processing_notes": {
+                "reason": "no_content",
+                "query": query,
+                "destination": destination
+            }
+        }
+
+    # Add this if you don't have hybrid processing yet
+    def _process_hybrid_content(self, database_restaurants, scraped_results, query, destination, evaluation_context):
+        """Process hybrid content - fallback to database for now"""
+        logger.info("🔗 Processing hybrid content (fallback to database)")
+
+        # For now, prioritize database content if available
+        if database_restaurants:
+            return self._process_database_restaurants(database_restaurants, query, destination)
+        elif scraped_results:
+            return self._process_scraped_content(scraped_results, query, destination)
+        else:
+            return self._handle_empty_content(query, destination)
 
     def _process_database_restaurants(self, database_restaurants, original_query, destination):
         """Process restaurants from AI-matched database"""
