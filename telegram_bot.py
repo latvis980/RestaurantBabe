@@ -437,6 +437,7 @@ def perform_restaurant_search(search_query, chat_id, user_id):
         cancel_event = create_cancel_event(user_id, chat_id)
 
         # Send processing message
+        video = open("media/searching.mp4", "rb")
         processing_msg = bot.send_message(
             chat_id,
             "🔍 Searching for the best recommendations... This may take a few minutes as I consult with my critic friends!\n\n"
