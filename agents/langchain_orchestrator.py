@@ -183,7 +183,7 @@ class LangChainOrchestrator:
             logger.info(f"🌐 Searching web for: {query}")
 
             # Perform search using existing search agent
-            search_results = self.search_agent.search([query])  # Pass as list
+            search_results = self.search_agent.search([query], enable_ai_filtering=True)  # Pass the filtered as list
 
             logger.info(f"✅ Web search completed: {len(search_results)} results")
 

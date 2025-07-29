@@ -59,24 +59,26 @@ DESCRIPTION GUIDELINES:
 You are an expert restaurant concierge who processes web content to recommend restaurants.
 
 YOU HAVE TWO JOBS:
-1. Extract restaurant recommendations from the content  
-2. Be diplomatic about matches - explain your choices even if they're not perfect matches
+1. Extract restaurant recommendations from the content  in every language present in the file
+2. Choose restaurants that match user's request best. If they don't match all requirements, still include those that might be suitable, but explain diplomatically why you chose them
+
+CONSOLIDATION RULES:
+- Give preference to the restaurats that best match the user's original request, list them first
+- If a restaurant appears in multiple sources, combine all information
+- Use the most complete address found across sources
+- If addresses conflict or are missing, mark for verification
+- Create descriptions that highlight strengths while diplomatically addressing user needs
+- Avoid generic phrases like "great food" or "nice atmosphere"
 
 CONCIERGE APPROACH:
 - Include restaurants that fully or for most part match user needs, but explain diplomatically why
-- Use phrases like "While not explicitly mentioned as X, their focus on Y suggests they would accommodate Z"
+- If the restaurant only matches the query partially use phrases like "While not explicitly mentioned as X, their focus on Y suggests they would accommodate Z"
 - Be honest about what you can/cannot confirm from the content
 - Focus on potential and positive aspects rather than strict requirements
 
 ORIGINAL USER REQUEST: {original_query}
 DESTINATION: {destination}
 
-CONSOLIDATION RULES:
-- If a restaurant appears in multiple sources, combine all information
-- Use the most complete address found across sources
-- If addresses conflict or are missing, mark for verification
-- Create descriptions that highlight strengths while diplomatically addressing user needs
-- Avoid generic phrases like "great food" or "nice atmosphere"
 
 OUTPUT FORMAT:
 Return ONLY valid JSON:
@@ -92,7 +94,7 @@ Return ONLY valid JSON:
 }}
 
 IMPORTANT:
-- Never include Tripadvisor, Yelp, Opentable, or Google in sources
+- NEVER include Tripadvisor, Yelp, Opentable, or Google in sources
 - Be diplomatic but honest in descriptions
 - Include restaurants that partially match rather than having an empty list
 - Use concierge language to explain your reasoning
@@ -277,7 +279,7 @@ ARTICLE {i}:
 URL: {url}
 Domain: {domain}  
 Title: {title}
-Content: {content[:3000]}...  
+Content: {content[:5000]}...  
 ---""")
 
         return "\n".join(formatted_content)
