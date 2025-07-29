@@ -190,48 +190,21 @@ class BraveSearchAgent:
             except Exception as e:
                 logger.warning(f"Failed to cache search results: {e}")
 
-        # CRITICAL FIX: Add consistent deduplication
-        deduplicated_results = self._deduplicate_search_results(all_results)
-        logger.info(f"[SearchAgent] Final results: {len(all_results)} → {len(deduplicated_results)} after deduplication")
+        # Cache search results using new Supabase system
+        if all_results:
+            try:
+                from utils.database import cache_search_results
+                cache_search_results(str(queries), {
+                    "queries": queries,
+                    "timestamp": time.time(),
+                    "results": all_results,
+                    "ai_filtering_enabled": enable_ai_filtering,
+                    "filtering_stats": self.evaluation_stats.copy()
+                })
+            except Exception as e:
+                logger.warning(f"Failed to cache search results: {e}")
 
-        return deduplicated_results
-
-    def _deduplicate_search_results(self, results: List[Dict]) -> List[Dict]:
-        """
-        Deduplicate search results while preserving highest quality sources
-
-        Strategy:
-        1. Group by URL
-        2. For duplicates, keep the one with highest AI evaluation score
-        3. If no AI scores, keep the first one
-        """
-        url_groups = {}
-
-        # Group results by URL
-        for result in results:
-            url = result.get('url', '')
-            if not url:
-                continue
-
-            if url not in url_groups:
-                url_groups[url] = []
-            url_groups[url].append(result)
-
-        # Select best result from each URL group
-        deduplicated = []
-
-        for url, duplicates in url_groups.items():
-            if len(duplicates) == 1:
-                # No duplicates, keep as-is
-                deduplicated.append(duplicates[0])
-            else:
-                # Multiple results for same URL - pick the best one
-                best_result = self._select_best_duplicate(duplicates, url)
-                deduplicated.append(best_result)
-
-                logger.info(f"[SearchAgent] Deduplicated {len(duplicates)} results for {url}")
-
-        return deduplicated
+        return all_results
 
     def _select_best_duplicate(self, duplicates: List[Dict], url: str) -> Dict:
         """
