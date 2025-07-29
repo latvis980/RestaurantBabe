@@ -436,15 +436,33 @@ def perform_restaurant_search(search_query, chat_id, user_id):
         # Create cancellation event for this search
         cancel_event = create_cancel_event(user_id, chat_id)
 
-        # Send processing message
-        video = open("media/searching.mp4", "rb")
-        processing_msg = bot.send_message(
-            chat_id,
-            "🔍 Searching for the best recommendations... This may take a few minutes as I consult with my critic friends!\n\n"
-            "💡 Type /cancel if you want to stop the search.",
-            parse_mode='HTML'
-        )
+        # Send processing message WITH VIDEO
+        try:
+            with open("media/searching.mp4", "rb") as video:
+                processing_msg = bot.send_video(
+                    chat_id,
+                    video,
+                    caption="🔍 Searching for the best recommendations... This may take a few minutes as I consult with my critic friends!\n\n💡 Type /cancel if you want to stop the search.",
+                    parse_mode='HTML'
+                )
+        except FileNotFoundError:
+            # Fallback to text message if video file doesn't exist
+            logger.warning("Video file not found, sending text message instead")
+            processing_msg = bot.send_message(
+                chat_id,
+                "🔍 Searching for the best recommendations... This may take a few minutes as I consult with my critic friends!\n\n💡 Type /cancel if you want to stop the search.",
+                parse_mode='HTML'
+            )
+        except Exception as e:
+            # Fallback to text message if video sending fails
+            logger.warning(f"Failed to send video: {e}, sending text message instead")
+            processing_msg = bot.send_message(
+                chat_id,
+                "🔍 Searching for the best recommendations... This may take a few minutes as I consult with my critic friends!\n\n💡 Type /cancel if you want to stop the search.",
+                parse_mode='HTML'
+            )
 
+        # ... rest of the function remains the same
         logger.info(f"Started restaurant search for user {user_id}: {search_query}")
 
         # Check for cancellation before starting the actual search
@@ -454,17 +472,11 @@ def perform_restaurant_search(search_query, chat_id, user_id):
 
         # Get orchestrator using singleton pattern
         orchestrator_instance = get_orchestrator()
-
-        # The orchestrator doesn't support cancellation directly, but we can check periodically
-        # For now, we'll run the search and check cancellation afterward
-        # In a future update, you could modify the orchestrator to accept a cancel_event
-
         result = orchestrator_instance.process_query(search_query)
 
         # Check if cancelled after processing
         if is_search_cancelled(user_id):
             logger.info(f"Search was cancelled during processing for user {user_id}")
-            # Delete processing message if search was cancelled
             try:
                 if processing_msg:
                     bot.delete_message(chat_id, processing_msg.message_id)
@@ -496,21 +508,16 @@ def perform_restaurant_search(search_query, chat_id, user_id):
         )
 
         logger.info(f"Successfully sent restaurant recommendations to user {user_id}")
-
-        # Add completion to conversation history
         add_to_conversation(user_id, "Restaurant recommendations delivered!", is_user=False)
 
     except Exception as e:
         logger.error(f"Error in restaurant search process: {e}")
-
-        # Delete processing message if it exists
         try:
             if processing_msg:
                 bot.delete_message(chat_id, processing_msg.message_id)
         except:
             pass
 
-        # Only send error message if search wasn't cancelled
         if not is_search_cancelled(user_id):
             bot.send_message(
                 chat_id,
@@ -518,7 +525,6 @@ def perform_restaurant_search(search_query, chat_id, user_id):
                 parse_mode='HTML'
             )
     finally:
-        # Always clean up the search tracking
         cleanup_search(user_id)
 
 # COMPLETE MESSAGE HANDLER - Replace the existing @bot.message_handler(func=lambda message: True) in telegram_bot.py
