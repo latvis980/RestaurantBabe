@@ -1,4 +1,4 @@
-# agents/follow_up_search_agent.py - CORRECTED VERSION
+# agents/follow_up_search_agent.py - Updated to check ALL addresses and filter closed restaurants
 
 import logging
 import googlemaps
@@ -10,9 +10,10 @@ logger = logging.getLogger(__name__)
 class FollowUpSearchAgent:
     """
     Follow-up search agent that handles:
-    1. Address verification using Google Maps API
+    1. Address verification for ALL restaurants using Google Maps API
     2. Rating filtering and restaurant rejection based on Google ratings
-    3. Saving coordinates back to database
+    3. Filtering out closed restaurants (temporarily or permanently)
+    4. Saving coordinates back to database
     """
 
     def __init__(self, config):
@@ -28,14 +29,18 @@ class FollowUpSearchAgent:
 
         self.gmaps = googlemaps.Client(key=api_key)
 
-        # Fields we want from Google Places API (updated to include rating)
+        # Fields we want from Google Places API (updated to include business status)
         self.place_fields = [
             "formatted_address",
             "geometry",
             "place_id",
             "url",
             "rating",
-            "user_ratings_total"
+            "user_ratings_total",
+            "business_status",  # PRIMARY: To check if restaurant is closed (RECOMMENDED)
+            "opening_hours"     # Additional info about operating hours
+            # NOTE: permanently_closed is deprecated (May 2021) but still works
+            # We use business_status as it's the current recommended approach
         ]
 
     @log_function_call
@@ -58,36 +63,33 @@ class FollowUpSearchAgent:
         secondary_filter_parameters: Optional[List[str]] = None  # Not used but kept for compatibility
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Verifies addresses and filters restaurants based on Google ratings.
-        Restaurants below the minimum rating threshold are removed from the list.
-
-        Args:
-            edited_results: Restaurant data from editor with main_list
-            follow_up_queries: Ignored (kept for compatibility)
-            destination: City from original query
-            secondary_filter_parameters: Ignored (kept for compatibility)
-
-        Returns:
-            Dict with enhanced_results containing only restaurants that pass rating filter
+        Verifies addresses for ALL restaurants and filters based on:
+        1. Google ratings (below minimum threshold)
+        2. Business status (closed restaurants)
         """
 
         main_list = edited_results.get("main_list", [])
 
-        logger.info(f"Starting address verification and rating filtering for {len(main_list)} restaurants in {destination}")
+        logger.info(f"Starting comprehensive verification for {len(main_list)} restaurants in {destination}")
         logger.info(f"Minimum acceptable rating: {self.min_acceptable_rating}")
 
         # Process each restaurant
         verified_restaurants = []
         rejected_count = 0
+        closed_count = 0
         coordinates_saved_count = 0
 
         for restaurant in main_list:
             result = self._verify_and_filter_restaurant(restaurant, destination)
 
             if result is None:
-                # Restaurant was rejected due to low rating
+                # Restaurant was rejected due to low rating or closure
                 rejected_count += 1
-                logger.info(f"❌ Rejected: {restaurant.get('name', 'Unknown')} (low rating)")
+                logger.info(f"❌ Rejected: {restaurant.get('name', 'Unknown')}")
+            elif result.get("is_closed", False):
+                # Restaurant is closed
+                closed_count += 1
+                logger.info(f"🚫 Closed: {restaurant.get('name', 'Unknown')}")
             else:
                 verified_restaurants.append(result)
                 # Count if coordinates were added
@@ -96,10 +98,11 @@ class FollowUpSearchAgent:
 
         final_result = {"enhanced_results": {"main_list": verified_restaurants}}
 
-        logger.info(f"✅ Address verification and filtering complete for {destination}")
+        logger.info(f"✅ Comprehensive verification complete for {destination}")
         logger.info(f"   - Original count: {len(main_list)}")
         logger.info(f"   - Passed filter: {len(verified_restaurants)}")
-        logger.info(f"   - Rejected: {rejected_count}")
+        logger.info(f"   - Rejected (low rating): {rejected_count}")
+        logger.info(f"   - Rejected (closed): {closed_count}")
         logger.info(f"   - Coordinates saved to DB: {coordinates_saved_count}")
 
         # Log overall statistics
@@ -108,6 +111,7 @@ class FollowUpSearchAgent:
             "original_count": len(main_list),
             "final_count": len(verified_restaurants),
             "rejected_count": rejected_count,
+            "closed_count": closed_count,
             "coordinates_saved_count": coordinates_saved_count,
             "min_rating": self.min_acceptable_rating
         })
@@ -116,8 +120,9 @@ class FollowUpSearchAgent:
 
     def _verify_and_filter_restaurant(self, restaurant: Dict[str, Any], destination: str) -> Optional[Dict[str, Any]]:
         """
-        Verify address and filter restaurant based on Google rating.
-        NOW ALSO SAVES COORDINATES BACK TO DATABASE.
+        Verify address and filter restaurant based on Google rating and business status.
+        NOW CHECKS ALL RESTAURANTS, not just those marked for verification.
+        ALSO FILTERS OUT CLOSED RESTAURANTS.
         """
         # Make a copy to avoid modifying the original
         updated_restaurant = restaurant.copy()
@@ -129,13 +134,30 @@ class FollowUpSearchAgent:
 
         logger.info(f"Verifying: {restaurant_name} in {destination}")
 
-        # Search Google Maps for restaurant info
+        # Search Google Maps for restaurant info - FOR ALL RESTAURANTS
         maps_info = self._search_google_maps(restaurant_name, destination)
 
         coordinates_saved = False
 
         if maps_info:
-            # Check rating first - reject if below threshold
+            # Check if restaurant is closed first
+            business_status = maps_info.get("business_status")
+
+            # Filter out closed restaurants using current Google-recommended field
+            if business_status in ["CLOSED_TEMPORARILY", "CLOSED_PERMANENTLY"]:
+                # Log closure details
+                dump_chain_state("restaurant_rejected_closed", {
+                    "restaurant": restaurant_name,
+                    "destination": destination,
+                    "business_status": business_status
+                })
+
+                logger.warning(f"🚫 {restaurant_name} rejected: {business_status}")
+                updated_restaurant["is_closed"] = True
+                updated_restaurant["closure_reason"] = business_status
+                return None  # Reject closed restaurants
+
+            # Check rating - reject if below threshold
             rating = maps_info.get("rating")
             if rating is not None:
                 rating = float(rating)
@@ -157,9 +179,9 @@ class FollowUpSearchAgent:
 
                 logger.info(f"✅ {restaurant_name} passed rating filter: {rating}")
 
-            # Update address if it was requiring verification
-            address = restaurant.get("address", "")
-            if address in ["Requires verification", "Address verification needed", "", None] and maps_info.get("formatted_address"):
+            # UPDATE: Always update address information from Google Maps (not just verification cases)
+            if maps_info.get("formatted_address"):
+                old_address = restaurant.get("address", "")
                 updated_restaurant["address"] = maps_info["formatted_address"]
 
                 # Remove "address" from missing_info if present
@@ -168,9 +190,12 @@ class FollowUpSearchAgent:
                     missing_info = [info for info in missing_info if info != "address"]
                     updated_restaurant["missing_info"] = missing_info
 
-                logger.info(f"✅ Address verified for {restaurant_name}: {maps_info['formatted_address']}")
+                if old_address != maps_info["formatted_address"]:
+                    logger.info(f"📍 Address updated for {restaurant_name}")
+                    logger.debug(f"   Old: {old_address}")
+                    logger.debug(f"   New: {maps_info['formatted_address']}")
 
-            # ADD COORDINATES TO USER RESULTS
+            # Add coordinates for ALL restaurants
             geometry = maps_info.get("geometry", {})
             location = geometry.get("location", {})
             if location.get("lat") and location.get("lng"):
@@ -178,12 +203,16 @@ class FollowUpSearchAgent:
                 updated_restaurant["longitude"] = location["lng"]
                 updated_restaurant["coordinates"] = [location["lat"], location["lng"]]
 
-                # 🆕 NEW: SAVE COORDINATES BACK TO DATABASE
+                # Save coordinates back to database
                 coordinates_saved = self._update_database_with_geodata(restaurant_name, destination, maps_info)
 
             # Add Google Maps URL if available
             if maps_info.get("url"):
                 updated_restaurant["google_maps_url"] = maps_info["url"]
+
+            # NEW: Add business status information
+            if business_status:
+                updated_restaurant["business_status"] = business_status
 
             # Log successful verification
             dump_chain_state("address_verified", {
@@ -192,6 +221,7 @@ class FollowUpSearchAgent:
                 "verified_address": maps_info.get("formatted_address"),
                 "coordinates": [location.get("lat"), location.get("lng")] if location.get("lat") else None,
                 "rating": rating if rating else "N/A",
+                "business_status": business_status,
                 "saved_to_database": coordinates_saved
             })
 
@@ -210,14 +240,7 @@ class FollowUpSearchAgent:
 
     def _search_google_maps(self, restaurant_name: str, city: str) -> Optional[Dict[str, Any]]:
         """
-        Search Google Maps for restaurant info including address and rating.
-
-        Args:
-            restaurant_name: Name of the restaurant
-            city: City where restaurant is located
-
-        Returns:
-            Dict with restaurant info or None if not found
+        Search Google Maps for restaurant info including address, rating, and business status.
         """
 
         try:
@@ -242,7 +265,7 @@ class FollowUpSearchAgent:
                 logger.debug(f"No place_id in first result for: {search_query}")
                 return None
 
-            # Get detailed place information including rating
+            # Get detailed place information including rating and business status
             place_details = self.gmaps.place(
                 place_id=place_id,
                 fields=self.place_fields
@@ -253,11 +276,13 @@ class FollowUpSearchAgent:
             formatted_address = result_data.get("formatted_address")
             rating = result_data.get("rating")
             user_ratings_total = result_data.get("user_ratings_total")
+            business_status = result_data.get("business_status")
 
             return {
                 "formatted_address": formatted_address,
                 "rating": rating,
                 "user_ratings_total": user_ratings_total,
+                "business_status": business_status,
                 "place_id": place_id,
                 "url": result_data.get("url", f"https://maps.google.com/maps/place/?q=place_id:{place_id}"),
                 "geometry": result_data.get("geometry", {})
@@ -274,7 +299,7 @@ class FollowUpSearchAgent:
     def _update_database_with_geodata(self, restaurant_name: str, city: str, maps_info: Dict[str, Any]) -> bool:
         """Save address and coordinates back to the Supabase database"""
         try:
-            # FIXED IMPORT: Use new database interface
+            # Use the database interface
             from utils.database import get_database
 
             # Get the database directly
