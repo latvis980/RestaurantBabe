@@ -150,8 +150,13 @@ class LangChainOrchestrator:
                 }
             }
 
+    # EXACT CODE FIX - Replace _search_step method in agents/langchain_orchestrator.py
+
     def _search_step(self, x):
-        """Enhanced search step that can skip web search if database provided enough results"""
+        """
+        FIXED: Simple orchestrator method that just bridges query_analyzer to search_agent
+        No business logic, no query generation - just pass through the AI-generated queries
+        """
         try:
             logger.info("🔍 SEARCH STEP")
 
@@ -160,30 +165,21 @@ class LangChainOrchestrator:
                 logger.info("⏭️ Skipping web search - database provided sufficient results")
                 return {**x, "search_results": []}
 
+            # FIXED: Use the search_queries that query_analyzer already generated!
+            search_queries = x.get("search_queries", [])
             destination = x.get("destination", "Unknown")
-            search_terms = x.get("search_terms", [])
-            language = x.get("language", "en")
 
-            # If no search terms from query analyzer, create them from the original query
-            if not search_terms:
-                query = x.get("query", "")
-                if query and destination != "Unknown":
-                    # Simple search term extraction
-                    search_terms = [query.replace(f" in {destination.lower()}", "").strip()]
-                    logger.info(f"🔧 Created search terms from query: {search_terms}")
-
-            if destination == "Unknown" or not search_terms:
-                logger.warning("Missing destination or search terms for web search")
+            if not search_queries or destination == "Unknown":
+                logger.warning("Missing search queries or destination for web search")
+                logger.warning(f"Available keys in x: {list(x.keys())}")
                 return {**x, "search_results": []}
 
-            # Build search query
-            primary_term = search_terms[0] if search_terms else "restaurants"
-            query = f"{primary_term} in {destination}"
+            logger.info(f"🌐 Using {len(search_queries)} AI-generated search queries:")
+            for i, query in enumerate(search_queries, 1):
+                logger.info(f"  {i}. {query}")
 
-            logger.info(f"🌐 Searching web for: {query}")
-
-            # Perform search using existing search agent
-            search_results = self.search_agent.search([query], enable_ai_filtering=True)  # Pass the filtered as list
+            # FIXED: Pass the AI-generated queries directly to search agent
+            search_results = self.search_agent.search(search_queries)
 
             logger.info(f"✅ Web search completed: {len(search_results)} results")
 
@@ -195,6 +191,7 @@ class LangChainOrchestrator:
 
         except Exception as e:
             logger.error(f"❌ Error in search step: {e}")
+            logger.error(f"Available data: {x.keys()}")
             return {**x, "search_results": []}
 
     def _scrape_step(self, x):
