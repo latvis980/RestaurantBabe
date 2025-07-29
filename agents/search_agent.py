@@ -1,4 +1,4 @@
-# Search agent with AI-based filteing system
+# Search agent with AI-based filtering system
 
 import requests
 from langchain_core.tracers.context import tracing_v2_enabled
@@ -33,19 +33,29 @@ class BraveSearchAgent:
         # Log the model being used for transparency
         logger.info(f"🔍 Search evaluation using: {config.SEARCH_EVALUATION_MODEL} (cost-optimized)")
 
-        # AI evaluation system prompt - extracted from your scraper
+        # Enhanced AI evaluation system prompt that prioritizes local sources
         self.eval_system_prompt = """
         You are an expert at evaluating web content about restaurants.
         Your task is to analyze if a web page contains a curated list of restaurants or restaurant recommendations.
 
-        VALID CONTENT (score > 0.7):
+        PRIORITIZE THESE SOURCES (score 0.8-1.0):
+        - Local newspapers and magazines (like Expresso, Le Monde, El Pais, Time Out, reputable local food blogs)
+        - Professional food critics and culinary experts
+        - Established food and travel publications (e.g., Conde Nast Traveler, Forbes Travel, Food & Wine, Bon Appétit, etc.)
+        - Local tourism boards and official guides
+        - Restaurant guides and gastronomic awards (Michelin, The World's 50 Best, World of Mouth)
+
+        VALID CONTENT (score 0.6-0.8):
         - Curated lists of multiple restaurants (e.g., "Top 10 restaurants in Paris")
         - Collections of restaurants in professional restaurant guides
-        - Food critic reviews covering multiple restaurants
+        - Food critic reviews of a single restaurant ONLY in professional media
         - Articles in reputable local media discussing various dining options in an area
+        - Food blog articles with restaurant recommendations
+        - Travel articles mentioning multiple dining options
 
         NOT VALID CONTENT (score < 0.3):
         - Official website of a single restaurant
+        - Anything on Tripadvisor, Yelp, OpenTable, RestaurantGuru and other review sites and generic restaurant lists, not professionally curated
         - Collections of restaurants in booking and delivery websites like Uber Eats, The Fork, Glovo, Bolt, etc.
         - Wanderlog content
         - Individual restaurant menus
@@ -56,10 +66,10 @@ class BraveSearchAgent:
         - Video content (YouTube, TikTok, etc.)
 
         SCORING CRITERIA:
-        - Multiple restaurants mentioned (essential)
+        - Multiple restaurants mentioned (essential with the only exception of single restaurant reviews in professional media)
         - Professional curation or expertise evident
+        - Local expertise and knowledge
         - Detailed descriptions of restaurants/cuisine
-        - Location information for multiple restaurants
         - Price or quality indications for multiple venues
 
         FORMAT:
@@ -68,13 +78,14 @@ class BraveSearchAgent:
           "is_restaurant_list": true/false,
           "restaurant_count": estimated number of restaurants mentioned,
           "content_quality": 0.0-1.0,
-          "reasoning": "brief explanation of your evaluation"
+          "passed_filter": true/false,
+          "reasoning": "brief explanation emphasizing local expertise and content quality"
         }}
         """
 
         self.eval_prompt = ChatPromptTemplate.from_messages([
             ("system", self.eval_system_prompt),
-            ("human", "URL: {url}\n\nPage Title: {title}\n\nContent Preview:\n{preview}")
+            ("human", "URL: {{url}}\n\nPage Title: {{title}}\n\nContent Preview:\n{{preview}}")
         ])
 
         self.eval_chain = self.eval_prompt | self.model
@@ -167,16 +178,91 @@ class BraveSearchAgent:
 
         # Cache search results using new Supabase system
         if all_results:
-            from utils.database import cache_search_results
-            cache_search_results(str(queries), {
-                "queries": queries,
-                "timestamp": time.time(),
-                "results": all_results,
-                "ai_filtering_enabled": enable_ai_filtering,
-                "filtering_stats": self.evaluation_stats.copy()
-            })
+            try:
+                from utils.database import cache_search_results
+                cache_search_results(str(queries), {
+                    "queries": queries,
+                    "timestamp": time.time(),
+                    "results": all_results,
+                    "ai_filtering_enabled": enable_ai_filtering,
+                    "filtering_stats": self.evaluation_stats.copy()
+                })
+            except Exception as e:
+                logger.warning(f"Failed to cache search results: {e}")
 
-        return all_results
+        # CRITICAL FIX: Add consistent deduplication
+        deduplicated_results = self._deduplicate_search_results(all_results)
+        logger.info(f"[SearchAgent] Final results: {len(all_results)} → {len(deduplicated_results)} after deduplication")
+
+        return deduplicated_results
+
+    def _deduplicate_search_results(self, results: List[Dict]) -> List[Dict]:
+        """
+        Deduplicate search results while preserving highest quality sources
+
+        Strategy:
+        1. Group by URL
+        2. For duplicates, keep the one with highest AI evaluation score
+        3. If no AI scores, keep the first one
+        """
+        url_groups = {}
+
+        # Group results by URL
+        for result in results:
+            url = result.get('url', '')
+            if not url:
+                continue
+
+            if url not in url_groups:
+                url_groups[url] = []
+            url_groups[url].append(result)
+
+        # Select best result from each URL group
+        deduplicated = []
+
+        for url, duplicates in url_groups.items():
+            if len(duplicates) == 1:
+                # No duplicates, keep as-is
+                deduplicated.append(duplicates[0])
+            else:
+                # Multiple results for same URL - pick the best one
+                best_result = self._select_best_duplicate(duplicates, url)
+                deduplicated.append(best_result)
+
+                logger.info(f"[SearchAgent] Deduplicated {len(duplicates)} results for {url}")
+
+        return deduplicated
+
+    def _select_best_duplicate(self, duplicates: List[Dict], url: str) -> Dict:
+        """
+        Select the best result from duplicates for the same URL
+
+        Priority:
+        1. Highest AI evaluation content_quality score
+        2. If no AI scores, prefer newer content (based on title/description)
+        3. If still tied, take the first one
+        """
+        # Check if any have AI evaluation scores
+        with_ai_scores = [r for r in duplicates if r.get('ai_evaluation', {}).get('content_quality')]
+
+        if with_ai_scores:
+            # Pick the one with highest content quality score
+            best = max(with_ai_scores, key=lambda r: r.get('ai_evaluation', {}).get('content_quality', 0))
+            score = best.get('ai_evaluation', {}).get('content_quality', 0)
+            logger.info(f"[SearchAgent] Selected best duplicate for {url}: quality={score}")
+            return best
+
+        # No AI scores - check for date indicators in title
+        current_year = "2025"
+        recent_results = [r for r in duplicates if current_year in r.get('title', '')]
+
+        if recent_results:
+            logger.debug(f"[SearchAgent] Selected recent result for {url}")
+            return recent_results[0]
+
+        # Default to first result
+        logger.debug(f"[SearchAgent] Selected first result for {url}")
+        return duplicates[0]
 
     def _run_async_in_thread(self, coro):
         """
@@ -304,7 +390,7 @@ class BraveSearchAgent:
             full_preview = f"{title}\n\n{description}\n\n{content_preview}"
 
             # Basic keyword check to avoid LLM calls for obviously irrelevant content
-            restaurant_keywords = ["restaurant", "dining", "food", "eat", "chef", "cuisine", "menu", "dish"]
+            restaurant_keywords = ["restaurant", "dining", "food", "eat", "chef", "cuisine", "menu", "dish", "gastronomy", "culinary"]
             if not any(kw in full_preview.lower() for kw in restaurant_keywords):
                 logger.info(f"URL filtered by basic keyword check: {url}")
                 self.evaluation_stats["failed_filter"] += 1
@@ -336,27 +422,23 @@ class BraveSearchAgent:
             if "content_quality" not in evaluation:
                 evaluation["content_quality"] = 0.8 if evaluation.get("is_restaurant_list", False) else 0.2
 
-            # Apply threshold
-            threshold = 0.5
-            is_restaurant_list = evaluation.get("is_restaurant_list", False)
-            content_quality = evaluation.get("content_quality", 0.0)
-            passed_filter = is_restaurant_list and content_quality > threshold
+            # Set passed_filter if not explicitly set
+            if "passed_filter" not in evaluation:
+                threshold = 0.5
+                is_restaurant_list = evaluation.get("is_restaurant_list", False)
+                content_quality = evaluation.get("content_quality", 0.0)
+                evaluation["passed_filter"] = is_restaurant_list and content_quality > threshold
 
-            if passed_filter:
+            # Update statistics
+            if evaluation.get("passed_filter", False):
                 self.evaluation_stats["passed_filter"] += 1
             else:
                 self.evaluation_stats["failed_filter"] += 1
 
             # Log evaluation details
-            logger.info(f"AI evaluation for {url}: List={is_restaurant_list}, Quality={content_quality:.2f}, Pass={passed_filter}")
+            logger.info(f"AI evaluation for {url}: List={evaluation.get('is_restaurant_list')}, Quality={evaluation.get('content_quality', 0):.2f}, Pass={evaluation.get('passed_filter')}")
 
-            return {
-                "passed_filter": passed_filter,
-                "is_restaurant_list": is_restaurant_list,
-                "restaurant_count": evaluation.get("restaurant_count", 0),
-                "content_quality": content_quality,
-                "reasoning": evaluation.get("reasoning", "")
-            }
+            return evaluation
 
         except Exception as e:
             logger.error(f"Error in AI evaluation for {url}: {str(e)}")
@@ -398,6 +480,10 @@ class BraveSearchAgent:
                         html = await response.text()
                         soup = BeautifulSoup(html, 'html.parser')
 
+                        # Remove script and style elements
+                        for script in soup(["script", "style"]):
+                            script.decompose()
+
                         # Extract text content
                         main_content = (soup.find('main') or 
                                       soup.find('article') or 
@@ -421,6 +507,9 @@ class BraveSearchAgent:
                 })
                 if response.status_code == 200:
                     soup = BeautifulSoup(response.text, 'html.parser')
+                    # Remove script and style elements
+                    for script in soup(["script", "style"]):
+                        script.decompose()
                     return soup.get_text(separator=' ', strip=True)[:1000]
             except Exception:
                 pass
@@ -444,17 +533,19 @@ class BraveSearchAgent:
         """
         combined_text = f"{title} {description}".lower()
 
-        # Positive keywords
+        # Positive keywords that indicate restaurant lists/guides
         positive_keywords = [
             "best restaurants", "top restaurants", "restaurant guide", "food guide",
             "where to eat", "dining guide", "restaurant list", "food critic",
-            "restaurant recommendations", "culinary guide", "michelin", "zagat"
+            "restaurant recommendations", "culinary guide", "michelin", "zagat",
+            "dining recommendations", "food scene", "restaurants to try"
         ]
 
-        # Negative keywords
+        # Negative keywords that indicate single restaurants or unwanted content
         negative_keywords = [
             "menu", "book table", "order online", "delivery", "takeaway",
-            "single restaurant", "one restaurant", "hotel", "booking"
+            "single restaurant", "one restaurant", "hotel", "booking",
+            "reservation", "uber eats", "doordash", "grubhub"
         ]
 
         positive_score = sum(1 for kw in positive_keywords if kw in combined_text)
@@ -505,26 +596,32 @@ class BraveSearchAgent:
         return response.json()
 
     def _filter_results(self, search_results):
-        """Filter search results to exclude unwanted domains"""
+        """Filter search results to exclude unwanted domains with enhanced logging"""
         if not search_results or "web" not in search_results or "results" not in search_results["web"]:
             return []
 
         filtered_results = []
+        excluded_count = 0
 
         for result in search_results["web"]["results"]:
             url = result.get("url", "")
 
             # Check if URL should be excluded by domain
             if self._should_exclude_domain(url):
-                logger.debug(f"[SearchAgent] Domain-filtered: {url}")
+                logger.info(f"[SearchAgent] ❌ Domain-filtered: {url}")
                 self.evaluation_stats["domain_filtered"] += 1
+                excluded_count += 1
                 continue
 
             # Check if it's a video platform
             if self._is_video_platform(url):
                 logger.debug(f"[SearchAgent] Video platform filtered: {url}")
                 self.evaluation_stats["domain_filtered"] += 1
+                excluded_count += 1
                 continue
+
+            # Log kept URLs for debugging
+            logger.info(f"[SearchAgent] ✅ Keeping: {url}")
 
             # Clean and extract the relevant information
             filtered_result = {
@@ -536,19 +633,53 @@ class BraveSearchAgent:
             }
             filtered_results.append(filtered_result)
 
+        logger.info(f"[SearchAgent] Domain filtering complete: {len(filtered_results)} kept, {excluded_count} excluded")
         return filtered_results
 
     def _should_exclude_domain(self, url):
-        """Check if URL domain should be excluded"""
+        """
+        Check if URL domain should be excluded using proper domain matching
+        Fixes the bug where TripAdvisor variants weren't being filtered
+        """
         try:
             parsed_url = urlparse(url)
             domain = parsed_url.netloc.lower()
+
             # Remove www. prefix for comparison
             if domain.startswith('www.'):
                 domain = domain[4:]
 
-            return any(excluded in domain for excluded in self.excluded_domains)
-        except Exception:
+            for excluded in self.excluded_domains:
+                excluded_clean = excluded.lower()
+                if excluded_clean.startswith('www.'):
+                    excluded_clean = excluded_clean[4:]
+
+                # Method 1: Exact domain match
+                if domain == excluded_clean:
+                    logger.info(f"[SearchAgent] ❌ Exact match filtered: {domain}")
+                    return True
+
+                # Method 2: Base domain match (handles country variants)
+                # e.g., "tripadvisor" matches tripadvisor.com, tripadvisor.co.uk, etc.
+                excluded_base = excluded_clean.split('.')[0]
+                domain_base = domain.split('.')[0]
+
+                # Only match if it's a known problematic base domain
+                problematic_bases = ['tripadvisor', 'yelp', 'opentable', 'booking', 'hotels', 'expedia']
+                if excluded_base in problematic_bases and excluded_base == domain_base:
+                    logger.info(f"[SearchAgent] ❌ Base domain match filtered: {domain} (base: {domain_base})")
+                    return True
+
+                # Method 3: Full subdomain match (for google.com/maps)
+                if excluded_clean == "google.com/maps" and ("maps.google" in domain or "google.com" in domain):
+                    logger.info(f"[SearchAgent] ❌ Google Maps filtered: {domain}")
+                    return True
+
+            logger.debug(f"[SearchAgent] ✅ Domain allowed: {domain}")
+            return False
+
+        except Exception as e:
+            logger.warning(f"Error parsing domain from {url}: {e}")
             return False
 
     def follow_up_search(self, restaurant_name, location, additional_context=None):
@@ -584,7 +715,7 @@ class BraveSearchAgent:
         """Check if the restaurant is mentioned in global guides"""
         global_guides = [
             "theworlds50best.com",
-            "worldofmouth.app",
+            "worldofmouth.app", 
             "guide.michelin.com",
             "culinarybackstreets.com",
             "oadguides.com",
@@ -624,4 +755,299 @@ class BraveSearchAgent:
         return {
             "evaluation_stats": self.evaluation_stats.copy(),
             "filtered_urls": self.filtered_urls.copy()
+        }
+
+    def reset_stats(self):
+        """Reset evaluation statistics"""
+        self.evaluation_stats = {
+            "total_evaluated": 0,
+            "passed_filter": 0,
+            "failed_filter": 0,
+            "evaluation_errors": 0,
+            "domain_filtered": 0,
+            "model_used": self.config.SEARCH_EVALUATION_MODEL,
+            "estimated_cost_saved": 0.0
+        }
+        self.filtered_urls = []
+
+    def get_excluded_domains(self):
+        """Get list of excluded domains"""
+        return self.excluded_domains.copy()
+
+    def add_excluded_domain(self, domain: str):
+        """Add a domain to the exclusion list"""
+        if domain not in self.excluded_domains:
+            self.excluded_domains.append(domain)
+            logger.info(f"Added {domain} to excluded domains")
+
+    def remove_excluded_domain(self, domain: str):
+        """Remove a domain from the exclusion list"""
+        if domain in self.excluded_domains:
+            self.excluded_domains.remove(domain)
+            logger.info(f"Removed {domain} from excluded domains")
+
+    def get_search_count(self):
+        """Get current search count setting"""
+        return self.search_count
+
+    def set_search_count(self, count: int):
+        """Set search count"""
+        if 1 <= count <= 50:  # Reasonable limits
+            self.search_count = count
+            logger.info(f"Set search count to {count}")
+        else:
+            logger.warning(f"Invalid search count: {count}. Must be between 1-50")
+
+    def get_video_platforms(self):
+        """Get list of video platforms that are filtered"""
+        return list(self.video_platforms)
+
+    def add_video_platform(self, platform: str):
+        """Add a video platform to the filter list"""
+        self.video_platforms.add(platform.lower())
+        logger.info(f"Added {platform} to video platform filters")
+
+    def remove_video_platform(self, platform: str):
+        """Remove a video platform from the filter list"""
+        self.video_platforms.discard(platform.lower())
+        logger.info(f"Removed {platform} from video platform filters")
+
+    def search_with_cache(self, queries, cache_key=None, cache_ttl=3600):
+        """
+        Perform search with optional caching
+
+        Args:
+            queries: List of search queries
+            cache_key: Optional cache key (defaults to queries hash)
+            cache_ttl: Cache time-to-live in seconds
+
+        Returns:
+            Search results (from cache or fresh search)
+        """
+        if not cache_key:
+            cache_key = str(hash(str(queries)))
+
+        try:
+            from utils.database import get_cached_results
+            cached = get_cached_results(cache_key)
+
+            if cached and (time.time() - cached.get('timestamp', 0)) < cache_ttl:
+                logger.info(f"[SearchAgent] Using cached results for: {queries}")
+                return cached.get('results', [])
+
+        except Exception as e:
+            logger.warning(f"Cache lookup failed: {e}")
+
+        # Perform fresh search
+        results = self.search(queries)
+
+        # Cache the results
+        try:
+            from utils.database import cache_search_results
+            cache_search_results(cache_key, {
+                "queries": queries,
+                "timestamp": time.time(), 
+                "results": results
+            })
+        except Exception as e:
+            logger.warning(f"Cache save failed: {e}")
+
+        return results
+
+    def search_specific_domains(self, queries, allowed_domains=None, blocked_domains=None):
+        """
+        Search with custom domain filtering
+
+        Args:
+            queries: Search queries
+            allowed_domains: List of domains to allow (if specified, only these are allowed)
+            blocked_domains: Additional domains to block
+
+        Returns:
+            Filtered search results
+        """
+        # Temporarily modify domain filtering
+        original_excluded = self.excluded_domains.copy()
+
+        try:
+            if allowed_domains:
+                # If allowed_domains specified, block everything else
+                logger.info(f"[SearchAgent] Restricting search to domains: {allowed_domains}")
+                # We'll filter in post-processing since we can't modify the search API
+
+            if blocked_domains:
+                # Add additional blocked domains
+                self.excluded_domains.extend(blocked_domains)
+                logger.info(f"[SearchAgent] Added temporary blocked domains: {blocked_domains}")
+
+            # Perform search
+            results = self.search(queries)
+
+            # Apply allowed_domains filter if specified
+            if allowed_domains:
+                allowed_set = set(d.lower() for d in allowed_domains)
+                filtered_results = []
+
+                for result in results:
+                    url = result.get('url', '')
+                    try:
+                        domain = urlparse(url).netloc.lower()
+                        if domain.startswith('www.'):
+                            domain = domain[4:]
+
+                        if any(allowed in domain for allowed in allowed_set):
+                            filtered_results.append(result)
+                        else:
+                            logger.debug(f"[SearchAgent] Filtered non-allowed domain: {domain}")
+
+                    except Exception:
+                        continue
+
+                results = filtered_results
+                logger.info(f"[SearchAgent] After allowed-domain filtering: {len(results)} results")
+
+            return results
+
+        finally:
+            # Restore original excluded domains
+            self.excluded_domains = original_excluded
+
+    def get_search_performance_stats(self):
+        """Get detailed performance statistics"""
+        return {
+            "evaluation_stats": self.evaluation_stats.copy(),
+            "filtered_urls_count": len(self.filtered_urls),
+            "video_platforms_count": len(self.video_platforms),
+            "excluded_domains_count": len(self.excluded_domains),
+            "current_search_count": self.search_count,
+            "model_used": self.config.SEARCH_EVALUATION_MODEL
+        }
+
+    def export_filtered_urls(self, filename=None):
+        """Export filtered URLs to file for analysis"""
+        if not filename:
+            timestamp = int(time.time())
+            filename = f"filtered_urls_{timestamp}.json"
+
+        try:
+            with open(filename, 'w') as f:
+                json.dump({
+                    "timestamp": time.time(),
+                    "filtered_urls": self.filtered_urls,
+                    "evaluation_stats": self.evaluation_stats,
+                    "excluded_domains": self.excluded_domains
+                }, f, indent=2)
+
+            logger.info(f"Exported filtered URLs to {filename}")
+            return filename
+
+        except Exception as e:
+            logger.error(f"Failed to export filtered URLs: {e}")
+            return None
+
+    def import_domain_intelligence(self, filename):
+        """Import domain intelligence from file"""
+        try:
+            with open(filename, 'r') as f:
+                data = json.load(f)
+
+            if 'excluded_domains' in data:
+                self.excluded_domains = data['excluded_domains']
+                logger.info(f"Imported {len(self.excluded_domains)} excluded domains")
+
+            if 'video_platforms' in data:
+                self.video_platforms = set(data['video_platforms'])
+                logger.info(f"Imported {len(self.video_platforms)} video platforms")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to import domain intelligence: {e}")
+            return False
+
+    def validate_configuration(self):
+        """Validate search agent configuration"""
+        issues = []
+
+        if not self.api_key:
+            issues.append("Missing Brave Search API key")
+
+        if not self.excluded_domains:
+            issues.append("No excluded domains configured")
+
+        if self.search_count < 1 or self.search_count > 50:
+            issues.append(f"Invalid search count: {self.search_count}")
+
+        if not hasattr(self.config, 'OPENAI_API_KEY') or not self.config.OPENAI_API_KEY:
+            issues.append("Missing OpenAI API key for AI evaluation")
+
+        if issues:
+            logger.warning(f"Configuration issues found: {issues}")
+            return False, issues
+        else:
+            logger.info("Search agent configuration validated successfully")
+            return True, []
+
+    def health_check(self):
+        """Perform health check of search functionality"""
+        try:
+            # Test basic search
+            test_query = "restaurants"
+            test_results = self._execute_search(test_query)
+
+            if not test_results or 'web' not in test_results:
+                return False, "Search API not responding correctly"
+
+            # Test AI evaluation
+            if hasattr(self, 'model'):
+                try:
+                    test_eval = self.model.invoke("Test message")
+                    if not test_eval:
+                        return False, "AI evaluation model not responding"
+                except Exception as e:
+                    return False, f"AI evaluation error: {str(e)}"
+
+            return True, "All systems operational"
+
+        except Exception as e:
+            return False, f"Health check failed: {str(e)}"
+
+    def get_debug_info(self):
+        """Get comprehensive debug information"""
+        return {
+            "config": {
+                "api_key_configured": bool(self.api_key),
+                "search_count": self.search_count,
+                "base_url": self.base_url,
+                "model": self.config.SEARCH_EVALUATION_MODEL,
+                "temperature": self.config.SEARCH_EVALUATION_TEMPERATURE
+            },
+            "filters": {
+                "excluded_domains": self.excluded_domains,
+                "video_platforms": list(self.video_platforms),
+                "excluded_domains_count": len(self.excluded_domains),
+                "video_platforms_count": len(self.video_platforms)
+            },
+            "statistics": self.evaluation_stats.copy(),
+            "filtered_urls": {
+                "count": len(self.filtered_urls),
+                "recent_urls": self.filtered_urls[-10:] if self.filtered_urls else []
+            }
+        }
+
+    ## Legacy compatibility methods
+    def get_stats(self):
+        """Legacy method - alias for get_filtering_stats"""
+        return self.get_filtering_stats()
+
+    def clear_cache(self):
+        """Legacy method - reset statistics"""
+        self.reset_stats()
+
+    def get_domain_intelligence(self):
+        """Legacy method - return domain information"""
+        return {
+            "excluded_domains": self.excluded_domains,
+            "video_platforms": list(self.video_platforms),
+            "evaluation_stats": self.evaluation_stats
         }
