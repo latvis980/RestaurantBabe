@@ -38,24 +38,14 @@ class BraveSearchAgent:
         You are an expert at evaluating web content about restaurants.
         Your task is to analyze if a web page contains a curated list of restaurants or restaurant recommendations.
 
-        PRIORITIZE THESE SOURCES (score 0.8-1.0):
-        - Local newspapers and magazines (like Expresso, Le Monde, El Pais, Time Out, reputable local food blogs)
-        - Professional food critics and culinary experts
-        - Established food and travel publications (e.g., Conde Nast Traveler, Forbes Travel, Food & Wine, Bon Appétit, etc.)
-        - Local tourism boards and official guides
-        - Restaurant guides and gastronomic awards (Michelin, The World's 50 Best, World of Mouth)
-
-        VALID CONTENT (score 0.6-0.8):
+        VALID CONTENT (score > 0.7):
         - Curated lists of multiple restaurants (e.g., "Top 10 restaurants in Paris")
         - Collections of restaurants in professional restaurant guides
-        - Food critic reviews of a single restaurant ONLY in professional media
+        - Food critic reviews covering multiple restaurants
         - Articles in reputable local media discussing various dining options in an area
-        - Food blog articles with restaurant recommendations
-        - Travel articles mentioning multiple dining options
 
         NOT VALID CONTENT (score < 0.3):
         - Official website of a single restaurant
-        - Anything on Tripadvisor, Yelp, OpenTable, RestaurantGuru and other review sites and generic restaurant lists, not professionally curated
         - Collections of restaurants in booking and delivery websites like Uber Eats, The Fork, Glovo, Bolt, etc.
         - Wanderlog content
         - Individual restaurant menus
@@ -66,10 +56,10 @@ class BraveSearchAgent:
         - Video content (YouTube, TikTok, etc.)
 
         SCORING CRITERIA:
-        - Multiple restaurants mentioned (essential with the only exception of single restaurant reviews in professional media)
+        - Multiple restaurants mentioned (essential)
         - Professional curation or expertise evident
-        - Local expertise and knowledge
         - Detailed descriptions of restaurants/cuisine
+        - Location information for multiple restaurants
         - Price or quality indications for multiple venues
 
         FORMAT:
@@ -78,8 +68,7 @@ class BraveSearchAgent:
           "is_restaurant_list": true/false,
           "restaurant_count": estimated number of restaurants mentioned,
           "content_quality": 0.0-1.0,
-          "passed_filter": true/false,
-          "reasoning": "brief explanation emphasizing local expertise and content quality"
+          "reasoning": "brief explanation of your evaluation"
         }}
         """
 
