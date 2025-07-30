@@ -1,6 +1,7 @@
 # formatters/telegram_formatter.py
 """
 Complete Telegram HTML formatter - handles all Telegram-specific formatting
+FIXED VERSION - removes problematic regex lookbehind
 """
 import re
 import logging
@@ -175,19 +176,64 @@ class TelegramFormatter:
         return html
 
     def _sanitize_for_telegram(self, text):
-        """Ensure HTML is completely safe for Telegram API - ROBUST VERSION"""
+        """
+        Ensure HTML is completely safe for Telegram API - FIXED VERSION
+        Removes problematic variable-width lookbehind regex patterns
+        """
         if not text:
             return ""
 
-        # Remove any malformed or incomplete tags
-        # This regex finds unclosed < or unmatched >
-        text = re.sub(r'<(?![/]?(?:b|i|u|s|a|code|pre)(?:\s[^>]*)?>)', '&lt;', text)
-        text = re.sub(r'(?<!<[/]?(?:b|i|u|s|a|code|pre)(?:\s[^>]*))>', '&gt;', text)
+        # FIXED: Replace the problematic lookbehind regex with a simpler approach
+        # Instead of using complex lookbehind, we'll use a different strategy
 
-        # Remove any standalone closing tags without openers
+        # First, protect valid HTML tags by temporarily replacing them
+        valid_tag_pattern = r'<(/?)(?:b|i|u|s|a|code|pre)(?:\s[^>]*)?>(?i)'
+        valid_tags = []
+        placeholder_base = "___VALID_TAG_"
+
+        def replace_valid_tag(match):
+            tag_index = len(valid_tags)
+            valid_tags.append(match.group(0))
+            return f"{placeholder_base}{tag_index}___"
+
+        # Temporarily replace valid tags with placeholders
+        protected_text = re.sub(valid_tag_pattern, replace_valid_tag, text)
+
+        # Now escape any remaining < and > characters (these are invalid)
+        protected_text = protected_text.replace('<', '&lt;').replace('>', '&gt;')
+
+        # Restore the valid tags
+        for i, original_tag in enumerate(valid_tags):
+            placeholder = f"{placeholder_base}{i}___"
+            protected_text = protected_text.replace(placeholder, original_tag)
+
+        # Additional cleanup for safety
+        result_text = self._additional_html_cleanup(protected_text)
+
+        return result_text
+
+    def _additional_html_cleanup(self, text):
+        """Additional HTML cleanup without problematic regex"""
+        # Remove any malformed or incomplete tags that might have slipped through
+        # This is a safer approach than complex regex
+
+        # Remove empty tags
+        text = re.sub(r'<\s*/?(?:b|i|u|s|a|code|pre)\s*>', '', text)
+
+        # Remove suspiciously long tag content (potential injection)
+        text = re.sub(r'<[^>]{100,}>', '', text)
+
+        # Ensure proper tag nesting by tracking open/close tags
+        text = self._fix_tag_nesting(text)
+
+        return text
+
+    def _fix_tag_nesting(self, text):
+        """
+        Fix HTML tag nesting without using complex regex lookbehind
+        Uses simple string parsing instead
+        """
         allowed_tags = ['b', 'i', 'u', 's', 'a', 'code', 'pre']
-
-        # Track open tags
         open_tags = []
         result = []
         i = 0
@@ -247,10 +293,4 @@ class TelegramFormatter:
             tag = open_tags.pop()
             result.append(f'</{tag}>')
 
-        final_text = ''.join(result)
-
-        # Final safety check - remove any remaining problematic patterns
-        final_text = re.sub(r'<\s*>', '', final_text)  # Remove empty tags
-        final_text = re.sub(r'<[^>]{100,}>', '', final_text)  # Remove suspiciously long tags
-
-        return final_text
+        return ''.join(result)
