@@ -715,7 +715,7 @@ def handle_voice_message(message):
         # Send immediate acknowledgment for voice processing
         processing_voice_msg = bot.reply_to(
             message,
-            "🎤 <b>Processing your voice message...</b>\n\n🔄 <i>Transcribing and understanding your request...</i>",
+            "🎤 <b>Processing your voice message...</b>\n\n<i>Just a sec, processing...</i>",
             parse_mode='HTML',
             reply_markup=remove_location_button()
         )

@@ -1,9 +1,9 @@
 # agents/database_search_agent.py
 """
-OPTIMIZED Database Search Agent - Single API call approach
+FIXED Database Search Agent - Removed is_restaurant_list parameter
 
-This optimization compiles all restaurant data into one text analysis
-instead of individual restaurant evaluations, reducing API calls from 6+ to 1.
+This fixes the LangChain prompt template error by removing the unnecessary
+is_restaurant_list parameter that was causing the crash.
 """
 
 import logging
@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 class DatabaseSearchAgent:
     """
-    OPTIMIZED agent that analyzes all restaurants in a single AI call
-    instead of individual evaluations.
+    FIXED agent that analyzes all restaurants in a single AI call
+    without the problematic is_restaurant_list parameter.
     """
 
     def __init__(self, config):
@@ -31,22 +31,22 @@ class DatabaseSearchAgent:
             temperature=0.1
         )
 
-        # Setup optimized prompts
+        # Setup fixed prompts
         self._setup_prompts()
-        logger.info("🚀 Optimized DatabaseSearchAgent initialized (single API call approach)")
+        logger.info("🚀 FIXED DatabaseSearchAgent initialized (removed is_restaurant_list parameter)")
 
     def _setup_prompts(self):
-        """Setup optimized prompts for batch analysis"""
+        """Setup fixed prompts for batch analysis - REMOVED is_restaurant_list parameter"""
 
-        # Single batch analysis prompt - analyzes ALL restaurants at once
+        # FIXED: Single batch analysis prompt - analyzes ALL restaurants at once
         self.batch_analysis_prompt = ChatPromptTemplate.from_template("""
-USER QUERY: {{raw_query}}
-LOCATION: {{destination}}
+USER QUERY: {raw_query}
+LOCATION: {destination}
 
 You are analyzing restaurants from our database to see which ones match the user's query.
 
 RESTAURANT LIST:
-{{restaurants_text}}
+{restaurants_text}
 
 TASK: Analyze this list and return the restaurant IDs that best match the user's query.
 
@@ -80,13 +80,13 @@ Return ONLY valid JSON with the top matches:
 IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality over quantity.
 """)
 
-        # Quality evaluation prompt - decides if results are sufficient
+        # FIXED: Quality evaluation prompt - decides if results are sufficient
         self.quality_evaluation_prompt = ChatPromptTemplate.from_template("""
-USER QUERY: {{raw_query}}
-LOCATION: {{destination}}
+USER QUERY: {raw_query}
+LOCATION: {destination}
 
-DATABASE RESULTS ({{restaurant_count}} restaurants found):
-{{restaurants_summary}}
+DATABASE RESULTS ({restaurant_count} restaurants found):
+{restaurants_summary}
 
 Evaluate if these database results sufficiently answer the user's query.
 
@@ -108,10 +108,10 @@ Return JSON:
     @log_function_call
     def search_and_evaluate(self, query_analysis: Dict[str, Any]) -> Dict[str, Any]:
         """
-        OPTIMIZED: Main method using single API call approach
+        FIXED: Main method using single API call approach with corrected prompts
         """
         try:
-            logger.info("🗃️ STARTING OPTIMIZED DATABASE SEARCH (single API call)")
+            logger.info("🗃️ STARTING FIXED DATABASE SEARCH (single API call)")
 
             # Extract data from query analysis
             destination = query_analysis.get("destination", "Unknown")
@@ -130,7 +130,7 @@ Return JSON:
 
             logger.info(f"📊 Database query returned {len(all_restaurants)} restaurants for {destination}")
 
-            # OPTIMIZATION: Analyze all restaurants in a single API call
+            # FIXED: Analyze all restaurants in a single API call
             selected_restaurants = self._batch_analyze_restaurants(
                 all_restaurants, 
                 raw_query, 
@@ -157,7 +157,7 @@ Return JSON:
                 return self._create_web_search_response(quality_evaluation.get("reasoning", "insufficient_quality"))
 
         except Exception as e:
-            logger.error(f"❌ Error in optimized database search: {e}")
+            logger.error(f"❌ Error in fixed database search: {e}")
             return self._create_web_search_response(f"database_error: {str(e)}")
 
     def _get_restaurants_for_city(self, city: str) -> List[Dict[str, Any]]:
@@ -181,8 +181,7 @@ Return JSON:
         destination: str
     ) -> List[Dict[str, Any]]:
         """
-        OPTIMIZATION: Analyze ALL restaurants in a single API call
-        instead of individual evaluations
+        FIXED: Analyze ALL restaurants in a single API call with corrected parameters
         """
         try:
             # Compile all restaurant data into a single text for analysis
@@ -190,10 +189,10 @@ Return JSON:
 
             logger.info(f"🧠 Batch analyzing {len(restaurants)} restaurants in single API call...")
 
-            # Create the analysis chain
+            # FIXED: Create the analysis chain with correct parameters only
             chain = self.batch_analysis_prompt | self.llm
 
-            # Single API call to analyze all restaurants
+            # FIXED: Single API call to analyze all restaurants - only pass expected parameters
             response = chain.invoke({
                 "raw_query": raw_query,
                 "destination": destination,
@@ -262,81 +261,32 @@ Return JSON:
 
             if restaurant_id in restaurant_lookup:
                 restaurant = restaurant_lookup[restaurant_id].copy()
-
                 # Add AI analysis metadata
                 restaurant['_ai_relevance_score'] = selection.get('relevance_score', 5)
-                restaurant['_ai_reasoning'] = selection.get('reasoning', '')
-
+                restaurant['_ai_reasoning'] = selection.get('reasoning', 'Selected by AI')
                 selected_restaurants.append(restaurant)
             else:
                 logger.warning(f"Restaurant ID {restaurant_id} not found in lookup")
 
-        # Sort by relevance score
-        selected_restaurants.sort(key=lambda r: r.get('_ai_relevance_score', 0), reverse=True)
-
         return selected_restaurants
 
-    def _fallback_keyword_matching(
+    def _evaluate_results_quality(
         self, 
         restaurants: List[Dict[str, Any]], 
-        raw_query: str
-    ) -> List[Dict[str, Any]]:
-        """
-        Fallback keyword matching if AI analysis fails
-        """
-        logger.info("🔄 Using fallback keyword matching")
-
-        query_words = raw_query.lower().split()
-        matched_restaurants = []
-
-        for restaurant in restaurants:
-            score = 0
-
-            # Check name
-            name = restaurant.get('name', '').lower()
-            for word in query_words:
-                if word in name:
-                    score += 2
-
-            # Check cuisine tags
-            cuisine_tags = [tag.lower() for tag in restaurant.get('cuisine_tags', [])]
-            for word in query_words:
-                for tag in cuisine_tags:
-                    if word in tag or tag in word:
-                        score += 3
-
-            # Check description
-            description = restaurant.get('raw_description', '').lower()
-            for word in query_words:
-                if word in description:
-                    score += 1
-
-            if score >= 2:  # Minimum threshold
-                restaurant_copy = restaurant.copy()
-                restaurant_copy['_ai_relevance_score'] = min(10, score)
-                restaurant_copy['_ai_reasoning'] = f"Keyword matching (score: {score})"
-                matched_restaurants.append(restaurant_copy)
-
-        # Sort by score and return top matches
-        matched_restaurants.sort(key=lambda r: r.get('_ai_relevance_score', 0), reverse=True)
-        return matched_restaurants[:8]
-
-    def _evaluate_results_quality(
-        self,
-        restaurants: List[Dict[str, Any]],
-        raw_query: str,
+        raw_query: str, 
         destination: str
     ) -> Dict[str, Any]:
         """
-        Evaluate if results are sufficient (second API call if needed)
+        FIXED: Evaluate the quality of selected restaurants with correct parameters
         """
         try:
-            # Format restaurants summary for evaluation
-            restaurants_summary = self._format_restaurants_for_evaluation(restaurants[:8])
+            # Create summary for evaluation
+            restaurants_summary = self._create_restaurants_summary(restaurants)
 
-            # Create the evaluation chain
+            # FIXED: Create evaluation chain with correct parameters only
             chain = self.quality_evaluation_prompt | self.llm
 
+            # FIXED: Single API call for quality evaluation - only pass expected parameters
             response = chain.invoke({
                 "raw_query": raw_query,
                 "destination": destination,
@@ -352,31 +302,68 @@ Return JSON:
                 content = content.split("```")[1].split("```")[0].strip()
 
             evaluation = json.loads(content)
-            evaluation["restaurant_count"] = len(restaurants)
-            evaluation["evaluation_method"] = "ai_quality_assessment"
+
+            # Ensure we have the minimum threshold check
+            if len(restaurants) < self.minimum_restaurant_threshold:
+                evaluation["sufficient"] = False
+                evaluation["reasoning"] = f"Only {len(restaurants)} restaurants found, minimum threshold is {self.minimum_restaurant_threshold}"
 
             return evaluation
 
         except Exception as e:
-            logger.error(f"Error in quality evaluation: {e}")
+            logger.error(f"Error evaluating restaurant quality: {e}")
             # Fallback evaluation
             return {
                 "sufficient": len(restaurants) >= self.minimum_restaurant_threshold,
                 "confidence": 5,
                 "reasoning": f"Fallback evaluation: {len(restaurants)} restaurants found",
-                "missing_aspects": [],
-                "evaluation_method": "fallback_count"
+                "missing_aspects": []
             }
 
-    def _format_restaurants_for_evaluation(self, restaurants: List[Dict[str, Any]]) -> str:
-        """Format restaurant data for quality evaluation"""
+    def _fallback_keyword_matching(self, restaurants: List[Dict[str, Any]], raw_query: str) -> List[Dict[str, Any]]:
+        """
+        Fallback method when AI analysis fails - simple keyword matching
+        """
+        logger.info("🔄 Using fallback keyword matching")
+
+        query_keywords = raw_query.lower().split()
+        matched_restaurants = []
+
+        for restaurant in restaurants:
+            # Check name, cuisine tags, and description for keyword matches
+            text_to_search = (
+                restaurant.get('name', '').lower() + ' ' +
+                ' '.join(restaurant.get('cuisine_tags', [])).lower() + ' ' +
+                restaurant.get('raw_description', '').lower()
+            )
+
+            # Count keyword matches
+            matches = sum(1 for keyword in query_keywords if keyword in text_to_search)
+
+            if matches > 0:
+                restaurant_copy = restaurant.copy()
+                restaurant_copy['_ai_relevance_score'] = min(10, matches * 2)  # Scale matches to score
+                restaurant_copy['_ai_reasoning'] = f"Fallback matching: {matches} keyword matches"
+                matched_restaurants.append(restaurant_copy)
+
+        # Sort by score and return top results
+        matched_restaurants.sort(key=lambda r: r.get('_ai_relevance_score', 0), reverse=True)
+        return matched_restaurants[:10]  # Limit to top 10
+
+    def _create_restaurants_summary(self, restaurants: List[Dict[str, Any]]) -> str:
+        """Create a formatted summary of restaurants for evaluation"""
+        if not restaurants:
+            return "No restaurants found"
+
         formatted = []
-        for i, rest in enumerate(restaurants, 1):
-            name = rest.get('name', 'Unknown')
-            tags = ', '.join(rest.get('cuisine_tags', [])[:3])
-            score = rest.get('_ai_relevance_score', 0)
-            reasoning = rest.get('_ai_reasoning', '')[:50]
-            formatted.append(f"{i}. {name} (Score: {score}) - {tags} - {reasoning}")
+        for restaurant in restaurants:
+            name = restaurant.get('name', 'Unknown')
+            tags = ', '.join(restaurant.get('cuisine_tags', []))
+            score = restaurant.get('_ai_relevance_score', 'N/A')
+            reasoning = restaurant.get('_ai_reasoning', 'No reasoning provided')
+
+            formatted.append(f"• {name} (Score: {score}) - {tags} - {reasoning}")
+
         return "\n".join(formatted)
 
     def _create_database_response(
@@ -424,7 +411,7 @@ Return JSON:
             from utils.database import get_database
             db = get_database()
             stats = db.get_database_stats()
-            stats["optimization"] = "single_api_call_batch_analysis"
+            stats["optimization"] = "single_api_call_batch_analysis_fixed"
             return stats
         except Exception as e:
             logger.error(f"Error getting database stats: {e}")
