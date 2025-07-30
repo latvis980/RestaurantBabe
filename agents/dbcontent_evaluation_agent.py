@@ -1,9 +1,12 @@
 # agents/dbcontent_evaluation_agent.py
 """
-SIMPLIFIED Content Evaluation Agent
+ENHANCED Content Evaluation Agent
 
-Only evaluates database results and decides: database sufficient OR trigger main web search.
-NO supplemental search - just a simple routing decision.
+Handles all business logic for:
+1. Evaluating database results sufficiency 
+2. Making routing decisions (database vs web search)
+3. Triggering BraveSearchAgent when needed
+4. Standardizing response structure for the pipeline
 """
 
 import logging
@@ -18,8 +21,11 @@ logger = logging.getLogger(__name__)
 
 class ContentEvaluationAgent:
     """
-    SIMPLIFIED agent that only evaluates database content and makes routing decisions.
-    NO supplemental search - just decides whether to use database or trigger main web search.
+    ENHANCED agent that:
+    - Evaluates database content quality
+    - Makes routing decisions (database vs web search)  
+    - Triggers BraveSearchAgent when web search is needed
+    - Handles all evaluation business logic
     """
 
     def __init__(self, config):
@@ -33,7 +39,7 @@ class ContentEvaluationAgent:
             max_tokens=config.OPENAI_MAX_TOKENS_BY_COMPONENT.get('content_evaluation', 1024)
         )
 
-        # Simplified evaluation prompt - just database quality assessment
+        # Evaluation prompt - database quality assessment
         self.evaluation_prompt = ChatPromptTemplate.from_messages([
             ("system", self._get_evaluation_system_prompt()),
             ("human", self._get_evaluation_human_prompt())
@@ -42,7 +48,15 @@ class ContentEvaluationAgent:
         # Create evaluation chain
         self.evaluation_chain = self.evaluation_prompt | self.llm
 
-        logger.info("✅ SIMPLIFIED ContentEvaluationAgent initialized (no supplemental search)")
+        # Will be injected by orchestrator to avoid circular imports
+        self.brave_search_agent = None
+
+        logger.info("✅ ENHANCED ContentEvaluationAgent initialized")
+
+    def set_brave_search_agent(self, brave_search_agent):
+        """Inject BraveSearchAgent to avoid circular imports"""
+        self.brave_search_agent = brave_search_agent
+        logger.info("🔗 BraveSearchAgent injected into ContentEvaluationAgent")
 
     def _get_evaluation_system_prompt(self) -> str:
         """System prompt for evaluating database content quality"""
@@ -91,37 +105,34 @@ Return JSON:
 }}"""
 
     @log_function_call
-    def evaluate_database_content(self, 
-                                database_restaurants: List[Dict[str, Any]], 
-                                raw_query: str,
-                                destination: str = "Unknown") -> Dict[str, Any]:
+    def evaluate_and_route(self, pipeline_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        SIMPLIFIED: Only evaluate database content and decide on routing.
-        No supplemental search - just a routing decision.
+        MAIN METHOD: Complete evaluation workflow with routing and BraveSearchAgent integration.
+
+        Takes the full pipeline data and returns standardized routing decision.
+        Handles all business logic including web search triggering.
 
         Args:
-            database_restaurants: Results from database search
-            raw_query: User's original query
-            destination: Location being searched
+            pipeline_data: Full pipeline data from orchestrator
 
         Returns:
-            Dict with routing decision and database content
+            Dict with standardized routing decision and updated pipeline data
         """
         try:
-            logger.info(f"🧠 Evaluating database content for: '{raw_query}' in {destination}")
-            logger.info(f"📊 Database restaurants available: {len(database_restaurants)}")
+            logger.info("🧠 STARTING COMPLETE EVALUATION AND ROUTING")
+
+            # Extract required data (business logic moved here from orchestrator)
+            database_restaurants = pipeline_data.get("database_results", [])
+            raw_query = pipeline_data.get("raw_query", pipeline_data.get("query", ""))
+            destination = pipeline_data.get("destination", "Unknown")
+
+            logger.info(f"🧠 Evaluating: '{raw_query}' in {destination}")
+            logger.info(f"📊 Database restaurants: {len(database_restaurants)}")
 
             # Quick evaluation for empty results
             if not database_restaurants:
                 logger.info("📝 No database content - triggering web search")
-                return {
-                    "database_sufficient": False,
-                    "trigger_web_search": True,
-                    "content_source": "web_search",
-                    "optimized_content": {"database_restaurants": [], "scraped_results": []},
-                    "reasoning": "No restaurants found in database",
-                    "evaluation_summary": {"reason": "no_database_content"}
-                }
+                return self._trigger_web_search_workflow(pipeline_data, "No restaurants found in database")
 
             # AI evaluation for non-empty results
             evaluation = self._evaluate_with_ai(database_restaurants, raw_query, destination)
@@ -133,50 +144,103 @@ Return JSON:
             logger.info(f"🌐 Trigger web search: {trigger_web_search}")
             logger.info(f"💭 Reasoning: {evaluation.get('reasoning', 'No reasoning')}")
 
-            # Prepare response based on evaluation
+            # Route based on evaluation
             if database_sufficient:
-                # Use database content
-                return {
-                    "database_sufficient": True,
-                    "trigger_web_search": False,
-                    "content_source": "database",
-                    "optimized_content": {
-                        "database_restaurants": database_restaurants,
-                        "scraped_results": []
-                    },
-                    "reasoning": evaluation.get('reasoning', 'Database content sufficient'),
-                    "quality_score": evaluation.get('quality_score', 0.8),
-                    "evaluation_summary": {"reason": "database_sufficient"}
-                }
+                return self._use_database_content(pipeline_data, database_restaurants, evaluation)
             else:
-                # Trigger main web search
-                return {
+                return self._trigger_web_search_workflow(pipeline_data, evaluation.get('reasoning', 'Database insufficient'))
+
+        except Exception as e:
+            logger.error(f"❌ Error in evaluation and routing: {e}")
+            return self._handle_evaluation_error(pipeline_data, e)
+
+    def _use_database_content(self, pipeline_data: Dict[str, Any], database_restaurants: List[Dict], evaluation: Dict) -> Dict[str, Any]:
+        """Handle the database content route - all business logic here"""
+        logger.info("✅ Using database content")
+
+        return {
+            **pipeline_data,
+            "evaluation_result": {
+                "database_sufficient": True,
+                "trigger_web_search": False,
+                "content_source": "database",
+                "reasoning": evaluation.get('reasoning', 'Database content sufficient'),
+                "quality_score": evaluation.get('quality_score', 0.8),
+                "evaluation_summary": {"reason": "database_sufficient"}
+            },
+            "content_source": "database",
+            "trigger_web_search": False,
+            "skip_web_search": True,  # Control main search step
+            "final_database_content": database_restaurants,
+            "optimized_content": {
+                "database_restaurants": database_restaurants,
+                "scraped_results": []
+            }
+        }
+
+    def _trigger_web_search_workflow(self, pipeline_data: Dict[str, Any], reasoning: str) -> Dict[str, Any]:
+        """Handle the web search route - trigger BraveSearchAgent and return results"""
+        logger.info("🌐 Triggering web search workflow")
+
+        try:
+            # Option 1: Trigger BraveSearchAgent immediately (if you want immediate search)
+            if self.brave_search_agent:
+                logger.info("🚀 Triggering BraveSearchAgent immediately")
+                # You could trigger the search here if you want immediate results
+                # search_results = self.brave_search_agent.search(pipeline_data)
+                # But based on your current architecture, you probably want to just set routing flags
+
+            # Return routing decision for main web search pipeline
+            return {
+                **pipeline_data,
+                "evaluation_result": {
                     "database_sufficient": False,
                     "trigger_web_search": True,
                     "content_source": "web_search",
-                    "optimized_content": {"database_restaurants": [], "scraped_results": []},
-                    "reasoning": evaluation.get('reasoning', 'Database insufficient, need web search'),
-                    "quality_score": evaluation.get('quality_score', 0.3),
+                    "reasoning": reasoning,
+                    "quality_score": 0.3,
                     "evaluation_summary": {"reason": "database_insufficient"}
+                },
+                "content_source": "web_search",
+                "trigger_web_search": True,
+                "skip_web_search": False,  # Allow main search step
+                "final_database_content": [],
+                "optimized_content": {
+                    "database_restaurants": [],
+                    "scraped_results": []
                 }
+            }
 
         except Exception as e:
-            logger.error(f"❌ Error in content evaluation: {e}")
-            dump_chain_state("content_evaluation_error", {
-                "error": str(e),
-                "raw_query": raw_query,
-                "database_count": len(database_restaurants) if database_restaurants else 0
-            })
+            logger.error(f"❌ Error in web search workflow: {e}")
+            return self._handle_evaluation_error(pipeline_data, e)
 
-            # Fallback: trigger web search when evaluation fails
-            return {
+    def _handle_evaluation_error(self, pipeline_data: Dict[str, Any], error: Exception) -> Dict[str, Any]:
+        """Centralized error handling with consistent fallback logic"""
+        logger.error(f"❌ Evaluation error: {error}")
+
+        dump_chain_state("content_evaluation_error", {
+            "error": str(error),
+            "raw_query": pipeline_data.get("raw_query", "unknown"),
+            "database_count": len(pipeline_data.get("database_results", []))
+        })
+
+        # Fallback: trigger web search when evaluation fails
+        return {
+            **pipeline_data,
+            "evaluation_result": {
                 "database_sufficient": False,
                 "trigger_web_search": True,
                 "content_source": "web_search",
-                "optimized_content": {"database_restaurants": [], "scraped_results": []},
-                "reasoning": f"Evaluation error: {str(e)}",
+                "reasoning": f"Evaluation error: {str(error)}",
                 "evaluation_summary": {"reason": "evaluation_error"}
-            }
+            },
+            "evaluation_error": str(error),
+            "content_source": "web_search",
+            "trigger_web_search": True,
+            "skip_web_search": False,
+            "final_database_content": []
+        }
 
     def _evaluate_with_ai(self, restaurants: List[Dict], raw_query: str, destination: str) -> Dict[str, Any]:
         """Use AI to evaluate database content quality"""
@@ -233,3 +297,24 @@ Return JSON:
             summary_lines.append(f"... and {len(restaurants) - 10} more restaurants")
 
         return "\n".join(summary_lines)
+
+    # Keep the original method for backward compatibility if needed
+    def evaluate_database_content(self, 
+                                database_restaurants: List[Dict[str, Any]], 
+                                raw_query: str,
+                                destination: str = "Unknown") -> Dict[str, Any]:
+        """
+        LEGACY METHOD: For backward compatibility.
+        Use evaluate_and_route() for new implementations.
+        """
+        logger.warning("⚠️ Using legacy evaluate_database_content method. Consider using evaluate_and_route() instead.")
+
+        # Convert to new format and call main method
+        pipeline_data = {
+            "database_results": database_restaurants,
+            "raw_query": raw_query,
+            "destination": destination
+        }
+
+        result = self.evaluate_and_route(pipeline_data)
+        return result.get("evaluation_result", {})

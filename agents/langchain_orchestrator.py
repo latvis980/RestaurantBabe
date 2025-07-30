@@ -36,6 +36,7 @@ class LangChainOrchestrator:
         self.scraper = WebScraper(config)
         self.editor_agent = EditorAgent(config)
         self.follow_up_search_agent = FollowUpSearchAgent(config)
+        self.dbcontent_evaluation_agent.set_brave_search_agent(self.search_agent)
 
         # Initialize formatter
         self.telegram_formatter = TelegramFormatter()
@@ -160,53 +161,17 @@ class LangChainOrchestrator:
             }
 
     def _evaluate_content_routing(self, x):
-        """
-        SIMPLIFIED: Just evaluate database content and decide on routing.
-        NO supplemental search - just database OR main web search.
-        """
         try:
-            logger.info("🧠 EVALUATING CONTENT ROUTING")
+            logger.info("🧠 ROUTING TO CONTENT EVALUATION AGENT")
 
-            database_restaurants = x.get("database_results", [])
-            raw_query = x.get("raw_query", x.get("query", ""))
-            destination = x.get("destination", "Unknown")
-
-            # Use ContentEvaluationAgent for routing decision
-            evaluation_result = self.content_evaluation_agent.evaluate_database_content(
-                database_restaurants=database_restaurants,
-                raw_query=raw_query,
-                destination=destination
-            )
-
-            trigger_web_search = evaluation_result.get("trigger_web_search", False)
-            content_source = evaluation_result.get("content_source", "database")
-
-            logger.info(f"🧠 Content evaluation complete:")
-            logger.info(f"   📊 Content source: {content_source}")
-            logger.info(f"   🌐 Trigger web search: {trigger_web_search}")
-            logger.info(f"   💭 Reasoning: {evaluation_result.get('reasoning', 'No reasoning')}")
-
-            return {
-                **x,
-                "evaluation_result": evaluation_result,
-                "content_source": content_source,
-                "trigger_web_search": trigger_web_search,
-                "skip_web_search": not trigger_web_search,  # Control main search step
-                # Pass through database content for editor if using database
-                "final_database_content": database_restaurants if content_source == "database" else []
-            }
+            # Pure delegation - no business logic in orchestrator
+            return self.dbcontent_evaluation_agent.evaluate_and_route(x)
 
         except Exception as e:
-            logger.error(f"❌ Error in content evaluation: {e}")
-            # Fallback: trigger web search
-            return {
-                **x,
-                "evaluation_error": str(e),
-                "trigger_web_search": True,
-                "skip_web_search": False,
-                "content_source": "web_search",
-                "final_database_content": []
-            }
+            logger.error(f"❌ Error routing to content evaluation agent: {e}")
+            # Even error handling is minimal - just log and re-raise
+            # Let the ContentEvaluationAgent handle error logic
+            return self.dbcontent_evaluation_agent._handle_evaluation_error(x, e)
 
     def _search_step(self, x):
         """
