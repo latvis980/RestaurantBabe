@@ -96,10 +96,11 @@ def remove_location_button():
 
 # Welcome message (unchanged)
 WELCOME_MESSAGE = (
-    "🍸 Hello! I'm an AI assistant Restaurant Babe, and I know all about the most delicious and trendy restaurants, cafes, bakeries, bars, and coffee shops around the world.\n\n"
-    "Tell me what you are looking for, like <i>best specialty coffee places in Berlin</i>, or I can just search for good places for lunch or dinner around you.\n\n"
+    "🍸 Hello! I'm an AI assistant, Restaurant Babe, but friend call me Babe. I know all about the most delicious and trendy restaurants, cafes, bakeries, bars, and coffee shops around the world.\n\n"
+    "Tell me what you are looking for, like <i>best specialty coffee places in Berlin</i>. Or I can just search for good places around you.\n\n"
 
     "I will check with my restaurant critic friends and provide the best recommendations. This might take a couple of minutes because I search very carefully and thoroughly verify the results. But there won't be any random places in my list.\n\n"
+    "I understand voice messages, too!\n\n"
     "💡 <b>Tip:</b> If you change your mind while I'm searching, just type /cancel to stop the current search.\n\n"
     "Shall we begin?"
 )
@@ -578,7 +579,7 @@ def handle_message(message):
         if user_id in active_searches:
             bot.reply_to(
                 message,
-                "⏳ I'm currently searching for places for you! Please wait for the results or type /cancel to stop the search.",
+                "⏳ Oh, darling! I'm on the phone with my friend, we are discussing the list of restaurants for you. I'll be with you in a minute, or just type /cancel to stop the search.",
                 parse_mode='HTML'
             )
             return
@@ -682,7 +683,7 @@ def handle_voice_message(message):
         if user_id in active_searches:
             bot.reply_to(
                 message,
-                "⏳ I'm currently searching for places for you! Please wait for the results or type /cancel to stop the search.",
+                "⏳ Oh, darling! I'm on the phone with my friend, we are discussing the list of restaurants for you. I'll be with you in a minute, or just type /cancel to stop the search.",
                 parse_mode='HTML'
             )
             return
