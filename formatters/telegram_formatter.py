@@ -187,7 +187,7 @@ class TelegramFormatter:
         # Instead of using complex lookbehind, we'll use a different strategy
 
         # First, protect valid HTML tags by temporarily replacing them
-        valid_tag_pattern = r'<(/?)(?:b|i|u|s|a|code|pre)(?:\s[^>]*)?>(?i)'
+        valid_tag_pattern = r'<(/?)(?:b|i|u|s|a|code|pre)(?:\s[^>]*)?>'
         valid_tags = []
         placeholder_base = "___VALID_TAG_"
 
@@ -197,7 +197,12 @@ class TelegramFormatter:
             return f"{placeholder_base}{tag_index}___"
 
         # Temporarily replace valid tags with placeholders
-        protected_text = re.sub(valid_tag_pattern, replace_valid_tag, text)
+        protected_text = re.sub(
+            valid_tag_pattern,
+            replace_valid_tag,
+            text,
+            flags=re.IGNORECASE        # ← moved the case-insensitive flag here
+        )
 
         # Now escape any remaining < and > characters (these are invalid)
         protected_text = protected_text.replace('<', '&lt;').replace('>', '&gt;')
@@ -213,20 +218,20 @@ class TelegramFormatter:
         return result_text
 
     def _additional_html_cleanup(self, text):
-        """Additional HTML cleanup without problematic regex"""
-        # Remove any malformed or incomplete tags that might have slipped through
-        # This is a safer approach than complex regex
+        """Additional HTML cleanup without killing valid formatting"""
 
-        # Remove empty tags
-        text = re.sub(r'<\s*/?(?:b|i|u|s|a|code|pre)\s*>', '', text)
+        text = re.sub(
+            r'<(?:b|i|u|s|code|pre)\b[^>]*>\s*</\1>',  # \1 is the tag name
+            '',
+            text,
+            flags=re.IGNORECASE | re.DOTALL
+        )
 
-        # Remove suspiciously long tag content (potential injection)
         text = re.sub(r'<[^>]{100,}>', '', text)
 
-        # Ensure proper tag nesting by tracking open/close tags
-        text = self._fix_tag_nesting(text)
+        # 3️⃣  Fix nesting
+        return self._fix_tag_nesting(text)
 
-        return text
 
     def _fix_tag_nesting(self, text):
         """
