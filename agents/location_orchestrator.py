@@ -433,7 +433,7 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
                 from utils.database import get_database
                 db = get_database()
 
-                coordinates = db._geocode_address(location_data.description)
+                coordinates = db.geocode_address(location_data.description)
                 if coordinates:
                     return coordinates
 
