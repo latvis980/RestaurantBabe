@@ -1,4 +1,4 @@
-# search_test.py - Updated with detailed AI reasoning display
+# search_test.py - Fixed for proper BraveSearchAgent.search() method call
 import asyncio
 import time
 import tempfile
@@ -91,19 +91,23 @@ class SearchTest:
                 f.write(f"  Primary: {query_analysis.get('primary_search_parameters', [])}\n")
                 f.write(f"  Secondary: {query_analysis.get('secondary_filter_parameters', [])}\n\n")
 
-                # Step 2: Raw Search Results
+                # Step 2: Raw Search Results - FIXED TO USE CORRECT METHOD SIGNATURE
                 f.write("STEP 2: RAW SEARCH RESULTS\n")
                 f.write("-" * 40 + "\n")
 
                 start_time = time.time()
                 raw_results = []
 
-                # Execute each search query
+                # Execute each search query with FIXED method call
                 for i, search_query in enumerate(search_queries, 1):
                     f.write(f"Search Query {i}: {search_query}\n")
 
-                    # Get raw results for this query
-                    query_results = self.search_agent.search([search_query])
+                    # FIXED: Call search method with correct parameters
+                    # The method signature is: search(queries, max_retries=3, retry_delay=2, enable_ai_filtering=True)
+                    query_results = self.search_agent.search(
+                        [search_query],  # queries parameter (must be a list)
+                        enable_ai_filtering=True  # explicitly pass enable_ai_filtering
+                    )
                     raw_results.extend(query_results)
 
                     f.write(f"  URLs found: {len(query_results)}\n")
@@ -150,6 +154,9 @@ class SearchTest:
                 f.write("STEP 3.5: DETAILED AI EVALUATION RESULTS\n")
                 f.write("-" * 40 + "\n")
 
+                passed_urls = []
+                failed_urls = []
+
                 for i, result in enumerate(unique_results, 1):
                     url = result.get('url', 'Unknown')
                     title = result.get('title', 'No title')
@@ -162,105 +169,85 @@ class SearchTest:
                         f.write(f"✅ AI EVALUATION:\n")
                         f.write(f"   Passed Filter: {ai_eval.get('passed_filter', 'N/A')}\n")
                         f.write(f"   Is Restaurant List: {ai_eval.get('is_restaurant_list', 'N/A')}\n")
+                        f.write(f"   Content Quality: {ai_eval.get('content_quality', 'N/A')}\n")
                         f.write(f"   Restaurant Count: {ai_eval.get('restaurant_count', 'N/A')}\n")
-                        f.write(f"   Content Quality: {ai_eval.get('content_quality', 'N/A'):.2f}\n")
                         f.write(f"   Reasoning: {ai_eval.get('reasoning', 'No reasoning provided')}\n")
+
+                        if ai_eval.get('passed_filter', False):
+                            passed_urls.append(result)
+                            f.write(f"   ✅ VERDICT: PASSED - Will be sent to scraper\n")
+                        else:
+                            failed_urls.append(result)
+                            f.write(f"   ❌ VERDICT: FILTERED OUT\n")
                     else:
-                        f.write(f"❌ NO AI EVALUATION DATA (may have been filtered at domain level)\n")
+                        f.write(f"❌ NO AI EVALUATION (filtered out at domain level or error)\n")
+                        failed_urls.append(result)
 
-                    f.write("-" * 60 + "\n")
+                # Step 4: Final Results Summary
+                f.write("\nSTEP 4: FINAL FILTERING SUMMARY\n")
+                f.write("-" * 40 + "\n")
 
-                f.write("\n")
-
-                # Analyze domain distribution
-                domain_counts = {}
-                filtered_urls = []
-
-                for result in unique_results:
-                    url = result.get('url', '')
-                    if url:
-                        # Extract domain
-                        try:
-                            from urllib.parse import urlparse
-                            domain = urlparse(url).netloc.lower()
-                            if domain.startswith('www.'):
-                                domain = domain[4:]
-                            domain_counts[domain] = domain_counts.get(domain, 0) + 1
-                        except:
-                            pass
-
-                        # Check if this URL made it through filtering
+                f.write(f"URLs that PASSED filtering (will be scraped): {len(passed_urls)}\n")
+                if passed_urls:
+                    for i, result in enumerate(passed_urls, 1):
                         ai_eval = result.get('ai_evaluation', {})
-                        if ai_eval.get('passed_filter', False) or not ai_eval:
-                            filtered_urls.append(result)
+                        quality = ai_eval.get('content_quality', 0)
+                        f.write(f"  {i}. Quality: {quality:.2f} - {result.get('url', 'Unknown')}\n")
 
-                f.write("Domain Analysis:\n")
-                for domain, count in sorted(domain_counts.items()):
-                    f.write(f"  {domain}: {count} URLs\n")
+                f.write(f"\nURLs that FAILED filtering: {len(failed_urls)}\n")
+                if failed_urls:
+                    for i, result in enumerate(failed_urls[:10], 1):  # Show first 10 only
+                        ai_eval = result.get('ai_evaluation', {})
+                        reason = ai_eval.get('reasoning', 'Domain filtered or error')[:60]
+                        f.write(f"  {i}. Reason: {reason}... - {result.get('url', 'Unknown')}\n")
+                    if len(failed_urls) > 10:
+                        f.write(f"  ... and {len(failed_urls) - 10} more filtered URLs\n")
 
-                f.write(f"\nFiltering Results:\n")
-                f.write(f"  Before filtering: {len(unique_results)} URLs\n")
-                f.write(f"  After AI filtering: {len(filtered_urls)} URLs\n")
-                f.write(f"  Filtered out: {len(unique_results) - len(filtered_urls)} URLs\n\n")
-
-                # Step 4: Final URLs for Scraping
-                f.write("STEP 4: FINAL URLs FOR SCRAPING\n")
+                # Step 5: Performance Analysis
+                f.write("\nSTEP 5: PERFORMANCE ANALYSIS\n")
                 f.write("-" * 40 + "\n")
-                f.write("URLs that would be sent to scraper:\n")
 
-                for i, result in enumerate(filtered_urls, 1):
-                    url = result.get('url', 'Unknown URL')
-                    title = result.get('title', 'No title')
-                    f.write(f"  {i}. {url}\n")
-                    f.write(f"     Title: {title[:100]}...\n")
-
-                if len(filtered_urls) > 20:
-                    f.write(f"  ... and {len(filtered_urls) - 20} more URLs\n")
-
-                final_count = len(filtered_urls)
-
-                # Cost Analysis Section
-                f.write(f"\nCOST OPTIMIZATION ANALYSIS:\n")
-                f.write("-" * 40 + "\n")
                 model_used = evaluation_stats.get('model_used', 'Unknown')
-                cost_saved = evaluation_stats.get('estimated_cost_saved', 0.0)
-                f.write(f"  AI Model Used: {model_used}\n")
-                f.write(f"  Total Evaluations: {evaluation_stats.get('total_evaluated', 0)}\n")
+                total_evaluated = evaluation_stats.get('total_evaluated', 0)
+                passed_filter = evaluation_stats.get('passed_filter', 0)
+                failed_filter = evaluation_stats.get('failed_filter', 0)
+                domain_filtered = evaluation_stats.get('domain_filtered', 0)
+                evaluation_errors = evaluation_stats.get('evaluation_errors', 0)
 
+                f.write(f"AI Model Used: {model_used}\n")
+                f.write(f"Total URLs evaluated by AI: {total_evaluated}\n")
+                f.write(f"Passed AI filter: {passed_filter}\n")
+                f.write(f"Failed AI filter: {failed_filter}\n")
+                f.write(f"Domain filtered (pre-AI): {domain_filtered}\n")
+                f.write(f"Evaluation errors: {evaluation_errors}\n")
+
+                if total_evaluated > 0:
+                    pass_rate = (passed_filter / total_evaluated) * 100
+                    f.write(f"AI Filter Pass Rate: {pass_rate:.1f}%\n")
+
+                # Cost analysis for GPT-4o-mini
                 if model_used == 'gpt-4o-mini':
-                    f.write(f"  💰 Estimated Cost Savings: ${cost_saved:.3f} vs GPT-4o\n")
-                    f.write(f"  📊 Cost Reduction: ~95% vs GPT-4o\n")
-                else:
-                    f.write(f"  💡 Switch to gpt-4o-mini for 95% cost reduction\n")
+                    cost_saved = evaluation_stats.get('estimated_cost_saved', 0.0)
+                    f.write(f"Estimated Cost Savings vs GPT-4o: ${cost_saved:.3f}\n")
 
-                # Configuration Info
-                f.write(f"\nCONFIGURATION INFO:\n")
-                f.write(f"  Excluded domains: {getattr(self.config, 'EXCLUDED_RESTAURANT_SOURCES', [])}\n")
-                f.write(f"  Search count limit: {getattr(self.config, 'BRAVE_SEARCH_COUNT', 15)}\n")
-                f.write(f"  AI model: {getattr(self.config, 'SEARCH_EVALUATION_MODEL', getattr(self.config, 'OPENAI_MODEL', 'Unknown'))}\n")
-
-                # Overall Summary
-                f.write(f"\nOVERALL SUMMARY:\n")
-                f.write(f"  Query analysis: {analysis_time}s\n")
-                f.write(f"  Search execution: {search_time}s\n")
-                f.write(f"  Total processing: {analysis_time + search_time}s\n")
-                f.write(f"  Final URLs for scraping: {final_count}\n")
-                f.write(f"  Success rate: {(final_count / max(len(unique_results), 1) * 100):.1f}%\n")
-                f.write(f"  AI Filtering efficiency: {evaluation_stats.get('passed_filter', 0)}/{evaluation_stats.get('total_evaluated', 0)} passed\n\n")
-
+                # Final summary
+                f.write("\n" + "=" * 80 + "\n")
+                f.write("SEARCH FILTERING TEST SUMMARY\n")
                 f.write("=" * 80 + "\n")
-                f.write("SEARCH FILTERING TEST COMPLETED\n")
-                f.write("=" * 80 + "\n")
+                f.write(f"Query: {restaurant_query}\n")
+                f.write(f"Search queries generated: {len(search_queries)}\n")
+                f.write(f"Total URLs found: {len(unique_results)}\n")
+                f.write(f"URLs passed filtering: {len(passed_urls)}\n")
+                f.write(f"Filter effectiveness: {len(failed_urls)}/{len(unique_results)} filtered out\n")
+                f.write(f"Ready for scraping: {'Yes' if passed_urls else 'No - all URLs filtered'}\n")
+
+                # Send results to admin if available
+                if bot and self.admin_chat_id:
+                    await self._send_results_to_admin(bot, filepath, restaurant_query, len(passed_urls))
 
             except Exception as e:
-                f.write(f"\n❌ ERROR during search test: {str(e)}\n")
-                logger.error(f"Error during search test: {e}")
-                import traceback
-                f.write(f"\nFull traceback:\n{traceback.format_exc()}\n")
-
-        # Send results to admin if bot is provided
-        if bot and self.admin_chat_id:
-            await self._send_results_to_admin(bot, filepath, restaurant_query, final_count if 'final_count' in locals() else 0)
+                f.write(f"\n❌ ERROR DURING TEST: {str(e)}\n")
+                logger.error(f"Error during search filtering test: {e}")
 
         return filepath
 
