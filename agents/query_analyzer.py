@@ -29,6 +29,8 @@ class QueryAnalyzer:
              Search query: "restaurants with view in New York"
             - User asks: "where to drink some wine in Bordeaux"
              Search query: "best wine bars and restaurants in Bordeaux"
+            - Any interesting restaurant openings in London?
+            Search query: "new restaurants in London 2025"    
        
         GUIDELINES:
         1. Extract the destination (city/country) from the query
@@ -36,7 +38,8 @@ class QueryAnalyzer:
         3. For USA destinations add the word "media" to the search query
         4. For non-English speaking destinations, identify the local language
         5. Create appropriate search queries in English and local language (for non-English destinations)
-        6. Extract or create keywords for analysis based on user preferences
+        6. For the query in local language, don;t just translate word for word from english, create an original query that will return better search results in this language. 
+        7. Extract or create keywords for analysis based on user preferences
        
         OUTPUT FORMAT:
         Respond with a JSON object containing:
