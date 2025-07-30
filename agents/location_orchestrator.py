@@ -160,6 +160,8 @@ class LocationOrchestrator:
             logger.error(f"❌ Error getting coordinates: {e}")
             return None
 
+    # Replace the _check_database_proximity method in agents/location_orchestrator.py
+
     async def _check_database_proximity(
         self, 
         coordinates: Tuple[float, float], 
@@ -186,14 +188,46 @@ class LocationOrchestrator:
             if cancel_check_fn and cancel_check_fn():
                 return []
 
-            # Filter by proximity using LocationUtils
-            nearby_restaurants = LocationUtils.filter_by_proximity(
-                center=coordinates,
-                points=restaurants,
-                radius_km=self.db_search_radius,
-                lat_key="latitude",
-                lon_key="longitude"
-            )
+            # Filter by proximity using LocationUtils - with error handling
+            try:
+                nearby_restaurants = LocationUtils.filter_by_proximity(
+                    center=coordinates,
+                    points=restaurants,
+                    radius_km=self.db_search_radius,
+                    lat_key="latitude",
+                    lon_key="longitude"
+                )
+            except Exception as filter_error:
+                logger.error(f"❌ Error in filter_by_proximity: {filter_error}")
+                # Fallback: use the existing find_nearby_points method if available
+                try:
+                    # Convert restaurants to the format expected by find_nearby_points
+                    restaurant_points = []
+                    for r in restaurants:
+                        if r.get('latitude') and r.get('longitude'):
+                            try:
+                                lat = float(r['latitude'])
+                                lng = float(r['longitude'])
+                                restaurant_points.append((lat, lng, r))
+                            except (ValueError, TypeError):
+                                continue
+
+                    nearby_tuples = LocationUtils.find_nearby_points(
+                        center=coordinates,
+                        points=restaurant_points,
+                        radius_km=self.db_search_radius
+                    )
+
+                    # Convert back to the expected format
+                    nearby_restaurants = []
+                    for lat, lng, data, distance in nearby_tuples:
+                        restaurant = data.copy()
+                        restaurant['distance_km'] = distance
+                        nearby_restaurants.append(restaurant)
+
+                except Exception as fallback_error:
+                    logger.error(f"❌ Fallback proximity filtering also failed: {fallback_error}")
+                    nearby_restaurants = []
 
             # TODO: Add query-specific filtering (cuisine type, etc.)
             # For now, return all nearby restaurants

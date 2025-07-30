@@ -94,6 +94,66 @@ class LocationUtils:
             logger.error(f"Error calculating distance: {e}")
             return float('inf')  # Return infinite distance on error
 
+    # Add this method to the LocationUtils class in utils/location_utils.py
+
+    @staticmethod
+    def filter_by_proximity(
+        center: Tuple[float, float],
+        points: List[Dict[str, Any]],
+        radius_km: float,
+        lat_key: str = "latitude",
+        lon_key: str = "longitude"
+    ) -> List[Dict[str, Any]]:
+        """
+        Filter a list of dictionary objects by proximity to a center point
+
+        Args:
+            center: (lat, lng) of center point
+            points: List of dictionaries containing location data
+            radius_km: Search radius in kilometers
+            lat_key: Key name for latitude in the dictionaries
+            lon_key: Key name for longitude in the dictionaries
+
+        Returns:
+            List of dictionaries for points within radius, with distance_km added
+        """
+        nearby = []
+
+        for point in points:
+            try:
+                # Extract coordinates from the dictionary
+                lat = point.get(lat_key)
+                lon = point.get(lon_key)
+
+                # Skip if coordinates are missing
+                if lat is None or lon is None:
+                    logger.debug(f"Skipping point with missing coordinates: {point.get('name', 'Unknown')}")
+                    continue
+
+                # Convert to float if needed
+                lat = float(lat)
+                lon = float(lon)
+
+                # Calculate distance
+                distance = LocationUtils.calculate_distance(center, (lat, lon))
+
+                # Check if within radius
+                if distance <= radius_km:
+                    # Add distance to the point data
+                    point_with_distance = point.copy()
+                    point_with_distance['distance_km'] = distance
+                    nearby.append(point_with_distance)
+
+            except Exception as e:
+                logger.debug(f"Error processing point: {e}")
+                continue
+
+        # Sort by distance (closest first)
+        nearby.sort(key=lambda x: x.get('distance_km', float('inf')))
+
+        logger.info(f"📊 Filtered {len(nearby)} points within {radius_km}km from {len(points)} total points")
+        return nearby
+
     @staticmethod
     def validate_coordinates(latitude: float, longitude: float) -> bool:
         """

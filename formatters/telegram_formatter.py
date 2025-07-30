@@ -129,47 +129,38 @@ class TelegramFormatter:
                 "Try rephrasing your query or searching for a different area.")
 
     def _clean_text(self, text):
-        """Clean and prepare text for HTML formatting - FIXED VERSION"""
+        """Clean and prepare text for HTML formatting - ROBUST VERSION"""
         if not text:
             return ""
 
         text = str(text).strip()
 
-        # First, decode any existing HTML entities to get clean text
+        # Remove any existing HTML tags first to avoid conflicts
+        text = re.sub(r'<[^>]*>', '', text)
+
+        # Decode any existing HTML entities to get clean text
         text = unescape(text)
 
-        # Now escape only the characters that need escaping for Telegram HTML
-        # Use simple replacements instead of complex lookbehind patterns
+        # Now escape the essential characters for Telegram HTML
+        # Do this in a specific order to avoid double-escaping
 
-        # Replace & that aren't part of valid entities
+        # 1. Escape ampersands first (but not existing entities)
         text = re.sub(r'&(?!(?:amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)', '&amp;', text)
 
-        # For < and >, use a different approach without variable-width lookbehind
-        # Instead, we'll use a two-step process:
+        # 2. Escape < and >
+        text = text.replace('<', '&lt;').replace('>', '&gt;')
 
-        # Step 1: Temporarily mark valid HTML tags
-        valid_tag_pattern = r'</?(?:b|i|u|s|code|pre|a(?:\s[^>]*)?)\s*>'
-        protected_tags = []
+        # 3. Remove or replace problematic characters that could break HTML
+        # Remove control characters except newlines and tabs
+        text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
 
-        def protect_tag(match):
-            tag = match.group(0)
-            placeholder = f"__PROTECTED_TAG_{len(protected_tags)}__"
-            protected_tags.append(tag)
-            return placeholder
+        # Remove null bytes
+        text = text.replace('\x00', '')
 
-        # Protect valid tags
-        text = re.sub(valid_tag_pattern, protect_tag, text, flags=re.IGNORECASE)
+        # Replace multiple whitespace with single space
+        text = re.sub(r'\s+', ' ', text)
 
-        # Step 2: Now escape all remaining < and >
-        text = text.replace('<', '&lt;')
-        text = text.replace('>', '&gt;')
-
-        # Step 3: Restore the protected tags
-        for i, tag in enumerate(protected_tags):
-            placeholder = f"__PROTECTED_TAG_{i}__"
-            text = text.replace(placeholder, tag)
-
-        return text
+        return text.strip()
 
     def _finalize_html(self, html):
         """Apply final processing and length limits"""
@@ -184,25 +175,20 @@ class TelegramFormatter:
         return html
 
     def _sanitize_for_telegram(self, text):
-        """Ensure HTML is safe for Telegram API"""
+        """Ensure HTML is completely safe for Telegram API - ROBUST VERSION"""
         if not text:
             return ""
 
-        # First, escape any unescaped text content
-        # Do this for any text between > and <
-        def escape_text_content(match):
-            content = match.group(1)
-            # Only escape if it's not already escaped
-            if '&' in content and ('&lt;' in content or '&gt;' in content or '&amp;' in content):
-                return '>' + content + '<'
-            return '>' + escape(content) + '<'
+        # Remove any malformed or incomplete tags
+        # This regex finds unclosed < or unmatched >
+        text = re.sub(r'<(?![/]?(?:b|i|u|s|a|code|pre)(?:\s[^>]*)?>)', '&lt;', text)
+        text = re.sub(r'(?<!<[/]?(?:b|i|u|s|a|code|pre)(?:\s[^>]*))>', '&gt;', text)
 
-        # Fix unescaped content between tags
-        text = re.sub(r'>([^<]+)<', escape_text_content, text)
+        # Remove any standalone closing tags without openers
+        allowed_tags = ['b', 'i', 'u', 's', 'a', 'code', 'pre']
 
-        # Ensure all tags are properly closed
-        # Stack to track open tags
-        stack = []
+        # Track open tags
+        open_tags = []
         result = []
         i = 0
 
@@ -211,51 +197,60 @@ class TelegramFormatter:
                 # Find the end of the tag
                 end = text.find('>', i)
                 if end == -1:
-                    # No closing bracket, treat as plain text
+                    # No closing bracket, treat as escaped text
                     result.append('&lt;')
                     i += 1
                     continue
 
-                tag_content = text[i+1:end]
+                tag_content = text[i+1:end].strip()
+
+                # Check if it's a closing tag
                 if tag_content.startswith('/'):
-                    # Closing tag
-                    tag_name = tag_content[1:].split()[0].lower()
-                    if tag_name in self.allowed_tags:
-                        if stack and stack[-1] == tag_name:
-                            stack.pop()
-                            result.append(text[i:end+1])
-                        else:
-                            # Mismatched closing tag, just add as text
-                            result.append(escape(text[i:end+1]))
+                    tag_name = tag_content[1:].strip().lower()
+                    if tag_name in allowed_tags and open_tags and open_tags[-1] == tag_name:
+                        # Valid closing tag
+                        open_tags.pop()
+                        result.append(text[i:end+1])
                     else:
-                        # Not an allowed tag
-                        result.append(escape(text[i:end+1]))
+                        # Invalid closing tag, escape it
+                        result.append('&lt;' + tag_content + '&gt;')
                 else:
                     # Opening tag
                     tag_parts = tag_content.split(None, 1)
                     tag_name = tag_parts[0].lower()
-                    if tag_name in self.allowed_tags:
-                        if tag_name == 'a':
-                            # Special handling for links
-                            if len(tag_parts) > 1 and 'href=' in tag_parts[1]:
+
+                    if tag_name in allowed_tags:
+                        # Validate tag format
+                        if tag_name == 'a' and len(tag_parts) > 1:
+                            # Special validation for links
+                            if 'href=' in tag_parts[1] and '"' in tag_parts[1]:
                                 result.append(text[i:end+1])
-                                stack.append(tag_name)
+                                open_tags.append(tag_name)
                             else:
-                                result.append(escape(text[i:end+1]))
+                                # Invalid link tag
+                                result.append('&lt;' + tag_content + '&gt;')
                         else:
+                            # Valid formatting tag
                             result.append(text[i:end+1])
-                            stack.append(tag_name)
+                            open_tags.append(tag_name)
                     else:
-                        # Not an allowed tag
-                        result.append(escape(text[i:end+1]))
+                        # Unknown tag, escape it
+                        result.append('&lt;' + tag_content + '&gt;')
+
                 i = end + 1
             else:
                 result.append(text[i])
                 i += 1
 
-        # Close any unclosed tags
-        while stack:
-            tag = stack.pop()
+        # Close any remaining open tags
+        while open_tags:
+            tag = open_tags.pop()
             result.append(f'</{tag}>')
 
-        return ''.join(result)
+        final_text = ''.join(result)
+
+        # Final safety check - remove any remaining problematic patterns
+        final_text = re.sub(r'<\s*>', '', final_text)  # Remove empty tags
+        final_text = re.sub(r'<[^>]{100,}>', '', final_text)  # Remove suspiciously long tags
+
+        return final_text
