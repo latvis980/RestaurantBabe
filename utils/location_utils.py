@@ -10,7 +10,7 @@ Provides utility functions for location-based operations:
 
 import logging
 import math
-from typing import Tuple, Optional, List, Any
+from typing import Tuple, Optional, List, Any, Dict
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
