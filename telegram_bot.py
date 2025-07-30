@@ -94,12 +94,8 @@ def remove_location_button():
 # Welcome message (unchanged)
 WELCOME_MESSAGE = (
     "🍸 Hello! I'm an AI assistant Restaurant Babe, and I know all about the most delicious and trendy restaurants, cafes, bakeries, bars, and coffee shops around the world.\n\n"
-    "Tell me what you are looking for. For example:\n"
-    "<i>What new restaurants have recently opened in Lisbon?</i>\n"
-    "<i>Local residents' favorite cevicherias in Lima</i>\n"
-    "<i>Where can I find the most delicious plov in Tashkent?</i>\n"
-    "<i>Recommend places with brunch and specialty coffee in Barcelona.</i>\n"
-    "<i>Best cocktail bars in Paris's Marais district</i>\n\n"
+    "Tell me what you are looking for, like <i>best specialty coffee places in Berlin</i>, or I can just search for good places for lunch or dinner around you.\n\n"
+
     "I will check with my restaurant critic friends and provide the best recommendations. This might take a couple of minutes because I search very carefully and thoroughly verify the results. But there won't be any random places in my list.\n\n"
     "💡 <b>Tip:</b> If you change your mind while I'm searching, just type /cancel to stop the current search.\n\n"
     "Shall we begin?"
@@ -107,7 +103,7 @@ WELCOME_MESSAGE = (
 
 # AI Conversation Prompt (unchanged)
 CONVERSATION_PROMPT = """
-You are Restaurant Babe, an expert AI assistant for restaurant recommendations worldwide. 
+You are an expert AI assistant for restaurant recommendations worldwide. Your name is Restaurant Babe, or simply Babe. You are very friendly, helpful, and enthusiastic about food and dining. You are helping a user find the best restaurants, cafes, bars, and other dining spots based on their preferences and location.
 
 CONVERSATION HISTORY:
 {{conversation_history}}
@@ -848,10 +844,7 @@ def perform_location_search(query, location_data, chat_id, user_id):
                     chat_id,
                     video,
                     caption="🔍 <b>Searching for nearby restaurants...</b>\n\n"
-                            "📍 Getting your precise location\n"
-                            "🗄️ Checking our restaurant database\n" 
-                            "📰 Searching with reputable food sources\n\n"
-                            "<i>This takes 1-2 minutes for thorough verification</i>\n\n"
+                            "<i>This may take a couple of minutes as I'll have to ask around to see what professional foodies have to say about these places'</i>\n\n"
                             "💡 Type /cancel to stop the search",
                     parse_mode='HTML',
                     reply_markup=remove_location_button()
@@ -873,10 +866,7 @@ def perform_location_search(query, location_data, chat_id, user_id):
             processing_msg = bot.send_message(
                 chat_id,
                 "🔍 <b>Searching for nearby restaurants...</b>\n\n"
-                "📍 Getting your precise location\n"
-                "🗄️ Checking our restaurant database\n" 
-                "📰 Searching with reputable food sources\n\n"
-                "<i>This takes 1-2 minutes for thorough verification</i>\n\n"
+                 "<i>This might take a couple of minutes as I'll check with my critic friends what they think about those places</i>\n\n"
                 "💡 Type /cancel to stop the search",
                 parse_mode='HTML',
                 reply_markup=remove_location_button()
