@@ -1,4 +1,5 @@
 # Search agent with AI-based filtering system and destination validation
+# Based on original version (12) with ONLY destination filtering added - NO keyword filtering
 
 import requests
 from langchain_core.tracers.context import tracing_v2_enabled
@@ -32,7 +33,7 @@ class BraveSearchAgent:
 
         logger.info(f"🔍 Search evaluation using: {config.SEARCH_EVALUATION_MODEL} (cost-optimized)")
 
-        # AI evaluation system prompt with destination validation
+        # AI evaluation system prompt with destination validation - ONLY CHANGE FROM ORIGINAL
         self.eval_system_prompt = """
         You are an expert at evaluating web content about restaurants.
         Your task is to analyze if a web page contains a curated list of restaurants or restaurant recommendations FOR THE SPECIFIC DESTINATION requested.
@@ -309,7 +310,7 @@ class BraveSearchAgent:
 
     async def _evaluate_search_result(self, result: Dict[str, Any], destination: str) -> Optional[Dict[str, Any]]:
         """
-        Evaluate a single search result using AI
+        Evaluate a single search result using AI - NO KEYWORD FILTERING, AI ONLY
 
         Args:
             result: Search result dictionary
@@ -325,30 +326,13 @@ class BraveSearchAgent:
         self.evaluation_stats["total_evaluated"] += 1
 
         try:
-            # First, do a quick content preview fetch
+            # Fetch content preview
             content_preview = await self._fetch_content_preview(url)
-            if not content_preview:
-                # If we can't fetch content, apply basic keyword filtering
-                return self._basic_keyword_evaluation(url, title, description, destination)
 
-            # Combine title and description with content preview
-            full_preview = f"{title}\n\n{description}\n\n{content_preview}"
+            # Combine title, description and content preview
+            full_preview = f"{title}\n\n{description}\n\n{content_preview}" if content_preview else f"{title}\n\n{description}"
 
-            # Basic keyword check to avoid LLM calls for obviously irrelevant content
-            restaurant_keywords = ["restaurant", "dining", "food", "eat", "chef", "cuisine", "menu", "dish"]
-            if not any(kw in full_preview.lower() for kw in restaurant_keywords):
-                logger.info(f"URL filtered by basic keyword check: {url}")
-                self.evaluation_stats["failed_filter"] += 1
-                return {
-                    "passed_filter": False,
-                    "is_restaurant_list": False,
-                    "restaurant_count": 0,
-                    "content_quality": 0.0,
-                    "destination_match": False,
-                    "reasoning": "No restaurant-related keywords found"
-                }
-
-            # AI evaluation with destination
+            # AI evaluation with destination - NO KEYWORD FILTERING!
             response = await self.eval_chain.ainvoke({
                 "destination": destination,
                 "url": url,
@@ -469,65 +453,6 @@ class BraveSearchAgent:
             logger.warning(f"Error fetching content preview for {url}: {str(e)}")
 
         return ""
-
-    def _basic_keyword_evaluation(self, url: str, title: str, description: str, destination: str) -> Dict[str, Any]:
-        """
-        Apply basic keyword-based evaluation when content fetching fails
-
-        Args:
-            url: URL being evaluated
-            title: Page title
-            description: Page description
-            destination: Target destination
-
-        Returns:
-            Basic evaluation result
-        """
-        combined_text = f"{title} {description}".lower()
-        destination_lower = destination.lower()
-
-        # Check for destination match
-        destination_match = destination_lower in combined_text
-
-        # Positive keywords
-        positive_keywords = [
-            "best restaurants", "top restaurants", "restaurant guide", "food guide",
-            "where to eat", "dining guide", "restaurant list", "food critic",
-            "restaurant recommendations", "culinary guide", "michelin", "zagat"
-        ]
-
-        # Negative keywords
-        negative_keywords = [
-            "menu", "book table", "order online", "delivery", "takeaway",
-            "single restaurant", "one restaurant", "hotel", "booking"
-        ]
-
-        positive_score = sum(1 for kw in positive_keywords if kw in combined_text)
-        negative_score = sum(1 for kw in negative_keywords if kw in combined_text)
-
-        # Simple scoring - now requires destination match
-        if positive_score > negative_score and positive_score > 0 and destination_match:
-            self.evaluation_stats["passed_filter"] += 1
-            return {
-                "passed_filter": True,
-                "is_restaurant_list": True,
-                "restaurant_count": 5,  # Estimate
-                "content_quality": 0.6,
-                "destination_match": True,
-                "reasoning": f"Basic keyword evaluation: {positive_score} positive, {negative_score} negative keywords, destination match: {destination_match}"
-            }
-        else:
-            self.evaluation_stats["failed_filter"] += 1
-            if not destination_match:
-                self.evaluation_stats["failed_destination"] += 1
-            return {
-                "passed_filter": False,
-                "is_restaurant_list": False,
-                "restaurant_count": 0,
-                "content_quality": 0.3,
-                "destination_match": destination_match,
-                "reasoning": f"Basic keyword evaluation: {positive_score} positive, {negative_score} negative keywords, destination match: {destination_match}"
-            }
 
     def _execute_search(self, query):
         """Execute a single search query against Brave Search API"""
