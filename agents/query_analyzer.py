@@ -14,7 +14,7 @@ class QueryAnalyzer:
 
         self.system_prompt = """
         You are a restaurant recommendation system that analyzes user queries about restaurants.
-        Your task is to extract key information and prepare search queries.
+        Your task is to extract key information and prepare search queries for a web search.
 
         SEARCH STRATEGY:
         1. First, identify PRIMARY search parameters that are likely to have existing curated lists online
@@ -32,6 +32,10 @@ class QueryAnalyzer:
 
            - User asks: "Looking for somewhere with a nice view in New York"
              Search query: "restaurants with view in New York"
+
+            - User asks: "tell me about good wine places in Bordeaux"
+             Search query: "best wine bars and restaurants in Bordeaux"
+
 
         2. Then, identify SECONDARY parameters that will be used for filtering and detailed analysis later.
            These are the specific preferences that won't be part of the main search but will be used
