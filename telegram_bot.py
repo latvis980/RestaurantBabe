@@ -1052,6 +1052,8 @@ def perform_location_search(query, location_data, chat_id, user_id):
         cleanup_search(user_id)
 
 
+# In telegram_bot.py, replace the process_voice_message function with this updated version:
+
 def process_voice_message(message, user_id, chat_id, processing_msg_id):
     """Process voice message in background thread"""
     try:
@@ -1083,23 +1085,13 @@ def process_voice_message(message, user_id, chat_id, processing_msg_id):
         # Step 2: Add transcribed text to conversation history
         add_to_conversation(user_id, transcribed_text, is_user=True)
 
-        # Step 3: Generate confirmation message
-        confirmation_msg = voice_handler.generate_voice_confirmation_message(transcribed_text)
-
-        # Step 4: Delete processing message and send confirmation
+        # Step 3: Delete processing message (no confirmation message sent)
         try:
             bot.delete_message(chat_id, processing_msg_id)
         except:
             pass
 
-        bot.send_message(
-            chat_id,
-            confirmation_msg,
-            parse_mode='HTML',
-            reply_markup=remove_location_button()
-        )
-
-        # Step 5: Process transcribed text directly without mock message
+        # Step 4: Process transcribed text directly - this will generate the AI response
         process_transcribed_text(transcribed_text, user_id, chat_id)
 
     except Exception as e:
