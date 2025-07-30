@@ -220,17 +220,20 @@ class TelegramFormatter:
     def _additional_html_cleanup(self, text):
         """Additional HTML cleanup without killing valid formatting"""
 
+        # Remove truly empty tag pairs, e.g. <b></b> or <i   ></i>
         text = re.sub(
-            r'<(?:b|i|u|s|code|pre)\b[^>]*>\s*</\1>',  # \1 is the tag name
+            r'<(?P<tag>b|i|u|s|code|pre)\b[^>]*>\s*</(?P=tag)>',
             '',
             text,
             flags=re.IGNORECASE | re.DOTALL
         )
 
+        # Remove suspiciously long single tags
         text = re.sub(r'<[^>]{100,}>', '', text)
 
-        # 3️⃣  Fix nesting
+        # Ensure proper tag nesting
         return self._fix_tag_nesting(text)
+
 
 
     def _fix_tag_nesting(self, text):
