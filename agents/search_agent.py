@@ -1,4 +1,5 @@
-# Search agent with AI-based filteing system
+# Search agent with AI-based filtering system and light destination awareness
+# Based on WORKING version (12) with minimal destination changes
 
 import requests
 from langchain_core.tracers.context import tracing_v2_enabled
@@ -33,19 +34,31 @@ class BraveSearchAgent:
         # Log the model being used for transparency
         logger.info(f"🔍 Search evaluation using: {config.SEARCH_EVALUATION_MODEL} (cost-optimized)")
 
-        # AI evaluation system prompt - extracted from your scraper
+        # AI evaluation system prompt - SAME AS WORKING VERSION (12) with light destination awareness
         self.eval_system_prompt = """
         You are an expert at evaluating web content about restaurants.
         Your task is to analyze if a web page contains a curated list of restaurants or restaurant recommendations.
 
-        VALID CONTENT (score > 0.7):
+        The user is looking for restaurants in: {{destination}}. Make sure that the content is relevant to this destination.
+
+        PRIORITIZE THESE SOURCES (score 0.8-1.0):
+        - Local newspapers and magazines (like Expresso, Le Monde, El Pais, Time Out, reputable local food blogs)
+        - Professional food critics and culinary experts
+        - Established food and travel publications (e.g., Conde Nast Traveler, Forbes Travel, Food & Wine, Bon Appétit, etc.)
+        - Local tourism boards and official guides
+        - Restaurant guides and gastronomic awards (Michelin, The World's 50 Best, World of Mouth)
+
+        VALID CONTENT (score 0.6-0.8):
         - Curated lists of multiple restaurants (e.g., "Top 10 restaurants in Paris")
         - Collections of restaurants in professional restaurant guides
-        - Food critic reviews covering multiple restaurants
+        - Food critic reviews of a single restaurant ONLY in professional media
         - Articles in reputable local media discussing various dining options in an area
+        - Food blog articles with restaurant recommendations
+        - Travel articles mentioning multiple dining options
 
         NOT VALID CONTENT (score < 0.3):
         - Official website of a single restaurant
+        - Anything on Tripadvisor, Yelp, OpenTable, RestaurantGuru and other review sites and generic restaurant lists, not professionally curated
         - Collections of restaurants in booking and delivery websites like Uber Eats, The Fork, Glovo, Bolt, etc.
         - Wanderlog content
         - Individual restaurant menus
@@ -56,10 +69,10 @@ class BraveSearchAgent:
         - Video content (YouTube, TikTok, etc.)
 
         SCORING CRITERIA:
-        - Multiple restaurants mentioned (essential)
+        - Multiple restaurants mentioned (essential with the only exception of single restaurant reviews in professional media)
         - Professional curation or expertise evident
+        - Local expertise and knowledge
         - Detailed descriptions of restaurants/cuisine
-        - Location information for multiple restaurants
         - Price or quality indications for multiple venues
 
         FORMAT:
@@ -68,18 +81,19 @@ class BraveSearchAgent:
           "is_restaurant_list": true/false,
           "restaurant_count": estimated number of restaurants mentioned,
           "content_quality": 0.0-1.0,
-          "reasoning": "brief explanation of your evaluation"
+          "passed_filter": true/false,
+          "reasoning": "brief explanation emphasizing local expertise and content quality"
         }}
         """
 
         self.eval_prompt = ChatPromptTemplate.from_messages([
             ("system", self.eval_system_prompt),
-            ("human", "URL: {url}\n\nPage Title: {title}\n\nContent Preview:\n{preview}")
+            ("human", "URL: {{url}}\n\nPage Title: {{title}}\n\nContent Preview:\n{{preview}}")
         ])
 
         self.eval_chain = self.eval_prompt | self.model
 
-        # Statistics tracking
+        # Statistics tracking - SAME AS VERSION (12)
         self.filtered_urls = []
         self.evaluation_stats = {
             "total_evaluated": 0,
@@ -91,28 +105,15 @@ class BraveSearchAgent:
             "estimated_cost_saved": 0.0  # Track cost savings vs GPT-4o
         }
 
-        # Define video/streaming platforms to exclude
-        self.video_platforms = {
-            'youtube.com',
-            'youtu.be', 
-            'tiktok.com',
-            'instagram.com',
-            'facebook.com',
-            'twitter.com',
-            'x.com',
-            'vimeo.com',
-            'dailymotion.com',
-            'twitch.tv',
-            'pinterest.com',
-            'snapchat.com'
-        }
+        # Video platform filtering removed - now handled by AI in prompt
 
-    def search(self, queries, max_retries=3, retry_delay=2, enable_ai_filtering=True):
+    def search(self, queries, destination="Unknown", max_retries=3, retry_delay=2, enable_ai_filtering=True):
         """
         Perform searches with the given queries and optional AI filtering
 
         Args:
             queries (list): List of search queries
+            destination (str): The destination/location for restaurant recommendations (optional)
             max_retries (int): Maximum number of retries for failed requests
             retry_delay (int): Delay between retries in seconds
             enable_ai_filtering (bool): Whether to apply AI-based content filtering
@@ -140,7 +141,7 @@ class BraveSearchAgent:
                         if enable_ai_filtering and filtered_results:
                             logger.info(f"[SearchAgent] Applying AI content filtering...")
                             # Use the thread-based approach for async execution
-                            ai_filtered_results = self._run_async_in_thread(self._apply_ai_filtering(filtered_results))
+                            ai_filtered_results = self._run_async_in_thread(self._apply_ai_filtering(filtered_results, destination))
                             logger.info(f"[SearchAgent] AI-filtered results count: {len(ai_filtered_results)}")
                             all_results.extend(ai_filtered_results)
                         else:
@@ -196,47 +197,34 @@ class BraveSearchAgent:
         with concurrent.futures.ThreadPoolExecutor() as pool:
             return pool.submit(run_in_new_event_loop).result()
 
-    async def _apply_ai_filtering(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    async def _apply_ai_filtering(self, search_results: List[Dict[str, Any]], destination: str = "Unknown") -> List[Dict[str, Any]]:
         """
-        Apply AI-based content filtering to search results with domain pre-filtering
+        Apply AI-based content filtering to search results
+        Pure AI filtering - no hardcoded domain checks
 
         Args:
             search_results: List of search result dictionaries
+            destination: The destination for context (optional)
 
         Returns:
             List of filtered search results that pass AI evaluation
         """
-        # First, apply domain-based filtering to remove obvious video platforms
-        domain_filtered_results = []
-
-        for result in search_results:
-            url = result.get('url', '')
-            if self._is_video_platform(url):
-                logger.info(f"Domain-filtered video platform: {url}")
-                self.evaluation_stats["domain_filtered"] += 1
-                self.filtered_urls.append(url)
-                continue
-
-            domain_filtered_results.append(result)
-
-        logger.info(f"[SearchAgent] After domain filtering: {len(domain_filtered_results)} results (filtered {len(search_results) - len(domain_filtered_results)} video platforms)")
-
-        # Now apply AI filtering to remaining results
+        # Apply AI filtering to all results - no hardcoded filtering
         filtered_results = []
         semaphore = asyncio.Semaphore(3)  # Limit concurrent AI evaluations
 
         async def evaluate_single_result(result):
             async with semaphore:
-                return await self._evaluate_search_result(result)
+                return await self._evaluate_search_result(result, destination)
 
         # Create tasks for all evaluations
-        tasks = [evaluate_single_result(result) for result in domain_filtered_results]
+        tasks = [evaluate_single_result(result) for result in search_results]
 
         # Wait for all evaluations to complete
         evaluation_results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Process results
-        for result, evaluation in zip(domain_filtered_results, evaluation_results):
+        for result, evaluation in zip(search_results, evaluation_results):
             if isinstance(evaluation, Exception):
                 logger.error(f"Error evaluating {result.get('url', 'unknown')}: {evaluation}")
                 self.evaluation_stats["evaluation_errors"] += 1
@@ -247,42 +235,22 @@ class BraveSearchAgent:
                 result["ai_evaluation"] = evaluation
                 filtered_results.append(result)
             else:
-                # Result was filtered out
+                # Result was filtered out by AI
                 self.filtered_urls.append(result.get("url", "unknown"))
 
+        logger.info(f"[SearchAgent] AI filtering: {len(filtered_results)}/{len(search_results)} URLs passed")
         return filtered_results
 
-    def _is_video_platform(self, url: str) -> bool:
-        """
-        Check if URL is from a video/social media platform that should be excluded
+    # _is_video_platform method removed - now handled by AI
 
-        Args:
-            url: URL to check
-
-        Returns:
-            bool: True if URL is from a video platform
-        """
-        try:
-            parsed_url = urlparse(url)
-            domain = parsed_url.netloc.lower()
-
-            # Remove www. prefix for comparison
-            if domain.startswith('www.'):
-                domain = domain[4:]
-
-            # Check if domain matches any video platform
-            return domain in self.video_platforms
-
-        except Exception as e:
-            logger.warning(f"Error parsing URL for video platform check: {url}, error: {e}")
-            return False
-
-    async def _evaluate_search_result(self, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def _evaluate_search_result(self, result: Dict[str, Any], destination: str = "Unknown") -> Optional[Dict[str, Any]]:
         """
         Evaluate a single search result using AI
+        SAME AS VERSION (12) but passes destination to AI evaluation
 
         Args:
             result: Search result dictionary
+            destination: Target destination for context
 
         Returns:
             Evaluation result dictionary or None if evaluation failed
@@ -296,34 +264,19 @@ class BraveSearchAgent:
         try:
             # First, do a quick content preview fetch
             content_preview = await self._fetch_content_preview(url)
-            if not content_preview:
-                # If we can't fetch content, apply basic keyword filtering
-                return self._basic_keyword_evaluation(url, title, description)
 
             # Combine title and description with content preview
-            full_preview = f"{title}\n\n{description}\n\n{content_preview}"
+            full_preview = f"{title}\n\n{description}\n\n{content_preview}" if content_preview else f"{title}\n\n{description}"
 
-            # Basic keyword check to avoid LLM calls for obviously irrelevant content
-            restaurant_keywords = ["restaurant", "dining", "food", "eat", "chef", "cuisine", "menu", "dish"]
-            if not any(kw in full_preview.lower() for kw in restaurant_keywords):
-                logger.info(f"URL filtered by basic keyword check: {url}")
-                self.evaluation_stats["failed_filter"] += 1
-                return {
-                    "passed_filter": False,
-                    "is_restaurant_list": False,
-                    "restaurant_count": 0,
-                    "content_quality": 0.0,
-                    "reasoning": "No restaurant-related keywords found"
-                }
-
-            # AI evaluation
+            # AI evaluation - SAME AS VERSION (12) but includes destination context
             response = await self.eval_chain.ainvoke({
+                "destination": destination,
                 "url": url,
                 "title": title,
                 "preview": full_preview[:1500]  # Limit to avoid token limits
             })
 
-            # Parse AI response
+            # Parse AI response - SAME AS VERSION (12)
             content = response.content
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
@@ -332,11 +285,11 @@ class BraveSearchAgent:
 
             evaluation = json.loads(content.strip())
 
-            # Ensure content_quality is in the response
+            # Ensure content_quality is in the response - SAME AS VERSION (12)
             if "content_quality" not in evaluation:
                 evaluation["content_quality"] = 0.8 if evaluation.get("is_restaurant_list", False) else 0.2
 
-            # Apply threshold
+            # Apply threshold - SAME AS VERSION (12)
             threshold = 0.5
             is_restaurant_list = evaluation.get("is_restaurant_list", False)
             content_quality = evaluation.get("content_quality", 0.0)
@@ -347,7 +300,7 @@ class BraveSearchAgent:
             else:
                 self.evaluation_stats["failed_filter"] += 1
 
-            # Log evaluation details
+            # Log evaluation details - SAME AS VERSION (12)
             logger.info(f"AI evaluation for {url}: List={is_restaurant_list}, Quality={content_quality:.2f}, Pass={passed_filter}")
 
             return {
@@ -361,7 +314,7 @@ class BraveSearchAgent:
         except Exception as e:
             logger.error(f"Error in AI evaluation for {url}: {str(e)}")
             self.evaluation_stats["evaluation_errors"] += 1
-            # Return conservative result (pass the filter) if evaluation fails
+            # Return conservative result (pass the filter) if evaluation fails - SAME AS VERSION (12)
             return {
                 "passed_filter": True,
                 "is_restaurant_list": True,
@@ -373,12 +326,7 @@ class BraveSearchAgent:
     async def _fetch_content_preview(self, url: str) -> str:
         """
         Fetch a brief content preview from URL for evaluation
-
-        Args:
-            url: URL to fetch preview from
-
-        Returns:
-            Content preview string
+        SAME AS VERSION (12)
         """
         try:
             # Use aiohttp for async HTTP requests
@@ -430,58 +378,8 @@ class BraveSearchAgent:
 
         return ""
 
-    def _basic_keyword_evaluation(self, url: str, title: str, description: str) -> Dict[str, Any]:
-        """
-        Apply basic keyword-based evaluation when content fetching fails
-
-        Args:
-            url: URL being evaluated
-            title: Page title
-            description: Page description
-
-        Returns:
-            Basic evaluation result
-        """
-        combined_text = f"{title} {description}".lower()
-
-        # Positive keywords
-        positive_keywords = [
-            "best restaurants", "top restaurants", "restaurant guide", "food guide",
-            "where to eat", "dining guide", "restaurant list", "food critic",
-            "restaurant recommendations", "culinary guide", "michelin", "zagat"
-        ]
-
-        # Negative keywords
-        negative_keywords = [
-            "menu", "book table", "order online", "delivery", "takeaway",
-            "single restaurant", "one restaurant", "hotel", "booking"
-        ]
-
-        positive_score = sum(1 for kw in positive_keywords if kw in combined_text)
-        negative_score = sum(1 for kw in negative_keywords if kw in combined_text)
-
-        # Simple scoring
-        if positive_score > negative_score and positive_score > 0:
-            self.evaluation_stats["passed_filter"] += 1
-            return {
-                "passed_filter": True,
-                "is_restaurant_list": True,
-                "restaurant_count": 5,  # Estimate
-                "content_quality": 0.6,
-                "reasoning": f"Basic keyword evaluation: {positive_score} positive, {negative_score} negative keywords"
-            }
-        else:
-            self.evaluation_stats["failed_filter"] += 1
-            return {
-                "passed_filter": False,
-                "is_restaurant_list": False,
-                "restaurant_count": 0,
-                "content_quality": 0.3,
-                "reasoning": f"Basic keyword evaluation: {positive_score} positive, {negative_score} negative keywords"
-            }
-
     def _execute_search(self, query):
-        """Execute a single search query against Brave Search API"""
+        """Execute a single search query against Brave Search API - SAME AS VERSION (12)"""
         headers = {
             "Accept": "application/json",
             "X-Subscription-Token": self.api_key
@@ -505,24 +403,19 @@ class BraveSearchAgent:
         return response.json()
 
     def _filter_results(self, search_results):
-        """Filter search results to exclude unwanted domains"""
+        """Filter search results to exclude unwanted domains - SAME AS VERSION (12)"""
         if not search_results or "web" not in search_results or "results" not in search_results["web"]:
             return []
 
         filtered_results = []
 
+        # Only apply excluded domain filtering - let AI handle everything else
         for result in search_results["web"]["results"]:
             url = result.get("url", "")
 
-            # Check if URL should be excluded by domain
+            # Check if URL should be excluded by domain (configured exclusions only)
             if self._should_exclude_domain(url):
                 logger.debug(f"[SearchAgent] Domain-filtered: {url}")
-                self.evaluation_stats["domain_filtered"] += 1
-                continue
-
-            # Check if it's a video platform
-            if self._is_video_platform(url):
-                logger.debug(f"[SearchAgent] Video platform filtered: {url}")
                 self.evaluation_stats["domain_filtered"] += 1
                 continue
 
@@ -539,7 +432,7 @@ class BraveSearchAgent:
         return filtered_results
 
     def _should_exclude_domain(self, url):
-        """Check if URL domain should be excluded"""
+        """Check if URL domain should be excluded - SAME AS VERSION (12)"""
         try:
             parsed_url = urlparse(url)
             domain = parsed_url.netloc.lower()
@@ -553,15 +446,7 @@ class BraveSearchAgent:
 
     def follow_up_search(self, restaurant_name, location, additional_context=None):
         """
-        Perform a follow-up search for a specific restaurant
-
-        Args:
-            restaurant_name (str): Name of the restaurant
-            location (str): Location of the restaurant
-            additional_context (str, optional): Additional search context
-
-        Returns:
-            dict: Search results specifically about this restaurant
+        Perform a follow-up search for a specific restaurant - SAME AS VERSION (12)
         """
         # Create a specific query for this restaurant
         query = f"{restaurant_name} restaurant {location}"
@@ -581,7 +466,7 @@ class BraveSearchAgent:
         }
 
     def _check_global_guides(self, restaurant_name, location):
-        """Check if the restaurant is mentioned in global guides"""
+        """Check if the restaurant is mentioned in global guides - SAME AS VERSION (12)"""
         global_guides = [
             "theworlds50best.com",
             "worldofmouth.app",
@@ -612,7 +497,7 @@ class BraveSearchAgent:
         return results
 
     def get_filtering_stats(self):
-        """Get current AI filtering statistics with cost information"""
+        """Get current AI filtering statistics with cost information - SAME AS VERSION (12)"""
         # Calculate estimated cost savings
         if self.config.SEARCH_EVALUATION_MODEL == "gpt-4o-mini":
             # Rough calculation: GPT-4o-mini is ~95% cheaper than GPT-4o
