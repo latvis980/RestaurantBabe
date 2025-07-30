@@ -275,7 +275,7 @@ class LangChainOrchestrator:
                 logger.info(f"  {i}. {query}")
 
             # FIXED: Pass the AI-generated queries directly to search agent
-            search_results = self.search_agent.search(search_queries)
+            search_results = self.search_agent.search(search_queries, destination)
 
             logger.info(f"✅ Web search completed: {len(search_results)} results")
 
