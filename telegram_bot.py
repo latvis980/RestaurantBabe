@@ -8,6 +8,7 @@ import json
 import asyncio
 from threading import Event
 from typing import Dict, List, Any, Optional, Tuple
+from utils.voice_handler import VoiceMessageHandler
 
 
 from langchain_openai import ChatOpenAI
@@ -46,6 +47,8 @@ location_analyzer = None  # Will be initialized in main()
 
 # Track users waiting for location input - UPDATED to include button tracking
 users_awaiting_location = {}  # user_id -> {"query": str, "timestamp": float, "has_button": bool}
+
+voice_handler = None  # Will be initialized in main()
 
 def create_cancel_event(user_id, chat_id):
     """Create a cancellation event for a user's search"""
@@ -562,8 +565,6 @@ def perform_restaurant_search(search_query, chat_id, user_id):
     finally:
         cleanup_search(user_id)
 
-# COMPLETE MESSAGE HANDLER - Updated with location button handling
-
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     """Handle all text messages with location-aware conversation management"""
@@ -667,6 +668,73 @@ def handle_message(message):
             parse_mode='HTML',
             reply_markup=remove_location_button()
         )
+
+@bot.message_handler(content_types=['voice'])
+def handle_voice_message(message):
+    """Handle voice messages using Whisper transcription"""
+    try:
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+
+        logger.info(f"🎤 Received voice message from user {user_id}")
+
+        # Check if user has an active search
+        if user_id in active_searches:
+            bot.reply_to(
+                message,
+                "⏳ I'm currently searching for places for you! Please wait for the results or type /cancel to stop the search.",
+                parse_mode='HTML'
+            )
+            return
+
+        # Check if user was waiting for location input
+        if user_id in users_awaiting_location:
+            awaiting_data = users_awaiting_location[user_id]
+            original_query = awaiting_data["query"]
+
+            # Remove from waiting list and button
+            del users_awaiting_location[user_id]
+
+            # Send immediate acknowledgment
+            bot.reply_to(
+                message,
+                "🎤 <b>Got your location!</b>\n\n⏱ Processing your voice message and searching...",
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
+            )
+
+            # Process voice message in background
+            threading.Thread(
+                target=process_voice_for_location,
+                args=(message, original_query, user_id, chat_id),
+                daemon=True
+            ).start()
+            return
+
+        # Send immediate acknowledgment for voice processing
+        processing_voice_msg = bot.reply_to(
+            message,
+            "🎤 <b>Processing your voice message...</b>\n\n🔄 <i>Transcribing and understanding your request...</i>",
+            parse_mode='HTML',
+            reply_markup=remove_location_button()
+        )
+
+        # Process voice message in background thread
+        threading.Thread(
+            target=process_voice_message,
+            args=(message, user_id, chat_id, processing_voice_msg.message_id),
+            daemon=True
+        ).start()
+
+    except Exception as e:
+        logger.error(f"❌ Error handling voice message: {e}")
+        bot.reply_to(
+            message,
+            "😔 Sorry, I had trouble processing your voice message. Could you try again or send a text message?",
+            parse_mode='HTML',
+            reply_markup=remove_location_button()
+        )
+
 
 def get_recent_location_from_conversation(user_id):
     """Check if user shared location in recent conversation"""
@@ -983,12 +1051,202 @@ def perform_location_search(query, location_data, chat_id, user_id):
         # Always clean up the search tracking
         cleanup_search(user_id)
 
-# UPDATED MAIN FUNCTION (add location_analyzer initialization)
-def main():
-    """Main function to start the bot with location support"""
-    global location_analyzer
+def process_voice_message(message, user_id, chat_id, processing_msg_id):
+    """Process voice message in background thread"""
+    try:
+        # Step 1: Transcribe voice message
+        transcribed_text = voice_handler.process_voice_message(bot, message.voice)
 
-    logger.info("Starting Restaurant Babe Telegram Bot with Location Support...")
+        if not transcribed_text:
+            # Delete processing message and send error
+            try:
+                bot.delete_message(chat_id, processing_msg_id)
+            except:
+                pass
+
+            bot.send_message(
+                chat_id,
+                "😔 <b>Sorry, I couldn't understand your voice message.</b>\n\n"
+                "This could be due to:\n"
+                "• Background noise\n"
+                "• Very quiet recording\n"
+                "• Connection issues\n\n"
+                "Could you try recording again or send a text message?",
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
+            )
+            return
+
+        logger.info(f"✅ Voice transcribed for user {user_id}: '{transcribed_text[:100]}{'...' if len(transcribed_text) > 100 else ''}'")
+
+        # Step 2: Add transcribed text to conversation history
+        add_to_conversation(user_id, transcribed_text, is_user=True)
+
+        # Step 3: Generate confirmation message
+        confirmation_msg = voice_handler.generate_voice_confirmation_message(transcribed_text)
+
+        # Step 4: Delete processing message and send confirmation
+        try:
+            bot.delete_message(chat_id, processing_msg_id)
+        except:
+            pass
+
+        bot.send_message(
+            chat_id,
+            confirmation_msg,
+            parse_mode='HTML',
+            reply_markup=remove_location_button()
+        )
+
+        # Step 5: Process transcribed text through normal message pipeline
+        # Create a mock message object for processing
+        class MockMessage:
+            def __init__(self, text, user_id, chat_id):
+                self.text = text
+                self.from_user = type('User', (), {'id': user_id})()
+                self.chat = type('Chat', (), {'id': chat_id})()
+
+        mock_message = MockMessage(transcribed_text, user_id, chat_id)
+
+        # Process through existing message handling logic
+        process_transcribed_message(mock_message)
+
+    except Exception as e:
+        logger.error(f"❌ Error processing voice message: {e}")
+
+        # Delete processing message
+        try:
+            bot.delete_message(chat_id, processing_msg_id)
+        except:
+            pass
+
+        bot.send_message(
+            chat_id,
+            "😔 Sorry, I encountered an error processing your voice message. Could you try again or send a text message?",
+            parse_mode='HTML',
+            reply_markup=remove_location_button()
+        )
+
+def process_voice_for_location(message, original_query, user_id, chat_id):
+    """Process voice message when user was providing location"""
+    try:
+        # Transcribe the voice message
+        transcribed_text = voice_handler.process_voice_message(bot, message.voice)
+
+        if not transcribed_text:
+            bot.send_message(
+                chat_id,
+                "😔 I couldn't understand your voice message for the location. Could you try again or type your location?",
+                parse_mode='HTML',
+                reply_markup=create_location_button()
+            )
+            # Re-add to waiting list
+            users_awaiting_location[user_id] = {
+                "query": original_query,
+                "timestamp": time.time(),
+                "has_button": True
+            }
+            return
+
+        logger.info(f"🎤📍 Voice location transcribed for user {user_id}: '{transcribed_text}'")
+
+        # Process location from transcribed text
+        location_data = location_handler.extract_location_from_text(transcribed_text)
+
+        if location_data.confidence > 0.3:
+            # Good location understanding
+            bot.send_message(
+                chat_id,
+                f"📍 <b>Perfect! I understand you're looking in: {location_data.description}</b>\n\n"
+                f"🔍 Now searching for: <i>{original_query}</i>\n\n"
+                "⏱ This might take a minute while I find the best places...",
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
+            )
+
+            # Combine query with location
+            full_query = f"{original_query} in {location_data.description}"
+
+            # Start location search
+            threading.Thread(
+                target=perform_location_search,
+                args=(full_query, location_data, chat_id, user_id),
+                daemon=True
+            ).start()
+
+        else:
+            # Couldn't understand location
+            bot.send_message(
+                chat_id,
+                "🤔 I'm having trouble understanding that location from your voice message. Could you try again?\n\n"
+                "Examples: \"Downtown\", \"Near Central Park\", \"Chinatown\", \"Rua da Rosa\"\n\n"
+                "Or use the button below to send your exact coordinates:",
+                parse_mode='HTML',
+                reply_markup=create_location_button()
+            )
+
+            # Re-add to waiting list
+            users_awaiting_location[user_id] = {
+                "query": original_query,
+                "timestamp": time.time(),
+                "has_button": True
+            }
+
+    except Exception as e:
+        logger.error(f"❌ Error processing voice location: {e}")
+        bot.send_message(
+            chat_id,
+            "😔 Sorry, I had trouble processing your voice message. Could you try typing your location or using the button?",
+            parse_mode='HTML',
+            reply_markup=create_location_button()
+        )
+
+def process_transcribed_message(message):
+    """Process transcribed voice message through normal text pipeline"""
+    try:
+        user_id = message.from_user.id
+        user_message = message.text.strip()
+
+        # STEP 1: Check if user has shared location in recent conversation
+        recent_location = get_recent_location_from_conversation(user_id)
+
+        # STEP 2: Analyze message for location intent
+        location_analysis = location_analyzer.analyze_message(user_message)
+        search_type = location_analyzer.determine_search_type(location_analysis)
+
+        logger.debug(f"🎤 Voice message analysis for user {user_id}: {search_type}")
+
+        # STEP 3: Route based on analysis (similar to text handler but without location request since voice was already processed)
+        if search_type == "location_search":
+            # User has specific location in voice message
+            handle_location_search_request(message, location_analysis)
+
+        elif search_type == "request_location":
+            # For voice messages, handle as location request
+            handle_location_request(message, location_analysis)
+
+        elif search_type == "general_search":
+            # Use existing general search pipeline
+            handle_general_search(message, location_analysis)
+
+        else:
+            # Need clarification
+            handle_clarification_needed(message, location_analysis)
+
+    except Exception as e:
+        logger.error(f"❌ Error processing transcribed message: {e}")
+        bot.send_message(
+            message.chat.id,
+            "😔 I had trouble understanding your request. Could you try again or be more specific about what restaurants you're looking for?",
+            parse_mode='HTML',
+            reply_markup=remove_location_button()
+        )
+
+def main():
+    """Main function to start the bot with location and voice support"""
+    global location_analyzer, voice_handler
+
+    logger.info("Starting Restaurant Babe Telegram Bot with Location & Voice Support...")
 
     # Verify bot token works
     try:
@@ -1006,6 +1264,14 @@ def main():
         logger.error(f"❌ Failed to initialize Location Analyzer: {e}")
         return
 
+    # Initialize voice handler
+    try:
+        voice_handler = VoiceMessageHandler()
+        logger.info("✅ Voice Message Handler initialized")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize Voice Handler: {e}")
+        return
+
     # Verify orchestrator is available
     try:
         orchestrator_instance = get_orchestrator()
@@ -1013,6 +1279,7 @@ def main():
         logger.info("🎯 Admin commands available: /test_scrape, /test_search")
         logger.info("🛑 Cancel command available: /cancel")
         logger.info("📍 Location support: GPS pins + text descriptions + location button")
+        logger.info("🎤 Voice support: Whisper transcription + live recognition flow")
     except RuntimeError as e:
         logger.error(f"❌ Orchestrator not initialized: {e}")
         logger.error("Make sure main.py calls setup_orchestrator() before starting the bot")
@@ -1021,7 +1288,7 @@ def main():
     # Start polling with error handling
     while True:
         try:
-            logger.info("Starting bot polling with location button support...")
+            logger.info("Starting bot polling with location button and voice support...")
             bot.infinity_polling(
                 timeout=10, 
                 long_polling_timeout=5,

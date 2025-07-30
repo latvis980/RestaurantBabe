@@ -15,6 +15,10 @@ GOOGLE_MAPS_KEY2 = os.environ.get("GOOGLE_MAPS_KEY2")
 LOCATION_SEARCH_RADIUS_KM = 2.0
 MAX_LOCATION_RESULTS = 8
 
+# Voice processing settings
+WHISPER_MODEL = "whisper-1"  # OpenAI Whisper model
+MAX_VOICE_FILE_SIZE = 25 * 1024 * 1024  # 25MB (OpenAI limit)
+
 # AI source mapping settings  
 AI_SOURCE_MAPPING_ENABLED = True
 DEFAULT_FOOD_SOURCES = ["michelin", "timeout"]
