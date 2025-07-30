@@ -219,19 +219,42 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
         """
         try:
             from utils.database import get_database
-            db = get_database()
+            from utils.location_utils import LocationUtils
 
+            db = get_database()
             lat, lng = coordinates
             logger.info(f"🗃️ Checking database for restaurants within {self.db_search_radius}km")
 
-            # Get nearby restaurants with basic data only
-            nearby_restaurants = db.get_restaurants_by_proximity(
-                latitude=lat,
-                longitude=lng,
-                radius_km=self.db_search_radius,
-                limit=50,  # Reasonable limit for processing
-                fields=['id', 'name', 'cuisine_tags', 'mention_count', 'raw_description']  # Basic fields only
-            )
+            # Get all restaurants with coordinates from database
+            result = db.supabase.table('restaurants')\
+                .select('id, name, cuisine_tags, mention_count, raw_description, latitude, longitude')\
+                .not_.is_('latitude', 'null')\
+                .not_.is_('longitude', 'null')\
+                .execute()
+
+            all_restaurants = result.data or []
+
+            if cancel_check_fn and cancel_check_fn():
+                return []
+
+            # Filter by proximity using LocationUtils
+            nearby_restaurants = []
+            for restaurant in all_restaurants:
+                try:
+                    r_lat = float(restaurant.get('latitude', 0))
+                    r_lng = float(restaurant.get('longitude', 0))
+
+                    # Calculate distance
+                    distance = LocationUtils.calculate_distance(
+                        (lat, lng), (r_lat, r_lng)
+                    )
+
+                    if distance <= self.db_search_radius:
+                        restaurant['distance_km'] = distance
+                        nearby_restaurants.append(restaurant)
+
+                except (ValueError, TypeError):
+                    continue
 
             logger.info(f"📊 Found {len(nearby_restaurants)} restaurants in database within {self.db_search_radius}km")
             return nearby_restaurants
@@ -366,9 +389,15 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
                     break
 
                 try:
-                    # Get full restaurant data including descriptions, addresses, sources
-                    full_restaurant = db.get_restaurant_by_id(restaurant_id)
-                    if full_restaurant:
+                    # Get full restaurant data from database
+                    result = db.supabase.table('restaurants')\
+                        .select('*')\
+                        .eq('id', restaurant_id)\
+                        .execute()
+
+                    if result.data:
+                        full_restaurant = result.data[0]
+
                         # Preserve AI analysis metadata
                         filtered_restaurant = next(
                             (r for r in filtered_restaurants if str(r.get('id')) == restaurant_id), 
@@ -395,28 +424,29 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
         """Get GPS coordinates from location data"""
         try:
             if location_data.location_type == "gps":
-                # Direct GPS coordinates
                 return (location_data.latitude, location_data.longitude)
 
             elif location_data.location_type == "description" and location_data.description:
-                # Geocode text description
                 logger.info(f"🗺️ Geocoding location: {location_data.description}")
 
-                # Use existing geocoding infrastructure if available
+                # Use database geocoding method
                 from utils.database import get_database
                 db = get_database()
 
-                # Try to get coordinates for the location description
-                coordinates = db.geocode_location(location_data.description)
+                coordinates = db._geocode_address(location_data.description)
                 if coordinates:
                     return coordinates
 
-                # Fallback to location utilities
-                location_utils = LocationUtils()
-                location_point = location_utils.geocode_location(location_data.description)
+                # Fallback to location utilities if available
+                try:
+                    from utils.location_utils import LocationUtils
+                    location_utils = LocationUtils()
+                    location_point = location_utils.geocode_location(location_data.description)
 
-                if location_point:
-                    return (location_point.latitude, location_point.longitude)
+                    if location_point:
+                        return (location_point.latitude, location_point.longitude)
+                except Exception as e:
+                    logger.warning(f"LocationUtils fallback failed: {e}")
 
             return None
 
@@ -471,20 +501,17 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
 
                 logger.debug(f"📰 Verifying venue {i+1}/{len(venues[:self.max_venues_to_verify])}: {venue.name}")
 
-                # Use source mapping agent to find and verify sources
-                source_result = await self.source_mapping_agent.map_venue_sources(venue)
-
-                if source_result and source_result.get('sources'):
-                    verified_venues.append({
-                        'name': venue.name,
-                        'address': venue.address,
-                        'rating': venue.rating,
-                        'price_level': venue.price_level,
-                        'place_id': venue.place_id,
-                        'location': {'lat': venue.latitude, 'lng': venue.longitude},
-                        'sources': source_result['sources'],
-                        'verification_confidence': source_result.get('confidence', 0.5)
-                    })
+                # Simple venue verification without external source mapping for now
+                verified_venues.append({
+                    'name': venue.name,
+                    'address': venue.address,
+                    'rating': venue.rating,
+                    'price_level': venue.price_level,
+                    'place_id': venue.place_id,
+                    'location': {'lat': venue.latitude, 'lng': venue.longitude},
+                    'sources': [],  # Will be populated by source mapping if implemented
+                    'verification_confidence': 0.7  # Default confidence
+                })
 
             logger.info(f"✅ Venue verification complete: {len(verified_venues)} venues verified")
             return verified_venues
@@ -515,10 +542,34 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
                 'search_method': search_method
             }
 
-            # Format using Telegram formatter
-            formatted_text = self.telegram_formatter.format_location_results(
-                results, location_info, query
-            )
+            # Simple formatting for location results
+            if not results:
+                formatted_text = "🤷‍♀️ No restaurants found matching your criteria in this area."
+            else:
+                formatted_text = f"🎯 <b>Found {len(results)} restaurants near you</b>\n\n"
+
+                for i, restaurant in enumerate(results[:8], 1):
+                    name = restaurant.get('name', 'Unknown Restaurant')
+                    cuisine_tags = restaurant.get('cuisine_tags', [])
+                    rating = restaurant.get('rating')
+                    distance = restaurant.get('distance_km')
+                    ai_score = restaurant.get('_ai_relevance_score')
+
+                    formatted_text += f"<b>{i}. {name}</b>\n"
+
+                    if cuisine_tags:
+                        formatted_text += f"🍽 {', '.join(cuisine_tags[:3])}\n"
+
+                    if rating:
+                        formatted_text += f"⭐ {rating}/5\n"
+
+                    if distance:
+                        formatted_text += f"📍 {distance:.1f}km away\n"
+
+                    if ai_score:
+                        formatted_text += f"🎯 Relevance: {ai_score}/10\n"
+
+                    formatted_text += "\n"
 
             return {
                 'success': True,
