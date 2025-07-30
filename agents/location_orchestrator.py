@@ -454,6 +454,70 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
             logger.error(f"❌ Error getting coordinates: {e}")
             return None
 
+    def _extract_search_terms(self, query: str) -> str:
+        """
+        Extract cuisine/restaurant type from location-based query
+
+        Examples:
+        "Find me a nice steakhouse around Central Park" -> "steakhouse"
+        "Good Italian restaurants near Times Square" -> "Italian restaurants"
+        "Sushi places in Manhattan" -> "sushi"
+        """
+        try:
+            # Use simple AI extraction
+            from langchain_core.prompts import ChatPromptTemplate
+
+            extraction_prompt = ChatPromptTemplate.from_template("""
+    Extract the cuisine type or restaurant category from this location-based query. If the description is too vague, return a general term like "restaurant". Analyse the user's intent and extract the most relevant cuisine or restaurant type.
+
+    Query: {query}
+
+    Return ONLY the cuisine/restaurant type (2-4 words max), nothing else.
+
+    Examples:
+    "Find steakhouses near Central Park" -> "steakhouse"
+    "Good Italian restaurants around Times Square" -> "Italian restaurant"
+    "Sushi places in Manhattan" -> "sushi restaurant"
+    "Coffee shops near the museum" -> "coffee shop"
+    "Best pizza in Brooklyn" -> "pizza"
+    "Wine bars downtown" -> "wine bar"
+    """)
+
+            chain = extraction_prompt | self.ai_model
+            response = chain.invoke({"query": query})
+
+            extracted = response.content.strip().lower()
+
+            # Fallback if extraction fails
+            if not extracted or len(extracted.split()) > 4:
+                # Simple keyword extraction as fallback
+                keywords = ["steakhouse", "steak", "italian", "sushi", "pizza", "coffee", "wine", "bar", "restaurant"]
+                for keyword in keywords:
+                    if keyword in query.lower():
+                        return keyword + (" restaurant" if keyword not in ["coffee", "wine bar"] else "")
+                return "restaurant"  # Default fallback
+
+            return extracted
+
+        except Exception as e:
+            logger.error(f"❌ Error extracting search terms: {e}")
+            # Fallback to simple keyword matching
+            query_lower = query.lower()
+            if "steak" in query_lower:
+                return "steakhouse"
+            elif "italian" in query_lower:
+                return "italian restaurant"
+            elif "sushi" in query_lower:
+                return "sushi restaurant"
+            elif "pizza" in query_lower:
+                return "pizza"
+            elif "coffee" in query_lower:
+                return "coffee shop"
+            elif "wine" in query_lower:
+                return "wine bar"
+            else:
+                return "restaurant"
+    
     async def _search_google_maps(
         self, 
         coordinates: Tuple[float, float], 
@@ -466,14 +530,18 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
 
             lat, lng = coordinates
 
-            # Determine venue type from query
-            venue_type = self.location_search_agent.determine_venue_type(query)
+            # NEW: Extract just the cuisine/restaurant type from the full query
+            search_terms = self._extract_search_terms(query)
+            logger.info(f"🔍 Extracted search terms: '{search_terms}' from query: '{query}'")
 
-            # Search for nearby venues
+            # Determine venue type from extracted terms
+            venue_type = self.location_search_agent.determine_venue_type(search_terms)
+
+            # Search for nearby venues using extracted terms
             venues = self.location_search_agent.search_nearby_venues(
                 latitude=lat,
                 longitude=lng,
-                query=query,
+                query=search_terms,  # Use extracted terms instead of full query
                 venue_type=venue_type
             )
 
