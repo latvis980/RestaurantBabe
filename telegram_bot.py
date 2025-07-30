@@ -1051,6 +1051,7 @@ def perform_location_search(query, location_data, chat_id, user_id):
         # Always clean up the search tracking
         cleanup_search(user_id)
 
+
 def process_voice_message(message, user_id, chat_id, processing_msg_id):
     """Process voice message in background thread"""
     try:
@@ -1098,18 +1099,8 @@ def process_voice_message(message, user_id, chat_id, processing_msg_id):
             reply_markup=remove_location_button()
         )
 
-        # Step 5: Process transcribed text through normal message pipeline
-        # Create a mock message object for processing
-        class MockMessage:
-            def __init__(self, text, user_id, chat_id):
-                self.text = text
-                self.from_user = type('User', (), {'id': user_id})()
-                self.chat = type('Chat', (), {'id': chat_id})()
-
-        mock_message = MockMessage(transcribed_text, user_id, chat_id)
-
-        # Process through existing message handling logic
-        process_transcribed_message(mock_message)
+        # Step 5: Process transcribed text directly without mock message
+        process_transcribed_text(transcribed_text, user_id, chat_id)
 
     except Exception as e:
         logger.error(f"❌ Error processing voice message: {e}")
@@ -1126,6 +1117,182 @@ def process_voice_message(message, user_id, chat_id, processing_msg_id):
             parse_mode='HTML',
             reply_markup=remove_location_button()
         )
+
+def process_transcribed_text(transcribed_text, user_id, chat_id):
+    """Process transcribed voice message text directly"""
+    try:
+        logger.debug(f"🎤 Processing transcribed text for user {user_id}: '{transcribed_text[:50]}...'")
+
+        # STEP 1: Check if user has shared location in recent conversation
+        recent_location = get_recent_location_from_conversation(user_id)
+
+        # STEP 2: Analyze message for location intent
+        location_analysis = location_analyzer.analyze_message(transcribed_text)
+        search_type = location_analyzer.determine_search_type(location_analysis)
+
+        logger.debug(f"🎤 Voice message analysis for user {user_id}: {search_type}")
+
+        # STEP 3: Route based on analysis
+        if search_type == "location_search":
+            # User has specific location in voice message
+            handle_voice_location_search(transcribed_text, location_analysis, user_id, chat_id)
+
+        elif search_type == "request_location":
+            # For voice messages, handle as location request
+            handle_voice_location_request(transcribed_text, location_analysis, user_id, chat_id)
+
+        elif search_type == "general_search":
+            # Use existing general search pipeline
+            handle_voice_general_search(transcribed_text, user_id, chat_id)
+
+        else:
+            # Need clarification
+            handle_voice_clarification(transcribed_text, location_analysis, user_id, chat_id)
+
+    except Exception as e:
+        logger.error(f"❌ Error processing transcribed text: {e}")
+        bot.send_message(
+            chat_id,
+            "😔 I had trouble understanding your voice request. Could you try again or be more specific about what restaurants you're looking for?",
+            parse_mode='HTML',
+            reply_markup=remove_location_button()
+        )
+
+def handle_voice_location_search(transcribed_text, location_analysis, user_id, chat_id):
+    """Handle voice requests with specific location mentioned"""
+    location_detected = location_analysis.get("location_detected")
+    cuisine_preference = location_analysis.get("cuisine_preference", "restaurants")
+
+    # Confirm and start search
+    response_text = f"🔍 <b>Perfect! Searching for {cuisine_preference} in {location_detected}.</b>\n\n"
+    response_text += "⏱ This might take a minute while I find the best places and verify them with reputable sources..."
+
+    bot.send_message(chat_id, response_text, parse_mode='HTML', reply_markup=remove_location_button())
+    add_to_conversation(user_id, response_text, is_user=False)
+
+    # Create location data from text
+    location_data = location_handler.extract_location_from_text(transcribed_text)
+
+    # Start location search
+    threading.Thread(
+        target=perform_location_search,
+        args=(transcribed_text, location_data, chat_id, user_id),
+        daemon=True
+    ).start()
+
+def handle_voice_location_request(transcribed_text, location_analysis, user_id, chat_id):
+    """Handle voice requests that need location specification"""
+    cuisine_preference = location_analysis.get("cuisine_preference", "restaurants")
+
+    # Determine query type for customized location request
+    query_type = "general"
+    if "wine" in cuisine_preference.lower():
+        query_type = "wine"
+    elif "coffee" in cuisine_preference.lower():
+        query_type = "coffee"
+    elif any(word in cuisine_preference.lower() for word in ["fine", "romantic", "fancy"]):
+        query_type = "fine_dining"
+
+    # Create the location request message
+    if query_type == "wine":
+        emoji = "🍷"
+        context = "wine bars and natural wine spots"
+    elif query_type == "coffee":
+        emoji = "☕"
+        context = "coffee shops and cafes"
+    elif query_type == "fine_dining":
+        emoji = "🍽️"
+        context = "fine dining restaurants"
+    else:
+        emoji = "📍"
+        context = "restaurants and bars"
+
+    location_request_msg = (
+        f"{emoji} <b>Perfect! I'd love to help you find great {context} near you.</b>\n\n"
+        "To give you the best recommendations, I need to know where you are:\n\n"
+        "🗺️ <b>Option 1:</b> Tell me your neighborhood, street, or nearby landmark\n"
+        "📍 <b>Option 2:</b> Use the button below to send your exact coordinates\n\n"
+        "<i>Examples: \"I'm in Chinatown\", \"Near Times Square\", \"On Rua da Rosa in Lisbon\"</i>\n\n"
+        "💡 <b>Don't worry:</b> I only use your location to find nearby places. I don't store it."
+    )
+
+    bot.send_message(
+        chat_id, 
+        location_request_msg, 
+        parse_mode='HTML',
+        reply_markup=create_location_button()
+    )
+    add_to_conversation(user_id, location_request_msg, is_user=False)
+
+    # Mark user as awaiting location WITH button tracking
+    users_awaiting_location[user_id] = {
+        "query": cuisine_preference,
+        "timestamp": time.time(),
+        "has_button": True
+    }
+
+def handle_voice_general_search(transcribed_text, user_id, chat_id):
+    """Handle general restaurant searches from voice (existing pipeline)"""
+    # Use existing conversation AI logic
+    conversation_prompt = ChatPromptTemplate.from_messages([
+        ("system", CONVERSATION_PROMPT),
+        ("human", "Conversation history:\n{conversation_history}\n\nCurrent message: {user_message}")
+    ])
+
+    conversation_chain = conversation_prompt | conversation_ai
+    response = conversation_chain.invoke({
+        "conversation_history": format_conversation_history(user_id),
+        "user_message": transcribed_text
+    })
+
+    # Parse AI response (existing logic)
+    content = response.content.strip()
+    if "```json" in content:
+        content = content.split("```json")[1].split("```")[0].strip()
+    elif "```" in content:
+        content = content.split("```")[1].split("```")[0].strip()
+
+    try:
+        ai_decision = json.loads(content)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse AI decision: {e}")
+        ai_decision = {
+            "action": "CLARIFY",
+            "bot_response": "I'd love to help you find restaurants! Could you tell me what city you're interested in and what type of dining you're looking for?"
+        }
+
+    # Handle existing search logic
+    action = ai_decision.get("action")
+    bot_response = ai_decision.get("bot_response", "How can I help you find restaurants?")
+
+    if action == "SEARCH":
+        search_query = ai_decision.get("search_query")
+        if search_query:
+            add_to_conversation(user_id, bot_response, is_user=False)
+            bot.send_message(chat_id, bot_response, parse_mode='HTML', reply_markup=remove_location_button())
+
+            # Use existing search pipeline
+            threading.Thread(
+                target=perform_restaurant_search,
+                args=(search_query, chat_id, user_id),
+                daemon=True
+            ).start()
+        else:
+            add_to_conversation(user_id, bot_response, is_user=False)
+            bot.send_message(chat_id, bot_response, parse_mode='HTML', reply_markup=remove_location_button())
+    else:
+        add_to_conversation(user_id, bot_response, is_user=False)
+        bot.send_message(chat_id, bot_response, parse_mode='HTML', reply_markup=remove_location_button())
+
+def handle_voice_clarification(transcribed_text, location_analysis, user_id, chat_id):
+    """Handle voice messages that need clarification"""
+    suggested_response = location_analysis.get("suggested_response", 
+        "I specialize in restaurant recommendations! What type of dining are you looking for and in which city?")
+
+    bot.send_message(chat_id, suggested_response, parse_mode='HTML', reply_markup=remove_location_button())
+    add_to_conversation(user_id, suggested_response, is_user=False)
+
+# REMOVE the process_transcribed_message function entirely - it's replaced by process_transcribed_text
 
 def process_voice_for_location(message, original_query, user_id, chat_id):
     """Process voice message when user was providing location"""
@@ -1199,47 +1366,6 @@ def process_voice_for_location(message, original_query, user_id, chat_id):
             "😔 Sorry, I had trouble processing your voice message. Could you try typing your location or using the button?",
             parse_mode='HTML',
             reply_markup=create_location_button()
-        )
-
-def process_transcribed_message(message):
-    """Process transcribed voice message through normal text pipeline"""
-    try:
-        user_id = message.from_user.id
-        user_message = message.text.strip()
-
-        # STEP 1: Check if user has shared location in recent conversation
-        recent_location = get_recent_location_from_conversation(user_id)
-
-        # STEP 2: Analyze message for location intent
-        location_analysis = location_analyzer.analyze_message(user_message)
-        search_type = location_analyzer.determine_search_type(location_analysis)
-
-        logger.debug(f"🎤 Voice message analysis for user {user_id}: {search_type}")
-
-        # STEP 3: Route based on analysis (similar to text handler but without location request since voice was already processed)
-        if search_type == "location_search":
-            # User has specific location in voice message
-            handle_location_search_request(message, location_analysis)
-
-        elif search_type == "request_location":
-            # For voice messages, handle as location request
-            handle_location_request(message, location_analysis)
-
-        elif search_type == "general_search":
-            # Use existing general search pipeline
-            handle_general_search(message, location_analysis)
-
-        else:
-            # Need clarification
-            handle_clarification_needed(message, location_analysis)
-
-    except Exception as e:
-        logger.error(f"❌ Error processing transcribed message: {e}")
-        bot.send_message(
-            message.chat.id,
-            "😔 I had trouble understanding your request. Could you try again or be more specific about what restaurants you're looking for?",
-            parse_mode='HTML',
-            reply_markup=remove_location_button()
         )
 
 def main():
