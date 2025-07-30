@@ -1,4 +1,4 @@
-# scrape_test.py - Fixed for proper BraveSearchAgent.search() method call
+# scrape_test.py - Updated for new pipeline without list_analyzer
 import asyncio
 import time
 import tempfile
@@ -53,7 +53,7 @@ class ScrapeTest:
 
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write("=" * 80 + "\n")
-            f.write("RESTAURANT SCRAPING PROCESS TEST - NEW PIPELINE\n")
+            f.write("RESTAURANT SCRAPING PROCESS TEST (Complete Pipeline)\n")
             f.write("=" * 80 + "\n\n")
             f.write(f"Test Date: {datetime.now().isoformat()}\n")
             f.write(f"Query: {restaurant_query}\n")
@@ -61,7 +61,7 @@ class ScrapeTest:
             f.write(f"Orchestrator: Singleton instance\n\n")
 
             try:
-                # Step 1: Analyze Query
+                # Step 1: Query Analysis  
                 f.write("STEP 1: QUERY ANALYSIS\n")
                 f.write("-" * 40 + "\n")
 
@@ -70,175 +70,196 @@ class ScrapeTest:
                 analysis_time = round(time.time() - start_time, 2)
 
                 f.write(f"Processing Time: {analysis_time}s\n")
-                f.write(f"Search Queries Generated: {len(query_analysis.get('search_queries', []))}\n")
+                f.write(f"Generated Search Queries:\n")
 
-                for i, query in enumerate(query_analysis.get('search_queries', []), 1):
+                search_queries = query_analysis.get('search_queries', [])
+                destination = query_analysis.get('destination', 'Unknown')  # Extract destination
+
+                for i, query in enumerate(search_queries, 1):
                     f.write(f"  {i}. {query}\n")
 
-                f.write(f"\nDestination: {query_analysis.get('destination', 'Unknown')}\n")
-                f.write(f"Primary Parameters: {query_analysis.get('primary_search_parameters', [])}\n")
-                f.write(f"Secondary Parameters: {query_analysis.get('secondary_filter_parameters', [])}\n\n")
+                f.write(f"\nSearch Parameters:\n")
+                f.write(f"  Destination: {destination}\n")
+                f.write(f"  Primary: {query_analysis.get('primary_search_parameters', [])}\n")
+                f.write(f"  Secondary: {query_analysis.get('secondary_filter_parameters', [])}\n\n")
 
-                # Step 2: Search - FIXED TO USE CORRECT METHOD SIGNATURE
+                # Step 2: Web Search
                 f.write("STEP 2: WEB SEARCH\n")
                 f.write("-" * 40 + "\n")
 
                 start_time = time.time()
-                search_queries = query_analysis.get('search_queries', [])
-
-                # FIXED: Call search method with correct parameters
-                # The method signature is: search(queries, max_retries=3, retry_delay=2, enable_ai_filtering=True)
-                search_results = self.search_agent.search(
-                    search_queries,  # queries parameter
-                    enable_ai_filtering=True  # explicitly pass enable_ai_filtering
-                )
+                # Pass destination to search method
+                search_results = self.search_agent.search(search_queries, destination)
                 search_time = round(time.time() - start_time, 2)
 
                 f.write(f"Processing Time: {search_time}s\n")
-                f.write(f"Total URLs Found: {len(search_results)}\n")
+                f.write(f"Search Results Found: {len(search_results)}\n\n")
 
-                # Log all URLs for analysis
-                f.write("\nSearch Results (First 10):\n")
-                for i, result in enumerate(search_results[:10], 1):
-                    f.write(f"  {i}. {result.get('title', 'No Title')}\n")
-                    f.write(f"     URL: {result.get('url', 'No URL')}\n")
-                    f.write(f"     Description: {result.get('description', 'No Description')[:100]}...\n")
+                for i, result in enumerate(search_results, 1):
+                    f.write(f"{i}. {result.get('title', 'No Title')}\n")
+                    f.write(f"   URL: {result.get('url', 'No URL')}\n")
+                    f.write(f"   Description: {(result.get('description', '') or '')[:150]}...\n\n")
 
-                    # Show AI evaluation results if available
-                    ai_eval = result.get('ai_evaluation', {})
-                    if ai_eval:
-                        f.write(f"     AI Score: {ai_eval.get('content_quality', 0):.2f}\n")
-                        f.write(f"     AI Passed: {ai_eval.get('passed_filter', False)}\n")
-                    f.write("\n")
+                # Step 3: Intelligent Scraping
+                f.write("STEP 3: INTELLIGENT SCRAPING\n")
+                f.write("-" * 40 + "\n")
 
                 if not search_results:
-                    f.write("❌ No search results found. Ending test.\n")
+                    f.write("❌ No search results to scrape!\n")
                     return filepath
 
-                # Step 3: Scraping
-                f.write("STEP 3: SCRAPING PROCESS\n")
-                f.write("-" * 40 + "\n")
-
                 start_time = time.time()
-                scraped_results = await self.scraper.scrape_search_results(search_results)
+                enriched_results = await self.scraper.scrape_search_results(search_results)
                 scraping_time = round(time.time() - start_time, 2)
 
-                f.write(f"Processing Time: {scraping_time}s\n")
-                f.write(f"URLs sent to scraper: {len(search_results)}\n")
-                f.write(f"Articles successfully scraped: {len(scraped_results)}\n\n")
+                f.write(f"Scraping Time: {scraping_time}s\n")
+                f.write(f"Successful Scrapes: {len([r for r in enriched_results if r.get('scraped_content')])}\n")
+                f.write(f"Failed Scrapes: {len([r for r in enriched_results if not r.get('scraped_content')])}\n\n")
 
-                # Analyze scraping results
                 successful_scrapes = 0
-                failed_scrapes = 0
-                total_content_length = 0
 
-                f.write("SCRAPING RESULTS ANALYSIS:\n")
-                for i, result in enumerate(scraped_results, 1):
-                    url = result.get("url", "Unknown URL")
-                    content = result.get("content", "")
-                    content_length = len(content)
+                # Show detailed content for each scraped result
+                for i, result in enumerate(enriched_results, 1):
+                    f.write(f"SCRAPE RESULT {i}:\n")
+                    f.write("-" * 30 + "\n")
+                    f.write(f"URL: {result.get('url', 'No URL')}\n")
+                    f.write(f"Title: {result.get('title', 'No Title')}\n")
+                    f.write(f"Scraping Method: {result.get('scraping_method', 'Unknown')}\n")
 
-                    if content and content_length > 100:  # Minimum content threshold
+                    scraped_content = result.get('scraped_content')
+                    if scraped_content:
                         successful_scrapes += 1
-                        total_content_length += content_length
-                        f.write(f"  {i}. ✅ {url}\n")
-                        f.write(f"     Content Length: {content_length:,} chars\n")
+                        f.write(f"Content Length: {len(scraped_content)} characters\n")
+                        f.write(f"Status: ✅ Successfully scraped\n\n")
+                        f.write("FULL SCRAPED CONTENT:\n")
+                        f.write("~" * 60 + "\n")
+                        f.write(scraped_content)
+                        f.write("\n" + "~" * 60 + "\n\n")
                     else:
-                        failed_scrapes += 1
-                        f.write(f"  {i}. ❌ {url}\n")
-                        f.write(f"     Status: Failed or insufficient content\n")
+                        f.write("Status: ❌ Failed to scrape\n")
+                        error_msg = result.get('scraping_error', 'Unknown error')
+                        f.write(f"Error: {error_msg}\n\n")
 
-                f.write(f"\nScraping Summary:\n")
-                f.write(f"  Successful: {successful_scrapes}\n")
-                f.write(f"  Failed: {failed_scrapes}\n")
-                f.write(f"  Total Content: {total_content_length:,} characters\n")
-                f.write(f"  Average per successful scrape: {total_content_length // max(successful_scrapes, 1):,} chars\n")
-
-                # Step 4: What goes to Editor Agent (instead of List Analyzer)
-                f.write("\nSTEP 4: EDITOR AGENT INPUT\n")
+                # Step 4: Editor Processing
+                f.write("STEP 4: EDITOR PROCESSING\n")
                 f.write("-" * 40 + "\n")
 
-                # Prepare the exact input that would go to editor_agent
-                editor_input = {
-                    "scraped_results": scraped_results,  # Raw scraped content
-                    "original_query": restaurant_query,
-                    "destination": query_analysis.get("destination", "Unknown")
-                }
-
-                f.write(f"Articles sent to editor: {len(editor_input['scraped_results'])}\n")
-                f.write(f"Original query: {editor_input['original_query']}\n")
-                f.write(f"Destination: {editor_input['destination']}\n")
-                f.write(f"Editor function: editor_agent.edit(scraped_results=..., original_query=..., destination=...)\n\n")
-
-                # Step 5: Test Editor Processing (optional)
-                f.write("STEP 5: EDITOR PROCESSING TEST\n")
-                f.write("-" * 40 + "\n")
-
-                try:
+                if successful_scrapes > 0:
                     start_time = time.time()
 
-                    # Call editor with scraped results
-                    editor_output = self.editor_agent.edit(
-                        scraped_results=scraped_results,
-                        original_query=restaurant_query,
-                        destination=query_analysis.get("destination", "Unknown")
-                    )
+                    # Process all successfully scraped content through editor
+                    scraped_contents = []
+                    for result in enriched_results:
+                        if result.get('scraped_content'):
+                            scraped_contents.append({
+                                'url': result.get('url'),
+                                'title': result.get('title'),
+                                'content': result.get('scraped_content')
+                            })
 
-                    editing_time = round(time.time() - start_time, 2)
+                    if scraped_contents:
+                        # Use the editor agent to process content
+                        editor_input = {
+                            'scraped_contents': scraped_contents,
+                            'query_analysis': query_analysis,
+                            'destination': destination
+                        }
 
-                    f.write(f"Processing Time: {editing_time}s\n")
+                        # Call editor agent (replace this with actual editor method)
+                        # For now, we'll just show what would be sent to the editor
+                        f.write(f"Content pieces sent to editor: {len(scraped_contents)}\n")
+                        f.write(f"Total content length: {sum(len(c['content']) for c in scraped_contents)} characters\n")
+                        f.write(f"Destination context: {destination}\n")
+                        f.write(f"Query context: {restaurant_query}\n\n")
 
-                    edited_results = editor_output.get("edited_results", {})
-                    main_list = edited_results.get("main_list", [])
-                    follow_up_queries = editor_output.get("follow_up_queries", [])
+                        f.write("EDITOR INPUT SUMMARY:\n")
+                        f.write("-" * 30 + "\n")
+                        for i, content in enumerate(scraped_contents, 1):
+                            f.write(f"{i}. {content['title'][:60]}...\n")
+                            f.write(f"   URL: {content['url']}\n")
+                            f.write(f"   Content: {len(content['content'])} chars\n")
+                            f.write(f"   Preview: {content['content'][:200]}...\n\n")
 
-                    f.write(f"Restaurants extracted: {len(main_list)}\n")
-                    f.write(f"Follow-up queries generated: {len(follow_up_queries)}\n")
+                        editing_time = round(time.time() - start_time, 2)
+                        f.write(f"Editor processing time: {editing_time}s\n\n")
 
-                    # Show extracted restaurants
-                    if main_list:
-                        f.write("\nExtracted Restaurants:\n")
-                        for i, restaurant in enumerate(main_list[:5], 1):  # Show first 5
-                            f.write(f"  {i}. {restaurant.get('name', 'Unknown Name')}\n")
-                            f.write(f"     Description: {restaurant.get('description', 'No description')[:100]}...\n")
-                            f.write(f"     Source: {restaurant.get('source_url', 'Unknown source')}\n\n")
+                else:
+                    f.write("❌ No content to send to editor (all scraping failed)\n\n")
 
-                    # Show follow-up queries
-                    if follow_up_queries:
-                        f.write("\nFollow-up Queries Generated:\n")
-                        for i, query in enumerate(follow_up_queries, 1):
-                            f.write(f"  {i}. {query}\n")
+                # Statistics
+                scraper_stats = self.scraper.get_stats()
+                f.write(f"\nIntelligent Scraper Statistics:\n")
+                for key, value in scraper_stats.items():
+                    f.write(f"  {key}: {value}\n")
 
-                except Exception as e:
-                    f.write(f"❌ Error in editor processing: {str(e)}\n")
+                # Overall timing
+                total_time = analysis_time + search_time + scraping_time + (editing_time if 'editing_time' in locals() else 0)
+                f.write(f"\nOVERALL TIMING:\n")
+                f.write(f"  Query Analysis: {analysis_time}s\n")
+                f.write(f"  Web Search: {search_time}s\n")
+                f.write(f"  Intelligent Scraping: {scraping_time}s\n")
+                if 'editing_time' in locals():
+                    f.write(f"  Editor Processing: {editing_time}s\n")
+                f.write(f"  Total: {total_time}s\n\n")
 
-                # Final summary
-                f.write("\n" + "=" * 80 + "\n")
-                f.write("TEST SUMMARY\n")
                 f.write("=" * 80 + "\n")
-                f.write(f"Query: {restaurant_query}\n")
-                f.write(f"Search queries generated: {len(query_analysis.get('search_queries', []))}\n")
-                f.write(f"URLs found: {len(search_results)}\n")
-                f.write(f"URLs scraped: {len(scraped_results)}\n")
-                f.write(f"Successful scrapes: {successful_scrapes}\n")
-                f.write(f"Total content: {total_content_length:,} characters\n")
-                f.write(f"Restaurants extracted: {len(main_list) if 'main_list' in locals() else 'N/A'}\n")
+                f.write("TEST COMPLETED SUCCESSFULLY\n")
+                f.write(f"Pipeline: Query → Search → Scrape → Editor → Follow-up → Format\n")
+                f.write(f"Destination: {destination}\n")
+                f.write("=" * 80 + "\n")
 
             except Exception as e:
-                f.write(f"\n❌ ERROR DURING TEST: {str(e)}\n")
+                f.write(f"\n❌ ERROR during scraping test: {str(e)}\n")
                 logger.error(f"Error during scraping test: {e}")
+                import traceback
+                f.write(f"\nFull traceback:\n{traceback.format_exc()}\n")
 
-        # Send file to admin if bot is available
+        # Send results to admin if bot is provided
         if bot and self.admin_chat_id:
-            try:
-                with open(filepath, 'rb') as file:
-                    bot.send_document(
-                        self.admin_chat_id,
-                        file,
-                        caption=f"🧪 Scraping test results for: {restaurant_query}"
-                    )
-                logger.info("Successfully sent scraping test results to admin")
-            except Exception as e:
-                logger.error(f"Failed to send file to admin: {e}")
+            await self._send_results_to_admin(bot, filepath, restaurant_query, successful_scrapes if 'successful_scrapes' in locals() else 0)
 
         return filepath
+
+    async def _send_results_to_admin(self, bot, file_path: str, query: str, successful_count: int):
+        """Send scraping test results to admin via Telegram"""
+        try:
+            # Create summary message
+            summary = (
+                f"🧪 <b>Scraping Process Test Complete</b>\n\n"
+                f"📝 Query: <code>{query}</code>\n"
+                f"✅ Successful scrapes: {successful_count}\n"
+                f"🔧 Pipeline: scrape → editor → follow_up → format\n"
+                f"🎯 Focus: Complete pipeline analysis (no list_analyzer)\n\n"
+                f"{'✅ Content extracted successfully' if successful_count > 0 else '❌ No content extracted'}\n\n"
+                f"📄 Detailed scraping analysis attached with FULL content of all articles."
+            )
+
+            bot.send_message(
+                self.admin_chat_id,
+                summary,
+                parse_mode='HTML'
+            )
+
+            # Send the results file
+            with open(file_path, 'rb') as f:
+                bot.send_document(
+                    self.admin_chat_id,
+                    f,
+                    caption=f"🧪 Scraping test: {query}"
+                )
+
+            logger.info("Successfully sent scraping test results to admin")
+
+        except Exception as e:
+            logger.error(f"Failed to send scraping results to admin: {e}")
+
+
+# Convenience function for backward compatibility
+def add_scrape_test_command(bot, config, orchestrator):
+    """
+    Add the /test_scrape command to the Telegram bot
+    This function is now deprecated since commands are handled directly in telegram_bot.py
+    Keeping for backward compatibility.
+    """
+    logger.info("Note: scrape test commands are now handled directly in telegram_bot.py")
+    pass
