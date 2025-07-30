@@ -1,5 +1,6 @@
-# telegram_bot.py - Updated with /cancel command functionality
+# telegram_bot.py - Updated with location button functionality
 import telebot
+from telebot import types  # Add this import for inline keyboards
 import logging
 import time
 import threading
@@ -43,8 +44,8 @@ active_searches = {}  # user_id -> {"thread": thread_object, "cancel_event": Eve
 location_handler = TelegramLocationHandler()
 location_analyzer = None  # Will be initialized in main()
 
-# Track users waiting for location input
-users_awaiting_location = {}  # user_id -> {"query": str, "timestamp": float}
+# Track users waiting for location input - UPDATED to include button tracking
+users_awaiting_location = {}  # user_id -> {"query": str, "timestamp": float, "has_button": bool}
 
 def create_cancel_event(user_id, chat_id):
     """Create a cancellation event for a user's search"""
@@ -68,6 +69,27 @@ def is_search_cancelled(user_id):
     if user_id in active_searches:
         return active_searches[user_id]["cancel_event"].is_set()
     return False
+
+def create_location_button():
+    """Create the 'Send my coordinates' button"""
+    keyboard = types.ReplyKeyboardMarkup(
+        one_time_keyboard=True,
+        resize_keyboard=True,
+        row_width=1
+    )
+
+    # Create location button
+    location_button = types.KeyboardButton(
+        "📍 Send my coordinates",
+        request_location=True
+    )
+
+    keyboard.add(location_button)
+    return keyboard
+
+def remove_location_button():
+    """Remove the location button (return to normal keyboard)"""
+    return types.ReplyKeyboardRemove()
 
 # Welcome message (unchanged)
 WELCOME_MESSAGE = (
@@ -160,7 +182,11 @@ def send_welcome(message):
         active_searches[user_id]["cancel_event"].set()
         cleanup_search(user_id)
 
-    bot.reply_to(message, WELCOME_MESSAGE, parse_mode='HTML')
+    # Clear any waiting location state
+    if user_id in users_awaiting_location:
+        del users_awaiting_location[user_id]
+
+    bot.reply_to(message, WELCOME_MESSAGE, parse_mode='HTML', reply_markup=remove_location_button())
 
 @bot.message_handler(commands=['cancel'])
 def handle_cancel(message):
@@ -175,7 +201,8 @@ def handle_cancel(message):
         bot.reply_to(
             message,
             "🤷‍♀️ I'm not currently searching for anything for you. Feel free to ask me about restaurants!",
-            parse_mode='HTML'
+            parse_mode='HTML',
+            reply_markup=remove_location_button()
         )
         return
 
@@ -191,11 +218,14 @@ def handle_cancel(message):
         message,
         f"✋ Search cancelled! I was searching for {search_duration} seconds.\n\n"
         "What else would you like me to help you find?",
-        parse_mode='HTML'
+        parse_mode='HTML',
+        reply_markup=remove_location_button()
     )
 
     # Clean up
     cleanup_search(user_id)
+    if user_id in users_awaiting_location:
+        del users_awaiting_location[user_id]
 
     # Add cancellation to conversation history
     add_to_conversation(user_id, "Search cancelled by user", is_user=False)
@@ -219,7 +249,8 @@ def handle_location_message(message):
             bot.reply_to(
                 message,
                 "❌ The location coordinates seem invalid. Could you try sending your location again or describe where you are?",
-                parse_mode='HTML'
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
             )
             return
 
@@ -235,13 +266,14 @@ def handle_location_message(message):
             # Remove from waiting list
             del users_awaiting_location[user_id]
 
-            # Confirm location received
+            # Confirm location received and remove button
             bot.reply_to(
                 message,
                 f"📍 <b>Perfect! I received your location.</b>\n\n"
                 f"🔍 Now searching for: <i>{original_query}</i>\n\n"
                 "⏱ This might take a minute while I find the best nearby places...",
-                parse_mode='HTML'
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
             )
 
             # Start location-based search
@@ -259,7 +291,8 @@ def handle_location_message(message):
                 f"📌 <i>{location_handler.format_location_summary(location_data)}</i>\n\n"
                 "What type of restaurants or bars are you looking for nearby?\n\n"
                 "<i>Examples: \"natural wine bars\", \"good coffee\", \"romantic dinner\"</i>",
-                parse_mode='HTML'
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
             )
 
             # Store location for next message
@@ -276,7 +309,8 @@ def handle_location_message(message):
         bot.reply_to(
             message,
             "😔 Sorry, I had trouble processing your location. Could you try again or describe where you are?",
-            parse_mode='HTML'
+            parse_mode='HTML',
+            reply_markup=remove_location_button()
         )
 
 # PRESERVED TEST COMMANDS - These are critical for debugging!
@@ -443,7 +477,8 @@ def perform_restaurant_search(search_query, chat_id, user_id):
                     chat_id,
                     video,
                     caption="🔍 Searching for the best recommendations... This may take a few minutes as I consult with my critic friends!\n\n💡 Type /cancel if you want to stop the search.",
-                    parse_mode='HTML'
+                    parse_mode='HTML',
+                    reply_markup=remove_location_button()
                 )
         except FileNotFoundError:
             # Fallback to text message if video file doesn't exist
@@ -451,7 +486,8 @@ def perform_restaurant_search(search_query, chat_id, user_id):
             processing_msg = bot.send_message(
                 chat_id,
                 "🔍 Searching for the best recommendations... This may take a few minutes as I consult with my critic friends!\n\n💡 Type /cancel if you want to stop the search.",
-                parse_mode='HTML'
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
             )
         except Exception as e:
             # Fallback to text message if video sending fails
@@ -459,7 +495,8 @@ def perform_restaurant_search(search_query, chat_id, user_id):
             processing_msg = bot.send_message(
                 chat_id,
                 "🔍 Searching for the best recommendations... This may take a few minutes as I consult with my critic friends!\n\n💡 Type /cancel if you want to stop the search.",
-                parse_mode='HTML'
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
             )
 
         # ... rest of the function remains the same
@@ -504,7 +541,8 @@ def perform_restaurant_search(search_query, chat_id, user_id):
             chat_id,
             telegram_text,
             parse_mode='HTML',
-            disable_web_page_preview=True
+            disable_web_page_preview=True,
+            reply_markup=remove_location_button()
         )
 
         logger.info(f"Successfully sent restaurant recommendations to user {user_id}")
@@ -522,12 +560,13 @@ def perform_restaurant_search(search_query, chat_id, user_id):
             bot.send_message(
                 chat_id,
                 "😔 Sorry, I encountered an error while searching for restaurants. Please try again with a different query!",
-                parse_mode='HTML'
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
             )
     finally:
         cleanup_search(user_id)
 
-# COMPLETE MESSAGE HANDLER - Replace the existing @bot.message_handler(func=lambda message: True) in telegram_bot.py
+# COMPLETE MESSAGE HANDLER - Updated with location button handling
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
@@ -546,6 +585,51 @@ def handle_message(message):
                 parse_mode='HTML'
             )
             return
+
+        # NEW: Check if user typed a location while waiting for location
+        if user_id in users_awaiting_location:
+            # User typed their location instead of using the button
+            awaiting_data = users_awaiting_location[user_id]
+            original_query = awaiting_data["query"]
+
+            # Remove from waiting list and button
+            del users_awaiting_location[user_id]
+
+            # Process text-based location
+            location_data = location_handler.extract_location_from_text(user_message)
+
+            if location_data.confidence > 0.3:  # Reasonable confidence in location extraction
+                # Confirm location and start search
+                bot.reply_to(
+                    message,
+                    f"📍 <b>Perfect! I understand you're looking in: {location_data.description}</b>\n\n"
+                    f"🔍 Now searching for: <i>{original_query}</i>\n\n"
+                    "⏱ This might take a minute while I find the best places...",
+                    parse_mode='HTML',
+                    reply_markup=remove_location_button()
+                )
+
+                # Combine original query with location
+                full_query = f"{original_query} in {location_data.description}"
+
+                # Start location search
+                threading.Thread(
+                    target=perform_location_search,
+                    args=(full_query, location_data, message.chat.id, user_id),
+                    daemon=True
+                ).start()
+                return
+            else:
+                # Couldn't understand location, ask again
+                bot.reply_to(
+                    message,
+                    "🤔 I'm having trouble understanding that location. Could you be more specific?\n\n"
+                    "Examples: \"Downtown\", \"Near Central Park\", \"Chinatown\", \"Rua da Rosa\"\n\n"
+                    "Or use the button below to send your exact coordinates:",
+                    parse_mode='HTML',
+                    reply_markup=create_location_button()
+                )
+                return
 
         # Add user message to conversation history
         add_to_conversation(user_id, user_message, is_user=True)
@@ -584,7 +668,8 @@ def handle_message(message):
         bot.reply_to(
             message, 
             "I'm having trouble understanding right now. Could you try asking again about restaurants in a specific city?",
-            parse_mode='HTML'
+            parse_mode='HTML',
+            reply_markup=remove_location_button()
         )
 
 def get_recent_location_from_conversation(user_id):
@@ -613,7 +698,7 @@ def handle_location_search_request(message, location_analysis):
     response_text = f"🔍 <b>Perfect! Searching for {cuisine_preference} in {location_detected}.</b>\n\n"
     response_text += "⏱ This might take a minute while I find the best places and verify them with reputable sources..."
 
-    bot.reply_to(message, response_text, parse_mode='HTML')
+    bot.reply_to(message, response_text, parse_mode='HTML', reply_markup=remove_location_button())
     add_to_conversation(user_id, response_text, is_user=False)
 
     # Create location data from text
@@ -627,7 +712,7 @@ def handle_location_search_request(message, location_analysis):
     ).start()
 
 def handle_location_request(message, location_analysis):
-    """Handle requests that need location specification"""
+    """Handle requests that need location specification - NOW WITH BUTTON"""
     user_id = message.from_user.id
     cuisine_preference = location_analysis.get("cuisine_preference", "restaurants")
 
@@ -640,15 +725,42 @@ def handle_location_request(message, location_analysis):
     elif any(word in cuisine_preference.lower() for word in ["fine", "romantic", "fancy"]):
         query_type = "fine_dining"
 
-    # Ask for location
-    location_request_msg = location_handler.create_location_request_message(query_type)
-    bot.reply_to(message, location_request_msg, parse_mode='HTML')
+    # Create the location request message
+    if query_type == "wine":
+        emoji = "🍷"
+        context = "wine bars and natural wine spots"
+    elif query_type == "coffee":
+        emoji = "☕"
+        context = "coffee shops and cafes"
+    elif query_type == "fine_dining":
+        emoji = "🍽️"
+        context = "fine dining restaurants"
+    else:
+        emoji = "📍"
+        context = "restaurants and bars"
+
+    location_request_msg = (
+        f"{emoji} <b>Perfect! I'd love to help you find great {context} near you.</b>\n\n"
+        "To give you the best recommendations, I need to know where you are:\n\n"
+        "🗺️ <b>Option 1:</b> Tell me your neighborhood, street, or nearby landmark\n"
+        "📍 <b>Option 2:</b> Use the button below to send your exact coordinates\n\n"
+        "<i>Examples: \"I'm in Chinatown\", \"Near Times Square\", \"On Rua da Rosa in Lisbon\"</i>\n\n"
+        "💡 <b>Don't worry:</b> I only use your location to find nearby places. I don't store it."
+    )
+
+    bot.reply_to(
+        message, 
+        location_request_msg, 
+        parse_mode='HTML',
+        reply_markup=create_location_button()
+    )
     add_to_conversation(user_id, location_request_msg, is_user=False)
 
-    # Mark user as awaiting location
+    # Mark user as awaiting location WITH button tracking
     users_awaiting_location[user_id] = {
         "query": cuisine_preference,
-        "timestamp": time.time()
+        "timestamp": time.time(),
+        "has_button": True
     }
 
 def handle_general_search(message, location_analysis):
@@ -691,7 +803,7 @@ def handle_general_search(message, location_analysis):
         search_query = ai_decision.get("search_query")
         if search_query:
             add_to_conversation(user_id, bot_response, is_user=False)
-            bot.reply_to(message, bot_response, parse_mode='HTML')
+            bot.reply_to(message, bot_response, parse_mode='HTML', reply_markup=remove_location_button())
 
             # Use existing search pipeline
             threading.Thread(
@@ -701,10 +813,10 @@ def handle_general_search(message, location_analysis):
             ).start()
         else:
             add_to_conversation(user_id, bot_response, is_user=False)
-            bot.reply_to(message, bot_response, parse_mode='HTML')
+            bot.reply_to(message, bot_response, parse_mode='HTML', reply_markup=remove_location_button())
     else:
         add_to_conversation(user_id, bot_response, is_user=False)
-        bot.reply_to(message, bot_response, parse_mode='HTML')
+        bot.reply_to(message, bot_response, parse_mode='HTML', reply_markup=remove_location_button())
 
 def handle_clarification_needed(message, location_analysis):
     """Handle messages that need clarification"""
@@ -712,7 +824,7 @@ def handle_clarification_needed(message, location_analysis):
     suggested_response = location_analysis.get("suggested_response", 
         "I specialize in restaurant recommendations! What type of dining are you looking for and in which city?")
 
-    bot.reply_to(message, suggested_response, parse_mode='HTML')
+    bot.reply_to(message, suggested_response, parse_mode='HTML', reply_markup=remove_location_button())
     add_to_conversation(user_id, suggested_response, is_user=False)
 
 def perform_location_search(query, location_data, chat_id, user_id):
@@ -729,17 +841,46 @@ def perform_location_search(query, location_data, chat_id, user_id):
         def is_cancelled():
             return is_search_cancelled(user_id)
 
-        # Send processing message
-        processing_msg = bot.send_message(
-            chat_id,
-            "🔍 <b>Searching for nearby restaurants...</b>\n\n"
-            "📍 Getting your precise location\n"
-            "🗄️ Checking our restaurant database\n" 
-            "📰 Searching with reputable food sources\n\n"
-            "<i>This takes 1-2 minutes for thorough verification</i>\n\n"
-            "💡 Type /cancel to stop the search",
-            parse_mode='HTML'
-        )
+        # Send processing message WITH VIDEO
+        try:
+            with open("media/searching.mp4", "rb") as video:
+                processing_msg = bot.send_video(
+                    chat_id,
+                    video,
+                    caption="🔍 <b>Searching for nearby restaurants...</b>\n\n"
+                            "📍 Getting your precise location\n"
+                            "🗄️ Checking our restaurant database\n" 
+                            "📰 Searching with reputable food sources\n\n"
+                            "<i>This takes 1-2 minutes for thorough verification</i>\n\n"
+                            "💡 Type /cancel to stop the search",
+                    parse_mode='HTML',
+                    reply_markup=remove_location_button()
+                )
+        except FileNotFoundError:
+            # Fallback to text message if video file doesn't exist
+            logger.warning("Video file not found, sending text message instead")
+            processing_msg = bot.send_message(
+                chat_id,
+                "🔍 <b>Searching for nearby restaurants...</b>\n\n"
+                "<i>This might take a couple of minutes as I'll check with my critic friends what they think about those places</i>\n\n"
+                "💡 Type /cancel to stop the search",
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
+            )
+        except Exception as e:
+            # Fallback to text message if video sending fails
+            logger.warning(f"Failed to send video: {e}, sending text message instead")
+            processing_msg = bot.send_message(
+                chat_id,
+                "🔍 <b>Searching for nearby restaurants...</b>\n\n"
+                "📍 Getting your precise location\n"
+                "🗄️ Checking our restaurant database\n" 
+                "📰 Searching with reputable food sources\n\n"
+                "<i>This takes 1-2 minutes for thorough verification</i>\n\n"
+                "💡 Type /cancel to stop the search",
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
+            )
 
         logger.info(f"🎯 Started location search for user {user_id}: {query}")
 
@@ -788,7 +929,7 @@ def perform_location_search(query, location_data, chat_id, user_id):
         # Check if search was successful
         if not result.get('success', False):
             error_text = result.get('telegram_formatted_text', 'Sorry, no results found.')
-            bot.send_message(chat_id, error_text, parse_mode='HTML')
+            bot.send_message(chat_id, error_text, parse_mode='HTML', reply_markup=remove_location_button())
             add_to_conversation(user_id, error_text, is_user=False)
             return
 
@@ -808,7 +949,8 @@ def perform_location_search(query, location_data, chat_id, user_id):
             chat_id,
             response_text,
             parse_mode='HTML',
-            disable_web_page_preview=True
+            disable_web_page_preview=True,
+            reply_markup=remove_location_button()
         )
 
         # Send a follow-up with search stats (optional)
@@ -818,7 +960,7 @@ def perform_location_search(query, location_data, chat_id, user_id):
             f"⏱ Processed in {processing_time:.1f} seconds"
         )
 
-        bot.send_message(chat_id, stats_msg, parse_mode='HTML')
+        bot.send_message(chat_id, stats_msg, parse_mode='HTML', reply_markup=remove_location_button())
 
         logger.info(f"✅ Successfully sent location search results to user {user_id}")
 
@@ -845,7 +987,7 @@ def perform_location_search(query, location_data, chat_id, user_id):
                 "• Network connectivity issues\n\n"
                 "Please try again with a different location or search term!"
             )
-            bot.send_message(chat_id, error_msg, parse_mode='HTML')
+            bot.send_message(chat_id, error_msg, parse_mode='HTML', reply_markup=remove_location_button())
 
     finally:
         # Always clean up the search tracking
@@ -880,7 +1022,7 @@ def main():
         logger.info("✅ Orchestrator singleton confirmed available")
         logger.info("🎯 Admin commands available: /test_scrape, /test_search")
         logger.info("🛑 Cancel command available: /cancel")
-        logger.info("📍 Location support: GPS pins + text descriptions")
+        logger.info("📍 Location support: GPS pins + text descriptions + location button")
     except RuntimeError as e:
         logger.error(f"❌ Orchestrator not initialized: {e}")
         logger.error("Make sure main.py calls setup_orchestrator() before starting the bot")
@@ -889,7 +1031,7 @@ def main():
     # Start polling with error handling
     while True:
         try:
-            logger.info("Starting bot polling with location support...")
+            logger.info("Starting bot polling with location button support...")
             bot.infinity_polling(
                 timeout=10, 
                 long_polling_timeout=5,
@@ -906,3 +1048,6 @@ def main():
         except Exception as e:
             logger.error(f"Unexpected error in bot polling: {e}")
             time.sleep(5)
+
+if __name__ == "__main__":
+    main()
