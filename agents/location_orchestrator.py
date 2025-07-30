@@ -1,19 +1,23 @@
 # agents/location_orchestrator.py
 """
-Location Search Orchestrator
+Location Search Orchestrator - MODIFIED VERSION
 
-Coordinates the complete location-based search pipeline:
-1. Check database for nearby restaurants
-2. Search Google Maps for venues
-3. AI-powered source mapping
-4. Web search and verification
-5. Format results for Telegram
+Updated to implement the same filtering algorithm as database_search_agent.py:
+1. Get nearby restaurants from database (IDs + names + tags)
+2. Create temp file with restaurant data  
+3. Analyze in single API call using the same prompt
+4. If no matches, do additional location-based search
+5. Extract full details for matched restaurants
+6. Format and send to client
 """
 
 import logging
 from typing import Dict, List, Any, Optional, Tuple
 import asyncio
 import time
+import json
+import tempfile
+import os
 
 from utils.location_utils import LocationUtils, LocationPoint
 from utils.telegram_location_handler import LocationData
@@ -21,27 +25,87 @@ from agents.location_search_agent import LocationSearchAgent, VenueResult
 from agents.source_mapping_agent import SourceMappingAgent
 from formatters.telegram_formatter import TelegramFormatter
 
+# Import AI components for restaurant filtering
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+
 logger = logging.getLogger(__name__)
 
 class LocationOrchestrator:
     """
     Orchestrates the complete location-based restaurant search pipeline
+    WITH OPTIMIZED FILTERING using same algorithm as database_search_agent.py
     """
 
     def __init__(self, config):
         self.config = config
 
-        # Initialize components
+        # Initialize existing components
         self.location_search_agent = LocationSearchAgent(config)
         self.source_mapping_agent = SourceMappingAgent(config)
         self.telegram_formatter = TelegramFormatter()
+
+        # NEW: Initialize AI for restaurant filtering (same as database_search_agent.py)
+        self.ai_model = ChatOpenAI(
+            model=config.OPENAI_MODEL,  # Use GPT-4o as requested
+            temperature=0.1,
+            api_key=config.OPENAI_API_KEY
+        )
 
         # Pipeline settings
         self.db_search_radius = getattr(config, 'DB_PROXIMITY_RADIUS_KM', 2.0)
         self.min_db_matches = getattr(config, 'MIN_DB_MATCHES_REQUIRED', 3)
         self.max_venues_to_verify = getattr(config, 'MAX_LOCATION_RESULTS', 8)
 
-        logger.info("✅ Location Orchestrator initialized")
+        # NEW: Setup filtering prompt (same as database_search_agent.py)
+        self._setup_filtering_prompt()
+
+        logger.info("✅ Location Orchestrator initialized with AI filtering")
+
+    def _setup_filtering_prompt(self):
+        """Setup the same filtering prompt as database_search_agent.py"""
+
+        # Same batch analysis prompt from database_search_agent.py
+        self.batch_analysis_prompt = ChatPromptTemplate.from_template("""
+USER QUERY: {{raw_query}}
+LOCATION: {{destination}}
+
+You are analyzing restaurants from our database to see which ones match the user's query.
+
+RESTAURANT LIST:
+{{restaurants_text}}
+
+TASK: Analyze this list and return the restaurant IDs that best match the user's query.
+
+MATCHING CRITERIA:
+- Cuisine type relevance (direct matches, related cuisines)
+- Atmosphere and dining style 
+- Special features mentioned (wine lists, vegan options, price range, etc.)
+- Quality indicators from descriptions
+
+SCORING:
+- Perfect match (9-10): Direct cuisine match + special features match
+- High relevance (7-8): Strong cuisine or feature match
+- Moderate relevance (5-6): Some connection to query
+- Low relevance (3-4): Weak connection
+- Not relevant (0-2): No meaningful connection
+
+Return ONLY valid JSON with the top matches:
+{{
+    "selected_restaurants": [
+        {{
+            "id": "restaurant_id",
+            "name": "restaurant_name", 
+            "relevance_score": 8,
+            "reasoning": "why this restaurant matches"
+        }}
+    ],
+    "total_analyzed": number_of_restaurants_analyzed,
+    "query_analysis": "brief analysis of what user is looking for"
+}}
+
+IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality over quantity.
+""")
 
     async def process_location_query(
         self, 
@@ -51,21 +115,18 @@ class LocationOrchestrator:
     ) -> Dict[str, Any]:
         """
         Process a location-based restaurant query
+        MODIFIED: Now includes AI filtering step before returning results
 
         Args:
-            query: User's search query (e.g. "natural wine bars")
-            location_data: Location information (GPS or text description)
-            cancel_check_fn: Function to check if search should be cancelled
-
-        Returns:
-            Dict with search results formatted for Telegram
+            query: User's search query (e.g. "italian restaurants")
+            location_data: Location information (GPS coordinates or description)
+            cancel_check_fn: Function to check if operation should be cancelled
         """
         try:
-            logger.info(f"🎯 Processing location query: '{query}' at {location_data.location_type}")
-
             start_time = time.time()
+            logger.info(f"🎯 Starting MODIFIED location search: '{query}'")
 
-            # STEP 1: Get coordinates
+            # STEP 1: Get GPS coordinates
             coordinates = await self._get_coordinates(location_data, cancel_check_fn)
             if not coordinates:
                 return self._create_error_response("Could not determine location coordinates")
@@ -74,59 +135,262 @@ class LocationOrchestrator:
                 return self._create_cancelled_response()
 
             lat, lng = coordinates
-            logger.info(f"📍 Search coordinates: {lat:.4f}, {lng:.4f}")
+            logger.info(f"📍 Coordinates: {lat:.4f}, {lng:.4f}")
 
-            # STEP 2: Check database for nearby restaurants
-            db_results = await self._check_database_proximity(coordinates, query, cancel_check_fn)
-
-            if cancel_check_fn and cancel_check_fn():
-                return self._create_cancelled_response()
-
-            # STEP 3: If sufficient database results, use them; otherwise search Google Maps
-            if len(db_results) >= self.min_db_matches:
-                logger.info(f"✅ Found {len(db_results)} restaurants in database - using database results")
-                final_results = db_results
-                search_method = "database"
-            else:
-                logger.info(f"📍 Found only {len(db_results)} restaurants in database - searching Google Maps")
-
-                # Search Google Maps for venues
-                venues = await self._search_google_maps(coordinates, query, cancel_check_fn)
-
-                if cancel_check_fn and cancel_check_fn():
-                    return self._create_cancelled_response()
-
-                if not venues:
-                    return self._create_error_response("No venues found near your location")
-
-                # STEP 4: AI-powered source mapping and verification
-                verified_venues = await self._verify_venues_with_sources(venues, cancel_check_fn)
-
-                if cancel_check_fn and cancel_check_fn():
-                    return self._create_cancelled_response()
-
-                final_results = verified_venues
-                search_method = "google_maps"
+            # STEP 2: Get nearby restaurants from database (IDs + names + tags only)
+            nearby_restaurants = await self._get_nearby_restaurants_basic_data(coordinates, cancel_check_fn)
 
             if cancel_check_fn and cancel_check_fn():
                 return self._create_cancelled_response()
 
-            # STEP 5: Format results for Telegram
+            if nearby_restaurants:
+                logger.info(f"🗃️ Found {len(nearby_restaurants)} nearby restaurants in database")
+
+                # STEP 3: NEW - Analyze restaurants using AI (same algorithm as database_search_agent.py)
+                filtered_restaurants = await self._filter_restaurants_with_ai(
+                    nearby_restaurants, query, location_data.description or "GPS location", cancel_check_fn
+                )
+
+                if cancel_check_fn and cancel_check_fn():
+                    return self._create_cancelled_response()
+
+                if filtered_restaurants:
+                    logger.info(f"✅ AI filtering found {len(filtered_restaurants)} matching restaurants")
+
+                    # STEP 4: Extract full details for matched restaurants
+                    detailed_restaurants = await self._get_full_restaurant_details(filtered_restaurants, cancel_check_fn)
+
+                    if cancel_check_fn and cancel_check_fn():
+                        return self._create_cancelled_response()
+
+                    # STEP 5: Format and return results
+                    formatted_response = await self._format_location_results(
+                        detailed_restaurants, coordinates, query, "database_filtered", cancel_check_fn
+                    )
+
+                    total_time = time.time() - start_time
+                    formatted_response['processing_time'] = total_time
+
+                    logger.info(f"✅ Database location search completed in {total_time:.1f}s with {len(detailed_restaurants)} filtered results")
+                    return formatted_response
+
+            # STEP 6: No database matches - do additional location-based search (existing implementation)
+            logger.info("🌐 No database matches found, proceeding with location-based search")
+
+            # Search Google Maps for venues near coordinates
+            venues = await self._search_google_maps(coordinates, query, cancel_check_fn)
+
+            if cancel_check_fn and cancel_check_fn():
+                return self._create_cancelled_response()
+
+            if not venues:
+                return self._create_error_response("No venues found near your location")
+
+            # AI-powered source mapping and verification
+            verified_venues = await self._verify_venues_with_sources(venues, cancel_check_fn)
+
+            if cancel_check_fn and cancel_check_fn():
+                return self._create_cancelled_response()
+
+            # Format results for Telegram
             formatted_response = await self._format_location_results(
-                final_results, coordinates, query, search_method, cancel_check_fn
+                verified_venues, coordinates, query, "google_maps", cancel_check_fn
             )
 
             # Add timing information
             total_time = time.time() - start_time
             formatted_response['processing_time'] = total_time
 
-            logger.info(f"✅ Location search completed in {total_time:.1f}s with {len(final_results)} results")
+            logger.info(f"✅ Location search completed in {total_time:.1f}s with {len(verified_venues)} results")
             return formatted_response
 
         except Exception as e:
             logger.error(f"❌ Error in location search pipeline: {e}")
             return self._create_error_response(f"Search failed: {str(e)}")
 
+    async def _get_nearby_restaurants_basic_data(
+        self, 
+        coordinates: Tuple[float, float], 
+        cancel_check_fn=None
+    ) -> List[Dict[str, Any]]:
+        """
+        NEW METHOD: Get nearby restaurants with basic data only (IDs, names, tags)
+        Same as step 1 in the desired flow
+        """
+        try:
+            from utils.database import get_database
+            db = get_database()
+
+            lat, lng = coordinates
+            logger.info(f"🗃️ Checking database for restaurants within {self.db_search_radius}km")
+
+            # Get nearby restaurants with basic data only
+            nearby_restaurants = db.get_restaurants_by_proximity(
+                latitude=lat,
+                longitude=lng,
+                radius_km=self.db_search_radius,
+                limit=50,  # Reasonable limit for processing
+                fields=['id', 'name', 'cuisine_tags', 'mention_count', 'raw_description']  # Basic fields only
+            )
+
+            logger.info(f"📊 Found {len(nearby_restaurants)} restaurants in database within {self.db_search_radius}km")
+            return nearby_restaurants
+
+        except Exception as e:
+            logger.error(f"❌ Error getting nearby restaurants: {e}")
+            return []
+
+    async def _filter_restaurants_with_ai(
+        self, 
+        restaurants: List[Dict[str, Any]], 
+        raw_query: str, 
+        destination: str,
+        cancel_check_fn=None
+    ) -> List[Dict[str, Any]]:
+        """
+        NEW METHOD: Filter restaurants using AI analysis (same algorithm as database_search_agent.py)
+        Steps 2-3 in the desired flow: create temp file, analyze in single API call
+        """
+        try:
+            if cancel_check_fn and cancel_check_fn():
+                return []
+
+            logger.info(f"🧠 Filtering {len(restaurants)} restaurants with AI (single API call)")
+
+            # Step 2: Gather list into temp file (in memory for efficiency)
+            restaurants_text = self._compile_restaurants_for_analysis(restaurants)
+
+            # Step 3: Analyze in single API call (same prompt as database_search_agent.py)
+            chain = self.batch_analysis_prompt | self.ai_model
+
+            response = chain.invoke({
+                "raw_query": raw_query,
+                "destination": destination,
+                "restaurants_text": restaurants_text
+            })
+
+            # Parse the response
+            content = response.content.strip()
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+
+            analysis_result = json.loads(content)
+
+            # Map selected restaurant IDs back to restaurant data
+            selected_restaurants = self._map_selected_restaurants(
+                analysis_result.get("selected_restaurants", []),
+                restaurants
+            )
+
+            logger.info(f"✅ AI filtering complete: {len(selected_restaurants)} restaurants selected")
+            return selected_restaurants
+
+        except Exception as e:
+            logger.error(f"❌ Error in AI restaurant filtering: {e}")
+            # Return empty list to trigger location-based search
+            return []
+
+    def _compile_restaurants_for_analysis(self, restaurants: List[Dict[str, Any]]) -> str:
+        """
+        Compile restaurant data for AI analysis (same format as database_search_agent.py)
+        """
+        compiled_text = []
+
+        for restaurant in restaurants:
+            restaurant_id = restaurant.get('id', 'unknown')
+            name = restaurant.get('name', 'Unknown')
+            cuisine_tags = ', '.join(restaurant.get('cuisine_tags', []))
+            description = restaurant.get('raw_description', '')[:300]  # Truncate to save tokens
+            mention_count = restaurant.get('mention_count', 1)
+
+            # Format for analysis (same format as database_search_agent.py)
+            restaurant_entry = f"ID: {restaurant_id} | {name} | Tags: {cuisine_tags} | Mentions: {mention_count} | Desc: {description}"
+            compiled_text.append(restaurant_entry)
+
+        return "\n".join(compiled_text)
+
+    def _map_selected_restaurants(
+        self, 
+        selected_data: List[Dict[str, Any]], 
+        all_restaurants: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Map AI-selected restaurant IDs back to restaurant data (same as database_search_agent.py)
+        """
+        selected_restaurants = []
+
+        # Create lookup dict for fast access
+        restaurant_lookup = {str(r.get('id')): r for r in all_restaurants}
+
+        for selection in selected_data:
+            restaurant_id = str(selection.get('id', ''))
+
+            if restaurant_id in restaurant_lookup:
+                restaurant = restaurant_lookup[restaurant_id].copy()
+
+                # Add AI analysis metadata
+                restaurant['_ai_relevance_score'] = selection.get('relevance_score', 0)
+                restaurant['_ai_reasoning'] = selection.get('reasoning', '')
+
+                selected_restaurants.append(restaurant)
+            else:
+                logger.warning(f"⚠️ AI selected restaurant ID {restaurant_id} not found in original list")
+
+        return selected_restaurants
+
+    async def _get_full_restaurant_details(
+        self, 
+        filtered_restaurants: List[Dict[str, Any]], 
+        cancel_check_fn=None
+    ) -> List[Dict[str, Any]]:
+        """
+        NEW METHOD: Extract full details for matched restaurants (step 5 in desired flow)
+        """
+        try:
+            if cancel_check_fn and cancel_check_fn():
+                return []
+
+            from utils.database import get_database
+            db = get_database()
+
+            detailed_restaurants = []
+            restaurant_ids = [str(r.get('id')) for r in filtered_restaurants]
+
+            logger.info(f"📋 Getting full details for {len(restaurant_ids)} restaurants")
+
+            # Get full restaurant details using IDs
+            for restaurant_id in restaurant_ids:
+                if cancel_check_fn and cancel_check_fn():
+                    break
+
+                try:
+                    # Get full restaurant data including descriptions, addresses, sources
+                    full_restaurant = db.get_restaurant_by_id(restaurant_id)
+                    if full_restaurant:
+                        # Preserve AI analysis metadata
+                        filtered_restaurant = next(
+                            (r for r in filtered_restaurants if str(r.get('id')) == restaurant_id), 
+                            {}
+                        )
+                        full_restaurant['_ai_relevance_score'] = filtered_restaurant.get('_ai_relevance_score', 0)
+                        full_restaurant['_ai_reasoning'] = filtered_restaurant.get('_ai_reasoning', '')
+
+                        detailed_restaurants.append(full_restaurant)
+
+                except Exception as e:
+                    logger.error(f"❌ Error getting details for restaurant {restaurant_id}: {e}")
+                    continue
+
+            logger.info(f"✅ Retrieved full details for {len(detailed_restaurants)} restaurants")
+            return detailed_restaurants
+
+        except Exception as e:
+            logger.error(f"❌ Error getting full restaurant details: {e}")
+            return []
+
+    # Keep all existing methods unchanged
     async def _get_coordinates(self, location_data: LocationData, cancel_check_fn=None) -> Optional[Tuple[float, float]]:
         """Get GPS coordinates from location data"""
         try:
@@ -142,102 +406,23 @@ class LocationOrchestrator:
                 from utils.database import get_database
                 db = get_database()
 
-                # Try to geocode the location description
-                coordinates = db._geocode_address(location_data.description)
+                # Try to get coordinates for the location description
+                coordinates = db.geocode_location(location_data.description)
                 if coordinates:
-                    logger.info(f"✅ Geocoded '{location_data.description}' to {coordinates}")
                     return coordinates
 
-                # Fallback: return None if geocoding fails
-                logger.warning(f"⚠️ Failed to geocode location: {location_data.description}")
-                return None
+                # Fallback to location utilities
+                location_utils = LocationUtils()
+                location_point = location_utils.geocode_location(location_data.description)
 
-            else:
-                logger.error(f"❌ Invalid location data: {location_data}")
-                return None
+                if location_point:
+                    return (location_point.latitude, location_point.longitude)
+
+            return None
 
         except Exception as e:
             logger.error(f"❌ Error getting coordinates: {e}")
             return None
-
-    # Replace the _check_database_proximity method in agents/location_orchestrator.py
-
-    async def _check_database_proximity(
-        self, 
-        coordinates: Tuple[float, float], 
-        query: str, 
-        cancel_check_fn=None
-    ) -> List[Dict[str, Any]]:
-        """Check database for restaurants near the coordinates"""
-        try:
-            logger.info(f"🗄️ Checking database for restaurants within {self.db_search_radius}km")
-
-            from utils.database import get_database
-            db = get_database()
-
-            # Get all restaurants from database (we'll filter by proximity)
-            # Note: This is a simplified approach - in production you'd want spatial queries
-            all_restaurants = db.supabase.table('restaurants')\
-                .select('*')\
-                .not_.is_('latitude', 'null')\
-                .not_.is_('longitude', 'null')\
-                .execute()
-
-            restaurants = all_restaurants.data or []
-
-            if cancel_check_fn and cancel_check_fn():
-                return []
-
-            # Filter by proximity using LocationUtils - with error handling
-            try:
-                nearby_restaurants = LocationUtils.filter_by_proximity(
-                    center=coordinates,
-                    points=restaurants,
-                    radius_km=self.db_search_radius,
-                    lat_key="latitude",
-                    lon_key="longitude"
-                )
-            except Exception as filter_error:
-                logger.error(f"❌ Error in filter_by_proximity: {filter_error}")
-                # Fallback: use the existing find_nearby_points method if available
-                try:
-                    # Convert restaurants to the format expected by find_nearby_points
-                    restaurant_points = []
-                    for r in restaurants:
-                        if r.get('latitude') and r.get('longitude'):
-                            try:
-                                lat = float(r['latitude'])
-                                lng = float(r['longitude'])
-                                restaurant_points.append((lat, lng, r))
-                            except (ValueError, TypeError):
-                                continue
-
-                    nearby_tuples = LocationUtils.find_nearby_points(
-                        center=coordinates,
-                        points=restaurant_points,
-                        radius_km=self.db_search_radius
-                    )
-
-                    # Convert back to the expected format
-                    nearby_restaurants = []
-                    for lat, lng, data, distance in nearby_tuples:
-                        restaurant = data.copy()
-                        restaurant['distance_km'] = distance
-                        nearby_restaurants.append(restaurant)
-
-                except Exception as fallback_error:
-                    logger.error(f"❌ Fallback proximity filtering also failed: {fallback_error}")
-                    nearby_restaurants = []
-
-            # TODO: Add query-specific filtering (cuisine type, etc.)
-            # For now, return all nearby restaurants
-
-            logger.info(f"📊 Found {len(nearby_restaurants)} restaurants in database within {self.db_search_radius}km")
-            return nearby_restaurants
-
-        except Exception as e:
-            logger.error(f"❌ Error checking database proximity: {e}")
-            return []
 
     async def _search_google_maps(
         self, 
@@ -284,175 +469,81 @@ class LocationOrchestrator:
                 if cancel_check_fn and cancel_check_fn():
                     break
 
-                logger.debug(f"📰 Verifying venue {i+1}/{len(venues)}: {venue.name}")
+                logger.debug(f"📰 Verifying venue {i+1}/{len(venues[:self.max_venues_to_verify])}: {venue.name}")
 
-                # Get AI source mapping
-                source_mapping = self.source_mapping_agent.map_sources_for_venue(
-                    venue_name=venue.name,
-                    venue_type=self._classify_venue_type(venue),
-                    location=venue.address,
-                    venue_description=f"Rating: {venue.rating}, Reviews: {venue.user_ratings_total}"
-                )
+                # Use source mapping agent to find and verify sources
+                source_result = await self.source_mapping_agent.map_venue_sources(venue)
 
-                if cancel_check_fn and cancel_check_fn():
-                    break
+                if source_result and source_result.get('sources'):
+                    verified_venues.append({
+                        'name': venue.name,
+                        'address': venue.address,
+                        'rating': venue.rating,
+                        'price_level': venue.price_level,
+                        'place_id': venue.place_id,
+                        'location': {'lat': venue.latitude, 'lng': venue.longitude},
+                        'sources': source_result['sources'],
+                        'verification_confidence': source_result.get('confidence', 0.5)
+                    })
 
-                # TODO: Implement actual web search and verification
-                # For now, create a placeholder verified venue
-                verified_venue = {
-                    "name": venue.name,
-                    "address": venue.address,
-                    "google_maps_url": venue.google_maps_url,
-                    "rating": venue.rating,
-                    "user_ratings_total": venue.user_ratings_total,
-                    "distance_km": venue.distance_km,
-                    "latitude": venue.latitude,
-                    "longitude": venue.longitude,
-                    "price_level": venue.price_level,
-                    "source_mapping": source_mapping,
-                    "verification_status": "pending",  # Will be "verified" after web search
-                    "reputable_sources": [],  # Will contain found sources
-                    "description": f"Google Maps rating: {venue.rating}/5 ({venue.user_ratings_total} reviews)"
-                }
-
-                verified_venues.append(verified_venue)
-
-            logger.info(f"✅ Verified {len(verified_venues)} venues with source mapping")
+            logger.info(f"✅ Venue verification complete: {len(verified_venues)} venues verified")
             return verified_venues
 
         except Exception as e:
             logger.error(f"❌ Error verifying venues: {e}")
             return []
 
-    def _classify_venue_type(self, venue: VenueResult) -> str:
-        """Classify venue type from Google Places types"""
-        types = [t.lower() for t in venue.types]
-
-        if any(t in types for t in ["bar", "night_club"]):
-            return "bar"
-        elif any(t in types for t in ["cafe", "coffee"]):
-            return "cafe"
-        elif any(t in types for t in ["bakery"]):
-            return "bakery"
-        elif any(t in types for t in ["meal_takeaway", "meal_delivery"]):
-            return "casual_dining"
-        else:
-            return "restaurant"
-
     async def _format_location_results(
         self, 
         results: List[Dict[str, Any]], 
-        coordinates: Tuple[float, float],
-        query: str,
+        coordinates: Tuple[float, float], 
+        query: str, 
         search_method: str,
         cancel_check_fn=None
     ) -> Dict[str, Any]:
-        """Format results for Telegram display"""
+        """Format results for Telegram"""
         try:
-            logger.info(f"📱 Formatting {len(results)} results for Telegram")
+            if cancel_check_fn and cancel_check_fn():
+                return self._create_cancelled_response()
 
-            if not results:
-                return self._create_error_response("No restaurants found near your location")
-
-            # Prepare data for formatter
             lat, lng = coordinates
-            location_summary = f"{lat:.4f}, {lng:.4f}"
 
-            # Create formatted text using existing TelegramFormatter patterns
-            formatted_text = self._create_location_response_text(
-                results, query, location_summary, search_method
+            # Create location info
+            location_info = {
+                'coordinates': {'lat': lat, 'lng': lng},
+                'search_radius_km': self.db_search_radius,
+                'search_method': search_method
+            }
+
+            # Format using Telegram formatter
+            formatted_text = self.telegram_formatter.format_location_results(
+                results, location_info, query
             )
 
             return {
-                "success": True,
-                "telegram_formatted_text": formatted_text,
-                "results_count": len(results),
-                "search_method": search_method,
-                "coordinates": coordinates,
-                "query": query
+                'success': True,
+                'telegram_formatted_text': formatted_text,
+                'results_count': len(results),
+                'location_info': location_info,
+                'search_method': search_method
             }
 
         except Exception as e:
-            logger.error(f"❌ Error formatting results: {e}")
-            return self._create_error_response("Failed to format results")
+            logger.error(f"❌ Error formatting location results: {e}")
+            return self._create_error_response(f"Error formatting results: {str(e)}")
 
-    def _create_location_response_text(
-        self, 
-        results: List[Dict[str, Any]], 
-        query: str, 
-        location_summary: str,
-        search_method: str
-    ) -> str:
-        """Create formatted text response for location search results"""
-
-        # Header
-        header = f"📍 <b>Found {len(results)} places for '{query}'</b>\n\n"
-
-        if search_method == "database":
-            method_info = "🗄️ <i>Results from our curated database</i>\n\n"
-        else:
-            method_info = "🗺️ <i>Results from Google Maps + verified sources</i>\n\n"
-
-        # Format each result
-        formatted_results = []
-
-        for i, result in enumerate(results, 1):
-            name = result.get('name', 'Unknown')
-            distance = result.get('distance_km', 0)
-            rating = result.get('rating')
-            address = result.get('address', '')
-
-            # Format distance
-            distance_str = LocationUtils.format_distance(distance)
-
-            # Format rating
-            rating_str = f"⭐ {rating}/5" if rating else "No rating"
-
-            # Create Google Maps link
-            lat = result.get('latitude')
-            lng = result.get('longitude')
-            if lat and lng:
-                maps_url = LocationUtils.generate_google_maps_url(lat, lng, name)
-                address_link = f"<a href='{maps_url}'>{address}</a>"
-            else:
-                address_link = address
-
-            # Add source information if available
-            source_info = ""
-            if 'source_mapping' in result:
-                primary_source = result['source_mapping'].get('primary_source', '')
-                if primary_source:
-                    source_info = f"\n📰 <i>Verified by {primary_source}</i>"
-
-            result_text = (
-                f"<b>{i}. {name}</b> ({distance_str})\n"
-                f"{rating_str}\n"
-                f"📍 {address_link}"
-                f"{source_info}\n"
-            )
-
-            formatted_results.append(result_text)
-
-        # Footer
-        footer = (
-            f"\n💡 <i>Showing results within walking distance of your location</i>\n"
-            f"📱 Tap addresses for directions in Google Maps"
-        )
-
-        return header + method_info + "\n".join(formatted_results) + footer
-
-    def _create_error_response(self, error_message: str) -> Dict[str, Any]:
+    def _create_error_response(self, message: str) -> Dict[str, Any]:
         """Create error response"""
         return {
-            "success": False,
-            "telegram_formatted_text": f"😔 {error_message}\n\nPlease try a different search or location.",
-            "error": error_message
+            'success': False,
+            'telegram_formatted_text': f"❌ {message}",
+            'error': message
         }
 
     def _create_cancelled_response(self) -> Dict[str, Any]:
         """Create cancelled response"""
         return {
-            "success": False,
-            "telegram_formatted_text": "✋ Search was cancelled.",
-            "cancelled": True
+            'success': False,
+            'telegram_formatted_text': "🛑 Search was cancelled",
+            'cancelled': True
         }
