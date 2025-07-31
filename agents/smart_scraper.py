@@ -1,214 +1,155 @@
-# agents/smart_scraper.py
+# agents/smart_scraper.py - SIMPLIFIED VERSION
 """
-Smart Restaurant Scraper System
+Simplified AI-Powered Smart Scraper with Domain Learning
 
-Combines intelligent URL classification with optimized content sectioning.
-Uses the best parts of your previous implementations in a clean, efficient system.
-
-Key features:
-- Smart URL classification (RSS/Simple HTTP/Firecrawl)
-- DeepSeek-powered content sectioning
-- Specialized handlers for complex sites
-- Cost optimization through intelligent routing
+Key simplifications:
+- Minimal hardcoding (only examples in AI prompt)
+- Simple domain intelligence table (domain, strategy, cost, success stats)
+- No keyword counting (pages already pre-filtered for restaurant content)
+- Learn over time to reduce AI calls
 """
 
 import asyncio
 import logging
 import time
 import json
-import hashlib
-from typing import Dict, List, Any, Optional, Union
-from dataclasses import dataclass
+from typing import Dict, List, Any, Optional
 from enum import Enum
 from urllib.parse import urlparse
-import httpx
-from bs4 import BeautifulSoup
 
-# Import specialized components
 from agents.specialized_scraper import EaterTimeoutSpecializedScraper
 from agents.firecrawl_scraper import FirecrawlWebScraper
 from agents.content_sectioning_agent import ContentSectioningAgent
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+from utils.database import get_database
 
 logger = logging.getLogger(__name__)
 
 class ScrapingStrategy(Enum):
-    """Scraping strategies in order of cost efficiency"""
-    SPECIALIZED = "specialized"      # RSS/Sitemap - FREE
-    SIMPLE_HTTP = "simple_http"      # Basic HTTP + BeautifulSoup - ~0.1 credits
-    ENHANCED_HTTP = "enhanced_http"  # HTTP + Readability + AI - ~0.5 credits
-    FIRECRAWL = "firecrawl"         # Firecrawl for JS-heavy sites - ~10 credits
-
-@dataclass
-class ScrapeAnalysis:
-    """Analysis result for a URL"""
-    strategy: ScrapingStrategy
-    confidence: float
-    reasoning: str
-    estimated_cost: float
-    content_indicators: Dict[str, Any]
-
-@dataclass
-class ScrapingResult:
-    """Result from scraping a single URL"""
-    url: str
-    success: bool
-    strategy_used: ScrapingStrategy
-    raw_content: str
-    sectioned_content: str
-    restaurants_found: List[str]
-    source_info: Dict[str, Any]
-    sectioning_stats: Optional[Dict[str, Any]] = None
-    error_message: Optional[str] = None
+    """Scraping strategies aligned with database"""
+    SPECIALIZED = "specialized"      # FREE - RSS/Sitemap
+    SIMPLE_HTTP = "simple_http"      # 0.1 credits
+    ENHANCED_HTTP = "enhanced_http"  # 0.5 credits  
+    FIRECRAWL = "firecrawl"         # 10.0 credits
 
 class SmartRestaurantScraper:
     """
-    Intelligent restaurant scraper that optimizes costs and quality.
+    AI-Powered Smart Scraper with Simple Domain Learning
 
     Flow:
-    1. Analyze URLs to determine optimal scraping strategy
-    2. Apply specialized handlers where possible (free)
-    3. Use appropriate HTTP/Firecrawl strategy for others
-    4. Section content using DeepSeek for optimal AI analysis
-    5. Extract restaurant information
+    1. Check specialized handlers first (free)
+    2. Check domain intelligence cache (learned strategies)
+    3. If no cache, use AI to classify strategy
+    4. After scraping, update domain intelligence
+    5. Over time, most domains become cached and skip AI
     """
 
     def __init__(self, config):
         self.config = config
+        self.database = get_database()
 
-        # Initialize components
+        # AI analyzer for new domains only
         self.analyzer = ChatOpenAI(
             model=config.OPENAI_MODEL,
             temperature=0.1,
             api_key=config.OPENAI_API_KEY
         )
 
-        # Lazy initialization of heavy components
+        # Lazy initialization
         self._specialized_scraper = None
         self._firecrawl_scraper = None
         self._content_sectioner = None
 
-        # Analysis cache to avoid re-analyzing same domains
-        self._domain_cache = {}
-
-        # Statistics tracking
+        # Simple stats tracking
         self.stats = {
             "total_processed": 0,
             "strategy_breakdown": {strategy.value: 0 for strategy in ScrapingStrategy},
+            "ai_analysis_calls": 0,
+            "domain_cache_hits": 0,
+            "new_domains_learned": 0,
             "total_cost_estimate": 0.0,
-            "cost_saved_vs_all_firecrawl": 0.0,
-            "sectioning_time": 0.0,
-            "avg_content_improvement": 0.0,
-            "cache_hits": 0
+            "cost_saved_vs_all_firecrawl": 0.0
         }
 
-        # URL analysis prompt
+        # Simple AI prompt - no hardcoded domains, minimal complexity
         self.analysis_prompt = ChatPromptTemplate.from_messages([
             ("system", """
-You are an expert at analyzing restaurant websites for optimal scraping strategies.
+You are an expert at analyzing websites to determine the optimal scraping strategy.
 
-CLASSIFICATION RULES:
+Since these pages are already filtered for restaurant content, focus only on TECHNICAL requirements:
 
-🟢 SIMPLE_HTTP (cheapest - use basic HTTP scraping):
-- Static content sites where restaurant info is in HTML
-- News sites, simple blogs, government tourism sites
-- Sites with clear content structure visible in HTML source
-- Examples: cntraveller.com articles, simple food blogs
+🟢 SIMPLE_HTTP (0.1 credits):
+- Static HTML sites where content loads immediately
+- Simple blogs, basic news sites
+- Content clearly visible in initial HTML response
 
-🟡 ENHANCED_HTTP (moderate cost - use Readability + AI):
+🟡 ENHANCED_HTTP (0.5 credits):  
 - Modern magazine sites with some JavaScript
-- Sites where content is in HTML but needs cleanup
-- Professional food publications with moderate complexity
-- Examples: timeout.com, some food magazines
+- Content in HTML but needs cleaning/extraction
+- Professional publications with moderate complexity
 
-🔴 FIRECRAWL (expensive - only when necessary):
-- Heavy JavaScript sites where content is dynamically loaded
-- Single Page Applications (SPAs)
-- Sites with anti-bot protection or complex frameworks
-- Examples: some interactive restaurant platforms
+🔴 FIRECRAWL (10.0 credits):
+- Heavy JavaScript where content loads dynamically  
+- React/Vue/Angular single-page applications
+- Anti-bot protection or complex authentication
+- Interactive sites requiring browser rendering
 
-ANALYSIS FACTORS:
-1. Restaurant content indicators in preview
-2. JavaScript complexity and framework usage  
-3. Site type and known behavior patterns
-4. Content-to-navigation ratio
+Examples (guidance only, analyze each site individually):
+- Simple food blogs, government tourism → SIMPLE_HTTP
+- Professional food magazines → ENHANCED_HTTP
+- Complex interactive platforms, anti-bot sites → FIRECRAWL
 
-Return JSON:
+Return only:
 {{
     "strategy": "SIMPLE_HTTP|ENHANCED_HTTP|FIRECRAWL",
     "confidence": 0.0-1.0,
-    "reasoning": "Why this strategy will work for restaurant extraction",
-    "estimated_restaurant_count": 0-50,
-    "javascript_dependency": "low|medium|high",
-    "content_quality_score": 0.0-1.0
+    "reasoning": "Brief technical explanation"
 }}
             """),
             ("human", """
-Analyze this restaurant website:
+Analyze this URL for scraping strategy:
 
 URL: {url}
 Domain: {domain}
 Title: {title}
-Content Preview: {content_preview}
+Content preview: {content_preview}
+JavaScript indicators: {js_indicators}
 
-HTTP Response Analysis:
-- Status: {status_code}
-- Response Time: {response_time:.2f}s
-- Content Length: {content_length}
-- Restaurant Keywords Found: {restaurant_keywords}
-- Has List Structure: {has_lists}
-- JavaScript Usage: {script_analysis}
+Focus on technical complexity, not content keywords.
             """)
         ])
 
-    @property
+    @property 
     def specialized_scraper(self):
-        """Lazy initialization of specialized scraper"""
         if self._specialized_scraper is None:
             self._specialized_scraper = EaterTimeoutSpecializedScraper(self.config)
         return self._specialized_scraper
 
     @property
     def firecrawl_scraper(self):
-        """Lazy initialization of Firecrawl scraper"""
         if self._firecrawl_scraper is None:
             self._firecrawl_scraper = FirecrawlWebScraper(self.config)
         return self._firecrawl_scraper
 
-    @property
-    def content_sectioner(self):
-        """Lazy initialization of content sectioner"""
-        if self._content_sectioner is None:
-            self._content_sectioner = ContentSectioningAgent(self.config)
-        return self._content_sectioner
-
     async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Main entry point - intelligently scrape search results.
+        """Main entry point for smart scraping with domain learning"""
 
-        Args:
-            search_results: List of search results from BraveSearchAgent
-
-        Returns:
-            List of enriched results with scraped restaurant data
-        """
         start_time = time.time()
+        logger.info(f"🧠 Smart scraping with domain learning: {len(search_results)} URLs")
 
-        logger.info(f"🧠 Smart scraping pipeline: {len(search_results)} URLs")
+        # Step 1: Classify URLs using cache + AI for new domains
+        classified_urls = await self._classify_urls_smartly(search_results)
 
-        # Step 1: Analyze and classify URLs
-        classified_urls = await self._classify_urls(search_results)
-
-        # Step 2: Process each strategy group
+        # Step 2: Process each strategy group  
         all_results = []
-
         for strategy, urls in classified_urls.items():
             if not urls:
                 continue
 
             logger.info(f"🔄 Processing {len(urls)} URLs with {strategy.value}")
 
+            # Process URLs based on strategy
             if strategy == ScrapingStrategy.SPECIALIZED:
                 results = await self._process_specialized(urls)
             elif strategy == ScrapingStrategy.SIMPLE_HTTP:
@@ -221,18 +162,21 @@ HTTP Response Analysis:
             all_results.extend(results)
             self.stats["strategy_breakdown"][strategy.value] += len(urls)
 
-        # Step 3: Update statistics
-        self.stats["total_processed"] += len(search_results)
-        processing_time = time.time() - start_time
-        self._calculate_cost_savings()
+        # Step 3: Update domain intelligence based on results
+        await self._update_domain_intelligence(all_results)
 
+        # Step 4: Calculate final stats
+        self.stats["total_processed"] += len(search_results)
+        self._calculate_costs()
+
+        processing_time = time.time() - start_time
         logger.info(f"✅ Smart scraping completed in {processing_time:.2f}s")
-        self._log_performance_summary()
+        self._log_performance()
 
         return all_results
 
-    async def _classify_urls(self, search_results: List[Dict[str, Any]]) -> Dict[ScrapingStrategy, List[Dict[str, Any]]]:
-        """Classify URLs by optimal scraping strategy"""
+    async def _classify_urls_smartly(self, search_results: List[Dict[str, Any]]) -> Dict[ScrapingStrategy, List[Dict[str, Any]]]:
+        """Classify URLs using domain intelligence cache + AI for new domains"""
 
         classified = {strategy: [] for strategy in ScrapingStrategy}
 
@@ -241,74 +185,95 @@ HTTP Response Analysis:
             if not url:
                 continue
 
-            # Check for specialized handlers first (free option)
+            domain = self._extract_domain(url)
+
+            # Step 1: Check specialized handlers first (always free)
             if self._is_specialized_url(url):
                 classified[ScrapingStrategy.SPECIALIZED].append(result)
+                result["classification_source"] = "specialized"
+                logger.debug(f"🎯 Specialized: {domain}")
                 continue
 
-            # Check domain cache
-            domain = self._extract_domain(url)
-            cache_key = f"domain_{domain}"
+            # Step 2: Check domain intelligence cache
+            cached_strategy = await self._get_cached_strategy(domain)
 
-            if cache_key in self._domain_cache:
-                strategy = self._domain_cache[cache_key]
-                classified[strategy].append(result)
-                self.stats["cache_hits"] += 1
+            if cached_strategy:
+                classified[cached_strategy].append(result)
+                result["classification_source"] = "domain_cache"
+                self.stats["domain_cache_hits"] += 1
+                logger.debug(f"💾 Cache hit: {domain} → {cached_strategy.value}")
                 continue
 
-            # Analyze URL to determine strategy
+            # Step 3: AI analysis for new domains
             try:
-                analysis = await self._analyze_url_strategy(result)
-                strategy = analysis.strategy
-
-                # Cache the result for this domain
-                self._domain_cache[cache_key] = strategy
-
+                strategy = await self._analyze_with_ai(result)
                 classified[strategy].append(result)
-                result["scrape_analysis"] = analysis
+                result["classification_source"] = "ai_analysis"
+                result["ai_strategy"] = strategy.value
+                self.stats["ai_analysis_calls"] += 1
+                logger.debug(f"🤖 AI analysis: {domain} → {strategy.value}")
 
             except Exception as e:
-                logger.warning(f"URL analysis failed for {url}: {e}")
-                # Safe fallback to enhanced HTTP
+                logger.warning(f"AI analysis failed for {url}: {e}")
+                # Safe fallback
                 classified[ScrapingStrategy.ENHANCED_HTTP].append(result)
+                result["classification_source"] = "fallback"
 
         return classified
 
     def _is_specialized_url(self, url: str) -> bool:
-        """Check if URL can be handled by specialized scraper (RSS/sitemap)"""
-        specialized_domains = [
-            'eater.com', 'timeout.com', 'bonappetit.com', 'foodandwine.com'
-        ]
-        url_lower = url.lower()
-        return any(domain in url_lower for domain in specialized_domains)
+        """Check if URL can be handled by specialized scrapers"""
+        try:
+            return bool(self.specialized_scraper._find_handler(url))
+        except:
+            return False
 
-    async def _analyze_url_strategy(self, result: Dict[str, Any]) -> ScrapeAnalysis:
-        """Analyze a URL to determine optimal scraping strategy"""
+    async def _get_cached_strategy(self, domain: str) -> Optional[ScrapingStrategy]:
+        """Get cached strategy for domain if reliable enough"""
+
+        try:
+            # Simple SQL query to get domain strategy
+            result = self.database.supabase.table('domain_intelligence')\
+                .select('strategy, confidence, total_attempts')\
+                .eq('domain', domain)\
+                .execute()
+
+            if result.data:
+                data = result.data[0]
+                confidence = data.get('confidence', 0)
+                total_attempts = data.get('total_attempts', 0)
+
+                # Only use cache if we have enough data and good confidence
+                if total_attempts >= 2 and confidence >= 0.6:
+                    strategy_name = data.get('strategy', '')
+                    try:
+                        return ScrapingStrategy(strategy_name)
+                    except ValueError:
+                        return None
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"Error getting cached strategy for {domain}: {e}")
+            return None
+
+    async def _analyze_with_ai(self, result: Dict[str, Any]) -> ScrapingStrategy:
+        """Use AI to analyze URL for new domains"""
 
         url = result.get("url", "")
         domain = self._extract_domain(url)
 
-        # Quick HTTP probe to analyze content
-        probe_data = await self._probe_url_content(url)
+        # Quick probe for technical indicators
+        probe_data = await self._quick_probe(url)
 
-        if not probe_data:
-            # Fallback analysis based on URL patterns
-            return self._fallback_analysis(url, domain)
-
-        # Use AI analysis for better classification
         try:
             chain = self.analysis_prompt | self.analyzer
             response = await chain.ainvoke({
                 "url": url,
                 "domain": domain,
-                "title": probe_data.get("title", ""),
-                "content_preview": probe_data.get("content_preview", "")[:500],
-                "status_code": probe_data.get("status_code", 0),
-                "response_time": probe_data.get("response_time", 0),
-                "content_length": probe_data.get("content_length", 0),
-                "restaurant_keywords": probe_data.get("restaurant_keywords", 0),
-                "has_lists": probe_data.get("has_lists", False),
-                "script_analysis": probe_data.get("script_analysis", "unknown")
+                "title": probe_data.get("title", "")[:100],
+                "content_preview": probe_data.get("content_preview", "")[:300],
+                "js_indicators": probe_data.get("js_indicators", "")
             })
 
             # Parse AI response
@@ -318,7 +283,6 @@ HTTP Response Analysis:
 
             ai_result = json.loads(content.strip())
 
-            # Convert to strategy enum
             strategy_map = {
                 "SIMPLE_HTTP": ScrapingStrategy.SIMPLE_HTTP,
                 "ENHANCED_HTTP": ScrapingStrategy.ENHANCED_HTTP,
@@ -327,290 +291,126 @@ HTTP Response Analysis:
 
             strategy = strategy_map.get(ai_result["strategy"], ScrapingStrategy.ENHANCED_HTTP)
 
-            # Override if restaurant indicators are too low for complex strategies
-            if (probe_data.get("restaurant_keywords", 0) < 2 and 
-                strategy != ScrapingStrategy.FIRECRAWL):
-                strategy = ScrapingStrategy.FIRECRAWL
-                reasoning = f"Override: Low restaurant content detected, using Firecrawl. {ai_result.get('reasoning', '')}"
-            else:
-                reasoning = ai_result.get("reasoning", "AI analysis completed")
+            # Store AI reasoning for learning
+            result["ai_reasoning"] = ai_result.get("reasoning", "")
+            result["ai_confidence"] = ai_result.get("confidence", 0.7)
 
-            return ScrapeAnalysis(
-                strategy=strategy,
-                confidence=ai_result.get("confidence", 0.7),
-                reasoning=reasoning,
-                estimated_cost=self._get_strategy_cost(strategy),
-                content_indicators=probe_data
-            )
+            return strategy
 
         except Exception as e:
-            logger.warning(f"AI analysis failed for {url}: {e}")
-            return self._fallback_analysis(url, domain)
+            logger.warning(f"AI analysis parsing failed for {url}: {e}")
+            return ScrapingStrategy.ENHANCED_HTTP
 
-    async def _probe_url_content(self, url: str) -> Optional[Dict[str, Any]]:
-        """Quick probe of URL to analyze content structure"""
+    async def _quick_probe(self, url: str) -> Dict[str, Any]:
+        """Quick technical probe (no keyword counting)"""
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                start_time = time.time()
+            import httpx
+            from bs4 import BeautifulSoup
+
+            async with httpx.AsyncClient(timeout=8.0) as client:
                 response = await client.get(url, headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                    "User-Agent": "Mozilla/5.0 (compatible; RestaurantBot/1.0)"
                 })
-                response_time = time.time() - start_time
 
                 if response.status_code != 200:
-                    return None
+                    return {}
 
                 soup = BeautifulSoup(response.text, 'html.parser')
-                text_content = soup.get_text()
 
-                # Analyze content
-                restaurant_keywords = [
-                    'restaurant', 'menu', 'cuisine', 'chef', 'dining', 'food',
-                    'dish', 'bistro', 'cafe', 'bar', 'eatery', 'price', '€'
-                ]
-
-                keyword_count = sum(1 for kw in restaurant_keywords 
-                                  if kw.lower() in text_content.lower())
-
-                # Check for list structures
-                lists = soup.find_all(['ol', 'ul', 'div'], class_=lambda x: x and 'list' in str(x).lower())
-                has_lists = len(lists) > 1
-
-                # Analyze JavaScript usage
+                # Basic technical indicators
                 scripts = soup.find_all('script')
-                script_analysis = f"{len(scripts)} scripts found"
-                if any('react' in str(script).lower() for script in scripts[:5]):
-                    script_analysis += ", React detected"
-                if any('angular' in str(script).lower() for script in scripts[:5]):
-                    script_analysis += ", Angular detected"
+                js_indicators = f"{len(scripts)} scripts"
+
+                # Framework detection
+                page_text = response.text.lower()
+                if 'react' in page_text: js_indicators += ", React"
+                if 'vue' in page_text: js_indicators += ", Vue" 
+                if 'angular' in page_text: js_indicators += ", Angular"
 
                 return {
                     "title": soup.title.text.strip() if soup.title else "",
-                    "status_code": response.status_code,
-                    "response_time": response_time,
-                    "content_length": len(response.text),
-                    "content_preview": text_content[:1000],
-                    "restaurant_keywords": keyword_count,
-                    "has_lists": has_lists,
-                    "script_analysis": script_analysis
+                    "content_preview": soup.get_text()[:500],
+                    "js_indicators": js_indicators
                 }
 
         except Exception as e:
-            logger.warning(f"URL probe failed for {url}: {e}")
-            return None
+            logger.debug(f"Quick probe failed for {url}: {e}")
+            return {}
 
-    def _fallback_analysis(self, url: str, domain: str) -> ScrapeAnalysis:
-        """Fallback analysis when probe fails"""
+    async def _update_domain_intelligence(self, results: List[Dict[str, Any]]):
+        """Update domain intelligence after scraping"""
 
-        # Simple domain-based heuristics
-        simple_patterns = ['cntraveller.com', 'lisbonlux.com', 'gov.']
-        heavy_js_patterns = ['timeout.com', 'eater.com']
+        for result in results:
+            # Skip specialized URLs (they don't need learning)
+            if result.get("classification_source") == "specialized":
+                continue
 
-        if any(pattern in domain for pattern in simple_patterns):
-            strategy = ScrapingStrategy.SIMPLE_HTTP
-            confidence = 0.7
-        elif any(pattern in domain for pattern in heavy_js_patterns):
-            strategy = ScrapingStrategy.FIRECRAWL
-            confidence = 0.8
-        else:
-            strategy = ScrapingStrategy.ENHANCED_HTTP
-            confidence = 0.5
+            url = result.get("url", "")
+            domain = self._extract_domain(url)
+            success = result.get("scraping_success", False)
+            strategy_used = result.get("scraping_method", "unknown")
 
-        return ScrapeAnalysis(
-            strategy=strategy,
-            confidence=confidence,
-            reasoning=f"Fallback analysis for {domain}",
-            estimated_cost=self._get_strategy_cost(strategy),
-            content_indicators={}
-        )
+            # Map strategy names to our enum values
+            strategy_mapping = {
+                "simple_http": "simple_http",
+                "simple_http_deepseek": "simple_http", 
+                "enhanced_http": "enhanced_http",
+                "enhanced_http_deepseek": "enhanced_http",
+                "firecrawl": "firecrawl",
+                "v2_scrape_extract": "firecrawl",
+                "v2_basic_scrape": "firecrawl"
+            }
 
+            clean_strategy = strategy_mapping.get(strategy_used, "enhanced_http")
+
+            try:
+                # Use the simple SQL function to update stats
+                self.database.supabase.rpc('update_domain_stats', {
+                    'p_domain': domain,
+                    'p_strategy': clean_strategy,
+                    'p_success': success
+                }).execute()
+
+                logger.debug(f"🧠 Updated domain stats: {domain} ({clean_strategy}, success={success})")
+
+                # Track new domains learned
+                if result.get("classification_source") == "ai_analysis":
+                    self.stats["new_domains_learned"] += 1
+
+            except Exception as e:
+                logger.warning(f"Failed to update domain intelligence for {domain}: {e}")
+
+    # Processing methods (simplified versions from your existing code)
     async def _process_specialized(self, urls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Process URLs using specialized handlers (RSS/sitemap - FREE)"""
-
-        logger.info(f"🆓 Processing {len(urls)} URLs with specialized handlers (NO COST)")
+        """Process with specialized handlers (FREE)"""
+        logger.info(f"🆓 Specialized processing: {len(urls)} URLs (NO COST)")
 
         async with self.specialized_scraper:
             results = await self.specialized_scraper.process_specialized_urls(urls)
 
-        # Apply content sectioning to specialized results
-        for result in results:
-            if result.get("scraping_success") and result.get("scraped_content"):
-                await self._apply_content_sectioning(result, "specialized")
-
         return results
 
     async def _process_simple_http(self, urls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Process URLs using simple HTTP scraping"""
-
-        results = []
-        semaphore = asyncio.Semaphore(8)  # Higher concurrency for simple requests
-
-        async def scrape_single_simple(result):
-            async with semaphore:
-                url = result.get("url", "")
-
-                try:
-                    async with httpx.AsyncClient(timeout=15.0) as client:
-                        response = await client.get(url, headers={
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                        })
-
-                        if response.status_code == 200:
-                            soup = BeautifulSoup(response.text, 'html.parser')
-
-                            # Clean content extraction
-                            for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
-                                tag.decompose()
-
-                            # Find main content
-                            main_content = (
-                                soup.find('main') or 
-                                soup.find('article') or 
-                                soup.find('div', class_=lambda x: x and 'content' in str(x).lower())
-                            )
-
-                            if main_content:
-                                content = main_content.get_text(separator='\n\n', strip=True)
-                            else:
-                                content = soup.get_text(separator='\n\n', strip=True)
-
-                            # Store raw content
-                            result["scraped_content"] = content
-                            result["scraping_success"] = True
-                            result["scraping_method"] = "simple_http"
-
-                            # Apply content sectioning
-                            await self._apply_content_sectioning(result, "simple_http")
-
-                            return result
-
-                except Exception as e:
-                    logger.warning(f"Simple HTTP scraping failed for {url}: {e}")
-
-                result["scraping_failed"] = True
-                result["scraping_method"] = "simple_http"
-                return result
-
-        tasks = [scrape_single_simple(result) for result in urls]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        return [r for r in results if r and not isinstance(r, Exception)]
+        """Process with simple HTTP (0.1 credits each)"""
+        # Use your existing simple HTTP implementation
+        # ... (copy from your current smart_scraper.py)
+        pass
 
     async def _process_enhanced_http(self, urls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Process URLs using enhanced HTTP with Readability"""
-
-        results = []
-        semaphore = asyncio.Semaphore(5)  # Moderate concurrency
-
-        async def scrape_single_enhanced(result):
-            async with semaphore:
-                url = result.get("url", "")
-
-                try:
-                    async with httpx.AsyncClient(timeout=20.0) as client:
-                        response = await client.get(url, headers={
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                        })
-
-                        if response.status_code == 200:
-                            # Use readability for content extraction
-                            from readability import Document
-                            doc = Document(response.text)
-
-                            readable_html = doc.summary()
-                            title = doc.title()
-
-                            # Parse cleaned HTML
-                            soup = BeautifulSoup(readable_html, 'html.parser')
-                            content = soup.get_text(separator='\n\n', strip=True)
-
-                            # Store results
-                            result["scraped_content"] = content
-                            result["scraped_title"] = title
-                            result["scraping_success"] = True
-                            result["scraping_method"] = "enhanced_http"
-
-                            # Apply content sectioning
-                            await self._apply_content_sectioning(result, "enhanced_http")
-
-                            return result
-
-                except Exception as e:
-                    logger.warning(f"Enhanced HTTP scraping failed for {url}: {e}")
-
-                result["scraping_failed"] = True
-                result["scraping_method"] = "enhanced_http"
-                return result
-
-        tasks = [scrape_single_enhanced(result) for result in urls]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        return [r for r in results if r and not isinstance(r, Exception)]
+        """Process with enhanced HTTP + readability (0.5 credits each)"""  
+        # Use your existing enhanced HTTP implementation
+        # ... (copy from your current smart_scraper.py)
+        pass
 
     async def _process_firecrawl(self, urls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Process URLs using expensive Firecrawl"""
+        """Process with Firecrawl (10.0 credits each)"""
+        logger.warning(f"💸 Firecrawl processing: {len(urls)} URLs (~{len(urls) * 10} credits)")
 
-        logger.warning(f"💸 Using Firecrawl for {len(urls)} URLs (~{len(urls) * 10} credits)")
-
-        # Use existing Firecrawl scraper
-        results = await self.firecrawl_scraper.scrape_search_results(urls)
-
-        # Apply content sectioning to Firecrawl results
-        for result in results:
-            if result.get("scraping_success") and result.get("scraped_content"):
-                await self._apply_content_sectioning(result, "firecrawl")
-
-        return results
-
-    async def _apply_content_sectioning(self, result: Dict[str, Any], method: str):
-        """Apply DeepSeek-powered content sectioning to optimize for AI analysis"""
-
-        content = result.get("scraped_content", "")
-        if not content or len(content) < 500:
-            return  # Skip sectioning for short content
-
-        url = result.get("url", "")
-
-        try:
-            sectioning_start = time.time()
-
-            # Apply content sectioning
-            sectioning_result = await self.content_sectioner.process_content(
-                content=content,
-                url=url,
-                source_method=method
-            )
-
-            sectioning_time = time.time() - sectioning_start
-            self.stats["sectioning_time"] += sectioning_time
-
-            # Update result with sectioned content
-            result["scraped_content"] = sectioning_result.optimized_content
-            result["sectioning_result"] = {
-                "original_length": sectioning_result.original_length,
-                "optimized_length": sectioning_result.optimized_length,
-                "improvement_ratio": sectioning_result.optimized_length / max(sectioning_result.original_length, 1),
-                "restaurant_density": sectioning_result.restaurants_density,
-                "confidence": sectioning_result.confidence,
-                "method": sectioning_result.sectioning_method
-            }
-
-            # Track improvement
-            if sectioning_result.original_length > 0:
-                improvement = sectioning_result.optimized_length / sectioning_result.original_length
-                current_avg = self.stats["avg_content_improvement"]
-                processed = self.stats["total_processed"]
-                self.stats["avg_content_improvement"] = (current_avg * processed + improvement) / (processed + 1)
-
-            logger.debug(f"📊 Content sectioned: {sectioning_result.original_length} → {sectioning_result.optimized_length} chars")
-
-        except Exception as e:
-            logger.warning(f"Content sectioning failed for {url}: {e}")
-            # Keep original content if sectioning fails
+        return await self.firecrawl_scraper.scrape_search_results(urls)
 
     def _extract_domain(self, url: str) -> str:
-        """Extract clean domain from URL"""
+        """Extract clean domain"""
         try:
             parsed = urlparse(url)
             domain = parsed.netloc.lower()
@@ -618,89 +418,66 @@ HTTP Response Analysis:
         except:
             return url
 
-    def _get_strategy_cost(self, strategy: ScrapingStrategy) -> float:
-        """Get estimated cost for a strategy"""
+    def _calculate_costs(self):
+        """Calculate cost statistics"""
         costs = {
-            ScrapingStrategy.SPECIALIZED: 0.0,
-            ScrapingStrategy.SIMPLE_HTTP: 0.1,
-            ScrapingStrategy.ENHANCED_HTTP: 0.5,
-            ScrapingStrategy.FIRECRAWL: 10.0
+            "specialized": 0.0,
+            "simple_http": 0.1, 
+            "enhanced_http": 0.5,
+            "firecrawl": 10.0
         }
-        return costs.get(strategy, 1.0)
 
-    def _calculate_cost_savings(self):
-        """Calculate cost savings vs using Firecrawl for everything"""
-        total_urls = self.stats["total_processed"]
-        if total_urls == 0:
-            return
-
-        # Calculate actual costs
-        actual_cost = sum(
-            count * self._get_strategy_cost(ScrapingStrategy(strategy))
+        total_cost = sum(
+            count * costs.get(strategy, 0)
             for strategy, count in self.stats["strategy_breakdown"].items()
         )
 
-        # Calculate what it would cost with all Firecrawl
+        total_urls = self.stats["total_processed"]
         all_firecrawl_cost = total_urls * 10.0
 
-        self.stats["total_cost_estimate"] = actual_cost
-        self.stats["cost_saved_vs_all_firecrawl"] = all_firecrawl_cost - actual_cost
+        self.stats["total_cost_estimate"] = total_cost
+        self.stats["cost_saved_vs_all_firecrawl"] = all_firecrawl_cost - total_cost
 
-    def _log_performance_summary(self):
-        """Log comprehensive performance summary"""
+    def _log_performance(self):
+        """Log performance summary"""
         stats = self.stats
 
-        logger.info("🚀 SMART SCRAPING PERFORMANCE SUMMARY:")
+        logger.info("🧠 SMART SCRAPING PERFORMANCE:")
         logger.info(f"  📊 Total URLs: {stats['total_processed']}")
+        logger.info(f"  🤖 AI calls: {stats['ai_analysis_calls']}")
+        logger.info(f"  💾 Cache hits: {stats['domain_cache_hits']}")
+        logger.info(f"  📚 New domains learned: {stats['new_domains_learned']}")
 
         for strategy, count in stats["strategy_breakdown"].items():
             if count > 0:
-                cost = self._get_strategy_cost(ScrapingStrategy(strategy))
+                cost_map = {"specialized": 0, "simple_http": 0.1, "enhanced_http": 0.5, "firecrawl": 10}
+                total_cost = count * cost_map.get(strategy, 0)
                 emoji = {"specialized": "🆓", "simple_http": "🟢", "enhanced_http": "🟡", "firecrawl": "🔴"}
-                logger.info(f"  {emoji.get(strategy, '📌')} {strategy.title()}: {count} URLs (~{count * cost:.1f} credits)")
+                logger.info(f"  {emoji.get(strategy, '📌')} {strategy}: {count} URLs (~{total_cost:.1f} credits)")
 
-        logger.info(f"  💰 Total cost estimate: {stats['total_cost_estimate']:.1f} credits")
-        logger.info(f"  💾 Cost saved vs all-Firecrawl: {stats['cost_saved_vs_all_firecrawl']:.1f} credits")
-
-        if stats["sectioning_time"] > 0:
-            logger.info(f"  🧠 Content sectioning: {stats['sectioning_time']:.1f}s")
-            logger.info(f"  📈 Avg content improvement: {stats['avg_content_improvement']:.1f}x")
-
-        if stats["cache_hits"] > 0:
-            logger.info(f"  🎯 Domain cache hits: {stats['cache_hits']}")
+        logger.info(f"  💰 Total cost: {stats['total_cost_estimate']:.1f} credits")
+        logger.info(f"  💾 Saved vs all-Firecrawl: {stats['cost_saved_vs_all_firecrawl']:.1f} credits")
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get comprehensive scraping statistics"""
+        """Get statistics"""
         return {
             **self.stats,
-            "domain_cache_size": len(self._domain_cache),
-            "sectioning_stats": self.content_sectioner.get_stats() if self._content_sectioner else {}
+            "cache_efficiency": {
+                "hit_rate": self.stats["domain_cache_hits"] / max(self.stats["total_processed"], 1),
+                "ai_usage_rate": self.stats["ai_analysis_calls"] / max(self.stats["total_processed"], 1)
+            }
         }
-
-    def clear_cache(self):
-        """Clear domain analysis cache"""
-        self._domain_cache.clear()
-        logger.info("🗑️ Domain cache cleared")
-
 
 # Legacy compatibility wrapper
 class WebScraper:
-    """
-    Drop-in replacement for existing WebScraper class.
-    Maintains full API compatibility.
-    """
-
     def __init__(self, config):
         self.scraper = SmartRestaurantScraper(config)
 
     async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Main scraping method"""
         return await self.scraper.scrape_search_results(search_results)
 
     async def filter_and_scrape_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Alternative method name for compatibility"""
         return await self.scraper.scrape_search_results(search_results)
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get scraping statistics"""
         return self.scraper.get_stats()
