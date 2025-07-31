@@ -9,6 +9,7 @@ performs web searches, and uses AI to verify mentions in professional publicatio
 import logging
 import asyncio
 import json
+import requests
 from typing import Dict, List, Any, Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -53,14 +54,9 @@ class SourceMappingAgent:
         self.mapping_chain = self.mapping_prompt | self.ai
         self.evaluation_chain = self.evaluation_prompt | self.search_ai
 
-        # Initialize web search (assuming BraveSearchAgent exists)
-        try:
-            from agents.search_agent import BraveSearchAgent
-            self.search_agent = BraveSearchAgent(config)
-            logger.info("✅ Web search integration enabled")
-        except ImportError:
-            logger.warning("⚠️ Web search agent not available - will use fallback")
-            self.search_agent = None
+        # Simple web search for verification (separate from main pipeline)
+        self.brave_api_key = config.BRAVE_API_KEY
+        self.brave_base_url = "https://api.search.brave.com/res/v1/web/search"
 
         logger.info("✅ AI Source Mapping Agent with verification initialized")
 
@@ -325,31 +321,47 @@ Be strict - only return true for genuine professional coverage, not just any web
             }
 
     async def _perform_web_search(self, query: str) -> Optional[str]:
-        """Perform web search and return combined content"""
+        """Perform simple web search using Brave API directly"""
         try:
-            if not self.search_agent:
+            if not self.brave_api_key:
                 return None
 
-            # Use existing search agent
+            headers = {
+                "Accept": "application/json",
+                "X-Subscription-Token": self.brave_api_key
+            }
+
+            params = {
+                "q": query,
+                "count": 3,  # Only need a few results for verification
+                "freshness": "month"
+            }
+
             loop = asyncio.get_event_loop()
-            search_results = await loop.run_in_executor(
+            response = await loop.run_in_executor(
                 None,
-                lambda: self.search_agent.search_web(query)
+                lambda: requests.get(self.brave_base_url, headers=headers, params=params)
             )
 
-            if not search_results:
+            if response.status_code != 200:
+                logger.error(f"Brave API error: {response.status_code}")
                 return None
 
-            # Combine snippets from search results
+            data = response.json()
+
+            if not data.get('web', {}).get('results'):
+                return None
+
+            # Combine results into content for AI analysis
             combined_content = ""
-            for result in search_results[:3]:  # Top 3 results
+            for result in data['web']['results'][:3]:
                 title = result.get('title', '')
-                snippet = result.get('snippet', '')
+                description = result.get('description', '')
                 url = result.get('url', '')
 
                 combined_content += f"Title: {title}\n"
                 combined_content += f"URL: {url}\n" 
-                combined_content += f"Content: {snippet}\n\n"
+                combined_content += f"Content: {description}\n\n"
 
             return combined_content.strip()
 
