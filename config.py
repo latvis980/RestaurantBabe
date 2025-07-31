@@ -42,7 +42,7 @@ SUPABASE_MANAGER_URL = os.environ.get("SUPABASE_MANAGER_URL", "https://restobabe
 SUPABASE_MANAGER_API_KEY = os.environ.get("SUPABASE_MANAGER_API_KEY", "")  # Optional API key for authentication
 
 # OpenAI API settings (for components that need highest quality)
-OPENAI_MODEL = "gpt-4o"  # Always using GPT-4o as requested
+OPENAI_MODEL = "gpt-4o-mini"  
 SEARCH_EVALUATION_MODEL = "gpt-4o-mini"  # Using GPT-4o-mini for search evaluation
 SEARCH_EVALUATION_TEMPERATURE = 0.2
 OPENAI_TEMPERATURE = 0.2
@@ -150,7 +150,7 @@ FIRECRAWL_MAX_REQUESTS = int(os.environ.get("FIRECRAWL_MAX_REQUESTS", "5"))  # L
 
 # Tavily Search settings (backup search engine)
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
-TAVILY_SEARCH_COUNT = 15
+TAVILY_SEARCH_COUNT = 20
 TAVILY_SEARCH_TIMEOUT = 25.0
 
 # Scraping settings

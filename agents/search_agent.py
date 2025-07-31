@@ -1,79 +1,94 @@
-# Search agent with AI-based filtering system and light destination awareness
-# Based on WORKING version (12) with minimal destination changes
+# agents/search_agent.py
+"""
+Enhanced Search Agent with Parallel Brave + Tavily Search and AI Filtering
+
+Features:
+- Parallel search: Brave Search for English queries, Tavily for local language queries  
+- AI-based content evaluation and filtering
+- Preview fetching for all results
+- Database storage of high-quality sources
+- Seamless integration with existing orchestrator pipeline
+"""
 
 import requests
-from langchain_core.tracers.context import tracing_v2_enabled
+import asyncio
+import aiohttp
+import concurrent.futures
+from typing import Dict, List, Any, Optional, Tuple
+from urllib.parse import urlparse
+import json
+import logging
+import time
+from bs4 import BeautifulSoup
+
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-import json
-import time
-import asyncio
-import concurrent.futures
-from typing import Dict, List, Any, Optional
-from urllib.parse import urlparse
-from bs4 import BeautifulSoup
-import logging
 
 logger = logging.getLogger("restaurant-recommender.search_agent")
 
 class BraveSearchAgent:
-    def __init__(self, config):
-        self.api_key = config.BRAVE_API_KEY
-        self.search_count = config.BRAVE_SEARCH_COUNT
-        self.excluded_domains = config.EXCLUDED_RESTAURANT_SOURCES
-        self.config = config
-        self.base_url = "https://api.search.brave.com/res/v1/web/search"
+    """
+    Enhanced search agent with parallel search capabilities and AI filtering
+    Maintains compatibility with existing orchestrator while adding new features
+    """
 
-        # Initialize the AI evaluation model
-        self.model = ChatOpenAI(
-            model=config.SEARCH_EVALUATION_MODEL,
-            temperature=config.SEARCH_EVALUATION_TEMPERATURE,  # Use the config value
-            api_key=config.OPENAI_API_KEY  # Explicitly set the API key
+    def __init__(self, config):
+        self.config = config
+
+        # API Configuration
+        self.brave_api_key = config.BRAVE_API_KEY
+        self.tavily_api_key = getattr(config, 'TAVILY_API_KEY', None)
+        self.search_count = config.BRAVE_SEARCH_COUNT
+
+        # Search URLs
+        self.brave_base_url = "https://api.search.brave.com/res/v1/web/search"
+        self.tavily_base_url = "https://api.tavily.com/search"
+
+        # Filtering Configuration
+        self.excluded_domains = config.EXCLUDED_RESTAURANT_SOURCES
+
+        # Initialize AI for content evaluation (using exact prompt you provided)
+        self.eval_model = ChatOpenAI(
+            model=config.OPENAI_MODEL,  # Using GPT-4o as requested
+            temperature=0.1,
+            api_key=config.OPENAI_API_KEY
         )
 
-        # Log the model being used for transparency
-        logger.info(f"🔍 Search evaluation using: {config.SEARCH_EVALUATION_MODEL} (cost-optimized)")
-
-        # AI evaluation system prompt - SAME AS WORKING VERSION (12) with light destination awareness
+        # Your exact filtering prompt - DO NOT CHANGE
         self.eval_system_prompt = """
         You are an expert at evaluating web content about restaurants.
         Your task is to analyze a web page's content and rate it using the criteria below.
 
-        
         PRIORITIZE THESE SOURCES (score 0.8-1.0):
-        - Local newspapers and magazines (like Expresso, Le Monde, El Pais, Time Out)
+        - Established food and travel publications (e.g., Conde Nast Traveler, Forbes Travel, Food & Wine, Bon Appétit, etc.)
+        - Local newspapers and magazines (like Expresso.pt, Le Monde, El Pais, Time Out)
         - Professional food critics and culinary experts
         - Reputable local food blogs (Katie Parla for Italy, 2Foodtrippers, David Leibovitz for Paris, etc.)
-        - Established food and travel publications (e.g., Conde Nast Traveler, Forbes Travel, Food & Wine, Bon Appétit, etc.)
         - Local tourism boards and official regional and city guides
         - Restaurant guides and gastronomic awards (Michelin, The World's 50 Best, World of Mouth)
-
         VALID CONTENT (score 0.6-0.8):
-        - Curated lists of multiple restaurants (e.g., "Top 10 restaurants in Paris")
-        - Collections of restaurants in professional restaurant guides
-        - Food critic reviews of a single restaurant ONLY in professional media
+        - Curated lists of multiple restaurants (e.g., "Top 10 restaurants in Paris", "Best artisanal pizza in Rome", etc.)
+        - Food critic reviews of a single restaurant, but ONLY in professional media
         - Articles in reputable local media discussing various dining options in an area
         - Food blog articles with restaurant recommendations
         - Travel articles mentioning multiple dining options
-
         NOT VALID CONTENT (score < 0.3):
         - Official website of a single restaurant
-        - Anything on Tripadvisor, Yelp, OpenTable, RestaurantGuru and other UGC sites
-        - Collections of restaurants on booking and delivery websites like Uber Eats, The Fork, Glovo, Bolt, etc.
-        - Wanderlog content
+        - ANYTHING on Tripadvisor, Yelp, OpenTable, RestaurantGuru and other UGC sites
+        - Collections of restaurants on booking and delivery websites like Uber Eats, The Fork, Glovo, Bolt, Wolt, Mesa24, etc.
+        - Social media content on Facebook and Instagram without professional curation
+        - ANY Wanderlog content
         - Individual restaurant menus
         - Single restaurant reviews
         - Social media posts about individual dining experiences
         - Forum/Reddit discussions without professional curation
         - Hotel booking sites
         - Video content (YouTube, TikTok, etc.)
-
         SCORING CRITERIA:
-        - Multiple restaurants mentioned (essential with the only exception of single restaurant reviews in professional media)
+        - Multiple restaurants mentioned (essential, with the only exception of single restaurant reviews in professional media)
         - Professional curation or expertise evident
         - Local expertise and knowledge
-        - Detailed descriptions of restaurants/cuisine
-
+        - Detailed professional descriptions of restaurants/cuisine
         FORMAT:
         Respond with a JSON object containing:
         {{
@@ -85,427 +100,515 @@ class BraveSearchAgent:
         }}
         """
 
+        # Set up evaluation prompt
         self.eval_prompt = ChatPromptTemplate.from_messages([
             ("system", self.eval_system_prompt),
-            ("human", "URL: {{url}}\n\nPage Title: {{title}}\n\nContent Preview:\n{{preview}}")
+            ("human", "URL: {url}\nTitle: {title}\nDescription: {description}\nContent Preview: {content_preview}")
         ])
 
-        self.eval_chain = self.eval_prompt | self.model
+        # Create evaluation chain
+        self.eval_chain = self.eval_prompt | self.eval_model
 
-        # Statistics tracking - SAME AS VERSION (12)
-        self.filtered_urls = []
-        self.evaluation_stats = {
-            "total_evaluated": 0,
-            "passed_filter": 0,
-            "failed_filter": 0,
-            "evaluation_errors": 0,
-            "domain_filtered": 0,
-            "model_used": config.SEARCH_EVALUATION_MODEL,  # Track which model we're using
-            "estimated_cost_saved": 0.0  # Track cost savings vs GPT-4o
+        # Statistics tracking
+        self.stats = {
+            "brave_searches": 0,
+            "tavily_searches": 0,
+            "total_results": 0,
+            "filtered_results": 0,
+            "high_quality_sources": 0,
+            "database_saves": 0
         }
 
-        # Video platform filtering removed - now handled by AI in prompt
+        logger.info("✅ Enhanced Search Agent initialized with parallel search and AI filtering")
 
-    def search(self, queries, destination="Unknown", max_retries=3, retry_delay=2, enable_ai_filtering=True):
+    def search(self, search_queries: List[str], destination: str, query_metadata: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """
-        Perform searches with the given queries and optional AI filtering
+        Main search method - maintains compatibility with orchestrator
 
         Args:
-            queries (list): List of search queries
-            destination (str): The destination/location for restaurant recommendations (optional)
-            max_retries (int): Maximum number of retries for failed requests
-            retry_delay (int): Delay between retries in seconds
-            enable_ai_filtering (bool): Whether to apply AI-based content filtering
+            search_queries: List of search queries from query analyzer
+            destination: Target destination for search
+            query_metadata: Optional metadata from query analyzer (language info, etc.)
 
         Returns:
-            list: Combined search results from all queries
+            List of filtered and evaluated search results
         """
-        all_results = []
+        logger.info(f"🔍 Starting parallel search for destination: {destination}")
+        logger.info(f"📋 Search queries: {search_queries}")
 
-        with tracing_v2_enabled(project_name="restaurant-recommender"):
-            for query in queries:
-                retry_count = 0
-                success = False
+        if query_metadata:
+            logger.info(f"🧠 Using query analyzer metadata: {query_metadata.get('is_english_speaking', 'unknown')} speaking, local language: {query_metadata.get('local_language', 'none')}")
 
-                while not success and retry_count < max_retries:
-                    try:
-                        logger.info(f"[SearchAgent] Searching for: {query}")
-                        results = self._execute_search(query)
-                        logger.info(f"[SearchAgent] Raw results count: {len(results.get('web', {}).get('results', []))}")
-
-                        filtered_results = self._filter_results(results)
-                        logger.info(f"[SearchAgent] Domain-filtered results count: {len(filtered_results)}")
-
-                        # Apply AI filtering if enabled
-                        if enable_ai_filtering and filtered_results:
-                            logger.info(f"[SearchAgent] Applying AI content filtering...")
-                            # Use the thread-based approach for async execution
-                            ai_filtered_results = self._run_async_in_thread(self._apply_ai_filtering(filtered_results, destination))
-                            logger.info(f"[SearchAgent] AI-filtered results count: {len(ai_filtered_results)}")
-                            all_results.extend(ai_filtered_results)
-                        else:
-                            all_results.extend(filtered_results)
-
-                        success = True
-                    except Exception as e:
-                        logger.error(f"Error in search for query '{query}': {e}")
-                        retry_count += 1
-                        if retry_count < max_retries:
-                            logger.info(f"Retrying in {retry_delay} seconds...")
-                            time.sleep(retry_delay)
-                        else:
-                            logger.error(f"Max retries reached for query '{query}'")
-
-                    # Respect rate limits
-                    time.sleep(1)
-
-        logger.info(f"[SearchAgent] Total search results after all filtering: {len(all_results)}")
-
-        # Log AI filtering statistics
-        if enable_ai_filtering:
-            logger.info(f"[SearchAgent] AI Filtering Stats: {self.evaluation_stats}")
-
-        # Cache search results using new Supabase system
-        if all_results:
-            from utils.database import cache_search_results
-            cache_search_results(str(queries), {
-                "queries": queries,
-                "timestamp": time.time(),
-                "results": all_results,
-                "ai_filtering_enabled": enable_ai_filtering,
-                "filtering_stats": self.evaluation_stats.copy()
-            })
-
-        return all_results
-
-    def _run_async_in_thread(self, coro):
-        """
-        Run an async coroutine in a new thread with its own event loop
-        This avoids the 'asyncio.run() cannot be called from a running event loop' error
-        """
-        def run_in_new_event_loop():
-            # Create a new event loop for this thread
+        try:
+            # Run parallel search in event loop
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                return loop.run_until_complete(coro)
+                results = loop.run_until_complete(
+                    self._parallel_search_and_filter(search_queries, destination, query_metadata)
+                )
+                return results
             finally:
                 loop.close()
 
-        # Execute the function in a thread
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(run_in_new_event_loop).result()
-
-    async def _apply_ai_filtering(self, search_results: List[Dict[str, Any]], destination: str = "Unknown") -> List[Dict[str, Any]]:
-        """
-        Apply AI-based content filtering to search results
-        Pure AI filtering - no hardcoded domain checks
-
-        Args:
-            search_results: List of search result dictionaries
-            destination: The destination for context (optional)
-
-        Returns:
-            List of filtered search results that pass AI evaluation
-        """
-        # Apply AI filtering to all results - no hardcoded filtering
-        filtered_results = []
-        semaphore = asyncio.Semaphore(3)  # Limit concurrent AI evaluations
-
-        async def evaluate_single_result(result):
-            async with semaphore:
-                return await self._evaluate_search_result(result, destination)
-
-        # Create tasks for all evaluations
-        tasks = [evaluate_single_result(result) for result in search_results]
-
-        # Wait for all evaluations to complete
-        evaluation_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Process results
-        for result, evaluation in zip(search_results, evaluation_results):
-            if isinstance(evaluation, Exception):
-                logger.error(f"Error evaluating {result.get('url', 'unknown')}: {evaluation}")
-                self.evaluation_stats["evaluation_errors"] += 1
-                # Include result if evaluation failed (conservative approach)
-                filtered_results.append(result)
-            elif evaluation and evaluation.get("passed_filter", False):
-                # Add evaluation metadata to the result
-                result["ai_evaluation"] = evaluation
-                filtered_results.append(result)
-            else:
-                # Result was filtered out by AI
-                self.filtered_urls.append(result.get("url", "unknown"))
-
-        logger.info(f"[SearchAgent] AI filtering: {len(filtered_results)}/{len(search_results)} URLs passed")
-        return filtered_results
-
-    # _is_video_platform method removed - now handled by AI
-
-    async def _evaluate_search_result(self, result: Dict[str, Any], destination: str = "Unknown") -> Optional[Dict[str, Any]]:
-        """
-        Evaluate a single search result using AI
-        SAME AS VERSION (12) but passes destination to AI evaluation
-
-        Args:
-            result: Search result dictionary
-            destination: Target destination for context
-
-        Returns:
-            Evaluation result dictionary or None if evaluation failed
-        """
-        url = result.get("url", "")
-        title = result.get("title", "")
-        description = result.get("description", "")
-
-        self.evaluation_stats["total_evaluated"] += 1
-
-        try:
-            # First, do a quick content preview fetch
-            content_preview = await self._fetch_content_preview(url)
-
-            # Combine title and description with content preview
-            full_preview = f"{title}\n\n{description}\n\n{content_preview}" if content_preview else f"{title}\n\n{description}"
-
-            # AI evaluation - SAME AS VERSION (12) but includes destination context
-            response = await self.eval_chain.ainvoke({
-                "destination": destination,
-                "url": url,
-                "title": title,
-                "preview": full_preview[:1500]  # Limit to avoid token limits
-            })
-
-            # Parse AI response - SAME AS VERSION (12)
-            content = response.content
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
-
-            evaluation = json.loads(content.strip())
-
-            # Ensure content_quality is in the response - SAME AS VERSION (12)
-            if "content_quality" not in evaluation:
-                evaluation["content_quality"] = 0.8 if evaluation.get("is_restaurant_list", False) else 0.2
-
-            # Apply threshold - SAME AS VERSION (12)
-            threshold = 0.5
-            is_restaurant_list = evaluation.get("is_restaurant_list", False)
-            content_quality = evaluation.get("content_quality", 0.0)
-            passed_filter = is_restaurant_list and content_quality > threshold
-
-            if passed_filter:
-                self.evaluation_stats["passed_filter"] += 1
-            else:
-                self.evaluation_stats["failed_filter"] += 1
-
-            # Log evaluation details - SAME AS VERSION (12)
-            logger.info(f"AI evaluation for {url}: List={is_restaurant_list}, Quality={content_quality:.2f}, Pass={passed_filter}")
-
-            return {
-                "passed_filter": passed_filter,
-                "is_restaurant_list": is_restaurant_list,
-                "restaurant_count": evaluation.get("restaurant_count", 0),
-                "content_quality": content_quality,
-                "reasoning": evaluation.get("reasoning", "")
-            }
-
         except Exception as e:
-            logger.error(f"Error in AI evaluation for {url}: {str(e)}")
-            self.evaluation_stats["evaluation_errors"] += 1
-            # Return conservative result (pass the filter) if evaluation fails - SAME AS VERSION (12)
-            return {
-                "passed_filter": True,
-                "is_restaurant_list": True,
-                "restaurant_count": 0,
-                "content_quality": 0.5,
-                "reasoning": f"Evaluation error: {str(e)}"
-            }
-
-    async def _fetch_content_preview(self, url: str) -> str:
-        """
-        Fetch a brief content preview from URL for evaluation
-        SAME AS VERSION (12)
-        """
-        try:
-            # Use aiohttp for async HTTP requests
-            import aiohttp
-
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "text/html,application/xhtml+xml",
-                "Connection": "close"
-            }
-
-            timeout = aiohttp.ClientTimeout(total=10)
-
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url, headers=headers) as response:
-                    if response.status == 200:
-                        html = await response.text()
-                        soup = BeautifulSoup(html, 'html.parser')
-
-                        # Extract text content
-                        main_content = (soup.find('main') or 
-                                      soup.find('article') or 
-                                      soup.find(class_='content') or 
-                                      soup.body)
-
-                        if main_content:
-                            preview_text = main_content.get_text(separator=' ', strip=True)
-                            return preview_text[:1000]  # Return first 1000 characters
-
-                        return soup.get_text(separator=' ', strip=True)[:1000]
-
-                    return ""
-
-        except ImportError:
-            # Fallback to requests if aiohttp not available
-            try:
-                import requests
-                response = requests.get(url, timeout=10, headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                })
-                if response.status_code == 200:
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    return soup.get_text(separator=' ', strip=True)[:1000]
-            except Exception:
-                pass
-
-        except Exception as e:
-            logger.warning(f"Error fetching content preview for {url}: {str(e)}")
-
-        return ""
-
-    def _execute_search(self, query):
-        """Execute a single search query against Brave Search API - SAME AS VERSION (12)"""
-        headers = {
-            "Accept": "application/json",
-            "X-Subscription-Token": self.api_key
-        }
-
-        params = {
-            "q": query,
-            "count": self.search_count,
-            "freshness": "month"  # Get recent results
-        }
-
-        response = requests.get(
-            self.base_url,
-            headers=headers,
-            params=params
-        )
-
-        if response.status_code != 200:
-            raise Exception(f"Brave Search API error: {response.status_code}, {response.text}")
-
-        return response.json()
-
-    def _filter_results(self, search_results):
-        """Filter search results to exclude unwanted domains - SAME AS VERSION (12)"""
-        if not search_results or "web" not in search_results or "results" not in search_results["web"]:
+            logger.error(f"❌ Search failed: {e}")
             return []
 
-        filtered_results = []
+    async def _parallel_search_and_filter(self, search_queries: List[str], destination: str, query_metadata: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+        """
+        Execute parallel searches and filtering pipeline
+        """
+        logger.info("🚀 Starting parallel search and filtering pipeline")
 
-        # Only apply excluded domain filtering - let AI handle everything else
-        for result in search_results["web"]["results"]:
-            url = result.get("url", "")
+        # Step 1: Determine query languages using query analyzer metadata
+        english_queries, local_queries = self._categorize_queries(search_queries, destination, query_metadata)
 
-            # Check if URL should be excluded by domain (configured exclusions only)
-            if self._should_exclude_domain(url):
-                logger.debug(f"[SearchAgent] Domain-filtered: {url}")
-                self.evaluation_stats["domain_filtered"] += 1
-                continue
+        # Step 2: Parallel search execution
+        all_results = []
 
-            # Clean and extract the relevant information
-            filtered_result = {
-                "title": result.get("title", ""),
-                "url": result.get("url", ""),
-                "description": result.get("description", ""),
-                "language": result.get("language", "en"),
-                "favicon": result.get("favicon", "")
-            }
-            filtered_results.append(filtered_result)
+        # Execute searches in parallel
+        search_tasks = []
 
+        if english_queries:
+            logger.info(f"🇺🇸 Brave Search queries: {english_queries}")
+            search_tasks.append(self._brave_search_batch(english_queries))
+
+        if local_queries and self.tavily_api_key:
+            logger.info(f"🌍 Tavily Search queries: {local_queries}")
+            search_tasks.append(self._tavily_search_batch(local_queries))
+        elif local_queries:
+            logger.warning("📋 Local language queries found but Tavily API key not configured")
+            # Fall back to Brave for local queries
+            search_tasks.append(self._brave_search_batch(local_queries))
+
+        # Execute parallel searches
+        if search_tasks:
+            search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
+
+            # Combine results
+            for result_set in search_results:
+                if isinstance(result_set, Exception):
+                    logger.error(f"❌ Search batch failed: {result_set}")
+                    continue
+                if isinstance(result_set, list):
+                    all_results.extend(result_set)
+
+        logger.info(f"📊 Total search results before filtering: {len(all_results)}")
+
+        # Step 3: Fetch previews for all results
+        results_with_previews = await self._fetch_previews_batch(all_results)
+
+        # Step 4: AI-based filtering
+        filtered_results = await self._filter_results_batch(results_with_previews, destination)
+
+        # Step 5: Store high-quality sources in database
+        await self._store_quality_sources(filtered_results, destination)
+
+        logger.info(f"✅ Final filtered results: {len(filtered_results)}")
         return filtered_results
 
-    def _should_exclude_domain(self, url):
-        """Check if URL domain should be excluded - SAME AS VERSION (12)"""
+    def _categorize_queries(self, search_queries: List[str], destination: str, query_metadata: Dict[str, Any] = None) -> Tuple[List[str], List[str]]:
+        """
+        Categorize queries into English (Brave) and local language (Tavily)
+        Uses AI-powered query analyzer metadata for intelligent categorization
+        """
+        english_queries = []
+        local_queries = []
+
+        # Always prefer query analyzer metadata (AI-powered decision)
+        if query_metadata:
+            is_english_speaking = query_metadata.get('is_english_speaking', True)
+            has_local_language = query_metadata.get('local_language') is not None
+
+            logger.info(f"🧠 Using AI-powered language detection: English-speaking={is_english_speaking}, Local language={query_metadata.get('local_language', 'None')}")
+
+            if is_english_speaking:
+                # AI determined this is English-speaking: all queries go to Brave
+                english_queries = search_queries.copy()
+                logger.info(f"🇺🇸 AI-detected English-speaking destination: {len(english_queries)} queries → Brave Search")
+            else:
+                # AI determined this is non-English: separate by query content
+                for query in search_queries:
+                    if self._is_likely_english(query):
+                        english_queries.append(query)
+                    else:
+                        local_queries.append(query)
+
+                # If query analyzer provided both English and local queries but all ended up as English
+                if has_local_language and len(local_queries) == 0:
+                    # Split for better coverage since we know there should be local content
+                    mid = len(english_queries) // 2
+                    local_queries = english_queries[mid:]
+                    english_queries = english_queries[:mid]
+
+                logger.info(f"🌍 AI-detected non-English destination: {len(english_queries)} → Brave, {len(local_queries)} → Tavily")
+        else:
+            # Fallback: simple content-based categorization only
+            logger.warning("⚠️ No AI language metadata available - using content-based fallback")
+
+            for query in search_queries:
+                if self._is_likely_english(query):
+                    english_queries.append(query)
+                else:
+                    local_queries.append(query)
+
+            # Without AI guidance, default to English search only
+            if len(local_queries) == 0:
+                english_queries = search_queries.copy()
+                logger.info(f"📝 Fallback: All {len(english_queries)} queries → Brave Search")
+
+        return english_queries, local_queries
+
+    def _is_likely_english(self, query: str) -> bool:
+        """Simple heuristic to detect English queries based on character content"""
+        # Check for non-ASCII characters (simple indicator of non-English)
+        try:
+            query.encode('ascii')
+            return True
+        except UnicodeEncodeError:
+            return False
+
+    async def _brave_search_batch(self, queries: List[str]) -> List[Dict[str, Any]]:
+        """Execute Brave Search for multiple queries"""
+        logger.info(f"🔍 Executing Brave Search for {len(queries)} queries")
+
+        all_results = []
+
+        async with aiohttp.ClientSession() as session:
+            tasks = [self._brave_search_single(session, query) for query in queries]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error(f"❌ Brave search failed for query {i}: {result}")
+                    continue
+                if isinstance(result, list):
+                    all_results.extend(result)
+
+        self.stats["brave_searches"] += len(queries)
+        logger.info(f"✅ Brave Search completed: {len(all_results)} results")
+        return all_results
+
+    async def _brave_search_single(self, session: aiohttp.ClientSession, query: str) -> List[Dict[str, Any]]:
+        """Execute single Brave search"""
+        try:
+            headers = {
+                "Accept": "application/json",
+                "X-Subscription-Token": self.brave_api_key
+            }
+
+            params = {
+                "q": query,
+                "count": self.search_count,
+                "freshness": "month"
+            }
+
+            async with session.get(self.brave_base_url, headers=headers, params=params) as response:
+                if response.status != 200:
+                    logger.error(f"❌ Brave API error: {response.status}")
+                    return []
+
+                data = await response.json()
+                return self._parse_brave_results(data, query)
+
+        except Exception as e:
+            logger.error(f"❌ Brave search error for '{query}': {e}")
+            return []
+
+    def _parse_brave_results(self, data: Dict, query: str) -> List[Dict[str, Any]]:
+        """Parse Brave search API response"""
+        results = []
+
+        web_results = data.get('web', {}).get('results', [])
+
+        for result in web_results:
+            # Basic domain filtering
+            url = result.get('url', '')
+            if self._should_exclude_domain(url):
+                continue
+
+            parsed_result = {
+                'url': url,
+                'title': result.get('title', ''),
+                'description': result.get('description', ''),
+                'source_engine': 'brave',
+                'search_query': query,
+                'favicon': result.get('favicon', ''),
+                'language': result.get('language', 'en')
+            }
+            results.append(parsed_result)
+
+        return results
+
+    async def _tavily_search_batch(self, queries: List[str]) -> List[Dict[str, Any]]:
+        """Execute Tavily Search for multiple queries"""
+        logger.info(f"🌍 Executing Tavily Search for {len(queries)} queries")
+
+        all_results = []
+
+        async with aiohttp.ClientSession() as session:
+            tasks = [self._tavily_search_single(session, query) for query in queries]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error(f"❌ Tavily search failed for query {i}: {result}")
+                    continue
+                if isinstance(result, list):
+                    all_results.extend(result)
+
+        self.stats["tavily_searches"] += len(queries)
+        logger.info(f"✅ Tavily Search completed: {len(all_results)} results")
+        return all_results
+
+    async def _tavily_search_single(self, session: aiohttp.ClientSession, query: str) -> List[Dict[str, Any]]:
+        """Execute single Tavily search"""
+        try:
+            payload = {
+                "api_key": self.tavily_api_key,
+                "query": query,
+                "search_depth": "basic",
+                "include_answer": False,
+                "include_images": False,
+                "include_raw_content": False,
+                "max_results": self.search_count
+            }
+
+            async with session.post(self.tavily_base_url, json=payload) as response:
+                if response.status != 200:
+                    logger.error(f"❌ Tavily API error: {response.status}")
+                    return []
+
+                data = await response.json()
+                return self._parse_tavily_results(data, query)
+
+        except Exception as e:
+            logger.error(f"❌ Tavily search error for '{query}': {e}")
+            return []
+
+    def _parse_tavily_results(self, data: Dict, query: str) -> List[Dict[str, Any]]:
+        """Parse Tavily search API response"""
+        results = []
+
+        tavily_results = data.get('results', [])
+
+        for result in tavily_results:
+            # Basic domain filtering
+            url = result.get('url', '')
+            if self._should_exclude_domain(url):
+                continue
+
+            parsed_result = {
+                'url': url,
+                'title': result.get('title', ''),
+                'description': result.get('content', ''),  # Tavily uses 'content' field
+                'source_engine': 'tavily',
+                'search_query': query,
+                'score': result.get('score', 0.0)
+            }
+            results.append(parsed_result)
+
+        return results
+
+    def _should_exclude_domain(self, url: str) -> bool:
+        """Check if URL domain should be excluded"""
         try:
             parsed_url = urlparse(url)
             domain = parsed_url.netloc.lower()
-            # Remove www. prefix for comparison
             if domain.startswith('www.'):
                 domain = domain[4:]
-
             return any(excluded in domain for excluded in self.excluded_domains)
         except Exception:
             return False
 
-    def follow_up_search(self, restaurant_name, location, additional_context=None):
-        """
-        Perform a follow-up search for a specific restaurant - SAME AS VERSION (12)
-        """
-        # Create a specific query for this restaurant
-        query = f"{restaurant_name} restaurant {location}"
-        if additional_context:
-            query += f" {additional_context}"
+    async def _fetch_previews_batch(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Fetch content previews for all search results"""
+        logger.info(f"📖 Fetching previews for {len(results)} results")
 
-        # Search for this specific restaurant (without AI filtering for specific searches)
-        results = self._execute_search(query)
-        filtered_results = self._filter_results(results)
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            tasks = [self._fetch_single_preview(session, result) for result in results]
+            previews = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Also check global guides
-        global_guides_results = self._check_global_guides(restaurant_name, location)
+            results_with_previews = []
+            for i, (result, preview) in enumerate(zip(results, previews)):
+                if isinstance(preview, Exception):
+                    logger.debug(f"Preview fetch failed for {result.get('url', 'unknown')}: {preview}")
+                    result['content_preview'] = result.get('description', '')
+                else:
+                    result['content_preview'] = preview or result.get('description', '')
 
-        return {
-            "direct_search": filtered_results,
-            "global_guides": global_guides_results
-        }
+                results_with_previews.append(result)
 
-    def _check_global_guides(self, restaurant_name, location):
-        """Check if the restaurant is mentioned in global guides - SAME AS VERSION (12)"""
-        global_guides = [
-            "theworlds50best.com",
-            "worldofmouth.app",
-            "guide.michelin.com",
-            "culinarybackstreets.com",
-            "oadguides.com",
-            "laliste.com"
-        ]
+        logger.info(f"✅ Preview fetching completed")
+        return results_with_previews
 
-        results = []
+    async def _fetch_single_preview(self, session: aiohttp.ClientSession, result: Dict[str, Any]) -> str:
+        """Fetch content preview for a single URL"""
+        url = result.get('url', '')
 
-        for guide in global_guides:
+        try:
+            async with session.get(url, headers={'User-Agent': 'Mozilla/5.0 (compatible; RestaurantBot/1.0)'}) as response:
+                if response.status != 200:
+                    return ""
+
+                # Only read first part of content for preview
+                content = await response.text()
+
+                # Extract text using BeautifulSoup
+                soup = BeautifulSoup(content, 'html.parser')
+
+                # Remove script and style elements
+                for script in soup(["script", "style"]):
+                    script.decompose()
+
+                # Get text and limit length
+                text = soup.get_text()
+                lines = (line.strip() for line in text.splitlines())
+                chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+                text = ' '.join(chunk for chunk in chunks if chunk)
+
+                # Return first 500 characters as preview
+                return text[:500]
+
+        except Exception as e:
+            logger.debug(f"Failed to fetch preview for {url}: {e}")
+            return ""
+
+    async def _filter_results_batch(self, results: List[Dict[str, Any]], destination: str) -> List[Dict[str, Any]]:
+        """Filter results using AI evaluation in batches"""
+        logger.info(f"🧠 AI filtering {len(results)} results")
+
+        # Process in smaller batches to avoid overwhelming the API
+        batch_size = 5
+        filtered_results = []
+
+        for i in range(0, len(results), batch_size):
+            batch = results[i:i + batch_size]
+            batch_filtered = await self._evaluate_batch(batch, destination)
+            filtered_results.extend(batch_filtered)
+
+            # Small delay between batches
+            await asyncio.sleep(0.1)
+
+        self.stats["total_results"] = len(results)
+        self.stats["filtered_results"] = len(filtered_results)
+
+        logger.info(f"✅ AI filtering completed: {len(filtered_results)}/{len(results)} passed")
+        return filtered_results
+
+    async def _evaluate_batch(self, batch: List[Dict[str, Any]], destination: str) -> List[Dict[str, Any]]:
+        """Evaluate a batch of results using AI"""
+        filtered_batch = []
+
+        # Create evaluation tasks
+        tasks = []
+        for result in batch:
+            task = self._evaluate_single_result(result, destination)
+            tasks.append(task)
+
+        # Execute evaluations in parallel
+        evaluations = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Process results
+        for result, evaluation in zip(batch, evaluations):
+            if isinstance(evaluation, Exception):
+                logger.error(f"❌ Evaluation failed for {result.get('url', 'unknown')}: {evaluation}")
+                continue
+
+            if evaluation and evaluation.get('passed_filter', False):
+                # Add evaluation metadata
+                result['ai_evaluation'] = evaluation
+                result['quality_score'] = evaluation.get('content_quality', 0.0)
+                filtered_batch.append(result)
+
+        return filtered_batch
+
+    async def _evaluate_single_result(self, result: Dict[str, Any], destination: str) -> Optional[Dict[str, Any]]:
+        """Evaluate a single result using AI"""
+        try:
+            # Prepare data for evaluation
+            evaluation_data = {
+                'url': result.get('url', ''),
+                'title': result.get('title', ''),
+                'description': result.get('description', ''),
+                'content_preview': result.get('content_preview', '')
+            }
+
+            # Run AI evaluation
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.eval_chain.invoke(evaluation_data)
+            )
+
+            # Parse AI response
+            response_text = response.content if hasattr(response, 'content') else str(response)
+
+            # Try to parse JSON response
             try:
-                query = f"site:{guide} {restaurant_name} {location}"
-                guide_results = self._execute_search(query)
-                filtered_guide_results = self._filter_results(guide_results)
+                # Clean up response text
+                response_text = response_text.strip()
+                if response_text.startswith('```json'):
+                    response_text = response_text[7:]
+                if response_text.endswith('```'):
+                    response_text = response_text[:-3]
 
-                if filtered_guide_results:
-                    for result in filtered_guide_results:
-                        result["guide"] = guide
-                        results.append(result)
+                evaluation = json.loads(response_text)
+                return evaluation
 
-                # Respect rate limits
-                time.sleep(1)
-            except Exception as e:
-                logger.error(f"Error checking guide {guide}: {e}")
+            except json.JSONDecodeError:
+                logger.error(f"❌ Failed to parse AI evaluation response: {response_text}")
+                return None
 
-        return results
+        except Exception as e:
+            logger.error(f"❌ AI evaluation error: {e}")
+            return None
 
-    def get_filtering_stats(self):
-        """Get current AI filtering statistics with cost information - SAME AS VERSION (12)"""
-        # Calculate estimated cost savings
-        if self.config.SEARCH_EVALUATION_MODEL == "gpt-4o-mini":
-            # Rough calculation: GPT-4o-mini is ~95% cheaper than GPT-4o
-            cost_multiplier = 0.05  # GPT-4o-mini costs about 5% of GPT-4o
-            estimated_calls = self.evaluation_stats["total_evaluated"]
-            estimated_savings_per_call = 0.012  # Rough estimate per evaluation call
-            self.evaluation_stats["estimated_cost_saved"] = estimated_calls * estimated_savings_per_call * 0.95
+    async def _store_quality_sources(self, filtered_results: List[Dict[str, Any]], destination: str):
+        """Store high-quality sources (score 0.7-1.0) in database"""
+        try:
+            high_quality_sources = [
+                result for result in filtered_results 
+                if result.get('quality_score', 0) >= 0.7
+            ]
 
-        return {
-            "evaluation_stats": self.evaluation_stats.copy(),
-            "filtered_urls": self.filtered_urls.copy()
-        }
+            if not high_quality_sources:
+                logger.info("📊 No high-quality sources to store")
+                return
+
+            logger.info(f"💾 Storing {len(high_quality_sources)} high-quality sources")
+
+            # Import here to avoid circular imports
+            from utils.database import get_database
+
+            for result in high_quality_sources:
+                # Clean up URL (remove everything after first dash as specified)
+                url = result.get('url', '')
+                clean_url = self._clean_url_for_storage(url)
+                score = result.get('quality_score', 0.0)
+
+                try:
+                    get_database().store_source_quality(destination, clean_url, score)
+                    self.stats["database_saves"] += 1
+                except Exception as e:
+                    logger.error(f"❌ Failed to store source {clean_url}: {e}")
+
+            self.stats["high_quality_sources"] = len(high_quality_sources)
+            logger.info(f"✅ Stored {self.stats['database_saves']} sources in database")
+
+        except Exception as e:
+            logger.error(f"❌ Error storing quality sources: {e}")
+
+    def _clean_url_for_storage(self, url: str) -> str:
+        """Clean URL for database storage (until first dash, website's main page)"""
+        try:
+            parsed = urlparse(url)
+            # Return scheme + netloc (main domain)
+            return f"{parsed.scheme}://{parsed.netloc}"
+        except Exception:
+            return url
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get search and filtering statistics"""
+        return self.stats.copy()

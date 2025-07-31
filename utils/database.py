@@ -37,6 +37,68 @@ class Database:
             logger.warning(f"⚠️ Geocoder initialization failed: {e}")
             self.geocoder = None
 
+    # ======== SOURCE QUALITY METHODS ========
+
+    def store_source_quality(self, destination: str, url: str, score: float) -> bool:
+        """
+        Store source quality information in the database
+
+        Args:
+            destination: The destination/city from the query
+            url: The cleaned URL (main domain)
+            score: Quality score from AI evaluation (0.0-1.0)
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Check if this destination+url combination already exists
+            existing = self.supabase.table('source_quality')\
+                .select('*')\
+                .eq('destination', destination)\
+                .eq('url', url)\
+                .execute()
+
+            if existing.data:
+                # Update existing record with new score (keep the highest score)
+                current_score = existing.data[0].get('score', 0.0)
+                new_score = max(current_score, score)
+
+                self.supabase.table('source_quality')\
+                    .update({
+                        'score': new_score,
+                        'last_updated': datetime.now(timezone.utc).isoformat(),
+                        'mention_count': existing.data[0].get('mention_count', 0) + 1
+                    })\
+                    .eq('id', existing.data[0]['id'])\
+                    .execute()
+
+                logger.debug(f"📊 Updated source quality: {url} for {destination} (score: {new_score})")
+            else:
+                # Insert new record
+                self.supabase.table('source_quality').insert({
+                    'destination': destination,
+                    'url': url,
+                    'score': score,
+                    'mention_count': 1,
+                    'first_added': datetime.now(timezone.utc).isoformat(),
+                    'last_updated': datetime.now(timezone.utc).isoformat()
+                }).execute()
+
+                logger.debug(f"➕ Added new source quality: {url} for {destination} (score: {score})")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Error storing source quality: {e}")
+            return False
+
+    # Also add this convenience function at the bottom of utils/database.py
+
+    def store_source_quality_data(destination: str, url: str, score: float) -> bool:
+        """Store source quality data - convenience function"""
+        return get_database().store_source_quality(destination, url, score)
+    
     # ============ RESTAURANT METHODS ============
 
     def save_restaurant(self, restaurant_data: Dict[str, Any]) -> Optional[str]:

@@ -12,12 +12,16 @@ class QueryAnalyzer:
             temperature=0.2
         )
 
+        # Replace the system prompt in your query_analyzer.py with this clean version
+
         self.system_prompt = """
         You are a restaurant recommendation system that analyzes user queries about restaurants.
         Your task is to extract key information and prepare search queries for a web search.
+
         SEARCH STRATEGY:
-        1. First, identify PRIMARY search parameters that are likely to have existing curated lists online
+        1. Identify PRIMARY search parameters that are likely to have existing curated lists online
            and transform the user's request into search terms that will find these curated lists.
+
            EXAMPLES OF TRANSFORMATIONS:
            - User asks: "Where can I take my wife for our anniversary in Paris?"
              Search query: "romantic restaurants in Paris"
@@ -27,20 +31,20 @@ class QueryAnalyzer:
              Search query: "traditional Japanese restaurants in Tokyo"
            - User asks: "Looking for somewhere with a nice view in New York"
              Search query: "restaurants with view in New York"
-            - User asks: "where to drink some wine in Bordeaux"
+           - User asks: "where to drink some wine in Bordeaux"
              Search query: "best wine bars and restaurants in Bordeaux"
-            - Any interesting restaurant openings in London?
-            Search query: "new restaurants in London 2025"    
-       
+           - User asks: "Any interesting restaurant openings in London?"
+             Search query: "new restaurants in London 2025"    
+
         GUIDELINES:
         1. Extract the destination (city/country) from the query
-        2. Determine if the destination is English-speaking or not
+        2. Determine if the destination is English-speaking or not  
         3. For USA destinations add the word "media" to the search query
         4. For non-English speaking destinations, identify the local language
         5. Create appropriate search queries in English and local language (for non-English destinations)
-        6. For the query in local language, don;t just translate word for word from english, create an original query that will return better search results in this language. 
-        7. Extract or create keywords for analysis based on user preferences
-       
+        6. For the query in local language, don't just translate word for word from English, create an original query that will return better search results in this language
+        7. Extract keywords for analysis based on user request
+
         OUTPUT FORMAT:
         Respond with a JSON object containing:
         {{
@@ -49,9 +53,8 @@ class QueryAnalyzer:
           "is_usa": true/false,
           "local_language": "language name (if not English-speaking)",
           "primary_search_parameters": ["param1", "param2", ...],
-          "english_search_query": "search query in English using only primary parameters",
-          "local_language_search_query": "search query in local language (if applicable) using only primary parameters",
-          "keywords_for_analysis": ["all keywords including primary and secondary"]
+          "english_search_query": "search query in English using primary parameters",
+          "local_language_search_query": "search query in local language (if applicable) using primary parameters"
         }}
         """
 
@@ -63,20 +66,14 @@ class QueryAnalyzer:
         self.chain = self.prompt | self.model
         self.config = config
 
+    # Enhancement to your existing query_analyzer.py
+    # Update the analyze method to provide clearer query separation
+
     def analyze(self, query, standing_prefs=None):
         """
-        Analyze the user's query and extract relevant search parameters
-
-        Args:
-            query (str): The user's query about restaurant recommendations
-            standing_prefs (list, optional): List of user's standing preferences
-
-        Returns:
-            dict: Extracted search parameters
+        CLEAN: Analyze the user's query and extract relevant search parameters
+        Focuses on destination, language detection, and AI-powered search query generation
         """
-        standing_prefs = standing_prefs or []
-        original_query_lower = query.lower()
-
         with tracing_v2_enabled(project_name="restaurant-recommender"):
             response = self.chain.invoke({"query": query})
 
@@ -100,64 +97,50 @@ class QueryAnalyzer:
                 location = result.get("destination")
                 is_english_speaking = result.get("is_english_speaking", True)
 
-                # Format search queries - always include English query
-                search_queries = [result.get("english_search_query")]
+                # Format search queries with clear separation
+                english_query = result.get("english_search_query")
+                local_query = result.get("local_language_search_query")
 
-                # Add only one local language query for non-English speaking locations
-                if not is_english_speaking and result.get("local_language_search_query"):
-                    search_queries.append(result.get("local_language_search_query"))
+                search_queries = []
+                english_queries = []
+                local_queries = []
+
+                # Always include English query
+                if english_query:
+                    search_queries.append(english_query)
+                    english_queries.append(english_query)
+
+                # Add local language query for non-English destinations
+                if not is_english_speaking and local_query:
+                    search_queries.append(local_query)
+                    local_queries.append(local_query)
 
                 # Clean up search queries
                 search_queries = [q for q in search_queries if q]
 
-                # Format keywords and parameters
-                keywords = result.get("keywords_for_analysis", [])
-                if isinstance(keywords, str):
-                    keywords = [k.strip() for k in keywords.split(",") if k.strip()]
-
-                primary_params = result.get("primary_search_parameters", [])
-                secondary_params = result.get("secondary_filter_parameters", [])
-
-                if isinstance(primary_params, str):
-                    primary_params = [p.strip() for p in primary_params.split(",") if p.strip()]
-                if isinstance(secondary_params, str):
-                    secondary_params = [p.strip() for p in secondary_params.split(",") if p.strip()]
-
-                # Handle standing preferences
-                NEGATION_PATTERNS = [
-                    r"\bnot\s+(?:necessarily\s+)?{p}\b",
-                    r"\bбез\s+{p}\b",                    
-                    r"\bnon-{p}\b",
-                    r"\bexcept\s+{p}\b",
-                ]
-
-                for pref in standing_prefs:
-                    skip = False
-                    for pat in NEGATION_PATTERNS:
-                        if re.search(pat.format(p=re.escape(pref)), original_query_lower):
-                            skip = True
-                            break
-                    if skip:
-                        continue
-                    # add pref only if it isn't already captured
-                    if pref not in secondary_params and pref not in primary_params:
-                        secondary_params.append(pref)
-
+                # CLEAN: Return only essential data
                 return {
+                    "raw_query": query,  # IMPORTANT: Preserve raw query for pipeline
                     "destination": location,
                     "is_english_speaking": is_english_speaking,
                     "local_language": result.get("local_language"),
                     "search_queries": search_queries,
-                    "primary_search_parameters": primary_params,
-                    "secondary_filter_parameters": secondary_params,
-                    "keywords_for_analysis": keywords,
+                    "english_queries": english_queries,
+                    "local_queries": local_queries,
+                    # Query metadata for search agent
+                    "query_metadata": {
+                        "is_english_speaking": is_english_speaking,
+                        "local_language": result.get("local_language"),
+                        "english_query": english_query,
+                        "local_query": local_query
+                    }
                 }
 
             except (json.JSONDecodeError, AttributeError) as e:
                 print(f"Error parsing response: {e}")
                 print(f"Response content: {response.content}")
 
-                # Simple fallback - use best restaurants + location if we can extract it
+                # CLEAN: Minimal fallback - let AI handle this in a retry or return minimal data
                 location = "Unknown"
                 for indicator in ["in ", "near ", "at "]:
                     if indicator in query.lower():
@@ -168,60 +151,45 @@ class QueryAnalyzer:
                                 location = possible_location
                                 break
 
-                # Create a basic search query
-                search_query = "best restaurants" + (f" in {location}" if location != "Unknown" else "")
-
-                # Try to at least determine if this is a non-English speaking destination
+                # Try to determine language
                 is_english_speaking = True
                 local_language = None
 
                 if location != "Unknown":
-                    # Attempt to identify if this is a non-English speaking location
-                    language_prompt = f"""
-                    Is {location} in a primarily English-speaking country? Answer with only 'yes' or 'no'.
-                    If 'no', what is the primary local language? Just provide the language name.
-                    """
-
                     try:
+                        language_prompt = f"""
+                        Is {location} in a primarily English-speaking country? Answer with only 'yes' or 'no'.
+                        If 'no', what is the primary local language? Just provide the language name.
+                        """
+
                         language_chain = ChatPromptTemplate.from_template(language_prompt) | self.model
                         language_response = language_chain.invoke({})
-
                         response_text = language_response.content.lower()
 
                         if 'no' in response_text:
                             is_english_speaking = False
-
-                            # Try to extract the language name
                             if '\n' in response_text:
                                 language_line = response_text.split('\n')[1].strip()
                                 local_language = language_line
                     except Exception as lang_error:
                         print(f"Error determining language: {lang_error}")
 
-                # Add standing preferences to secondary parameters
-                primary_params = ["best restaurants", f"in {location}"] if location != "Unknown" else ["best restaurants"]
-                secondary_params = []
-
-                # Process standing preferences
-                for pref in standing_prefs:
-                    skip = False
-                    for pat in NEGATION_PATTERNS:
-                        if re.search(pat.format(p=re.escape(pref)), original_query_lower):
-                            skip = True
-                            break
-                    if skip:
-                        continue
-                    if pref not in secondary_params and pref not in primary_params:
-                        secondary_params.append(pref)
-
+                # CLEAN: Minimal fallback - no generic queries, let the system handle it upstream
                 return {
+                    "raw_query": query,  # IMPORTANT: Always preserve raw query
                     "destination": location,
                     "is_english_speaking": is_english_speaking,
                     "local_language": local_language,
-                    "search_queries": [search_query],
-                    "primary_search_parameters": primary_params,
-                    "secondary_filter_parameters": secondary_params,
-                    "keywords_for_analysis": query.split(),
+                    "search_queries": [],  # Empty - let upstream handle the failure
+                    "english_queries": [],
+                    "local_queries": [],
+                    # Minimal query metadata
+                    "query_metadata": {
+                        "is_english_speaking": is_english_speaking,
+                        "local_language": local_language,
+                        "english_query": None,
+                        "local_query": None
+                    }
                 }
 
     

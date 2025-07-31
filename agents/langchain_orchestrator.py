@@ -175,8 +175,7 @@ class LangChainOrchestrator:
 
     def _search_step(self, x):
         """
-        FIXED: Simple orchestrator method that just bridges query_analyzer to search_agent
-        No business logic, no query generation - just pass through the AI-generated queries
+        CLEAN: Pass essential query analyzer metadata to search agent for intelligent routing
         """
         try:
             logger.info("🔍 SEARCH STEP")
@@ -186,7 +185,7 @@ class LangChainOrchestrator:
                 logger.info("⏭️ Skipping web search - database provided sufficient results")
                 return {**x, "search_results": []}
 
-            # FIXED: Use the search_queries that query_analyzer already generated!
+            # Get search queries and destination
             search_queries = x.get("search_queries", [])
             destination = x.get("destination", "Unknown")
 
@@ -199,8 +198,16 @@ class LangChainOrchestrator:
             for i, query in enumerate(search_queries, 1):
                 logger.info(f"  {i}. {query}")
 
-            # FIXED: Pass the AI-generated queries directly to search agent
-            search_results = self.search_agent.search(search_queries, destination)
+            # CLEAN: Prepare essential query analyzer metadata only
+            query_metadata = {
+                'is_english_speaking': x.get('is_english_speaking', True),
+                'local_language': x.get('local_language')
+            }
+
+            logger.info(f"🧠 Passing query metadata to search agent")
+
+            # Pass metadata to search agent for intelligent routing
+            search_results = self.search_agent.search(search_queries, destination, query_metadata)
 
             logger.info(f"✅ Web search completed: {len(search_results)} results")
 
