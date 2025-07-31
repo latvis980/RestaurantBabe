@@ -21,8 +21,8 @@ import os
 
 from utils.location_utils import LocationUtils, LocationPoint
 from utils.telegram_location_handler import LocationData
-from agents.location_search_agent import LocationSearchAgent, VenueResult
-from agents.source_mapping_agent import SourceMappingAgent
+from location.location_search_agent import LocationSearchAgent, VenueResult
+from location.source_mapping_agent import SourceMappingAgent
 from formatters.telegram_formatter import TelegramFormatter
 
 # Import AI components for restaurant filtering

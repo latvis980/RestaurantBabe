@@ -17,7 +17,7 @@ import config
 from utils.orchestrator_manager import get_orchestrator
 
 from utils.telegram_location_handler import TelegramLocationHandler, LocationData
-from agents.location_analyzer import LocationAnalyzer
+from location.location_analyzer import LocationAnalyzer
 
 # Configure logging
 logging.basicConfig(
@@ -1026,7 +1026,7 @@ def perform_location_search(query, location_data, chat_id, user_id):
             return
 
         # Initialize location orchestrator
-        from agents.location_orchestrator import LocationOrchestrator
+        from location.location_orchestrator import LocationOrchestrator
         location_orchestrator = LocationOrchestrator(config)
 
         # Run the location search pipeline
