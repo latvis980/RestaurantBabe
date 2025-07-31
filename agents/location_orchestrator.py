@@ -107,6 +107,8 @@ Return ONLY valid JSON with the top matches:
 IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality over quantity.
 """)
 
+    # Add this debug logging to location_orchestrator.py around line 170-180
+
     async def process_location_query(
         self, 
         query: str, 
@@ -114,13 +116,7 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
         cancel_check_fn=None
     ) -> Dict[str, Any]:
         """
-        Process a location-based restaurant query
-        MODIFIED: Now includes AI filtering step before returning results
-
-        Args:
-            query: User's search query (e.g. "italian restaurants")
-            location_data: Location information (GPS coordinates or description)
-            cancel_check_fn: Function to check if operation should be cancelled
+        Process a location-based restaurant query with database-first approach
         """
         try:
             start_time = time.time()
@@ -137,16 +133,20 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
             lat, lng = coordinates
             logger.info(f"📍 Coordinates: {lat:.4f}, {lng:.4f}")
 
-            # STEP 2: Get nearby restaurants from database (IDs + names + tags only)
+            # STEP 2: ALWAYS check database first
+            logger.info(f"🗃️ STEP 2: Checking database for restaurants within {self.db_search_radius}km")
             nearby_restaurants = await self._get_nearby_restaurants_basic_data(coordinates, cancel_check_fn)
 
             if cancel_check_fn and cancel_check_fn():
                 return self._create_cancelled_response()
 
-            if nearby_restaurants:
-                logger.info(f"🗃️ Found {len(nearby_restaurants)} nearby restaurants in database")
+            logger.info(f"📊 Database returned {len(nearby_restaurants)} restaurants")
 
-                # STEP 3: NEW - Analyze restaurants using AI (same algorithm as database_search_agent.py)
+            if nearby_restaurants:
+                logger.info(f"✅ Found {len(nearby_restaurants)} nearby restaurants in database")
+
+                # STEP 3: AI filtering 
+                logger.info(f"🧠 STEP 3: AI filtering restaurants for query: '{query}'")
                 filtered_restaurants = await self._filter_restaurants_with_ai(
                     nearby_restaurants, query, location_data.description or "GPS location", cancel_check_fn
                 )
@@ -154,16 +154,22 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
                 if cancel_check_fn and cancel_check_fn():
                     return self._create_cancelled_response()
 
+                logger.info(f"🎯 AI filtering result: {len(filtered_restaurants)} restaurants matched")
+
                 if filtered_restaurants:
                     logger.info(f"✅ AI filtering found {len(filtered_restaurants)} matching restaurants")
 
-                    # STEP 4: Extract full details for matched restaurants
+                    # STEP 4: Get full details
+                    logger.info(f"📋 STEP 4: Getting full details for matched restaurants")
                     detailed_restaurants = await self._get_full_restaurant_details(filtered_restaurants, cancel_check_fn)
 
                     if cancel_check_fn and cancel_check_fn():
                         return self._create_cancelled_response()
 
-                    # STEP 5: Format and return results
+                    logger.info(f"📄 Retrieved details for {len(detailed_restaurants)} restaurants")
+
+                    # STEP 5: Format and return
+                    logger.info(f"📝 STEP 5: Formatting database results")
                     formatted_response = await self._format_location_results(
                         detailed_restaurants, coordinates, query, "database_filtered", cancel_check_fn
                     )
@@ -173,11 +179,14 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
 
                     logger.info(f"✅ Database location search completed in {total_time:.1f}s with {len(detailed_restaurants)} filtered results")
                     return formatted_response
+                else:
+                    logger.info(f"❌ AI filtering found no matches from {len(nearby_restaurants)} database restaurants")
+            else:
+                logger.info("📭 No restaurants found in database within radius")
 
-            # STEP 6: No database matches - do additional location-based search (existing implementation)
-            logger.info("🌐 No database matches found, proceeding with location-based search")
+            # STEP 6: Fallback to Google Maps + verification
+            logger.info("🌐 STEP 6: No database matches found, proceeding with Google Maps + source verification")
 
-            # Search Google Maps for venues near coordinates
             venues = await self._search_google_maps(coordinates, query, cancel_check_fn)
 
             if cancel_check_fn and cancel_check_fn():
@@ -186,18 +195,22 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
             if not venues:
                 return self._create_error_response("No venues found near your location")
 
-            # AI-powered source mapping and verification
+            logger.info(f"🗺️ Google Maps found {len(venues)} venues")
+
+            # AI-powered source verification
+            logger.info(f"🔍 Starting source verification for {len(venues)} venues")
             verified_venues = await self._verify_venues_with_sources(venues, cancel_check_fn)
 
             if cancel_check_fn and cancel_check_fn():
                 return self._create_cancelled_response()
 
-            # Format results for Telegram
+            logger.info(f"✅ Source verification complete: {len(verified_venues)} venues verified")
+
+            # Format results
             formatted_response = await self._format_location_results(
                 verified_venues, coordinates, query, "google_maps", cancel_check_fn
             )
 
-            # Add timing information
             total_time = time.time() - start_time
             formatted_response['processing_time'] = total_time
 
@@ -206,7 +219,10 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
 
         except Exception as e:
             logger.error(f"❌ Error in location search pipeline: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             return self._create_error_response(f"Search failed: {str(e)}")
+
 
     async def _get_nearby_restaurants_basic_data(
         self, 
@@ -214,53 +230,42 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
         cancel_check_fn=None
     ) -> List[Dict[str, Any]]:
         """
-        NEW METHOD: Get nearby restaurants with basic data only (IDs, names, tags)
-        Same as step 1 in the desired flow
+        Get nearby restaurants from database with basic data only
         """
         try:
+            logger.info(f"🗃️ Database search starting...")
+
             from utils.database import get_database
-            from utils.location_utils import LocationUtils
-
             db = get_database()
+
             lat, lng = coordinates
-            logger.info(f"🗃️ Checking database for restaurants within {self.db_search_radius}km")
+            logger.info(f"🗃️ Checking database for restaurants within {self.db_search_radius}km of {lat:.4f}, {lng:.4f}")
 
-            # Get all restaurants with coordinates from database
-            result = db.supabase.table('restaurants')\
-                .select('id, name, cuisine_tags, mention_count, raw_description, latitude, longitude')\
-                .not_.is_('latitude', 'null')\
-                .not_.is_('longitude', 'null')\
-                .execute()
+            # Get nearby restaurants with basic data only
+            nearby_restaurants = db.get_restaurants_by_proximity(
+                latitude=lat,
+                longitude=lng,
+                radius_km=self.db_search_radius,
+                limit=50,
+                fields=['id', 'name', 'cuisine_tags', 'mention_count', 'raw_description']
+            )
 
-            all_restaurants = result.data or []
+            logger.info(f"📊 Database query returned {len(nearby_restaurants)} restaurants within {self.db_search_radius}km")
 
-            if cancel_check_fn and cancel_check_fn():
-                return []
+            # Debug: Log first few restaurants if any found
+            if nearby_restaurants:
+                logger.info(f"📝 Sample restaurants found:")
+                for i, restaurant in enumerate(nearby_restaurants[:3]):
+                    logger.info(f"  {i+1}. {restaurant.get('name', 'Unknown')} (ID: {restaurant.get('id')})")
+            else:
+                logger.warning(f"📭 No restaurants found in database within {self.db_search_radius}km radius")
 
-            # Filter by proximity using LocationUtils
-            nearby_restaurants = []
-            for restaurant in all_restaurants:
-                try:
-                    r_lat = float(restaurant.get('latitude', 0))
-                    r_lng = float(restaurant.get('longitude', 0))
-
-                    # Calculate distance
-                    distance = LocationUtils.calculate_distance(
-                        (lat, lng), (r_lat, r_lng)
-                    )
-
-                    if distance <= self.db_search_radius:
-                        restaurant['distance_km'] = distance
-                        nearby_restaurants.append(restaurant)
-
-                except (ValueError, TypeError):
-                    continue
-
-            logger.info(f"📊 Found {len(nearby_restaurants)} restaurants in database within {self.db_search_radius}km")
             return nearby_restaurants
 
         except Exception as e:
-            logger.error(f"❌ Error getting nearby restaurants: {e}")
+            logger.error(f"❌ Error getting nearby restaurants from database: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             return []
 
     async def _filter_restaurants_with_ai(
