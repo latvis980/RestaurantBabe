@@ -219,3 +219,11 @@ def get_token_limit_for_component(component_name: str, model_type: str = None) -
 def get_content_limit_for_component(component_name: str) -> int:
     """Get the appropriate content character limit for a component"""
     return CONTENT_PROCESSING_LIMITS.get(f"{component_name}_limit", 6000)
+
+SOURCE_MAPPING_GUIDELINES = {
+    "fine_dining": ["michelin", "worlds 50 best", "james beard", "local food critics"],
+    "natural_wine": ["raisin", "wine list", "punch magazine", "natural wine company"],
+    "coffee": ["sprudge", "perfect daily grind", "coffee review", "specialty coffee"],
+    "cocktails": ["worlds 50 best bars", "punch magazine", "difford's guide", "imbibe"],
+    "general": ["timeout", "eater", "conde nast traveler", "local food media"]
+}

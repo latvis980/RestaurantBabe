@@ -557,36 +557,84 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
         venues: List[VenueResult], 
         cancel_check_fn=None
     ) -> List[Dict[str, Any]]:
-        """Use AI to map sources and verify venue information"""
+        """
+        Use AI to map sources and verify venue information with web search
+
+        This implements your smart search approach:
+        1. Get venues from Google Maps  
+        2. For each venue, generate searches like "venue + michelin", "venue + 50 best"
+        3. AI analyzes results - if only Instagram/TripAdvisor found = not verified
+        4. If mentioned in local newspaper/professional source = verified
+        """
         try:
             logger.info(f"🔍 Starting AI-powered source verification for {len(venues)} venues")
 
             verified_venues = []
+            max_venues = min(len(venues), self.max_venues_to_verify)
 
-            for i, venue in enumerate(venues[:self.max_venues_to_verify]):
+            for i, venue in enumerate(venues[:max_venues]):
                 if cancel_check_fn and cancel_check_fn():
                     break
 
-                logger.debug(f"📰 Verifying venue {i+1}/{len(venues[:self.max_venues_to_verify])}: {venue.name}")
+                logger.debug(f"📰 Verifying venue {i+1}/{max_venues}: {venue.name}")
 
-                # Simple venue verification without external source mapping for now
-                verified_venues.append({
-                    'name': venue.name,
-                    'address': venue.address,
-                    'rating': venue.rating,
-                    'price_level': venue.price_level,
-                    'place_id': venue.place_id,
-                    'location': {'lat': venue.latitude, 'lng': venue.longitude},
-                    'sources': [],  # Will be populated by source mapping if implemented
-                    'verification_confidence': 0.7  # Default confidence
-                })
+                try:
+                    # Use the enhanced source mapping agent
+                    verification_result = await self.source_mapping_agent.map_venue_sources(venue)
 
-            logger.info(f"✅ Venue verification complete: {len(verified_venues)} venues verified")
+                    if verification_result and verification_result.get('verified', False):
+                        # Venue has professional mentions - include it
+                        verified_venue = {
+                            'name': venue.name,
+                            'address': venue.address,
+                            'latitude': venue.latitude,
+                            'longitude': venue.longitude,
+                            'rating': venue.rating,
+                            'user_ratings_total': venue.user_ratings_total,
+                            'price_level': venue.price_level,
+                            'types': venue.types,
+                            'distance_km': venue.distance_km,
+                            'place_id': venue.place_id,
+
+                            # Add verification data
+                            'verification_result': verification_result,
+                            'professional_sources': verification_result.get('sources', []),
+                            'source_count': len(verification_result.get('sources', [])),
+                            'verified': True
+                        }
+
+                        verified_venues.append(verified_venue)
+                        logger.debug(f"✅ {venue.name} verified with {len(verification_result.get('sources', []))} professional sources")
+                    else:
+                        logger.debug(f"❌ {venue.name} not found in professional sources")
+
+                except Exception as e:
+                    logger.error(f"Error verifying {venue.name}: {e}")
+                    continue
+
+            logger.info(f"✅ Source verification complete: {len(verified_venues)}/{len(venues)} venues verified")
             return verified_venues
 
         except Exception as e:
-            logger.error(f"❌ Error verifying venues: {e}")
-            return []
+            logger.error(f"❌ Error in source verification: {e}")
+            # Return unverified venues as fallback
+            return [self._venue_to_dict(venue) for venue in venues[:5]]
+
+    def _venue_to_dict(self, venue: VenueResult) -> Dict[str, Any]:
+        """Convert VenueResult to dictionary format"""
+        return {
+            'name': venue.name,
+            'address': venue.address,
+            'latitude': venue.latitude,
+            'longitude': venue.longitude,
+            'rating': venue.rating,
+            'user_ratings_total': venue.user_ratings_total,
+            'price_level': venue.price_level,
+            'types': venue.types,
+            'distance_km': venue.distance_km,
+            'place_id': venue.place_id,
+            'verified': False  # Fallback case
+        }
 
     async def _format_location_results(
         self, 
