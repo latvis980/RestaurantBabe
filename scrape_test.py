@@ -340,11 +340,11 @@ class ScrapeTest:
 
         # Send results to admin if bot is provided
         if bot and self.admin_chat_id:
-            await self._send_results_to_admin(bot, filepath, restaurant_query, successful_scrapes if 'successful_scrapes' in locals() else 0)
+            self._send_results_to_admin(bot, filepath, restaurant_query, successful_scrapes if 'successful_scrapes' in locals() else 0)
 
         return filepath
 
-    async def _send_results_to_admin(self, bot, file_path: str, query: str, successful_count: int):
+    def _send_results_to_admin(self, bot, file_path: str, query: str, successful_count: int):
         """Send pipeline test results to admin via Telegram"""
         try:
             # Create summary message
@@ -358,7 +358,7 @@ class ScrapeTest:
                 f"📄 Complete pipeline analysis attached with FULL scraped content."
             )
 
-            await bot.send_message(
+            bot.send_message(
                 self.admin_chat_id,
                 summary,
                 parse_mode='HTML'
@@ -366,7 +366,7 @@ class ScrapeTest:
 
             # Send the results file
             with open(file_path, 'rb') as f:
-                await bot.send_document(
+                bot.send_document(
                     self.admin_chat_id,
                     f,
                     caption=f"🧪 Pipeline test: {query}"
