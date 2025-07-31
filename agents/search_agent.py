@@ -121,14 +121,17 @@ class BraveSearchAgent:
 
         logger.info("✅ Enhanced Search Agent initialized with parallel search and AI filtering")
 
+    # Replace the search method in your agents/search_agent.py with this fixed version
+
     def search(self, search_queries: List[str], destination: str, query_metadata: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """
-        Main search method - maintains compatibility with orchestrator
+        Execute search queries and return filtered results
+        FIXED: Handles event loop conflicts properly
 
         Args:
-            search_queries: List of search queries from query analyzer
-            destination: Target destination for search
-            query_metadata: Optional metadata from query analyzer (language info, etc.)
+            search_queries: List of search queries
+            destination: Target destination/city 
+            query_metadata: Query analyzer metadata for intelligent routing
 
         Returns:
             List of filtered and evaluated search results
@@ -140,16 +143,47 @@ class BraveSearchAgent:
             logger.info(f"🧠 Using query analyzer metadata: {query_metadata.get('is_english_speaking', 'unknown')} speaking, local language: {query_metadata.get('local_language', 'none')}")
 
         try:
-            # Run parallel search in event loop
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            # FIXED: Check if event loop is already running
             try:
-                results = loop.run_until_complete(
-                    self._parallel_search_and_filter(search_queries, destination, query_metadata)
-                )
+                # Try to get the current running loop
+                loop = asyncio.get_running_loop()
+                # If we get here, a loop is already running - use different approach
+                logger.info("🔄 Event loop already running - using concurrent execution")
+
+                # Run in thread pool to avoid loop conflict
+                import concurrent.futures
+                import threading
+
+                def run_async_search():
+                    # Create new loop in this thread
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        return new_loop.run_until_complete(
+                            self._parallel_search_and_filter(search_queries, destination, query_metadata)
+                        )
+                    finally:
+                        new_loop.close()
+
+                # Execute in thread pool
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(run_async_search)
+                    results = future.result(timeout=60)  # 60 second timeout
+
                 return results
-            finally:
-                loop.close()
+
+            except RuntimeError:
+                # No event loop is running - create one
+                logger.info("🆕 No event loop running - creating new one")
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    results = loop.run_until_complete(
+                        self._parallel_search_and_filter(search_queries, destination, query_metadata)
+                    )
+                    return results
+                finally:
+                    loop.close()
 
         except Exception as e:
             logger.error(f"❌ Search failed: {e}")
