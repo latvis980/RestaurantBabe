@@ -39,8 +39,7 @@ class BraveSearchAgent:
         You are an expert at evaluating web content about restaurants.
         Your task is to analyze a web page's content and rate it using the criteria below.
 
-        The user is looking for restaurants in: {{destination}}. Make sure that the content is relevant to this destination.
-
+        
         PRIORITIZE THESE SOURCES (score 0.8-1.0):
         - Local newspapers and magazines (like Expresso, Le Monde, El Pais, Time Out)
         - Professional food critics and culinary experts
