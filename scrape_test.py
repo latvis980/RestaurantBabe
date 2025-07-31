@@ -80,8 +80,6 @@ class ScrapeTest:
 
                 f.write(f"\nSearch Parameters:\n")
                 f.write(f"  Destination: {destination}\n")
-                f.write(f"  Primary: {query_analysis.get('primary_search_parameters', [])}\n")
-                f.write(f"  Secondary: {query_analysis.get('secondary_filter_parameters', [])}\n\n")
 
                 # Step 2: Web Search
                 f.write("STEP 2: WEB SEARCH\n")

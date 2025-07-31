@@ -59,8 +59,7 @@ class FollowUpSearchAgent:
         self,
         edited_results: Dict[str, List[Dict[str, Any]]],
         follow_up_queries: List[Dict[str, Any]] = None,  # Not used but kept for compatibility
-        destination: str = "Unknown",
-        secondary_filter_parameters: Optional[List[str]] = None  # Not used but kept for compatibility
+        destination: str = "Unknown"
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
         Verifies addresses for ALL restaurants and filters based on:

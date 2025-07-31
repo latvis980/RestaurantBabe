@@ -52,7 +52,6 @@ class QueryAnalyzer:
           "is_english_speaking": true/false,
           "is_usa": true/false,
           "local_language": "language name (if not English-speaking)",
-          "primary_search_parameters": ["param1", "param2", ...],
           "english_search_query": "search query in English using primary parameters",
           "local_language_search_query": "search query in local language (if applicable) using primary parameters"
         }}

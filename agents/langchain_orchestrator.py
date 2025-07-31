@@ -371,8 +371,8 @@ class LangChainOrchestrator:
             followup_output = self.follow_up_search_agent.perform_follow_up_searches(
                 edited_results=edited_results,
                 follow_up_queries=follow_up_queries,
-                destination=x.get("destination", "Unknown"),
-                secondary_filter_parameters=x.get("secondary_filter_parameters")
+                destination=x.get("destination", "Unknown")
+                # Remove: secondary_filter_parameters=x.get("secondary_filter_parameters")
             )
 
             enhanced_results = followup_output.get("enhanced_results", {"main_list": []})
