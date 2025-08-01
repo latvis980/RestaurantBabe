@@ -68,7 +68,6 @@ EVALUATION CRITERIA:
 
 1. **Query Match**: Do the restaurants match what the user is asking for?
    - Cuisine type, dining style, price range, special requirements
-   - Do the result present a good choice of what the user asked for (for example, if they are asking for Italian, only pizza restaurants aren't enough)
 
 2. **Quantity**: Is there enough variety for the user to choose from?
    - 3+ restaurants = usually sufficient 
@@ -85,7 +84,9 @@ DECISION LOGIC:
 - If too few results (less than 3) → TRIGGER WEB SEARCH
 - If no results → TRIGGER WEB SEARCH
 
-OUTPUT: JSON with decision and reasoning"""
+OUTPUT: JSON with decision and reasoning
+
+IMPORTANT: Always return valid JSON. If you're unsure, err on the side of triggering web search."""
 
     def _get_evaluation_human_prompt(self) -> str:
         """Human prompt template for evaluation"""
@@ -97,7 +98,7 @@ DATABASE RESTAURANTS ({{restaurant_count}} found):
 
 Evaluate if these database results are sufficient for the user's query.
 
-Return JSON:
+Return ONLY valid JSON in this exact format:
 {{
     "database_sufficient": true/false,
     "trigger_web_search": true/false,
@@ -184,40 +185,75 @@ Return JSON:
         logger.info("🌐 Triggering web search workflow")
 
         try:
-            # Option 1: Trigger BraveSearchAgent immediately (if you want immediate search)
+            # FIXED: Actually trigger web search when evaluation fails or database is insufficient
             if self.brave_search_agent:
-                logger.info("🚀 Triggering BraveSearchAgent immediately")
-                # You could trigger the search here if you want immediate results
-                # search_results = self.brave_search_agent.search(pipeline_data)
-                # But based on your current architecture, you probably want to just set routing flags
+                logger.info("🚀 Executing web search through BraveSearchAgent")
 
-            # Return routing decision for main web search pipeline
-            return {
-                **pipeline_data,
-                "evaluation_result": {
-                    "database_sufficient": False,
-                    "trigger_web_search": True,
-                    "content_source": "web_search",
-                    "reasoning": reasoning,
-                    "quality_score": 0.3,
-                    "evaluation_summary": {"reason": "database_insufficient"}
-                },
-                "content_source": "web_search",
-                "trigger_web_search": True,
-                "skip_web_search": False,  # Allow main search step
-                "final_database_content": [],
-                "optimized_content": {
-                    "database_restaurants": [],
-                    "scraped_results": []
+                # Prepare search data
+                search_queries = pipeline_data.get('search_queries', [])
+                destination = pipeline_data.get('destination', 'Unknown')
+                query_metadata = {
+                    'is_english_speaking': pipeline_data.get('is_english_speaking', True),
+                    'local_language': pipeline_data.get('local_language')
                 }
-            }
+
+                # Execute search immediately
+                search_results = self.brave_search_agent.search(search_queries, destination, query_metadata)
+
+                logger.info(f"✅ Web search completed: {len(search_results)} results found")
+
+                # Return with web search results
+                return {
+                    **pipeline_data,
+                    "evaluation_result": {
+                        "database_sufficient": False,
+                        "trigger_web_search": True,
+                        "content_source": "web_search",
+                        "reasoning": reasoning,
+                        "quality_score": 0.3,
+                        "evaluation_summary": {"reason": "database_insufficient"}
+                    },
+                    "content_source": "web_search",
+                    "trigger_web_search": True,
+                    "skip_web_search": True,  # Skip main search since we already did it
+                    "final_database_content": [],
+                    "web_search_results": search_results,  # Add the actual results
+                    "optimized_content": {
+                        "database_restaurants": [],
+                        "scraped_results": search_results
+                    }
+                }
+            else:
+                logger.warning("⚠️ BraveSearchAgent not available - falling back to routing flags")
+                # Return routing decision for main web search pipeline
+                return {
+                    **pipeline_data,
+                    "evaluation_result": {
+                        "database_sufficient": False,
+                        "trigger_web_search": True,
+                        "content_source": "web_search",
+                        "reasoning": reasoning,
+                        "quality_score": 0.3,
+                        "evaluation_summary": {"reason": "database_insufficient"}
+                    },
+                    "content_source": "web_search",
+                    "trigger_web_search": True,
+                    "skip_web_search": False,  # Allow main search step
+                    "final_database_content": [],
+                    "optimized_content": {
+                        "database_restaurants": [],
+                        "scraped_results": []
+                    }
+                }
 
         except Exception as e:
             logger.error(f"❌ Error in web search workflow: {e}")
             return self._handle_evaluation_error(pipeline_data, e)
 
     def _handle_evaluation_error(self, pipeline_data: Dict[str, Any], error: Exception) -> Dict[str, Any]:
-        """Centralized error handling with consistent fallback logic"""
+        """
+        FIXED: Centralized error handling that triggers actual web search instead of just returning ALL database results
+        """
         logger.error(f"❌ Evaluation error: {error}")
 
         dump_chain_state("content_evaluation_error", {
@@ -226,25 +262,90 @@ Return JSON:
             "database_count": len(pipeline_data.get("database_results", []))
         })
 
-        # Fallback: trigger web search when evaluation fails
-        return {
-            **pipeline_data,
-            "evaluation_result": {
-                "database_sufficient": False,
-                "trigger_web_search": True,
+        # FIXED: When AI evaluation fails, trigger web search instead of using all database results
+        logger.info("🔧 AI evaluation failed - triggering web search as fallback")
+
+        try:
+            # Try to execute web search immediately when evaluation fails
+            if self.brave_search_agent:
+                logger.info("🚀 Executing fallback web search through BraveSearchAgent")
+
+                # Prepare search data
+                search_queries = pipeline_data.get('search_queries', [])
+                destination = pipeline_data.get('destination', 'Unknown')
+                query_metadata = {
+                    'is_english_speaking': pipeline_data.get('is_english_speaking', True),
+                    'local_language': pipeline_data.get('local_language')
+                }
+
+                # Execute search as fallback
+                search_results = self.brave_search_agent.search(search_queries, destination, query_metadata)
+
+                logger.info(f"✅ Fallback web search completed: {len(search_results)} results found")
+
+                # Return web search results instead of database fallback
+                return {
+                    **pipeline_data,
+                    "evaluation_result": {
+                        "database_sufficient": False,
+                        "trigger_web_search": True,
+                        "content_source": "web_search",
+                        "reasoning": f"AI evaluation failed ({str(error)}) - using web search fallback",
+                        "evaluation_summary": {"reason": "evaluation_error_web_search_fallback"}
+                    },
+                    "evaluation_error": str(error),
+                    "content_source": "web_search",
+                    "trigger_web_search": True,
+                    "skip_web_search": True,  # Skip main search since we already did it
+                    "final_database_content": [],
+                    "web_search_results": search_results,  # Add the actual results
+                    "optimized_content": {
+                        "database_restaurants": [],
+                        "scraped_results": search_results
+                    }
+                }
+            else:
+                logger.warning("⚠️ BraveSearchAgent not available for fallback - using routing flags")
+                # Fallback: trigger web search when evaluation fails (old behavior but cleaner)
+                return {
+                    **pipeline_data,
+                    "evaluation_result": {
+                        "database_sufficient": False,
+                        "trigger_web_search": True,
+                        "content_source": "web_search",
+                        "reasoning": f"AI evaluation failed ({str(error)}) - triggering web search",
+                        "evaluation_summary": {"reason": "evaluation_error"}
+                    },
+                    "evaluation_error": str(error),
+                    "content_source": "web_search",
+                    "trigger_web_search": True,
+                    "skip_web_search": False,  # Allow main search step
+                    "final_database_content": []
+                }
+
+        except Exception as search_error:
+            logger.error(f"❌ Fallback web search also failed: {search_error}")
+            # If web search also fails, we have no choice but to use a simple fallback
+            return {
+                **pipeline_data,
+                "evaluation_result": {
+                    "database_sufficient": False,
+                    "trigger_web_search": True,
+                    "content_source": "web_search",
+                    "reasoning": f"Both AI evaluation and web search failed - using routing fallback",
+                    "evaluation_summary": {"reason": "complete_evaluation_failure"}
+                },
+                "evaluation_error": f"AI: {str(error)}, Search: {str(search_error)}",
                 "content_source": "web_search",
-                "reasoning": f"Evaluation error: {str(error)}",
-                "evaluation_summary": {"reason": "evaluation_error"}
-            },
-            "evaluation_error": str(error),
-            "content_source": "web_search",
-            "trigger_web_search": True,
-            "skip_web_search": False,
-            "final_database_content": []
-        }
+                "trigger_web_search": True,
+                "skip_web_search": False,
+                "final_database_content": []
+            }
 
     def _evaluate_with_ai(self, restaurants: List[Dict], raw_query: str, destination: str) -> Dict[str, Any]:
-        """Use AI to evaluate database content quality"""
+        """
+        IMPROVED: Use AI to evaluate database content with better error handling
+        """
         try:
             # Prepare restaurant summary for AI evaluation
             restaurants_summary = self._create_restaurants_summary(restaurants)
@@ -260,25 +361,54 @@ Return JSON:
             # Get AI evaluation
             response = self.evaluation_chain.invoke({"messages": formatted_prompt})
 
-            # Parse response
+            # Parse response with improved error handling
             content = response.content.strip()
+
+            # Clean up response - handle various formats
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
                 content = content.split("```")[1].split("```")[0].strip()
 
-            evaluation = json.loads(content)
+            # Additional cleanup for common AI response patterns
+            content = content.replace('```', '').strip()
+            if content.startswith('json'):
+                content = content[4:].strip()
+
+            # Handle empty content
+            if not content:
+                logger.warning("⚠️ AI returned empty evaluation - using fallback")
+                raise ValueError("Empty AI response")
+
+            logger.debug(f"🔍 AI evaluation response: {content}")
+
+            # Parse JSON with better error handling
+            try:
+                evaluation = json.loads(content)
+            except json.JSONDecodeError as json_error:
+                logger.error(f"❌ JSON parsing failed: {json_error}")
+                logger.error(f"📄 Raw content: '{content}'")
+                raise ValueError(f"Invalid JSON response: {content[:100]}...")
+
+            # Validate required fields
+            required_fields = ['database_sufficient', 'trigger_web_search', 'reasoning']
+            missing_fields = [field for field in required_fields if field not in evaluation]
+
+            if missing_fields:
+                logger.warning(f"⚠️ AI evaluation missing fields: {missing_fields}")
+                # Fill in missing fields with safe defaults
+                evaluation.setdefault('database_sufficient', False)
+                evaluation.setdefault('trigger_web_search', True)
+                evaluation.setdefault('reasoning', 'Incomplete AI evaluation')
+                evaluation.setdefault('quality_score', 0.3)
+
+            logger.info(f"✅ AI evaluation successful: {evaluation.get('reasoning', 'No reasoning')}")
             return evaluation
 
         except Exception as e:
             logger.error(f"❌ Error in AI evaluation: {e}")
-            # Fallback decision
-            return {
-                "database_sufficient": len(restaurants) >= 3,  # Simple fallback logic
-                "trigger_web_search": len(restaurants) < 3,
-                "reasoning": f"AI evaluation failed, using fallback logic: {len(restaurants)} restaurants",
-                "quality_score": 0.5
-            }
+            # Re-raise to be handled by _handle_evaluation_error
+            raise e
 
     def _create_restaurants_summary(self, restaurants: List[Dict]) -> str:
         """Create a concise summary of restaurants for AI evaluation"""
@@ -299,23 +429,10 @@ Return JSON:
 
         return "\n".join(summary_lines)
 
-    # Keep the original method for backward compatibility if needed
-    def evaluate_database_content(self, 
-                                database_restaurants: List[Dict[str, Any]], 
-                                raw_query: str,
-                                destination: str = "Unknown") -> Dict[str, Any]:
-        """
-        LEGACY METHOD: For backward compatibility.
-        Use evaluate_and_route() for new implementations.
-        """
-        logger.warning("⚠️ Using legacy evaluate_database_content method. Consider using evaluate_and_route() instead.")
-
-        # Convert to new format and call main method
-        pipeline_data = {
-            "database_results": database_restaurants,
-            "raw_query": raw_query,
-            "destination": destination
+    def get_stats(self) -> Dict[str, Any]:
+        """Get evaluation statistics"""
+        return {
+            "agent_type": "content_evaluation",
+            "has_brave_search_agent": self.brave_search_agent is not None,
+            "model": self.config.OPENAI_MODEL
         }
-
-        result = self.evaluate_and_route(pipeline_data)
-        return result.get("evaluation_result", {})
