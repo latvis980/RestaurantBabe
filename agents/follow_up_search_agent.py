@@ -1,4 +1,4 @@
-# agents/follow_up_search_agent.py - Updated with corrected Google Maps URLs
+# agents/follow_up_search_agent.py - COMPLETE FIXED VERSION with address components
 
 import logging
 import googlemaps
@@ -17,7 +17,7 @@ class FollowUpSearchAgent:
     3. Rating filtering and restaurant rejection based on Google ratings
     4. Filtering out closed restaurants (temporarily or permanently) with auto-deletion
     5. Saving coordinates and corrected country data back to database
-    6. FIXED: Proper Google Maps URLs that work on mobile and desktop
+    6. FIXED: Proper address_components storage for street-only display
     """
 
     def __init__(self, config):
@@ -43,7 +43,7 @@ class FollowUpSearchAgent:
             "user_ratings_total",
             "business_status",  # To check if restaurant is closed
             "opening_hours",    # Additional info about operating hours
-            "address_components"  # For country extraction
+            "address_components"  # For country extraction AND street-only display
         ]
 
     @log_function_call
@@ -134,7 +134,8 @@ class FollowUpSearchAgent:
         2. Extracts country from Google Maps formatted addresses
         3. Auto-deletes closed restaurants from database
         4. Filters by rating threshold
-        5. FIXED: Creates proper Google Maps URLs
+        5. STORES address_components for proper street-only formatting
+        6. Saves coordinates and country data back to database
         """
         # Make a copy to avoid modifying the original
         updated_restaurant = restaurant.copy()
@@ -232,16 +233,17 @@ class FollowUpSearchAgent:
                     restaurant_name, destination, maps_info, extracted_country
                 )
 
-            # FIXED: Create proper Google Maps URLs using correct format
+            # CRITICAL: Store place_id and address_components for proper formatting
             place_id = maps_info.get("place_id")
+            address_components = maps_info.get("address_components", [])
+
             if place_id:
-                # Use the official Google Maps Place URL format (works on mobile + desktop)
-                updated_restaurant["google_maps_url"] = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
                 updated_restaurant["place_id"] = place_id
-                logger.debug(f"📱 Created mobile-friendly URL for {restaurant_name}")
-            elif maps_info.get("url"):
-                # Fallback to the URL provided by Places API
-                updated_restaurant["google_maps_url"] = maps_info["url"]
+                logger.debug(f"✅ Stored place_id for {restaurant_name}: {place_id}")
+
+            if address_components:
+                updated_restaurant["address_components"] = address_components
+                logger.debug(f"✅ Stored address_components for {restaurant_name}")
 
             # Add business status information
             if business_status:
@@ -367,6 +369,7 @@ class FollowUpSearchAgent:
 
             if existing_restaurants.data:
                 restaurant_id = existing_restaurants.data[0]['id']
+                restaurant_info = existing_restaurants.data[0]
 
                 # Delete the restaurant
                 delete_result = db.supabase.table('restaurants')\
@@ -438,16 +441,13 @@ class FollowUpSearchAgent:
             business_status = result_data.get("business_status")
             address_components = result_data.get("address_components", [])
 
-            # FIXED: Create proper Google Maps URL using place_id
-            place_url = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
-
             return {
                 "formatted_address": formatted_address,
                 "rating": rating,
                 "user_ratings_total": user_ratings_total,
                 "business_status": business_status,
                 "place_id": place_id,
-                "url": place_url,  # Use our corrected URL format
+                "url": result_data.get("url", f"https://www.google.com/maps/place/?q=place_id:{place_id}"),
                 "geometry": result_data.get("geometry", {}),
                 "address_components": address_components
             }

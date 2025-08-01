@@ -1,7 +1,7 @@
 # formatters/telegram_formatter.py
 """
-Complete Telegram HTML formatter - handles all Telegram-specific formatting
-FIXED VERSION - corrected Google Maps URLs for proper mobile/desktop support
+Complete Telegram HTML formatter with CORRECT Google Maps URLs and street-only addresses
+FIXED VERSION - uses official Google Maps URL format from documentation
 """
 import re
 import logging
@@ -72,9 +72,9 @@ class TelegramFormatter:
         address = restaurant.get('address', 'Address unavailable')
         sources = restaurant.get('sources', [])
 
-        # Get Google Maps data for proper mobile links
+        # Get Google Maps data for proper links
         place_id = restaurant.get('place_id')
-        google_maps_url = restaurant.get('google_maps_url')
+        address_components = restaurant.get('address_components', [])
 
         # Skip if no valid name
         if not name or name == 'Unknown Restaurant':
@@ -86,7 +86,7 @@ class TelegramFormatter:
 
         parts = [
             f"<b>{index}. {name_escaped}</b>\n",
-            self._format_address_with_correct_google_link(address, place_id),
+            self._format_address_with_official_google_link(address, place_id, address_components),
             f"{desc_escaped}\n" if desc_escaped else "",
             self._format_sources(sources),
             "\n"  # Add spacing between restaurants
@@ -94,39 +94,99 @@ class TelegramFormatter:
 
         return ''.join(filter(None, parts))
 
-    def _format_address_with_correct_google_link(self, address, place_id=None):
+    def _format_address_with_official_google_link(self, full_address, place_id=None, address_components=None):
         """
-        Format address with CORRECT Google Maps URLs according to Google documentation
+        Format address using OFFICIAL Google Maps URL format with street-only display text
 
-        Google Maps URL formats:
-        1. Place ID (BEST for accuracy): https://www.google.com/maps/place/?q=place_id:PLACE_ID
-        2. Search query fallback: https://www.google.com/maps/search/?api=1&query=ENCODED_ADDRESS
+        URL Format (from Google docs): 
+        https://www.google.com/maps/search/?api=1&query=FALLBACK&query_place_id=PLACE_ID
 
-        These URLs work on:
-        - Desktop: Opens in browser Google Maps
-        - Mobile: Opens Google Maps app if installed, otherwise browser
-        - iOS: Can open Apple Maps if user chooses
+        Display Text: Only street number + route (e.g. "123 Main Street")
         """
-        if not address or address == "Address unavailable":
+        if not full_address or full_address == "Address unavailable":
             return "📍 Address unavailable\n"
 
-        # Clean the address text for display
-        clean_address = self._clean_text(str(address))
+        # Extract street-only address for display
+        street_address = self._extract_street_address(address_components, full_address)
 
-        # PRIORITY 1: Use place_id if available (most accurate)
-        if place_id:
-            # Official Google Maps Place URL format
-            maps_url = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
-            logger.debug(f"Using place_id URL: {maps_url}")
-            return f'📍 <a href="{maps_url}">{clean_address}</a>\n'
+        if not street_address:
+            return "📍 Address unavailable\n"
 
-        # PRIORITY 2: Create search-based URL (fallback)
+        # Clean the street address for display
+        clean_street = self._clean_text(street_address)
+
+        # Create the OFFICIAL Google Maps URL format
+        if place_id and place_id.strip():
+            # Official format from Google documentation
+            fallback_query = urllib.parse.quote(clean_street)
+            maps_url = f"https://www.google.com/maps/search/?api=1&query={fallback_query}&query_place_id={place_id.strip()}"
+            logger.debug(f"Created official Google Maps URL: {maps_url}")
         else:
-            # Use Google Maps Search API format for better reliability
-            encoded_address = urllib.parse.quote(clean_address)
-            search_url = f"https://www.google.com/maps/search/?api=1&query={encoded_address}"
-            logger.debug(f"Using search URL: {search_url}")
-            return f'📍 <a href="{search_url}">{clean_address}</a>\n'
+            # Fallback: simple search URL
+            encoded_street = urllib.parse.quote(clean_street)
+            maps_url = f"https://www.google.com/maps/search/?api=1&query={encoded_street}"
+            logger.debug(f"Created fallback search URL: {maps_url}")
+
+        # Return properly formatted HTML link with street-only text
+        return f'📍 <a href="{maps_url}">{clean_street}</a>\n'
+
+    def _extract_street_address(self, address_components, full_address):
+        """
+        Extract only street number + route from address_components
+
+        According to Google docs:
+        - street_number: The precise numeric portion (e.g., "123")
+        - route: The named route (e.g., "Main Street")
+
+        Returns: "123 Main Street" (street only, no city/country/postal)
+        """
+        if not address_components or not isinstance(address_components, list):
+            # Fallback: extract street from full address
+            return self._extract_street_from_full_address(full_address)
+
+        street_number = ""
+        route = ""
+
+        # Parse address components according to Google's structure
+        for component in address_components:
+            types = component.get('types', [])
+            long_name = component.get('long_name', '')
+
+            if 'street_number' in types:
+                street_number = long_name
+            elif 'route' in types:
+                route = long_name
+
+        # Combine street number and route
+        if street_number and route:
+            return f"{street_number} {route}"
+        elif route:  # Some places only have route (like "Main Street")
+            return route
+        elif street_number:  # Rare case: only number
+            return street_number
+        else:
+            # Last resort: extract from full address
+            return self._extract_street_from_full_address(full_address)
+
+    def _extract_street_from_full_address(self, full_address):
+        """
+        Extract street address from full formatted address as fallback
+        Takes the first part before the first comma
+        """
+        if not full_address:
+            return ""
+
+        # Split by comma and take the first part (usually the street)
+        parts = str(full_address).split(',')
+        if parts:
+            street_part = parts[0].strip()
+            # Basic validation - should contain some numbers or common street words
+            if (re.search(r'\d', street_part) or 
+                any(word in street_part.lower() for word in ['street', 'st', 'avenue', 'ave', 'road', 'rd', 'plaza', 'square', 'lane', 'ln', 'drive', 'dr', 'boulevard', 'blvd', 'way'])):
+                return street_part
+
+        # If no valid street found, return "Address available"
+        return "Address available"
 
     def _format_sources(self, sources):
         """Format source attribution"""
@@ -204,13 +264,9 @@ class TelegramFormatter:
     def _sanitize_for_telegram(self, text):
         """
         Ensure HTML is completely safe for Telegram API - FIXED VERSION
-        Removes problematic variable-width lookbehind regex patterns
         """
         if not text:
             return ""
-
-        # FIXED: Replace the problematic lookbehind regex with a simpler approach
-        # Instead of using complex lookbehind, we'll use a different strategy
 
         # First, protect valid HTML tags by temporarily replacing them
         valid_tag_pattern = r'<(/?)(?:b|i|u|s|a|code|pre)(?:\s[^>]*)?>'
@@ -261,10 +317,7 @@ class TelegramFormatter:
         return self._fix_tag_nesting(text)
 
     def _fix_tag_nesting(self, text):
-        """
-        Fix HTML tag nesting without using complex regex lookbehind
-        Uses simple string parsing instead
-        """
+        """Fix HTML tag nesting using simple string parsing"""
         allowed_tags = ['b', 'i', 'u', 's', 'a', 'code', 'pre']
         open_tags = []
         result = []
