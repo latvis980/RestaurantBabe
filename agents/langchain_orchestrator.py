@@ -178,7 +178,7 @@ class LangChainOrchestrator:
                 **x,
                 "raw_query": x.get("raw_query", x.get("query", "")),  # Preserve raw query even on error
                 "has_database_content": False,
-                "database_results": [],
+                "database_restaurants": [],
                 "content_source": "web_search",
                 "skip_web_search": False,
                 "evaluation_details": {
@@ -257,7 +257,7 @@ class LangChainOrchestrator:
             if x.get("content_source") == "database":
                 logger.info("⏭️ SKIPPING SCRAPING - using database content")
                 logger.info("⏭️ → NO FILES SENT TO SUPABASE MANAGER (using existing data)")
-                return {**x, "enriched_results": []}
+                return {**x, "scraped_results": []}
 
             logger.info("🤖 SMART SCRAPING PIPELINE STARTING")  # ENHANCED
             logger.info("🤖 → WILL SEND FILES TO SUPABASE MANAGER AFTER SCRAPING")
@@ -266,7 +266,7 @@ class LangChainOrchestrator:
 
             if not search_results:
                 logger.warning("⚠️ No search results to scrape")
-                return {**x, "enriched_results": []}
+                return {**x, "scraped_results": []}
 
             def run_scraping():
                 loop = asyncio.new_event_loop()
@@ -279,7 +279,7 @@ class LangChainOrchestrator:
                     loop.close()
 
             with concurrent.futures.ThreadPoolExecutor() as pool:
-                enriched_results = pool.submit(run_scraping).result()
+                scraped_results = pool.submit(run_scraping).result()
 
             # ENHANCED: Log smart scraper statistics
             scraper_stats = self.scraper.get_stats()
@@ -293,24 +293,24 @@ class LangChainOrchestrator:
                     emoji = {"specialized": "🆓", "simple_http": "🟢", "enhanced_http": "🟡", "firecrawl": "🔴"}
                     logger.info(f"   {emoji.get(strategy, '📌')} {strategy}: {count} URLs")
 
-            logger.info(f"✅ Scraped {len(enriched_results)} articles")
+            logger.info(f"✅ Scraped {len(scraped_results)} articles")
 
             # Save scraped content for Supabase manager (existing logic)
-            if enriched_results:
+            if scraped_results:
                 logger.info("💾 Proceeding to save scraped content...")
-                self._save_scraped_content_for_processing(x, enriched_results)
+                self._save_scraped_content_for_processing(x, scraped_results)
             else:
                 logger.warning("⚠️ No enriched results to save")
 
             return {
                 **x, 
                 "raw_query": x.get("raw_query", x.get("query", "")),
-                "enriched_results": enriched_results
+                "scraped_results": scraped_results
             }
 
         except Exception as e:
             logger.error(f"❌ Error in smart scraping step: {e}")
-            return {**x, "enriched_results": []}
+            return {**x, "scraped_results": []}
 
     def _edit_step(self, x):
         """
@@ -327,9 +327,9 @@ class LangChainOrchestrator:
                 # DATABASE BRANCH: Process database restaurants
                 logger.info("🗃️ Processing DATABASE restaurants")
 
-                database_results = x.get("final_database_content", [])
+                database_restaurants = x.get("final_database_content", [])
 
-                if not database_results:
+                if not database_restaurants:
                     logger.warning("⚠️ No database results to process")
                     return {
                         **x,
@@ -341,8 +341,8 @@ class LangChainOrchestrator:
                 # FIXED: Use correct parameter names
                 edit_output = self.editor_agent.edit(
                     scraped_results=None,
-                    database_restaurants=database_results,
-                    original_query=raw_query,  # Use original_query instead of raw_query
+                    database_restaurants=database_restaurants,
+                    raw_query=raw_query, 
                     destination=destination
                 )
 
@@ -352,7 +352,7 @@ class LangChainOrchestrator:
                 # WEB SEARCH BRANCH: Process scraped content
                 logger.info("🌐 Processing SCRAPED content")
 
-                scraped_results = x.get("enriched_results", [])
+                scraped_results = x.get("scraped_results", [])
 
                 if not scraped_results:
                     logger.warning("⚠️ No scraped results to process")
@@ -367,7 +367,7 @@ class LangChainOrchestrator:
                 edit_output = self.editor_agent.edit(
                     scraped_results=scraped_results,
                     database_restaurants=None,
-                    original_query=raw_query,  # Use original_query instead of raw_query
+                    raw_query=raw_query,
                     destination=destination
                 )
 
@@ -465,11 +465,11 @@ class LangChainOrchestrator:
                 "telegram_formatted_text": "Sorry, there was an error formatting the restaurant recommendations."
             }
 
-    def _save_scraped_content_for_processing(self, x, enriched_results):
+    def _save_scraped_content_for_processing(self, x, scraped_results):
         """Save scraped content and send to Supabase manager (working version)"""
         try:
             logger.info("💾 ENTERING SIMPLE SAVE SCRAPED CONTENT")
-            logger.info(f"💾 Enriched results count: {len(enriched_results)}")
+            logger.info(f"💾 Enriched results count: {len(scraped_results)}")
 
             from datetime import datetime
             import threading
@@ -492,7 +492,7 @@ class LangChainOrchestrator:
             all_scraped_content = ""
             sources = []
 
-            for result in enriched_results:
+            for result in scraped_results:
                 try:
                     content = result.get("scraped_content", result.get("content", ""))
                     url = result.get("url", "")

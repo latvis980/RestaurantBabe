@@ -173,11 +173,7 @@ Return ONLY valid JSON in this exact format:
             "content_source": "database",
             "trigger_web_search": False,
             "skip_web_search": True,  # Control main search step
-            "final_database_content": database_restaurants,
-            "optimized_content": {
-                "database_restaurants": database_restaurants,
-                "scraped_results": []
-            }
+            "final_database_content": database_restaurants
         }
 
     def _trigger_web_search_workflow(self, pipeline_data: Dict[str, Any], reasoning: str) -> Dict[str, Any]:

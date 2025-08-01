@@ -30,7 +30,7 @@ class EditorAgent:
         - Be honest about uncertainties: "though I cannot confirm if they have vegan options, their modern approach suggests they likely accommodate dietary preferences"
         - Focus on positive aspects and potential matches rather than strict filtering
 
-        ORIGINAL USER REQUEST: {{original_query}}
+        ORIGINAL USER REQUEST: {{raw_query}}
         DESTINATION: {{destination}}
 
         SOURCE OUTPUT RULE:
@@ -77,7 +77,7 @@ class EditorAgent:
         - Be honest about what you can/cannot confirm from the content
         - Focus on potential and positive aspects rather than strict requirements
 
-        ORIGINAL USER REQUEST: {{original_query}}
+        ORIGINAL USER REQUEST: {{raw_query}}
         DESTINATION: {{destination}}
         
         SOURCE OUTPUT RULE:
@@ -108,7 +108,7 @@ class EditorAgent:
         self.database_prompt = ChatPromptTemplate.from_messages([
             ("system", self.database_formatting_prompt),
             ("human", """
-Original user request: {original_query}
+Original user request: {raw_query}
 Destination: {destination}
 
 Database restaurants to format:
@@ -121,7 +121,7 @@ Format these restaurants using the diplomatic concierge approach. Include restau
         self.scraped_prompt = ChatPromptTemplate.from_messages([
             ("system", self.scraped_content_prompt),
             ("human", """
-Original user request: {original_query}
+Original user request: {raw_query}
 Destination: {destination}
 
 Scraped content from multiple sources:
@@ -138,32 +138,55 @@ Extract restaurants using the diplomatic concierge approach. Include good option
     # Update your EditorAgent.edit() method in agents/editor_agent.py
 
     @log_function_call
-    def edit(self, scraped_results=None, database_restaurants=None, original_query="", destination="Unknown", 
-             raw_query=None, content_source=None, processing_mode=None, evaluation_context=None, **kwargs):
+    def edit(self, scraped_results=None, database_restaurants=None, raw_query="", destination="Unknown", 
+             content_source=None, processing_mode=None, evaluation_context=None, **kwargs):
         """
-        BACKWARD COMPATIBLE: Main method that handles both old and new calling patterns
+        Main editing method with standardized parameter names
 
-        LEGACY PARAMETERS (keep for backward compatibility):
-            scraped_results: List of scraped articles
+        Parameters:
+            scraped_results: List of scraped articles from web search
             database_restaurants: List of database restaurant objects  
-            original_query: The user's original query
+            raw_query: The user's original query (primary parameter)
             destination: The city/location being searched
-
-        NEW PARAMETERS (for ContentEvaluationAgent integration):
-            raw_query: User's raw query (takes precedence over original_query)
             content_source: "database", "web_search", or "hybrid"
             processing_mode: "database_only", "web_only", or "hybrid"
             evaluation_context: Context from ContentEvaluationAgent
-            **kwargs: Additional context
+            **kwargs: Additional context for future compatibility
 
         Returns:
             Dict with edited_results and follow_up_queries
         """
         try:
-            # Handle parameter compatibility
-            query = raw_query or original_query or ""
-            mode = processing_mode or self._determine_legacy_mode(scraped_results, database_restaurants)
-            source = content_source or self._determine_legacy_source(scraped_results, database_restaurants)
+            # Use raw_query consistently
+            query = raw_query or kwargs.get('original_query', '') or ""  # Fallback for backward compatibility
+
+            # Determine processing mode
+            if processing_mode:
+                mode = processing_mode
+            else:
+                # Auto-detect mode based on available content
+                if database_restaurants and scraped_results:
+                    mode = "hybrid"
+                elif database_restaurants:
+                    mode = "database_only"
+                elif scraped_results:
+                    mode = "web_only"
+                else:
+                    mode = "unknown"
+
+            # Determine content source
+            if content_source:
+                source = content_source
+            else:
+                # Auto-detect source based on available content
+                if database_restaurants and scraped_results:
+                    source = "hybrid"
+                elif database_restaurants:
+                    source = "database"
+                elif scraped_results:
+                    source = "web_search"
+                else:
+                    source = "unknown"
 
             logger.info(f"✏️ Editor processing {mode} content for: {destination}")
             logger.info(f"📝 Content source: {source}")
@@ -197,28 +220,6 @@ Extract restaurants using the diplomatic concierge approach. Include good option
             })
             return self._fallback_response()
 
-    def _determine_legacy_mode(self, scraped_results, database_restaurants):
-        """Determine processing mode for legacy calls"""
-        if database_restaurants and scraped_results:
-            return "hybrid"
-        elif database_restaurants:
-            return "database_only"
-        elif scraped_results:
-            return "web_only"
-        else:
-            return "unknown"
-
-    def _determine_legacy_source(self, scraped_results, database_restaurants):
-        """Determine content source for legacy calls"""
-        if database_restaurants and scraped_results:
-            return "hybrid"
-        elif database_restaurants:
-            return "database"
-        elif scraped_results:
-            return "web_search"
-        else:
-            return "unknown"
-
     def _handle_empty_content(self, query, destination):
         """Handle cases where no content is available"""
         logger.warning("⚠️ Editor: No content to process")
@@ -233,19 +234,48 @@ Extract restaurants using the diplomatic concierge approach. Include good option
         }
 
     # Add this if you don't have hybrid processing yet
-    def _process_hybrid_content(self, database_restaurants, scraped_results, query, destination, evaluation_context):
-        """Process hybrid content - fallback to database for now"""
-        logger.info("🔗 Processing hybrid content (fallback to database)")
+    def _process_hybrid_content(self, database_restaurants, scraped_results, raw_query, destination, evaluation_context):
+        """Process hybrid content (both database and scraped)"""
+        logger.info("🔗 Processing hybrid content")
 
-        # For now, prioritize database content if available
-        if database_restaurants:
-            return self._process_database_restaurants(database_restaurants, query, destination)
-        elif scraped_results:
-            return self._process_scraped_content(scraped_results, query, destination)
-        else:
-            return self._handle_empty_content(query, destination)
+        # For now, combine both sources
+        # In the future, this could intelligently merge or prioritize sources
 
-    def _process_database_restaurants(self, database_restaurants, original_query, destination):
+        try:
+            all_restaurants = []
+
+            # Process database restaurants first
+            if database_restaurants:
+                db_result = self._process_database_restaurants(database_restaurants, raw_query, destination)
+                all_restaurants.extend(db_result.get('edited_results', {}).get('main_list', []))
+
+            # Then process scraped content
+            if scraped_results:
+                scraped_result = self._process_scraped_content(scraped_results, raw_query, destination)
+                all_restaurants.extend(scraped_result.get('edited_results', {}).get('main_list', []))
+
+            # Remove duplicates based on restaurant name
+            seen_names = set()
+            unique_restaurants = []
+            for restaurant in all_restaurants:
+                name = restaurant.get('name', '').lower().strip()
+                if name and name not in seen_names:
+                    seen_names.add(name)
+                    unique_restaurants.append(restaurant)
+
+            # Generate follow-up queries for address verification
+            follow_up_queries = self._generate_follow_up_queries(unique_restaurants, destination)
+
+            return {
+                "edited_results": {"main_list": unique_restaurants},
+                "follow_up_queries": follow_up_queries
+            }
+
+        except Exception as e:
+            logger.error(f"Error processing hybrid content: {e}")
+            return self._fallback_response()
+
+    def _process_database_restaurants(self, database_restaurants, raw_query, destination):
         """Process restaurants from AI-matched database"""
         try:
             logger.info(f"🗃️ Processing {len(database_restaurants)} restaurants from database for {destination}")
@@ -259,7 +289,7 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
             # Get AI formatting with diplomatic approach
             response = self.database_chain.invoke({
-                "original_query": original_query,
+                "raw_query": raw_query,  # Changed from original_query
                 "destination": destination,
                 "database_restaurants": database_content
             })
@@ -275,7 +305,7 @@ Extract restaurants using the diplomatic concierge approach. Include good option
             logger.error(f"Error processing database restaurants: {e}")
             return self._fallback_response()
 
-    def _process_scraped_content(self, scraped_results, original_query, destination):
+    def _process_scraped_content(self, scraped_results, raw_query, destination):
         """Process traditional scraped content"""
         try:
             logger.info(f"🌐 Processing {len(scraped_results)} scraped articles for {destination}")
@@ -289,7 +319,7 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
             # Get AI processing with diplomatic approach
             response = self.scraped_chain.invoke({
-                "original_query": original_query,
+                "raw_query": raw_query,  # Changed from original_query
                 "destination": destination,
                 "scraped_content": scraped_content
             })
@@ -477,11 +507,11 @@ Content: {content[:5000]}...
     # BACKWARD COMPATIBILITY: Keep existing method signatures
     def process_scraped_results(self, scraped_results, original_query, destination="Unknown"):
         """Backward compatibility method"""
-        return self.edit(scraped_results=scraped_results, original_query=original_query, destination=destination)
+        return self.edit(scraped_results=scraped_results, raw_query=original_query, destination=destination)
 
     def process_database_restaurants(self, database_restaurants, original_query, destination="Unknown"):
         """Method for database restaurant processing"""
-        return self.edit(database_restaurants=database_restaurants, original_query=original_query, destination=destination)
+        return self.edit(database_restaurants=database_restaurants, raw_query=original_query, destination=destination)
 
     def get_editor_stats(self):
         """Get statistics about editor performance"""
