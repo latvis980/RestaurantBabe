@@ -1,5 +1,5 @@
 # scrape_test.py - UPDATED for current pipeline architecture
-# Now follows the EXACT same path as production: query_analyzer → database_search_agent → dbcontent_evaluation_agent → search_agent → scraper → editor_agent
+# Now follows the EXACT same path as production: query_analyzer → database_search_agent → dbcontent_evaluation_agent → search_agent → SmartRestaurantScraper → editor_agent
 
 import asyncio
 import time
@@ -21,7 +21,7 @@ class ScrapeTest:
     2. DatabaseSearchAgent - search database for matching restaurants
     3. ContentEvaluationAgent - evaluate if database results are sufficient
     4. [IF WEB SEARCH NEEDED] SearchAgent - perform web search with query metadata
-    5. [IF WEB SEARCH NEEDED] WebScraper - scrape search results intelligently
+    5. [IF WEB SEARCH NEEDED] SmartRestaurantScraper - scrape search results intelligently
     6. EditorAgent - process final content (database OR scraped)
     7. FollowUpSearchAgent - enhance content if needed
     8. TelegramFormatter - format for output
@@ -36,10 +36,10 @@ class ScrapeTest:
 
         # Get agents from orchestrator to ensure consistency with production
         self.query_analyzer = orchestrator.query_analyzer
-        self.database_search_agent = orchestrator.database_search_agent  # NEW
-        self.dbcontent_evaluation_agent = orchestrator.dbcontent_evaluation_agent  # NEW  
+        self.database_search_agent = orchestrator.database_search_agent
+        self.dbcontent_evaluation_agent = orchestrator.dbcontent_evaluation_agent  
         self.search_agent = orchestrator.search_agent
-        self.scraper = orchestrator.scraper
+        self.scraper = orchestrator.scraper  # This is now SmartRestaurantScraper directly
         self.editor_agent = orchestrator.editor_agent
 
     async def test_scraping_process(self, restaurant_query: str, bot=None) -> str:
@@ -51,7 +51,7 @@ class ScrapeTest:
         - What database results are found  
         - What the content evaluation agent decides
         - If web search happens, what search results are found
-        - What gets scraped successfully (FULL content)
+        - What gets scraped successfully with SmartRestaurantScraper (FULL content)
         - What goes to the editor agent
 
         Args:
@@ -61,7 +61,7 @@ class ScrapeTest:
         Returns:
             str: Path to the results file
         """
-        logger.info(f"Testing COMPLETE pipeline for: {restaurant_query}")
+        logger.info(f"Testing COMPLETE pipeline with SmartRestaurantScraper for: {restaurant_query}")
 
         # Create results file
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -74,7 +74,7 @@ class ScrapeTest:
             f.write("=" * 80 + "\n\n")
             f.write(f"Test Date: {datetime.now().isoformat()}\n")
             f.write(f"Query: {restaurant_query}\n")
-            f.write(f"Pipeline: query → database → evaluation → [search] → [scrape] → editor\n")
+            f.write(f"Pipeline: query → database → evaluation → [search] → [SmartRestaurantScraper] → editor\n")
             f.write(f"Orchestrator: Production singleton instance\n\n")
 
             try:
@@ -169,7 +169,7 @@ class ScrapeTest:
                     }
 
                     search_results = self.search_agent.search(search_queries, destination, query_metadata)
-                    search_time = round(time.time() - start_time, 2)
+                    search_time = round(time.time() - search_start, 2)
 
                     f.write(f"Processing Time: {search_time}s\n")
                     f.write(f"Search Results Found: {len(search_results)}\n")
@@ -188,14 +188,25 @@ class ScrapeTest:
                     f.write("-" * 40 + "\n")
                     f.write("Web search skipped because database content was sufficient.\n")
 
-                # STEP 5: Intelligent Scraping (conditional - only if search happened)
+                # STEP 5: SmartRestaurantScraper (conditional - only if search happened)
                 enriched_results = []
                 scraping_time = 0
                 successful_scrapes = 0
 
                 if search_results:
-                    f.write(f"\nSTEP 5: INTELLIGENT SCRAPING\n")
+                    f.write(f"\nSTEP 5: SMART RESTAURANT SCRAPER\n")
                     f.write("-" * 40 + "\n")
+
+                    # Reset scraper stats for this test
+                    self.scraper.stats = {
+                        "total_processed": 0,
+                        "strategy_breakdown": {"specialized": 0, "simple_http": 0, "enhanced_http": 0, "firecrawl": 0},
+                        "ai_analysis_calls": 0,
+                        "domain_cache_hits": 0,
+                        "new_domains_learned": 0,
+                        "total_cost_estimate": 0.0,
+                        "cost_saved_vs_all_firecrawl": 0.0
+                    }
 
                     start_time = time.time()
                     enriched_results = await self.scraper.scrape_search_results(search_results)
@@ -203,9 +214,28 @@ class ScrapeTest:
 
                     successful_scrapes = len([r for r in enriched_results if r.get('scraped_content')])
 
-                    f.write(f"Scraping Time: {scraping_time}s\n")
+                    f.write(f"SmartRestaurantScraper Time: {scraping_time}s\n")
                     f.write(f"Successful Scrapes: {successful_scrapes}\n")
-                    f.write(f"Failed Scrapes: {len(enriched_results) - successful_scrapes}\n\n")
+                    f.write(f"Failed Scrapes: {len(enriched_results) - successful_scrapes}\n")
+
+                    # Show SmartRestaurantScraper strategy breakdown
+                    scraper_stats = self.scraper.get_stats()
+                    strategy_breakdown = scraper_stats.get('strategy_breakdown', {})
+
+                    f.write(f"\nSmartRestaurantScraper Strategy Breakdown:\n")
+                    emoji_map = {"specialized": "🆓", "simple_http": "🟢", "enhanced_http": "🟡", "firecrawl": "🔴"}
+                    cost_map = {"specialized": 0.0, "simple_http": 0.1, "enhanced_http": 0.5, "firecrawl": 10.0}
+
+                    for strategy, count in strategy_breakdown.items():
+                        if count > 0:
+                            emoji = emoji_map.get(strategy, "📌")
+                            cost = count * cost_map.get(strategy, 0)
+                            f.write(f"  {emoji} {strategy.upper()}: {count} URLs (~{cost:.1f} credits)\n")
+
+                    f.write(f"  💰 Total Cost: {scraper_stats.get('total_cost_estimate', 0):.1f} credits\n")
+                    f.write(f"  💾 Saved vs all-Firecrawl: {scraper_stats.get('cost_saved_vs_all_firecrawl', 0):.1f} credits\n")
+                    f.write(f"  🤖 AI Analysis Calls: {scraper_stats.get('ai_analysis_calls', 0)}\n")
+                    f.write(f"  💾 Domain Cache Hits: {scraper_stats.get('domain_cache_hits', 0)}\n\n")
 
                     # Show detailed content for each scraped result (MOST IMPORTANT FOR DEBUGGING)
                     for i, result in enumerate(enriched_results, 1):
@@ -213,14 +243,27 @@ class ScrapeTest:
                         f.write("-" * 30 + "\n")
                         f.write(f"URL: {result.get('url', 'No URL')}\n")
                         f.write(f"Title: {result.get('title', 'No Title')}\n")
-                        f.write(f"Scraping Method: {result.get('scraping_method', 'Unknown')}\n")
+                        f.write(f"Scraping Strategy: {result.get('scraping_method', 'Unknown')}\n")
+                        f.write(f"Classification Source: {result.get('classification_source', 'Unknown')}\n")
                         f.write(f"Quality Score: {result.get('quality_score', 'N/A')}\n")
+
+                        # Show AI reasoning if available
+                        if result.get('ai_reasoning'):
+                            f.write(f"AI Reasoning: {result.get('ai_reasoning', '')}\n")
+                            f.write(f"AI Confidence: {result.get('ai_confidence', 'N/A')}\n")
 
                         scraped_content = result.get('scraped_content')
                         if scraped_content:
                             f.write(f"Content Length: {len(scraped_content)} characters\n")
-                            f.write(f"Status: ✅ Successfully scraped\n\n")
-                            f.write("FULL SCRAPED CONTENT:\n")
+                            f.write(f"Status: ✅ Successfully scraped\n")
+
+                            # Show content sectioning if applied
+                            if result.get('sectioning_applied'):
+                                f.write(f"Content Sectioning: ✅ Applied\n")
+                                sections = result.get('content_sections', [])
+                                f.write(f"Sections Identified: {len(sections)}\n")
+
+                            f.write(f"\nFULL SCRAPED CONTENT:\n")
                             f.write("~" * 60 + "\n")
                             f.write(scraped_content)
                             f.write("\n" + "~" * 60 + "\n\n")
@@ -233,9 +276,9 @@ class ScrapeTest:
                     pipeline_data['enriched_results'] = enriched_results
 
                 else:
-                    f.write(f"\nSTEP 5: INTELLIGENT SCRAPING (Skipped)\n")
+                    f.write(f"\nSTEP 5: SMART RESTAURANT SCRAPER (Skipped)\n")
                     f.write("-" * 40 + "\n")
-                    f.write("Scraping skipped - no search results to scrape.\n")
+                    f.write("SmartRestaurantScraper skipped - no search results to scrape.\n")
 
                 # STEP 6: Editor Processing Preview
                 f.write(f"\nSTEP 6: EDITOR AGENT INPUT PREPARATION\n")
@@ -262,19 +305,21 @@ class ScrapeTest:
                             scraped_contents.append({
                                 'url': result.get('url'),
                                 'title': result.get('title'),
-                                'content': result.get('scraped_content')
+                                'content': result.get('scraped_content'),
+                                'strategy': result.get('scraping_method')
                             })
 
-                    f.write(f"Content Source: Web Scraping\n")
+                    f.write(f"Content Source: SmartRestaurantScraper\n")
                     f.write(f"Scraped content pieces to be sent to editor: {len(scraped_contents)}\n")
                     f.write(f"Total scraped content length: {sum(len(c['content']) for c in scraped_contents)} characters\n")
-                    f.write(f"Editor will process: Scraped web content\n\n")
+                    f.write(f"Editor will process: Smart-scraped web content\n\n")
 
                     f.write("EDITOR INPUT SUMMARY:\n")
                     f.write("-" * 30 + "\n")
                     for i, content in enumerate(scraped_contents, 1):
                         f.write(f"{i}. {content['title'][:60]}...\n")
                         f.write(f"   URL: {content['url']}\n")
+                        f.write(f"   Strategy: {content['strategy']}\n")
                         f.write(f"   Content: {len(content['content'])} chars\n")
                         f.write(f"   Preview: {content['content'][:200]}...\n\n")
 
@@ -285,9 +330,9 @@ class ScrapeTest:
                 f.write("\nPIPELINE STATISTICS\n")
                 f.write("=" * 40 + "\n")
 
-                # Scraper stats (important for debugging)
-                scraper_stats = self.scraper.get_stats()
-                f.write(f"Intelligent Scraper Statistics:\n")
+                # SmartRestaurantScraper stats (important for debugging)
+                scraper_stats = self.scraper.get_stats()  # Direct access (no .scraper wrapper)
+                f.write(f"SmartRestaurantScraper Statistics:\n")
                 for key, value in scraper_stats.items():
                     f.write(f"  {key}: {value}\n")
 
@@ -314,7 +359,7 @@ class ScrapeTest:
                 if search_time > 0:
                     f.write(f"  4. Web Search: {search_time}s\n")
                 if scraping_time > 0:
-                    f.write(f"  5. Intelligent Scraping: {scraping_time}s\n")
+                    f.write(f"  5. SmartRestaurantScraper: {scraping_time}s\n")
                 f.write(f"  Total Pipeline Time: {total_time}s\n\n")
 
                 # Final summary
@@ -329,7 +374,7 @@ class ScrapeTest:
                 f.write(f"Successful Scrapes: {successful_scrapes}\n")
                 f.write(f"Total Processing Time: {total_time}s\n")
                 f.write("Pipeline: ✅ Query → ✅ Database → ✅ Evaluation → ")
-                f.write("✅ Search → ✅ Scrape → ✅ Ready for Editor\n")
+                f.write("✅ Search → ✅ SmartRestaurantScraper → ✅ Ready for Editor\n")
                 f.write("=" * 80 + "\n")
 
             except Exception as e:
@@ -352,10 +397,10 @@ class ScrapeTest:
                 f"🧪 <b>Complete Pipeline Test Results</b>\n\n"
                 f"📝 Query: <code>{query}</code>\n"
                 f"✅ Successful scrapes: {successful_count}\n"
-                f"🔧 Pipeline: query → database → evaluation → search → scrape → editor\n"
+                f"🔧 Pipeline: query → database → evaluation → search → SmartRestaurantScraper → editor\n"
                 f"🎯 Follows: EXACT production path\n\n"
                 f"{'✅ Content ready for editor' if successful_count > 0 else '❌ No scraped content (check database route)'}\n\n"
-                f"📄 Complete pipeline analysis attached with FULL scraped content."
+                f"📄 Complete pipeline analysis with SmartRestaurantScraper details attached."
             )
 
             bot.send_message(
@@ -369,21 +414,10 @@ class ScrapeTest:
                 bot.send_document(
                     self.admin_chat_id,
                     f,
-                    caption=f"🧪 Pipeline test: {query}"
+                    caption=f"🧪 Smart pipeline test: {query}"
                 )
 
             logger.info("Successfully sent pipeline test results to admin")
 
         except Exception as e:
             logger.error(f"Failed to send pipeline results to admin: {e}")
-
-
-# Convenience function for backward compatibility
-def add_scrape_test_command(bot, config, orchestrator):
-    """
-    Add the /test_scrape command to the Telegram bot
-    This function is now deprecated since commands are handled directly in telegram_bot.py
-    Keeping for backward compatibility.
-    """
-    logger.info("Note: pipeline test commands are now handled directly in telegram_bot.py")
-    pass

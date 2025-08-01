@@ -135,6 +135,12 @@ Focus on technical complexity, not content keywords.
             self._firecrawl_scraper = FirecrawlWebScraper(self.config)
         return self._firecrawl_scraper
 
+    @property
+    def content_sectioner(self):
+        if self._content_sectioner is None:
+            self._content_sectioner = ContentSectioningAgent(self.config)
+        return self._content_sectioner
+
     async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Main entry point for smart scraping with domain learning"""
 
@@ -540,44 +546,25 @@ Focus on technical complexity, not content keywords.
             logger.warning(f"Failed to extract source name from {url}: {e}")
             return "Unknown Source"
 
-    async def _apply_content_sectioning(self, content: str, url: str, source_method: str):
-        """
-        Apply content sectioning if available, otherwise use simple truncation.
-        """
+    async def _apply_content_sectioning(self, result: Dict[str, Any], strategy: str):
+        """Apply content sectioning if available"""
         try:
-            if hasattr(self, 'content_sectioner'):
-                # Use DeepSeek-powered content sectioning for 90% speed improvement
-                sectioning_result = await self.content_sectioner.process_content(
-                    content, url, source_method
-                )
-                return sectioning_result
-            else:
-                # Fallback to simple truncation if content sectioner not available
-                from agents.content_sectioning_agent import SectioningResult
-                max_length = 6000  # Default limit
-                truncated_content = content[:max_length] if len(content) > max_length else content
+            content = result.get('scraped_content', '')
+            if content and len(content) > 1000:  # Only section longer content
+                if hasattr(self, '_content_sectioner') and self._content_sectioner:
+                    # Use content sectioner if available
+                    url = result.get('url', '')
+                    sectioning_result = await self.content_sectioner.process_content(content, url, strategy)
 
-                return SectioningResult(
-                    optimized_content=truncated_content,
-                    original_length=len(content),
-                    optimized_length=len(truncated_content),
-                    sections_identified=["simple_truncation"],
-                    restaurants_density=0.0,
-                    sectioning_method="simple_truncation",
-                    confidence=0.5
-                )
+                    # Store sectioned content back in result
+                    if hasattr(sectioning_result, 'optimized_content'):
+                        result['scraped_content'] = sectioning_result.optimized_content
+                        result['content_sections'] = getattr(sectioning_result, 'sections_identified', [])
+                        result['sectioning_applied'] = True
+                        logger.debug(f"Applied content sectioning: {len(content)} → {len(sectioning_result.optimized_content)} chars")
+
         except Exception as e:
-            logger.error(f"Content sectioning failed for {url}: {e}")
-            # Simple fallback
-            max_length = 6000
-            truncated_content = content[:max_length] if len(content) > max_length else content
-
-            # Create a minimal result object
-            class SimpleResult:
-                def __init__(self, content):
-                    self.optimized_content = content
-
-            return SimpleResult(truncated_content)
+            logger.warning(f"Content sectioning failed: {e}")
 
     def _extract_domain(self, url: str) -> str:
         """Extract clean domain"""
@@ -637,17 +624,3 @@ Focus on technical complexity, not content keywords.
                 "ai_usage_rate": self.stats["ai_analysis_calls"] / max(self.stats["total_processed"], 1)
             }
         }
-
-# Legacy compatibility wrapper
-class WebScraper:
-    def __init__(self, config):
-        self.scraper = SmartRestaurantScraper(config)
-
-    async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return await self.scraper.scrape_search_results(search_results)
-
-    async def filter_and_scrape_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return await self.scraper.scrape_search_results(search_results)
-
-    def get_stats(self) -> Dict[str, Any]:
-        return self.scraper.get_stats()

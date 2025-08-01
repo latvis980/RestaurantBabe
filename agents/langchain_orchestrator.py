@@ -1,5 +1,5 @@
 # agents/langchain_orchestrator.py
-# UPDATED VERSION - Now preserves raw query throughout pipeline while maintaining all existing features
+# UPDATED VERSION - Now uses SmartRestaurantScraper directly (no legacy wrapper)
 
 import os
 from langchain_core.runnables import RunnableSequence, RunnableLambda
@@ -36,21 +36,21 @@ class LangChainOrchestrator:
     """
     
     def __init__(self, config):
-        # Import agents with correct file names
+        # Import agents with correct names - NO MORE LEGACY WRAPPERS
         from agents.query_analyzer import QueryAnalyzer
-        from agents.database_search_agent import DatabaseSearchAgent  # NEW AGENT
-        from agents.dbcontent_evaluation_agent import ContentEvaluationAgent  # NEW AGENT
+        from agents.database_search_agent import DatabaseSearchAgent
+        from agents.dbcontent_evaluation_agent import ContentEvaluationAgent
         from agents.search_agent import BraveSearchAgent
-        from agents.smart_scraper import WebScraper
+        from agents.smart_scraper import SmartRestaurantScraper  # DIRECT IMPORT
         from agents.editor_agent import EditorAgent
         from agents.follow_up_search_agent import FollowUpSearchAgent
 
         # Initialize agents
         self.query_analyzer = QueryAnalyzer(config)
-        self.database_search_agent = DatabaseSearchAgent(config)  # NEW AGENT
-        self.dbcontent_evaluation_agent = ContentEvaluationAgent(config)  # NEW AGENT
+        self.database_search_agent = DatabaseSearchAgent(config)
+        self.dbcontent_evaluation_agent = ContentEvaluationAgent(config)
         self.search_agent = BraveSearchAgent(config)
-        self.scraper = WebScraper(config)
+        self.scraper = SmartRestaurantScraper(config)  # DIRECT USAGE
         self.editor_agent = EditorAgent(config)
         self.follow_up_search_agent = FollowUpSearchAgent(config)
         self.dbcontent_evaluation_agent.set_brave_search_agent(self.search_agent)
@@ -64,15 +64,16 @@ class LangChainOrchestrator:
             "total_queries": 0,
             "successful_queries": 0,
             "avg_processing_time": 0.0,
-            "content_sources": {"database": 0, "web_search": 0},
-            # NEW: Smart scraper statistics
+            "content_sources": {"database": 0, "web": 0},
             "scraper_stats": {},
             "cost_savings": 0.0
         }
 
+        logger.info("✅ LangChain Orchestrator initialized with SmartRestaurantScraper")
+
         # Build the pipeline steps
         self._build_pipeline()
-
+    
     def _build_pipeline(self):
         """Build pipeline with ContentEvaluationAgent integration"""
 

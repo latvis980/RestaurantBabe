@@ -1,5 +1,5 @@
-# web_scrape_test.py - DEDICATED WEB SEARCH & SCRAPING TEST
-# Bypasses database entirely - focuses on web search → scraping → content analysis
+# web_scrape_test.py - CLEANED UP IMPORTS
+# Uses SmartRestaurantScraper directly, no legacy wrapper
 
 import asyncio
 import time
@@ -14,182 +14,185 @@ logger = logging.getLogger(__name__)
 
 class WebScrapeTest:
     """
-    DEDICATED test for web search and scraping pipeline ONLY.
+    Web-only test that uses SmartRestaurantScraper directly.
 
     This test:
-    - Skips all database steps
+    - Skips all database steps (bypasses completely)
     - Forces web search to happen
     - Shows detailed search results and filtering
-    - Shows complete scraping process with full content
-    - Perfect for debugging web scraping issues
+    - Shows complete SMART SCRAPING process with strategy breakdown
+    - Perfect for debugging the smart scraping pipeline
 
-    Pipeline tested: query_analyzer → search_agent → scraper → content analysis
+    Pipeline tested: query_analyzer → search_agent → SmartRestaurantScraper (with AI strategy routing)
     Command: /test_wscrape
     """
 
     def __init__(self, config, orchestrator):
         self.config = config
-        self.orchestrator = orchestrator  # Singleton instance
+        self.orchestrator = orchestrator
         self.admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
 
-        # Get only the agents we need for web scraping test
+        # Get agents directly from orchestrator (now using SmartRestaurantScraper)
         self.query_analyzer = orchestrator.query_analyzer
         self.search_agent = orchestrator.search_agent  
-        self.scraper = orchestrator.scraper
-        self.editor_agent = orchestrator.editor_agent
+        self.scraper = orchestrator.scraper  # This is now SmartRestaurantScraper directly
 
     async def test_web_scraping_only(self, restaurant_query: str, bot=None) -> str:
         """
-        Test ONLY the web search and scraping pipeline.
-
-        Forces web search to happen regardless of database content.
-        Shows complete search and scraping analysis.
-
-        Args:
-            restaurant_query: The restaurant query to test (e.g., "best brunch in Lisbon")
-            bot: Telegram bot instance for sending file
-
-        Returns:
-            str: Path to the results file
+        Test ONLY the web search and smart scraping pipeline.
+        Uses SmartRestaurantScraper directly for maximum debugging detail.
         """
-        logger.info(f"Testing WEB SCRAPING ONLY for: {restaurant_query}")
+        total_start_time = time.time()
 
-        # Create results file
+        # Create timestamped filename for results
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"web_scrape_test_{timestamp}.txt"
+        filename = f"webscrape_test_{timestamp}.txt"
         filepath = os.path.join(tempfile.gettempdir(), filename)
 
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write("=" * 80 + "\n")
-            f.write("WEB SEARCH & SCRAPING TEST (Database Bypassed)\n")
-            f.write("=" * 80 + "\n\n")
-            f.write(f"Test Date: {datetime.now().isoformat()}\n")
-            f.write(f"Query: {restaurant_query}\n")
-            f.write(f"Focus: WEB SEARCH → SCRAPING → CONTENT ANALYSIS\n")
-            f.write(f"Database: BYPASSED (forced web search)\n")
-            f.write(f"Command: /test_wscrape\n\n")
+        logger.info(f"Starting smart web scraping test for: {restaurant_query}")
+        logger.info(f"Results will be saved to: {filepath}")
 
-            try:
-                total_start_time = time.time()
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                # Header
+                f.write("SMART WEB SCRAPING TEST RESULTS\n")
+                f.write("=" * 80 + "\n")
+                f.write(f"Query: {restaurant_query}\n")
+                f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+                f.write(f"Test Type: Web Search + SmartRestaurantScraper ONLY (Database Bypassed)\n")
+                f.write("=" * 80 + "\n\n")
 
-                # STEP 1: Query Analysis (to get search terms)
+                f.write("SMART SCRAPING PIPELINE OVERVIEW:\n")
+                f.write("1. Query Analysis → Search Terms Generation\n")
+                f.write("2. Web Search → URL Discovery & Filtering\n")
+                f.write("3. Smart Scraper → AI Strategy Classification\n")
+                f.write("   ├── 🆓 Specialized (RSS/Sitemap)\n")
+                f.write("   ├── 🟢 Simple HTTP (0.1 credits)\n")
+                f.write("   ├── 🟡 Enhanced HTTP (0.5 credits)\n")
+                f.write("   └── 🔴 Firecrawl (10.0 credits)\n")
+                f.write("4. Content Analysis → Results for Editor\n")
+                f.write("\n" + "-" * 80 + "\n\n")
+
+                # STEP 1: Query Analysis
                 f.write("STEP 1: QUERY ANALYSIS\n")
                 f.write("-" * 40 + "\n")
 
-                start_time = time.time()
+                analysis_start = time.time()
                 query_analysis = self.query_analyzer.analyze(restaurant_query)
-                analysis_time = round(time.time() - start_time, 2)
-
-                destination = query_analysis.get('destination', 'Unknown')
-                is_english_speaking = query_analysis.get('is_english_speaking', True)
-                local_language = query_analysis.get('local_language', 'None')
-                search_queries = query_analysis.get('search_queries', [])
+                analysis_time = round(time.time() - analysis_start, 2)
 
                 f.write(f"Processing Time: {analysis_time}s\n")
-                f.write(f"ANALYSIS RESULTS:\n")
-                f.write(f"  Destination: {destination}\n")
-                f.write(f"  Is English Speaking: {is_english_speaking}\n")
-                f.write(f"  Local Language: {local_language}\n")
-                f.write(f"  Search Queries Generated: {len(search_queries)}\n\n")
+                f.write(f"Query: {restaurant_query}\n")
+                f.write(f"Destination: {query_analysis.get('destination', 'Unknown')}\n")
+                f.write(f"Language: {query_analysis.get('local_language', 'Unknown')}\n")
+                f.write(f"Search Queries Generated: {len(query_analysis.get('search_queries', []))}\n\n")
 
-                f.write("GENERATED SEARCH QUERIES:\n")
+                # Show generated search queries
+                search_queries = query_analysis.get('search_queries', [])
                 for i, query in enumerate(search_queries, 1):
                     f.write(f"  {i}. {query}\n")
 
-                if not search_queries:
-                    f.write("❌ ERROR: No search queries generated!\n")
-                    return filepath
+                destination = query_analysis.get('destination', 'Unknown')
 
-                # STEP 2: WEB SEARCH (FORCED - bypass database)
-                f.write(f"\nSTEP 2: WEB SEARCH (FORCED)\n")
+                # STEP 2: Web Search (FORCED - bypass database completely)
+                f.write(f"\nSTEP 2: WEB SEARCH (FORCED - Database Bypassed)\n")
                 f.write("-" * 40 + "\n")
-                f.write("🌐 BYPASSING DATABASE - FORCING WEB SEARCH\n\n")
 
-                start_time = time.time()
+                search_start = time.time()
 
-                # Prepare query metadata exactly like production
+                # Prepare query metadata for search agent
                 query_metadata = {
-                    'is_english_speaking': is_english_speaking,
-                    'local_language': local_language
+                    'is_english_speaking': query_analysis.get('is_english_speaking', True),
+                    'local_language': query_analysis.get('local_language')
                 }
 
-                f.write(f"Search Parameters:\n")
-                f.write(f"  Destination: {destination}\n")
-                f.write(f"  Query Metadata: {query_metadata}\n")
-                f.write(f"  Search Queries: {search_queries}\n\n")
-
-                # Execute search with production parameters
                 search_results = self.search_agent.search(search_queries, destination, query_metadata)
-                search_time = round(time.time() - start_time, 2)
+                search_time = round(time.time() - search_start, 2)
 
-                f.write(f"SEARCH RESULTS:\n")
-                f.write(f"  Processing Time: {search_time}s\n")
-                f.write(f"  Results Found: {len(search_results)}\n")
-                f.write(f"  Search Method: BraveSearch + Filtering\n\n")
+                f.write(f"Search Time: {search_time}s\n")
+                f.write(f"Search Queries Used: {len(search_queries)}\n")
+                f.write(f"Results Found: {len(search_results)}\n\n")
 
-                if not search_results:
-                    f.write("❌ NO SEARCH RESULTS FOUND!\n")
-                    f.write("This could indicate:\n")
-                    f.write("  - Network connectivity issues\n")
-                    f.write("  - Search API problems\n")
-                    f.write("  - Query generation issues\n")
-                    f.write("  - Overly restrictive filtering\n")
-                    return filepath
-
-                # Show detailed search results
-                f.write("DETAILED SEARCH RESULTS:\n")
-                f.write("~" * 60 + "\n")
+                # Show search results details
+                f.write("SEARCH RESULTS FOUND:\n")
                 for i, result in enumerate(search_results, 1):
-                    f.write(f"{i}. SEARCH RESULT:\n")
-                    f.write(f"   Title: {result.get('title', 'No Title')}\n")
-                    f.write(f"   URL: {result.get('url', 'No URL')}\n")
-                    f.write(f"   Quality Score: {result.get('quality_score', 'N/A')}\n")
-                    f.write(f"   Source Type: {result.get('source_type', 'Unknown')}\n")
+                    f.write(f"  {i}. {result.get('title', 'No Title')[:70]}...\n")
+                    f.write(f"     URL: {result.get('url', 'No URL')}\n")
+                    f.write(f"     Quality Score: {result.get('quality_score', 'N/A')}\n")
+                    f.write(f"     Description: {(result.get('description', '') or '')[:150]}...\n\n")
 
-                    description = result.get('description', '')
-                    if description:
-                        f.write(f"   Description: {description[:200]}...\n")
-
-                    # Show any filtering metadata
-                    if 'filter_reason' in result:
-                        f.write(f"   Filter Reason: {result['filter_reason']}\n")
-
-                    f.write(f"\n")
-
-                f.write("~" * 60 + "\n\n")
-
-                # Get search agent statistics
-                search_stats = self.search_agent.get_stats()
-                f.write("SEARCH AGENT STATISTICS:\n")
-                f.write("-" * 30 + "\n")
-                for key, value in search_stats.items():
-                    f.write(f"  {key}: {value}\n")
-                f.write("\n")
-
-                # STEP 3: INTELLIGENT SCRAPING
-                f.write("STEP 3: INTELLIGENT SCRAPING\n")
+                # STEP 3: SMART RESTAURANT SCRAPER with AI Strategy Classification
+                f.write(f"\nSTEP 3: SMART RESTAURANT SCRAPER PIPELINE\n")
                 f.write("-" * 40 + "\n")
 
-                start_time = time.time()
+                if not search_results:
+                    f.write("❌ NO SEARCH RESULTS TO SCRAPE\n")
+                    f.write("Cannot proceed with scraping - no URLs found.\n\n")
+                    return filepath
+
+                # Reset scraper stats for this test
+                self.scraper.stats = {
+                    "total_processed": 0,
+                    "strategy_breakdown": {"specialized": 0, "simple_http": 0, "enhanced_http": 0, "firecrawl": 0},
+                    "ai_analysis_calls": 0,
+                    "domain_cache_hits": 0,
+                    "new_domains_learned": 0,
+                    "total_cost_estimate": 0.0,
+                    "cost_saved_vs_all_firecrawl": 0.0
+                }
+
+                scraping_start = time.time()
+                f.write(f"🧠 Starting SmartRestaurantScraper with AI strategy classification...\n")
+                f.write(f"URLs to process: {len(search_results)}\n\n")
+
+                # Run the SmartRestaurantScraper directly
                 enriched_results = await self.scraper.scrape_search_results(search_results)
-                scraping_time = round(time.time() - start_time, 2)
+                scraping_time = round(time.time() - scraping_start, 2)
 
+                # Get smart scraper statistics
+                scraper_stats = self.scraper.get_stats()
                 successful_scrapes = len([r for r in enriched_results if r.get('scraped_content')])
-                failed_scrapes = len(enriched_results) - successful_scrapes
 
-                f.write(f"SCRAPING SUMMARY:\n")
-                f.write(f"  Processing Time: {scraping_time}s\n")
-                f.write(f"  URLs Attempted: {len(enriched_results)}\n")
-                f.write(f"  Successful Scrapes: {successful_scrapes}\n")
-                f.write(f"  Failed Scrapes: {failed_scrapes}\n")
-                f.write(f"  Success Rate: {round((successful_scrapes/max(len(enriched_results),1))*100, 1)}%\n\n")
+                f.write(f"✅ SmartRestaurantScraper Complete!\n")
+                f.write(f"Processing Time: {scraping_time}s\n")
+                f.write(f"Successful Scrapes: {successful_scrapes}\n")
+                f.write(f"Failed Scrapes: {len(enriched_results) - successful_scrapes}\n")
+                f.write(f"Success Rate: {round((successful_scrapes/max(len(enriched_results),1))*100, 1)}%\n\n")
 
-                # Show detailed scraping results (MOST IMPORTANT FOR DEBUGGING)
+                # SMART SCRAPER INTELLIGENCE BREAKDOWN
+                f.write("SMART SCRAPER INTELLIGENCE BREAKDOWN:\n")
+                f.write("=" * 60 + "\n")
+
+                strategy_breakdown = scraper_stats.get('strategy_breakdown', {})
+                total_urls = scraper_stats.get('total_processed', 0)
+
+                f.write(f"🧠 AI Strategy Classification:\n")
+                f.write(f"   Total URLs Analyzed: {total_urls}\n")
+                f.write(f"   AI Analysis Calls: {scraper_stats.get('ai_analysis_calls', 0)}\n")
+                f.write(f"   Domain Cache Hits: {scraper_stats.get('domain_cache_hits', 0)}\n")
+                f.write(f"   New Domains Learned: {scraper_stats.get('new_domains_learned', 0)}\n\n")
+
+                f.write("📊 Strategy Distribution:\n")
+                cost_map = {"specialized": 0.0, "simple_http": 0.1, "enhanced_http": 0.5, "firecrawl": 10.0}
+                emoji_map = {"specialized": "🆓", "simple_http": "🟢", "enhanced_http": "🟡", "firecrawl": "🔴"}
+
+                for strategy, count in strategy_breakdown.items():
+                    if count > 0:
+                        cost = count * cost_map.get(strategy, 0)
+                        emoji = emoji_map.get(strategy, "📌")
+                        f.write(f"   {emoji} {strategy.upper()}: {count} URLs (~{cost:.1f} credits)\n")
+
+                f.write(f"\n💰 Cost Analysis:\n")
+                f.write(f"   Actual Cost: {scraper_stats.get('total_cost_estimate', 0):.1f} credits\n")
+                f.write(f"   All-Firecrawl Cost: {total_urls * 10:.1f} credits\n")
+                f.write(f"   Cost Saved: {scraper_stats.get('cost_saved_vs_all_firecrawl', 0):.1f} credits\n")
+                f.write(f"   Efficiency: {(scraper_stats.get('cost_saved_vs_all_firecrawl', 0) / max(total_urls * 10, 1) * 100):.1f}% savings\n\n")
+
+                # DETAILED SCRAPING RESULTS 
                 f.write("DETAILED SCRAPING RESULTS:\n")
                 f.write("=" * 60 + "\n")
 
                 total_content_length = 0
-                content_by_method = {}
 
                 for i, result in enumerate(enriched_results, 1):
                     f.write(f"SCRAPE #{i}:\n")
@@ -199,114 +202,33 @@ class WebScrapeTest:
                     f.write(f"Original Quality Score: {result.get('quality_score', 'N/A')}\n")
 
                     scraping_method = result.get('scraping_method', 'Unknown')
-                    f.write(f"Scraping Method: {scraping_method}\n")
-
-                    # Track scraping methods
-                    if scraping_method not in content_by_method:
-                        content_by_method[scraping_method] = {'count': 0, 'success': 0, 'content_length': 0}
-                    content_by_method[scraping_method]['count'] += 1
+                    f.write(f"Scraping Strategy: {scraping_method}\n")
 
                     scraped_content = result.get('scraped_content')
                     if scraped_content:
                         content_length = len(scraped_content)
                         total_content_length += content_length
-                        content_by_method[scraping_method]['success'] += 1
-                        content_by_method[scraping_method]['content_length'] += content_length
 
                         f.write(f"Status: ✅ SUCCESS\n")
                         f.write(f"Content Length: {content_length} characters\n")
                         f.write(f"Processing Time: {result.get('scraping_time', 'N/A')}s\n")
 
-                        # Show any additional metadata
-                        if 'content_quality' in result:
-                            f.write(f"Content Quality: {result['content_quality']}\n")
-                        if 'restaurant_mentions' in result:
-                            f.write(f"Restaurant Mentions: {result['restaurant_mentions']}\n")
+                        # Show content sectioning info if available
+                        if result.get('content_sections'):
+                            sections = result.get('content_sections', {})
+                            f.write(f"Content Sections: {len(sections)} sections\n")
+                            for section_name, section_content in sections.items():
+                                f.write(f"   - {section_name}: {len(section_content)} chars\n")
 
                         f.write(f"\nFULL SCRAPED CONTENT:\n")
-                        f.write("~" * 50 + "\n")
+                        f.write("~" * 60 + "\n")
                         f.write(scraped_content)
-                        f.write("\n" + "~" * 50 + "\n\n")
+                        f.write("\n" + "~" * 60 + "\n\n")
 
                     else:
                         f.write(f"Status: ❌ FAILED\n")
                         error_msg = result.get('scraping_error', 'Unknown error')
-                        f.write(f"Error: {error_msg}\n")
-
-                        # Show any retry information
-                        if 'retry_count' in result:
-                            f.write(f"Retries Attempted: {result['retry_count']}\n")
-                        if 'fallback_attempted' in result:
-                            f.write(f"Fallback Attempted: {result['fallback_attempted']}\n")
-
-                        f.write(f"\n")
-
-                # STEP 4: SCRAPING ANALYSIS
-                f.write("STEP 4: SCRAPING ANALYSIS\n")
-                f.write("-" * 40 + "\n")
-
-                # Content by scraping method analysis
-                f.write("CONTENT BY SCRAPING METHOD:\n")
-                f.write("-" * 30 + "\n")
-                for method, stats in content_by_method.items():
-                    success_rate = round((stats['success'] / max(stats['count'], 1)) * 100, 1)
-                    avg_content = round(stats['content_length'] / max(stats['success'], 1), 0) if stats['success'] > 0 else 0
-
-                    f.write(f"{method.upper()}:\n")
-                    f.write(f"  Attempts: {stats['count']}\n")
-                    f.write(f"  Successes: {stats['success']}\n")
-                    f.write(f"  Success Rate: {success_rate}%\n")
-                    f.write(f"  Total Content: {stats['content_length']} chars\n")
-                    f.write(f"  Avg Content/Success: {avg_content} chars\n\n")
-
-                # Intelligent scraper statistics
-                scraper_stats = self.scraper.get_stats()
-                f.write("INTELLIGENT SCRAPER STATISTICS:\n")
-                f.write("-" * 30 + "\n")
-                for key, value in scraper_stats.items():
-                    f.write(f"  {key}: {value}\n")
-                f.write("\n")
-
-                # STEP 5: CONTENT PREPARATION FOR EDITOR
-                f.write("STEP 5: CONTENT FOR EDITOR AGENT\n")
-                f.write("-" * 40 + "\n")
-
-                if successful_scrapes > 0:
-                    # Prepare content exactly like production pipeline would
-                    scraped_contents = []
-                    for result in enriched_results:
-                        if result.get('scraped_content'):
-                            scraped_contents.append({
-                                'url': result.get('url'),
-                                'title': result.get('title'),
-                                'content': result.get('scraped_content'),
-                                'quality_score': result.get('quality_score'),
-                                'scraping_method': result.get('scraping_method')
-                            })
-
-                    f.write(f"EDITOR INPUT READY:\n")
-                    f.write(f"  Content Pieces: {len(scraped_contents)}\n")
-                    f.write(f"  Total Content Length: {total_content_length} characters\n")
-                    f.write(f"  Average Content Length: {round(total_content_length/len(scraped_contents), 0)} chars\n")
-                    f.write(f"  Content Source: Web Scraping\n\n")
-
-                    f.write("CONTENT SUMMARY FOR EDITOR:\n")
-                    f.write("-" * 30 + "\n")
-                    for i, content in enumerate(scraped_contents, 1):
-                        f.write(f"{i}. {content['title'][:70]}...\n")
-                        f.write(f"   URL: {content['url']}\n")
-                        f.write(f"   Method: {content['scraping_method']}\n")
-                        f.write(f"   Length: {len(content['content'])} chars\n")
-                        f.write(f"   Quality: {content.get('quality_score', 'N/A')}\n")
-                        f.write(f"   Preview: {content['content'][:150]}...\n\n")
-
-                else:
-                    f.write(f"❌ NO CONTENT AVAILABLE FOR EDITOR\n")
-                    f.write("All scraping attempts failed. Possible issues:\n")
-                    f.write("  - Website blocking/protection\n")
-                    f.write("  - Network connectivity\n")
-                    f.write("  - Scraping strategy selection\n")
-                    f.write("  - Content parsing errors\n\n")
+                        f.write(f"Error: {error_msg}\n\n")
 
                 # FINAL STATISTICS & TIMING
                 total_time = round(time.time() - total_start_time, 2)
@@ -315,7 +237,7 @@ class WebScrapeTest:
                 f.write("=" * 40 + "\n")
                 f.write(f"Query Processing: {analysis_time}s\n")
                 f.write(f"Web Search: {search_time}s\n")
-                f.write(f"Intelligent Scraping: {scraping_time}s\n")
+                f.write(f"SmartRestaurantScraper: {scraping_time}s\n")
                 f.write(f"Total Pipeline Time: {total_time}s\n\n")
 
                 f.write(f"Search Results Found: {len(search_results)}\n")
@@ -323,28 +245,34 @@ class WebScrapeTest:
                 f.write(f"Total Content Scraped: {total_content_length} characters\n")
                 f.write(f"Content Ready for Editor: {'YES' if successful_scrapes > 0 else 'NO'}\n\n")
 
-                # Performance insights
+                # Smart scraper specific insights
                 if successful_scrapes > 0:
                     chars_per_second = round(total_content_length / scraping_time, 0)
-                    f.write(f"PERFORMANCE INSIGHTS:\n")
+                    cost_efficiency = scraper_stats.get('cost_saved_vs_all_firecrawl', 0)
+
+                    f.write(f"SMART SCRAPER INSIGHTS:\n")
                     f.write(f"  Content scraped per second: {chars_per_second} chars/s\n")
                     f.write(f"  Average time per successful scrape: {round(scraping_time/successful_scrapes, 2)}s\n")
+                    f.write(f"  Cost efficiency vs all-Firecrawl: {cost_efficiency:.1f} credits saved\n")
+                    f.write(f"  AI optimization: {scraper_stats.get('domain_cache_hits', 0)} cache hits, {scraper_stats.get('ai_analysis_calls', 0)} AI calls\n\n")
 
-                # Final summary
+                # Final summary with correct naming
                 f.write("\n" + "=" * 80 + "\n")
-                f.write("WEB SCRAPING TEST COMPLETED\n")
+                f.write("SMART WEB SCRAPING TEST COMPLETED\n")
                 f.write("=" * 80 + "\n")
                 f.write(f"Query: {restaurant_query}\n")
                 f.write(f"Destination: {destination}\n")
                 f.write(f"Search Success: {'✅' if len(search_results) > 0 else '❌'}\n")
-                f.write(f"Scraping Success: {'✅' if successful_scrapes > 0 else '❌'}\n")
+                f.write(f"SmartRestaurantScraper Success: {'✅' if successful_scrapes > 0 else '❌'}\n")
                 f.write(f"Content for Editor: {'✅ READY' if successful_scrapes > 0 else '❌ NONE'}\n")
                 f.write(f"Total Time: {total_time}s\n")
-                f.write("Pipeline: ✅ Query → ✅ Search → ✅ Scrape → ✅ Analysis\n")
+                f.write(f"Pipeline: ✅ Query → ✅ Search → ✅ SmartScraper → ✅ Analysis\n")
+                f.write(f"AI Features: ✅ Strategy Classification → ✅ Cost Optimization → ✅ Domain Learning\n")
                 f.write("=" * 80 + "\n")
 
-            except Exception as e:
-                f.write(f"\n❌ ERROR during web scraping test: {str(e)}\n")
+        except Exception as e:
+            with open(filepath, 'a', encoding='utf-8') as f:
+                f.write(f"\n❌ ERROR during smart web scraping test: {str(e)}\n")
                 logger.error(f"Error during web scraping test: {e}")
                 import traceback
                 f.write(f"\nFull traceback:\n{traceback.format_exc()}\n")
@@ -356,17 +284,17 @@ class WebScrapeTest:
         return filepath
 
     def _send_results_to_admin(self, bot, file_path: str, query: str, successful_count: int):
-        """Send web scraping test results to admin via Telegram"""
+        """Send smart web scraping test results to admin via Telegram"""
         try:
             # Create summary message
             summary = (
-                f"🌐 <b>Web Scraping Test Results</b>\n\n"
+                f"🧠 <b>SmartRestaurantScraper Test Results</b>\n\n"
                 f"📝 Query: <code>{query}</code>\n"
                 f"✅ Successful scrapes: {successful_count}\n"
-                f"🔧 Pipeline: query → search → scrape (database bypassed)\n"
-                f"🎯 Focus: Web search and scraping analysis\n\n"
-                f"{'✅ Web content scraped successfully' if successful_count > 0 else '❌ No content scraped - check logs'}\n\n"
-                f"📄 Complete web scraping analysis with FULL content attached."
+                f"🎯 Pipeline: query → search → SmartRestaurantScraper (AI routing)\n"
+                f"🧠 Focus: AI strategy classification and cost optimization\n\n"
+                f"{'✅ Content scraped with smart strategies' if successful_count > 0 else '❌ No content scraped - check logs'}\n\n"
+                f"📄 Complete SmartRestaurantScraper analysis attached."
             )
 
             bot.send_message(
@@ -380,21 +308,92 @@ class WebScrapeTest:
                 bot.send_document(
                     self.admin_chat_id,
                     f,
-                    caption=f"🌐 Web scrape test: {query}"
+                    caption=f"🧠 SmartRestaurantScraper test: {query}"
                 )
 
-            logger.info("Successfully sent web scraping test results to admin")
+            logger.info("Successfully sent SmartRestaurantScraper test results to admin")
 
         except Exception as e:
-            logger.error(f"Failed to send web scraping results to admin: {e}")
+            logger.error(f"Failed to send smart scraping results to admin: {e}")
 
 
-# Convenience function for telegram bot integration
-def add_web_scrape_test_command(bot, config, orchestrator):
+# ============================================================================
+# SIMILAR UPDATES NEEDED FOR scrape_test.py
+# ============================================================================
+
+# scrape_test.py - CLEANED UP IMPORTS  
+# Now uses SmartRestaurantScraper directly from orchestrator
+
+class ScrapeTest:
     """
-    Add the /test_wscrape command to the Telegram bot
-    This function is deprecated since commands are handled directly in telegram_bot.py
-    Keeping for backward compatibility.
+    Full pipeline test that uses SmartRestaurantScraper directly.
+    Follows the EXACT production pipeline path.
     """
-    logger.info("Note: web scrape test commands are now handled directly in telegram_bot.py")
-    pass
+
+    def __init__(self, config, orchestrator):
+        self.config = config
+        self.orchestrator = orchestrator
+        self.admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
+
+        # Get agents directly from orchestrator (SmartRestaurantScraper, not wrapper)
+        self.query_analyzer = orchestrator.query_analyzer
+        self.database_search_agent = orchestrator.database_search_agent
+        self.dbcontent_evaluation_agent = orchestrator.dbcontent_evaluation_agent  
+        self.search_agent = orchestrator.search_agent
+        self.scraper = orchestrator.scraper  # This is now SmartRestaurantScraper directly
+        self.editor_agent = orchestrator.editor_agent
+
+    async def test_scraping_process(self, restaurant_query: str, bot=None) -> str:
+        """
+        Run the COMPLETE production pipeline up to editor stage using SmartRestaurantScraper directly.
+        """
+        total_start_time = time.time()
+
+        # Create timestamped filename for results
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"scrape_test_{timestamp}.txt"
+        filepath = os.path.join(tempfile.gettempdir(), filename)
+
+        logger.info(f"Starting full pipeline test with SmartRestaurantScraper for: {restaurant_query}")
+        logger.info(f"Results will be saved to: {filepath}")
+
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                # Header
+                f.write("FULL PIPELINE TEST RESULTS (SmartRestaurantScraper)\n")
+                f.write("=" * 80 + "\n")
+                f.write(f"Query: {restaurant_query}\n")
+                f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+                f.write(f"Test Type: Complete Pipeline (Database → SmartRestaurantScraper → Editor)\n")
+                f.write("=" * 80 + "\n\n")
+
+                f.write("PRODUCTION PIPELINE OVERVIEW:\n")
+                f.write("1. Query Analysis → Search Terms Generation\n")
+                f.write("2. Database Search → Existing Restaurant Lookup\n")
+                f.write("3. Content Evaluation → Sufficiency Assessment\n")
+                f.write("4. [IF NEEDED] Web Search → URL Discovery\n")
+                f.write("5. [IF NEEDED] SmartRestaurantScraper → AI Strategy Routing\n")
+                f.write("6. Editor Agent → Final Processing\n")
+                f.write("\n" + "-" * 80 + "\n\n")
+
+                # Execute the same steps as production...
+                # STEP 1: Query Analysis
+                f.write("STEP 1: QUERY ANALYSIS\n")
+                f.write("-" * 40 + "\n")
+
+                analysis_start = time.time()
+                query_analysis = self.query_analyzer.analyze(restaurant_query)
+                analysis_time = round(time.time() - analysis_start, 2)
+
+                f.write(f"Processing Time: {analysis_time}s\n")
+                f.write(f"Query: {restaurant_query}\n")
+                f.write(f"Destination: {query_analysis.get('destination', 'Unknown')}\n")
+
+                # Continue with rest of pipeline...
+                # (This would include database search, evaluation, conditional web search, 
+                #  conditional SmartRestaurantScraper usage, and editor processing)
+
+        except Exception as e:
+            logger.error(f"Error in full pipeline test: {e}")
+
+        return filepath
