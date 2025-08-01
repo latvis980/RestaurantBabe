@@ -202,7 +202,7 @@ Return ONLY valid JSON in this exact format:
 
                 logger.info(f"✅ Web search completed: {len(search_results)} results found")
 
-                # Return with web search results
+                # Return with web search results - make sure they flow to scraping
                 return {
                     **pipeline_data,
                     "evaluation_result": {
@@ -216,11 +216,11 @@ Return ONLY valid JSON in this exact format:
                     "content_source": "web_search",
                     "trigger_web_search": True,
                     "skip_web_search": True,  # Skip main search since we already did it
+                    "search_results": search_results,  # FIXED: Use correct key for orchestrator
                     "final_database_content": [],
-                    "web_search_results": search_results,  # Add the actual results
                     "optimized_content": {
                         "database_restaurants": [],
-                        "scraped_results": search_results
+                        "scraped_results": []  # Will be filled by scraper
                     }
                 }
             else:
@@ -297,11 +297,11 @@ Return ONLY valid JSON in this exact format:
                     "content_source": "web_search",
                     "trigger_web_search": True,
                     "skip_web_search": True,  # Skip main search since we already did it
+                    "search_results": search_results,  # FIXED: Use correct key for orchestrator
                     "final_database_content": [],
-                    "web_search_results": search_results,  # Add the actual results
                     "optimized_content": {
                         "database_restaurants": [],
-                        "scraped_results": search_results
+                        "scraped_results": []  # Will be filled by scraper
                     }
                 }
             else:
