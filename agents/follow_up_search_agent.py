@@ -1,9 +1,10 @@
-# agents/follow_up_search_agent.py - Updated with address verification + country extraction from Google Maps
+# agents/follow_up_search_agent.py - Updated with corrected Google Maps URLs
 
 import logging
 import googlemaps
 import re
 from typing import Dict, List, Any, Optional
+from datetime import datetime
 from utils.debug_utils import dump_chain_state, log_function_call
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,7 @@ class FollowUpSearchAgent:
     3. Rating filtering and restaurant rejection based on Google ratings
     4. Filtering out closed restaurants (temporarily or permanently) with auto-deletion
     5. Saving coordinates and corrected country data back to database
+    6. FIXED: Proper Google Maps URLs that work on mobile and desktop
     """
 
     def __init__(self, config):
@@ -132,6 +134,7 @@ class FollowUpSearchAgent:
         2. Extracts country from Google Maps formatted addresses
         3. Auto-deletes closed restaurants from database
         4. Filters by rating threshold
+        5. FIXED: Creates proper Google Maps URLs
         """
         # Make a copy to avoid modifying the original
         updated_restaurant = restaurant.copy()
@@ -229,12 +232,15 @@ class FollowUpSearchAgent:
                     restaurant_name, destination, maps_info, extracted_country
                 )
 
-            # Add Google Maps URL using place_id for proper mobile support
+            # FIXED: Create proper Google Maps URLs using correct format
             place_id = maps_info.get("place_id")
             if place_id:
-                updated_restaurant["google_maps_url"] = f"https://maps.google.com/maps/place/?q=place_id:{place_id}"
+                # Use the official Google Maps Place URL format (works on mobile + desktop)
+                updated_restaurant["google_maps_url"] = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
                 updated_restaurant["place_id"] = place_id
+                logger.debug(f"📱 Created mobile-friendly URL for {restaurant_name}")
             elif maps_info.get("url"):
+                # Fallback to the URL provided by Places API
                 updated_restaurant["google_maps_url"] = maps_info["url"]
 
             # Add business status information
@@ -361,7 +367,6 @@ class FollowUpSearchAgent:
 
             if existing_restaurants.data:
                 restaurant_id = existing_restaurants.data[0]['id']
-                restaurant_info = existing_restaurants.data[0]
 
                 # Delete the restaurant
                 delete_result = db.supabase.table('restaurants')\
@@ -433,13 +438,16 @@ class FollowUpSearchAgent:
             business_status = result_data.get("business_status")
             address_components = result_data.get("address_components", [])
 
+            # FIXED: Create proper Google Maps URL using place_id
+            place_url = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
+
             return {
                 "formatted_address": formatted_address,
                 "rating": rating,
                 "user_ratings_total": user_ratings_total,
                 "business_status": business_status,
                 "place_id": place_id,
-                "url": result_data.get("url", f"https://maps.google.com/maps/place/?q=place_id:{place_id}"),
+                "url": place_url,  # Use our corrected URL format
                 "geometry": result_data.get("geometry", {}),
                 "address_components": address_components
             }

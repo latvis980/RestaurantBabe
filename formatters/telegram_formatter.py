@@ -1,11 +1,12 @@
 # formatters/telegram_formatter.py
 """
 Complete Telegram HTML formatter - handles all Telegram-specific formatting
-FIXED VERSION - removes problematic regex lookbehind
+FIXED VERSION - corrected Google Maps URLs for proper mobile/desktop support
 """
 import re
 import logging
 from html import escape, unescape
+import urllib.parse
 
 logger = logging.getLogger(__name__)
 
@@ -63,19 +64,6 @@ class TelegramFormatter:
         logger.info(f"✅ Successfully formatted {formatted_count} restaurants")
         return self._finalize_html(final_html)
 
-    def _format_address(self, address):
-        """Format address with Google Maps place link support"""
-        if not address or address == "Address unavailable":
-            return "📍 Address unavailable\n"
-
-        # Check for existing link format
-        link_match = re.search(r'<a href="([^"]+)"[^>]*>([^<]+)</a>', str(address))
-        if link_match:
-            url, address_text = link_match.groups()
-            return f'📍 <a href="{url}">{self._clean_text(address_text)}</a>\n'
-
-        return f"📍 {self._clean_text(str(address))}\n"
-
     def _format_single_restaurant(self, restaurant, index):
         """Format a single restaurant entry"""
         # Safely extract data with defaults
@@ -84,7 +72,7 @@ class TelegramFormatter:
         address = restaurant.get('address', 'Address unavailable')
         sources = restaurant.get('sources', [])
 
-        # NEW: Get Google Maps data for proper mobile links
+        # Get Google Maps data for proper mobile links
         place_id = restaurant.get('place_id')
         google_maps_url = restaurant.get('google_maps_url')
 
@@ -98,7 +86,7 @@ class TelegramFormatter:
 
         parts = [
             f"<b>{index}. {name_escaped}</b>\n",
-            self._format_address_with_place_link(address, place_id, google_maps_url),
+            self._format_address_with_correct_google_link(address, place_id),
             f"{desc_escaped}\n" if desc_escaped else "",
             self._format_sources(sources),
             "\n"  # Add spacing between restaurants
@@ -106,28 +94,38 @@ class TelegramFormatter:
 
         return ''.join(filter(None, parts))
 
-    def _format_address_with_place_link(self, address, place_id=None, google_maps_url=None):
-        """Format address with proper Google Maps place link for mobile"""
+    def _format_address_with_correct_google_link(self, address, place_id=None):
+        """
+        Format address with CORRECT Google Maps URLs according to Google documentation
+
+        Google Maps URL formats:
+        1. Place ID (BEST for accuracy): https://www.google.com/maps/place/?q=place_id:PLACE_ID
+        2. Search query fallback: https://www.google.com/maps/search/?api=1&query=ENCODED_ADDRESS
+
+        These URLs work on:
+        - Desktop: Opens in browser Google Maps
+        - Mobile: Opens Google Maps app if installed, otherwise browser
+        - iOS: Can open Apple Maps if user chooses
+        """
         if not address or address == "Address unavailable":
             return "📍 Address unavailable\n"
 
-        # Clean the address text
+        # Clean the address text for display
         clean_address = self._clean_text(str(address))
 
-        # Use place_id link if available (best for mobile)
+        # PRIORITY 1: Use place_id if available (most accurate)
         if place_id:
-            maps_url = f"https://maps.google.com/maps/place/?q=place_id:{place_id}"
+            # Official Google Maps Place URL format
+            maps_url = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
+            logger.debug(f"Using place_id URL: {maps_url}")
             return f'📍 <a href="{maps_url}">{clean_address}</a>\n'
 
-        # Fallback to google_maps_url if available
-        elif google_maps_url:
-            return f'📍 <a href="{google_maps_url}">{clean_address}</a>\n'
-
-        # Last resort: search-based URL
+        # PRIORITY 2: Create search-based URL (fallback)
         else:
-            import urllib.parse
+            # Use Google Maps Search API format for better reliability
             encoded_address = urllib.parse.quote(clean_address)
-            search_url = f"https://maps.google.com/maps?q={encoded_address}"
+            search_url = f"https://www.google.com/maps/search/?api=1&query={encoded_address}"
+            logger.debug(f"Using search URL: {search_url}")
             return f'📍 <a href="{search_url}">{clean_address}</a>\n'
 
     def _format_sources(self, sources):
@@ -229,7 +227,7 @@ class TelegramFormatter:
             valid_tag_pattern,
             replace_valid_tag,
             text,
-            flags=re.IGNORECASE        # ← moved the case-insensitive flag here
+            flags=re.IGNORECASE
         )
 
         # Now escape any remaining < and > characters (these are invalid)
@@ -261,8 +259,6 @@ class TelegramFormatter:
 
         # Ensure proper tag nesting
         return self._fix_tag_nesting(text)
-
-
 
     def _fix_tag_nesting(self, text):
         """
