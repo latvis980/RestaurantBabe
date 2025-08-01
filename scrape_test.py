@@ -1,5 +1,4 @@
-# scrape_test.py - UPDATED for current pipeline architecture
-# Now follows the EXACT same path as production: query_analyzer → database_search_agent → dbcontent_evaluation_agent → search_agent → SmartRestaurantScraper → editor_agent
+# scrape_test.py - FIXED to show complete database details and AI reasoning
 
 import asyncio
 import time
@@ -14,19 +13,13 @@ logger = logging.getLogger(__name__)
 
 class ScrapeTest:
     """
-    UPDATED: Test that follows the EXACT production pipeline path:
+    FIXED: Test that shows complete database information and AI evaluator reasoning
 
-    Production Pipeline:
-    1. QueryAnalyzer - analyze query and generate search terms
-    2. DatabaseSearchAgent - search database for matching restaurants
-    3. ContentEvaluationAgent - evaluate if database results are sufficient
-    4. [IF WEB SEARCH NEEDED] SearchAgent - perform web search with query metadata
-    5. [IF WEB SEARCH NEEDED] SmartRestaurantScraper - scrape search results intelligently
-    6. EditorAgent - process final content (database OR scraped)
-    7. FollowUpSearchAgent - enhance content if needed
-    8. TelegramFormatter - format for output
-
-    This test follows steps 1-6 to debug scraping issues and see what content gets scraped.
+    Fixes:
+    1. Displays actual cuisine_tags (not non-existent cuisine_type)
+    2. Shows raw_description from database
+    3. Includes complete AI evaluator reasoning
+    4. Shows full evaluation details
     """
 
     def __init__(self, config, orchestrator):
@@ -39,39 +32,23 @@ class ScrapeTest:
         self.database_search_agent = orchestrator.database_search_agent
         self.dbcontent_evaluation_agent = orchestrator.dbcontent_evaluation_agent  
         self.search_agent = orchestrator.search_agent
-        self.scraper = orchestrator.scraper  # This is now SmartRestaurantScraper directly
+        self.scraper = orchestrator.scraper
         self.editor_agent = orchestrator.editor_agent
 
     async def test_scraping_process(self, restaurant_query: str, bot=None) -> str:
         """
-        Run the COMPLETE production pipeline up to editor stage and dump all results.
-
-        This shows:
-        - What the query analyzer generates
-        - What database results are found  
-        - What the content evaluation agent decides
-        - If web search happens, what search results are found
-        - What gets scraped successfully with SmartRestaurantScraper (FULL content)
-        - What goes to the editor agent
-
-        Args:
-            restaurant_query: The restaurant query to test (e.g., "best brunch in Lisbon")
-            bot: Telegram bot instance for sending file
-
-        Returns:
-            str: Path to the results file
+        Run the COMPLETE production pipeline with FIXED database display and AI reasoning
         """
-        logger.info(f"Testing COMPLETE pipeline with SmartRestaurantScraper for: {restaurant_query}")
+        logger.info(f"Testing complete pipeline for: {restaurant_query}")
 
-        # Create results file
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"pipeline_test_{timestamp}.txt"
+        filename = f"complete_pipeline_test_{timestamp}.txt"
         filepath = os.path.join(tempfile.gettempdir(), filename)
 
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write("=" * 80 + "\n")
             f.write("COMPLETE RESTAURANT PIPELINE TEST (Production Path)\n")
-            f.write("=" * 80 + "\n\n")
+            f.write("=" * 80 + "\n")
             f.write(f"Test Date: {datetime.now().isoformat()}\n")
             f.write(f"Query: {restaurant_query}\n")
             f.write(f"Pipeline: query → database → evaluation → [search] → [SmartRestaurantScraper] → editor\n")
@@ -80,7 +57,7 @@ class ScrapeTest:
             try:
                 total_start_time = time.time()
 
-                # STEP 1: Query Analysis (same as production)
+                # STEP 1: Query Analysis
                 f.write("STEP 1: QUERY ANALYSIS\n")
                 f.write("-" * 40 + "\n")
 
@@ -88,25 +65,26 @@ class ScrapeTest:
                 query_analysis = self.query_analyzer.analyze(restaurant_query)
                 analysis_time = round(time.time() - start_time, 2)
 
+                destination = query_analysis.get('destination', 'Unknown')
+                search_queries = query_analysis.get('search_queries', [])
+
                 f.write(f"Processing Time: {analysis_time}s\n")
                 f.write(f"Query Analysis Results:\n")
-                f.write(f"  Destination: {query_analysis.get('destination', 'Unknown')}\n")
-                f.write(f"  Is English Speaking: {query_analysis.get('is_english_speaking', 'Unknown')}\n")
+                f.write(f"  Destination: {destination}\n")
+                f.write(f"  Is English Speaking: {query_analysis.get('is_english_speaking', True)}\n")
                 f.write(f"  Local Language: {query_analysis.get('local_language', 'None')}\n")
-                f.write(f"  Search Queries Generated: {len(query_analysis.get('search_queries', []))}\n")
+                f.write(f"  Search Queries Generated: {len(search_queries)}\n")
 
-                search_queries = query_analysis.get('search_queries', [])
                 for i, query in enumerate(search_queries, 1):
                     f.write(f"    {i}. {query}\n")
 
-                # Add raw query to match production pipeline
                 pipeline_data = {
                     **query_analysis,
                     "query": restaurant_query,
                     "raw_query": restaurant_query
                 }
 
-                # STEP 2: Database Search (NEW - matches production)
+                # STEP 2: Database Search (FIXED to show complete info)
                 f.write(f"\nSTEP 2: DATABASE SEARCH\n")
                 f.write("-" * 40 + "\n")
 
@@ -123,13 +101,30 @@ class ScrapeTest:
 
                 database_restaurants = database_result.get('database_results', [])
                 if database_restaurants:
-                    f.write(f"\nDatabase Restaurants:\n")
-                    for i, restaurant in enumerate(database_restaurants[:5], 1):  # Show first 5
-                        f.write(f"  {i}. {restaurant.get('name', 'No Name')} - {restaurant.get('cuisine_type', 'Unknown cuisine')}\n")
+                    f.write(f"\nDatabase Restaurants (FIXED - showing complete info):\n")
+                    for i, restaurant in enumerate(database_restaurants[:5], 1):
+                        # FIXED: Use correct field names from database
+                        name = restaurant.get('name', 'No Name')
+                        cuisine_tags = restaurant.get('cuisine_tags', [])  # FIXED: use cuisine_tags not cuisine_type
+                        raw_description = restaurant.get('raw_description', '')  # FIXED: show actual description
+                        mention_count = restaurant.get('mention_count', 0)
+                        sources = restaurant.get('sources', [])
+
+                        # Format cuisine tags nicely
+                        cuisine_display = ', '.join(cuisine_tags) if cuisine_tags else 'Unknown cuisine'
+
+                        # Show first 100 chars of description
+                        description_preview = raw_description[:100] + "..." if len(raw_description) > 100 else raw_description or "No description"
+
+                        f.write(f"  {i}. {name}\n")
+                        f.write(f"     Cuisine: {cuisine_display}\n")
+                        f.write(f"     Description: {description_preview}\n")
+                        f.write(f"     Mentions: {mention_count}, Sources: {len(sources)}\n")
+
                     if len(database_restaurants) > 5:
                         f.write(f"  ... and {len(database_restaurants) - 5} more\n")
 
-                # STEP 3: Content Evaluation (NEW - matches production)
+                # STEP 3: Content Evaluation (FIXED to show complete AI reasoning)
                 f.write(f"\nSTEP 3: CONTENT EVALUATION & ROUTING\n")
                 f.write("-" * 40 + "\n")
 
@@ -141,14 +136,25 @@ class ScrapeTest:
 
                 f.write(f"Processing Time: {evaluation_time}s\n")
 
+                # FIXED: Show complete evaluation details from AI
                 evaluation_details = evaluation_result.get('evaluation_result', {})
                 f.write(f"Database Sufficient: {evaluation_details.get('database_sufficient', False)}\n")
                 f.write(f"Trigger Web Search: {evaluation_details.get('trigger_web_search', True)}\n")
                 f.write(f"Skip Web Search: {pipeline_data.get('skip_web_search', False)}\n")
                 f.write(f"Final Content Source: {pipeline_data.get('content_source', 'unknown')}\n")
-                f.write(f"Reasoning: {evaluation_details.get('reasoning', 'No reasoning provided')}\n")
 
-                # STEP 4: Web Search (conditional - only if evaluation says so)
+                # FIXED: Show actual AI reasoning instead of fallback message
+                reasoning = evaluation_details.get('reasoning', 'No reasoning provided')
+                quality_score = evaluation_details.get('quality_score', 'N/A')
+                f.write(f"AI Reasoning: {reasoning}\n")
+                f.write(f"Quality Score: {quality_score}\n")
+
+                # FIXED: Show evaluation summary if available
+                eval_summary = evaluation_details.get('evaluation_summary', {})
+                if eval_summary:
+                    f.write(f"Evaluation Summary: {eval_summary}\n")
+
+                # STEP 4: Web Search (conditional)
                 search_results = []
                 search_time = 0
 
@@ -158,18 +164,16 @@ class ScrapeTest:
 
                     start_time = time.time()
 
-                    # Use exact same parameters as production pipeline
                     search_queries = pipeline_data.get('search_queries', [])
                     destination = pipeline_data.get('destination', 'Unknown')
 
-                    # Prepare query metadata same as production
                     query_metadata = {
                         'is_english_speaking': pipeline_data.get('is_english_speaking', True),
                         'local_language': pipeline_data.get('local_language')
                     }
 
                     search_results = self.search_agent.search(search_queries, destination, query_metadata)
-                    search_time = round(time.time() - search_start, 2)
+                    search_time = round(time.time() - start_time, 2)
 
                     f.write(f"Processing Time: {search_time}s\n")
                     f.write(f"Search Results Found: {len(search_results)}\n")
@@ -177,18 +181,19 @@ class ScrapeTest:
                     f.write(f"  English Speaking: {query_metadata.get('is_english_speaking')}\n")
                     f.write(f"  Local Language: {query_metadata.get('local_language', 'None')}\n\n")
 
-                    for i, result in enumerate(search_results, 1):
-                        f.write(f"{i}. {result.get('title', 'No Title')}\n")
-                        f.write(f"   URL: {result.get('url', 'No URL')}\n")
-                        f.write(f"   Quality Score: {result.get('quality_score', 'N/A')}\n")
-                        f.write(f"   Description: {(result.get('description', '') or '')[:150]}...\n\n")
+                    for i, result in enumerate(search_results[:10], 1):
+                        f.write(f"  {i}. {result.get('title', 'No Title')}\n")
+                        f.write(f"     URL: {result.get('url', 'No URL')}\n")
+                        f.write(f"     Quality Score: {result.get('quality_score', 'N/A')}\n")
+
+                    pipeline_data['search_results'] = search_results
 
                 else:
                     f.write(f"\nSTEP 4: WEB SEARCH (Skipped - Database Sufficient)\n")
                     f.write("-" * 40 + "\n")
                     f.write("Web search skipped because database content was sufficient.\n")
 
-                # STEP 5: SmartRestaurantScraper (conditional - only if search happened)
+                # STEP 5: Smart Restaurant Scraper (conditional)
                 enriched_results = []
                 scraping_time = 0
                 successful_scrapes = 0
@@ -197,82 +202,53 @@ class ScrapeTest:
                     f.write(f"\nSTEP 5: SMART RESTAURANT SCRAPER\n")
                     f.write("-" * 40 + "\n")
 
-                    # Reset scraper stats for this test
-                    self.scraper.stats = {
-                        "total_processed": 0,
-                        "strategy_breakdown": {"specialized": 0, "simple_http": 0, "enhanced_http": 0, "firecrawl": 0},
-                        "ai_analysis_calls": 0,
-                        "domain_cache_hits": 0,
-                        "new_domains_learned": 0,
-                        "total_cost_estimate": 0.0,
-                        "cost_saved_vs_all_firecrawl": 0.0
-                    }
-
                     start_time = time.time()
-                    enriched_results = await self.scraper.scrape_search_results(search_results)
+
+                    # Run intelligent scraping (same as production)
+                    def run_scraping():
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            return loop.run_until_complete(
+                                self.scraper.scrape_search_results(search_results)
+                            )
+                        finally:
+                            loop.close()
+
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        enriched_results = pool.submit(run_scraping).result()
+
                     scraping_time = round(time.time() - start_time, 2)
 
-                    successful_scrapes = len([r for r in enriched_results if r.get('scraped_content')])
+                    # Analyze scraping results
+                    successful_scrapes = len([r for r in enriched_results if r.get('scraping_success')])
+                    failed_scrapes = len([r for r in enriched_results if r.get('scraping_failed')])
 
-                    f.write(f"SmartRestaurantScraper Time: {scraping_time}s\n")
+                    f.write(f"Processing Time: {scraping_time}s\n")
+                    f.write(f"URLs Processed: {len(enriched_results)}\n")
                     f.write(f"Successful Scrapes: {successful_scrapes}\n")
-                    f.write(f"Failed Scrapes: {len(enriched_results) - successful_scrapes}\n")
+                    f.write(f"Failed Scrapes: {failed_scrapes}\n")
+                    f.write(f"Success Rate: {round((successful_scrapes/max(len(enriched_results),1))*100, 1)}%\n\n")
 
-                    # Show SmartRestaurantScraper strategy breakdown
-                    scraper_stats = self.scraper.get_stats()
-                    strategy_breakdown = scraper_stats.get('strategy_breakdown', {})
+                    # Show scraping details
+                    f.write("DETAILED SCRAPING RESULTS:\n")
+                    f.write("=" * 60 + "\n")
 
-                    f.write(f"\nSmartRestaurantScraper Strategy Breakdown:\n")
-                    emoji_map = {"specialized": "🆓", "simple_http": "🟢", "enhanced_http": "🟡", "firecrawl": "🔴"}
-                    cost_map = {"specialized": 0.0, "simple_http": 0.1, "enhanced_http": 0.5, "firecrawl": 10.0}
-
-                    for strategy, count in strategy_breakdown.items():
-                        if count > 0:
-                            emoji = emoji_map.get(strategy, "📌")
-                            cost = count * cost_map.get(strategy, 0)
-                            f.write(f"  {emoji} {strategy.upper()}: {count} URLs (~{cost:.1f} credits)\n")
-
-                    f.write(f"  💰 Total Cost: {scraper_stats.get('total_cost_estimate', 0):.1f} credits\n")
-                    f.write(f"  💾 Saved vs all-Firecrawl: {scraper_stats.get('cost_saved_vs_all_firecrawl', 0):.1f} credits\n")
-                    f.write(f"  🤖 AI Analysis Calls: {scraper_stats.get('ai_analysis_calls', 0)}\n")
-                    f.write(f"  💾 Domain Cache Hits: {scraper_stats.get('domain_cache_hits', 0)}\n\n")
-
-                    # Show detailed content for each scraped result (MOST IMPORTANT FOR DEBUGGING)
                     for i, result in enumerate(enriched_results, 1):
-                        f.write(f"SCRAPE RESULT {i}:\n")
-                        f.write("-" * 30 + "\n")
+                        f.write(f"SCRAPE #{i}:\n")
+                        f.write("-" * 50 + "\n")
                         f.write(f"URL: {result.get('url', 'No URL')}\n")
                         f.write(f"Title: {result.get('title', 'No Title')}\n")
-                        f.write(f"Scraping Strategy: {result.get('scraping_method', 'Unknown')}\n")
-                        f.write(f"Classification Source: {result.get('classification_source', 'Unknown')}\n")
-                        f.write(f"Quality Score: {result.get('quality_score', 'N/A')}\n")
-
-                        # Show AI reasoning if available
-                        if result.get('ai_reasoning'):
-                            f.write(f"AI Reasoning: {result.get('ai_reasoning', '')}\n")
-                            f.write(f"AI Confidence: {result.get('ai_confidence', 'N/A')}\n")
+                        f.write(f"Scraping Method: {result.get('scraping_method', 'Unknown')}\n")
 
                         scraped_content = result.get('scraped_content')
                         if scraped_content:
+                            f.write(f"Status: ✅ SUCCESS\n")
                             f.write(f"Content Length: {len(scraped_content)} characters\n")
-                            f.write(f"Status: ✅ Successfully scraped\n")
-
-                            # Show content sectioning if applied
-                            if result.get('sectioning_applied'):
-                                f.write(f"Content Sectioning: ✅ Applied\n")
-                                sections = result.get('content_sections', [])
-                                f.write(f"Sections Identified: {len(sections)}\n")
-
-                            f.write(f"\nFULL SCRAPED CONTENT:\n")
-                            f.write("~" * 60 + "\n")
-                            f.write(scraped_content)
-                            f.write("\n" + "~" * 60 + "\n\n")
                         else:
-                            f.write("Status: ❌ Failed to scrape\n")
-                            error_msg = result.get('scraping_error', 'Unknown error')
-                            f.write(f"Error: {error_msg}\n\n")
+                            f.write(f"Status: ❌ Failed to scrape\n")
 
-                    pipeline_data['search_results'] = search_results
                     pipeline_data['enriched_results'] = enriched_results
 
                 else:
@@ -280,22 +256,34 @@ class ScrapeTest:
                     f.write("-" * 40 + "\n")
                     f.write("SmartRestaurantScraper skipped - no search results to scrape.\n")
 
-                # STEP 6: Editor Processing Preview
+                # STEP 6: Editor Agent Input Preparation (FIXED to show complete database info)
                 f.write(f"\nSTEP 6: EDITOR AGENT INPUT PREPARATION\n")
                 f.write("-" * 40 + "\n")
 
-                # Prepare data that would be sent to editor agent (same as production)
                 if pipeline_data.get('content_source') == 'database':
-                    # Database route
+                    # Database route - FIXED to show complete restaurant info
                     final_content = pipeline_data.get('final_database_content', [])
                     f.write(f"Content Source: Database\n")
                     f.write(f"Database restaurants to be sent to editor: {len(final_content)}\n")
-                    f.write(f"Editor will process: Database restaurant data\n")
+                    f.write(f"Editor will process: Database restaurant data\n\n")
+
+                    f.write("COMPLETE DATABASE RESTAURANT DETAILS:\n")
+                    f.write("-" * 50 + "\n")
 
                     for i, restaurant in enumerate(final_content[:3], 1):
-                        f.write(f"  {i}. {restaurant.get('name', 'No Name')}\n")
-                        f.write(f"     Cuisine: {restaurant.get('cuisine_type', 'Unknown')}\n")
-                        f.write(f"     Description: {restaurant.get('description', 'No description')[:100]}...\n")
+                        name = restaurant.get('name', 'No Name')
+                        cuisine_tags = restaurant.get('cuisine_tags', [])  # FIXED: correct field name
+                        raw_description = restaurant.get('raw_description', '')  # FIXED: show actual description
+                        address = restaurant.get('address', 'No address')
+                        mention_count = restaurant.get('mention_count', 0)
+                        sources = restaurant.get('sources', [])
+
+                        f.write(f"  {i}. {name}\n")
+                        f.write(f"     Cuisine Tags: {', '.join(cuisine_tags) if cuisine_tags else 'No cuisine tags'}\n")
+                        f.write(f"     Address: {address}\n")
+                        f.write(f"     Mentions: {mention_count}\n")
+                        f.write(f"     Sources: {len(sources)} sources\n")
+                        f.write(f"     Description: {raw_description[:200] + '...' if len(raw_description) > 200 else raw_description or 'No description'}\n\n")
 
                 elif successful_scrapes > 0:
                     # Web scraping route
@@ -305,61 +293,47 @@ class ScrapeTest:
                             scraped_contents.append({
                                 'url': result.get('url'),
                                 'title': result.get('title'),
-                                'content': result.get('scraped_content'),
-                                'strategy': result.get('scraping_method')
+                                'content': result.get('scraped_content')
                             })
 
-                    f.write(f"Content Source: SmartRestaurantScraper\n")
+                    f.write(f"Content Source: Web Scraping\n")
                     f.write(f"Scraped content pieces to be sent to editor: {len(scraped_contents)}\n")
                     f.write(f"Total scraped content length: {sum(len(c['content']) for c in scraped_contents)} characters\n")
-                    f.write(f"Editor will process: Smart-scraped web content\n\n")
+                    f.write(f"Editor will process: Scraped web content\n\n")
 
-                    f.write("EDITOR INPUT SUMMARY:\n")
-                    f.write("-" * 30 + "\n")
-                    for i, content in enumerate(scraped_contents, 1):
-                        f.write(f"{i}. {content['title'][:60]}...\n")
-                        f.write(f"   URL: {content['url']}\n")
-                        f.write(f"   Strategy: {content['strategy']}\n")
-                        f.write(f"   Content: {len(content['content'])} chars\n")
-                        f.write(f"   Preview: {content['content'][:200]}...\n\n")
-
-                else:
-                    f.write(f"❌ No content available for editor (neither database nor scraped content)\n")
-
-                # Statistics Section
-                f.write("\nPIPELINE STATISTICS\n")
+                # PIPELINE STATISTICS
+                f.write("PIPELINE STATISTICS\n")
                 f.write("=" * 40 + "\n")
 
-                # SmartRestaurantScraper stats (important for debugging)
-                scraper_stats = self.scraper.get_stats()  # Direct access (no .scraper wrapper)
-                f.write(f"SmartRestaurantScraper Statistics:\n")
+                # SmartRestaurantScraper stats
+                scraper_stats = self.scraper.get_stats()
+                f.write("SmartRestaurantScraper Statistics:\n")
                 for key, value in scraper_stats.items():
                     f.write(f"  {key}: {value}\n")
 
                 # Search agent stats
                 search_stats = self.search_agent.get_stats()
-                f.write(f"\nSearch Agent Statistics:\n")
-                f.write(f"  Total searches: {search_stats.get('total_searches', 0)}\n")
-                f.write(f"  Results filtered: {search_stats.get('results_filtered', 0)}\n")
-                f.write(f"  High quality sources: {search_stats.get('high_quality_sources', 0)}\n")
+                f.write("Search Agent Statistics:\n")
+                for key, value in search_stats.items():
+                    f.write(f"  {key}: {value}\n")
 
-                # Database search stats if available
-                if hasattr(self.database_search_agent, 'get_stats'):
-                    db_stats = self.database_search_agent.get_stats()
-                    f.write(f"\nDatabase Search Statistics:\n")
-                    for key, value in db_stats.items():
-                        f.write(f"  {key}: {value}\n")
+                # Database search stats
+                db_stats = self.database_search_agent.get_stats()
+                f.write("Database Search Statistics:\n")
+                for key, value in db_stats.items():
+                    f.write(f"  {key}: {value}\n")
 
-                # Overall timing
+                # Timing summary
                 total_time = round(time.time() - total_start_time, 2)
-                f.write(f"\nOVERALL PIPELINE TIMING:\n")
+
+                f.write("OVERALL PIPELINE TIMING:\n")
                 f.write(f"  1. Query Analysis: {analysis_time}s\n")
                 f.write(f"  2. Database Search: {database_time}s\n")
                 f.write(f"  3. Content Evaluation: {evaluation_time}s\n")
                 if search_time > 0:
                     f.write(f"  4. Web Search: {search_time}s\n")
                 if scraping_time > 0:
-                    f.write(f"  5. SmartRestaurantScraper: {scraping_time}s\n")
+                    f.write(f"  5. Intelligent Scraping: {scraping_time}s\n")
                 f.write(f"  Total Pipeline Time: {total_time}s\n\n")
 
                 # Final summary
@@ -394,13 +368,14 @@ class ScrapeTest:
         try:
             # Create summary message
             summary = (
-                f"🧪 <b>Complete Pipeline Test Results</b>\n\n"
+                f"🧪 <b>Complete Pipeline Test Results (FIXED)</b>\n\n"
                 f"📝 Query: <code>{query}</code>\n"
                 f"✅ Successful scrapes: {successful_count}\n"
-                f"🔧 Pipeline: query → database → evaluation → search → SmartRestaurantScraper → editor\n"
-                f"🎯 Follows: EXACT production path\n\n"
+                f"🔧 Pipeline: query → database → evaluation → search → scrape → editor\n"
+                f"🎯 Follows: EXACT production path\n"
+                f"🔧 FIXED: Shows complete database info + AI reasoning\n\n"
                 f"{'✅ Content ready for editor' if successful_count > 0 else '❌ No scraped content (check database route)'}\n\n"
-                f"📄 Complete pipeline analysis with SmartRestaurantScraper details attached."
+                f"📄 Complete pipeline analysis with FULL database details and AI reasoning."
             )
 
             bot.send_message(
@@ -414,10 +389,19 @@ class ScrapeTest:
                 bot.send_document(
                     self.admin_chat_id,
                     f,
-                    caption=f"🧪 Smart pipeline test: {query}"
+                    caption=f"🧪 Pipeline test: {query}"
                 )
 
             logger.info("Successfully sent pipeline test results to admin")
 
         except Exception as e:
             logger.error(f"Failed to send pipeline results to admin: {e}")
+
+
+# Convenience function for telegram bot integration
+def add_scrape_test_command(bot, config, orchestrator):
+    """
+    Add the /test_scrape command to the Telegram bot
+    This function is kept for backward compatibility
+    """
+    logger.info("Note: scrape test commands are now handled directly in telegram_bot.py")
