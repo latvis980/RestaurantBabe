@@ -215,8 +215,8 @@ Return ONLY valid JSON in this exact format:
                     },
                     "content_source": "web_search",
                     "trigger_web_search": True,
-                    "skip_web_search": True,  # Skip main search since we already did it
-                    "search_results": search_results,  # FIXED: Use correct key for orchestrator
+                    "skip_web_search": False,  # FIXED: Don't skip - let orchestrator handle the results we provide
+                    "search_results": search_results,  # Results already found
                     "final_database_content": [],
                     "optimized_content": {
                         "database_restaurants": [],
@@ -296,8 +296,8 @@ Return ONLY valid JSON in this exact format:
                     "evaluation_error": str(error),
                     "content_source": "web_search",
                     "trigger_web_search": True,
-                    "skip_web_search": True,  # Skip main search since we already did it
-                    "search_results": search_results,  # FIXED: Use correct key for orchestrator
+                    "skip_web_search": False,  # FIXED: Don't skip - let orchestrator handle the results we provide
+                    "search_results": search_results,  # Results already found
                     "final_database_content": [],
                     "optimized_content": {
                         "database_restaurants": [],
