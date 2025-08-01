@@ -1,4 +1,4 @@
-# agents/follow_up_search_agent.py - Updated to check ALL addresses and filter closed restaurants
+# agents/follow_up_search_agent.py - Updated to delete closed restaurants from supabase
 
 import logging
 import googlemaps
@@ -119,9 +119,11 @@ class FollowUpSearchAgent:
 
     def _verify_and_filter_restaurant(self, restaurant: Dict[str, Any], destination: str) -> Optional[Dict[str, Any]]:
         """
+        Enhanced version that automatically deletes closed restaurants from database
+
         Verify address and filter restaurant based on Google rating and business status.
         NOW CHECKS ALL RESTAURANTS, not just those marked for verification.
-        ALSO FILTERS OUT CLOSED RESTAURANTS.
+        ALSO FILTERS OUT CLOSED RESTAURANTS AND DELETES THEM FROM DATABASE.
         """
         # Make a copy to avoid modifying the original
         updated_restaurant = restaurant.copy()
@@ -152,6 +154,10 @@ class FollowUpSearchAgent:
                 })
 
                 logger.warning(f"🚫 {restaurant_name} rejected: {business_status}")
+
+                # NEW: Auto-delete from database when we find it's closed
+                self._delete_closed_restaurant_from_database(restaurant_name, destination, business_status)
+
                 updated_restaurant["is_closed"] = True
                 updated_restaurant["closure_reason"] = business_status
                 return None  # Reject closed restaurants
@@ -165,77 +171,94 @@ class FollowUpSearchAgent:
 
                 if rating < self.min_acceptable_rating:
                     # Log rejection details
-                    dump_chain_state("restaurant_rejected_low_rating", {
+                    dump_chain_state("restaurant_rejected_rating", {
                         "restaurant": restaurant_name,
                         "destination": destination,
                         "rating": rating,
-                        "min_required": self.min_acceptable_rating,
-                        "user_ratings_total": maps_info.get("user_ratings_total", 0)
+                        "threshold": self.min_acceptable_rating
                     })
 
-                    logger.warning(f"❌ {restaurant_name} rejected: rating {rating} < {self.min_acceptable_rating}")
-                    return None  # Reject this restaurant
+                    logger.warning(f"🚫 {restaurant_name} rejected: Rating {rating} below {self.min_acceptable_rating}")
+                    return None
 
-                logger.info(f"✅ {restaurant_name} passed rating filter: {rating}")
-
-            # UPDATE: Always update address information from Google Maps (not just verification cases)
-            if maps_info.get("formatted_address"):
-                old_address = restaurant.get("address", "")
-                updated_restaurant["address"] = maps_info["formatted_address"]
-
-                # Remove "address" from missing_info if present
-                missing_info = updated_restaurant.get("missing_info", [])
-                if "address" in missing_info:
-                    missing_info = [info for info in missing_info if info != "address"]
-                    updated_restaurant["missing_info"] = missing_info
-
-                if old_address != maps_info["formatted_address"]:
-                    logger.info(f"📍 Address updated for {restaurant_name}")
-                    logger.debug(f"   Old: {old_address}")
-                    logger.debug(f"   New: {maps_info['formatted_address']}")
-
-            # Add coordinates for ALL restaurants
-            geometry = maps_info.get("geometry", {})
-            location = geometry.get("location", {})
-            if location.get("lat") and location.get("lng"):
-                updated_restaurant["latitude"] = location["lat"]
-                updated_restaurant["longitude"] = location["lng"]
-                updated_restaurant["coordinates"] = [location["lat"], location["lng"]]
-
-                # Save coordinates back to database
-                coordinates_saved = self._update_database_with_geodata(restaurant_name, destination, maps_info)
-
-            # Add Google Maps URL if available
-            if maps_info.get("url"):
-                updated_restaurant["google_maps_url"] = maps_info["url"]
-
-            # NEW: Add business status information
-            if business_status:
-                updated_restaurant["business_status"] = business_status
-
-            # Log successful verification
-            dump_chain_state("address_verified", {
-                "restaurant": restaurant_name,
-                "destination": destination,
-                "verified_address": maps_info.get("formatted_address"),
-                "coordinates": [location.get("lat"), location.get("lng")] if location.get("lat") else None,
-                "rating": rating if rating else "N/A",
-                "business_status": business_status,
-                "saved_to_database": coordinates_saved
+            # Update with Google Maps data
+            updated_restaurant.update({
+                "verification_completed": True,
+                "google_maps_verified": True,
+                "google_place_id": maps_info.get("place_id", ""),
+                "google_url": maps_info.get("url", "")
             })
+
+            # Save coordinates to database
+            coordinates_saved = self._update_database_with_geodata(restaurant_name, destination, maps_info)
+            updated_restaurant["coordinates_saved_to_db"] = coordinates_saved
 
         else:
-            # No Maps data found - keep restaurant but log it
-            logger.warning(f"⚠️ No Google Maps data found for {restaurant_name} in {destination}")
-            dump_chain_state("google_maps_no_data", {
-                "restaurant": restaurant_name,
-                "destination": destination
+            # No Google Maps data found
+            updated_restaurant.update({
+                "verification_completed": True,
+                "google_maps_verified": False,
+                "coordinates_saved_to_db": False
             })
 
-        # Add flag to track database updates
-        updated_restaurant["coordinates_saved_to_db"] = coordinates_saved
+            logger.warning(f"⚠️ Could not verify {restaurant_name} on Google Maps")
 
         return updated_restaurant
+
+    def _delete_closed_restaurant_from_database(self, restaurant_name: str, city: str, business_status: str):
+        """
+        NEW METHOD: Delete a closed restaurant from the database
+
+        Args:
+            restaurant_name: Name of the restaurant to delete
+            city: City where the restaurant is located
+            business_status: The closure status (CLOSED_PERMANENTLY or CLOSED_TEMPORARILY)
+        """
+        try:
+            # Get the database interface
+            from utils.database import get_database
+            db = get_database()
+
+            # Find the restaurant in the database
+            existing_restaurants = db.supabase.table('restaurants')\
+                .select('id, name, city')\
+                .eq('name', restaurant_name)\
+                .eq('city', city)\
+                .execute()
+
+            if existing_restaurants.data:
+                restaurant_id = existing_restaurants.data[0]['id']
+                restaurant_info = existing_restaurants.data[0]
+
+                # Delete the restaurant
+                delete_result = db.supabase.table('restaurants')\
+                    .delete()\
+                    .eq('id', restaurant_id)\
+                    .execute()
+
+                if delete_result.data:
+                    logger.info(f"🗑️ AUTO-DELETED closed restaurant: {restaurant_name} in {city} (Status: {business_status})")
+
+                    # Log the deletion for audit purposes
+                    dump_chain_state("restaurant_auto_deleted", {
+                        "restaurant_id": restaurant_id,
+                        "restaurant_name": restaurant_name,
+                        "city": city,
+                        "business_status": business_status,
+                        "deleted_at": datetime.now().isoformat()
+                    })
+
+                    return True
+                else:
+                    logger.warning(f"⚠️ Failed to delete {restaurant_name} from database")
+                    return False
+            else:
+                logger.debug(f"Restaurant not found in database for deletion: {restaurant_name} in {city}")
+                return False
+
+        except Exception as e:
+            logger.error(f"❌ Error auto-deleting closed restaurant {restaurant_name}: {e}")
+            return False
 
     def _search_google_maps(self, restaurant_name: str, city: str) -> Optional[Dict[str, Any]]:
         """

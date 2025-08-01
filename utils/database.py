@@ -324,11 +324,149 @@ class Database:
             logger.error(f"Error getting restaurants by preference tags: {e}")
             return []
 
+    def get_restaurants_by_coordinates(self, center: Tuple[float, float], radius_km: float, limit: int = 20) -> List[Dict[str, Any]]:
+
+
+
+        
+
+        def delete_closed_restaurants(self, business_status: str = None) -> Dict[str, Any]:
+            """
+            Delete restaurants that are permanently or temporarily closed from the database
+
+            Args:
+                business_status: Specific status to delete ('CLOSED_PERMANENTLY', 'CLOSED_TEMPORARILY') 
+                                If None, deletes both types of closed restaurants
+
+            Returns:
+                Dictionary with deletion statistics
+            """
+            try:
+                logger.info("🗑️ Starting closed restaurant deletion process")
+
+                # Step 1: Find restaurants to delete based on business status
+                if business_status:
+                    # Delete specific closure type
+                    query = self.supabase.table('restaurants')\
+                        .select('id, name, city, business_status')\
+                        .eq('business_status', business_status)
+                else:
+                    # Delete all closed restaurants (both temporarily and permanently)
+                    query = self.supabase.table('restaurants')\
+                        .select('id, name, city, business_status')\
+                        .in_('business_status', ['CLOSED_PERMANENTLY', 'CLOSED_TEMPORARILY'])
+
+                result = query.execute()
+                restaurants_to_delete = result.data or []
+
+                if not restaurants_to_delete:
+                    logger.info("✅ No closed restaurants found to delete")
+                    return {
+                        'deleted_count': 0,
+                        'deleted_restaurants': [],
+                        'message': 'No closed restaurants found'
+                    }
+
+                # Step 2: Log what we're about to delete
+                logger.info(f"Found {len(restaurants_to_delete)} closed restaurants to delete:")
+                deleted_restaurants = []
+
+                for restaurant in restaurants_to_delete:
+                    restaurant_info = {
+                        'id': restaurant['id'],
+                        'name': restaurant['name'],
+                        'city': restaurant['city'],
+                        'business_status': restaurant.get('business_status', 'Unknown')
+                    }
+                    deleted_restaurants.append(restaurant_info)
+                    logger.info(f"  - {restaurant['name']} in {restaurant['city']} ({restaurant.get('business_status', 'Unknown')})")
+
+                # Step 3: Delete the restaurants
+                restaurant_ids = [r['id'] for r in restaurants_to_delete]
+
+                delete_result = self.supabase.table('restaurants')\
+                    .delete()\
+                    .in_('id', restaurant_ids)\
+                    .execute()
+
+                deleted_count = len(delete_result.data) if delete_result.data else 0
+
+                logger.info(f"✅ Successfully deleted {deleted_count} closed restaurants from database")
+
+                return {
+                    'deleted_count': deleted_count,
+                    'deleted_restaurants': deleted_restaurants,
+                    'deletion_completed_at': datetime.now(timezone.utc).isoformat(),
+                    'message': f'Successfully deleted {deleted_count} closed restaurants'
+                }
+
+            except Exception as e:
+                logger.error(f"❌ Error deleting closed restaurants: {e}")
+                return {
+                    'deleted_count': 0,
+                    'deleted_restaurants': [],
+                    'error': str(e),
+                    'message': 'Failed to delete closed restaurants'
+                }
+
+        def delete_restaurants_by_ids(self, restaurant_ids: List[int]) -> Dict[str, Any]:
+            """
+            Delete specific restaurants by their IDs
+
+            Args:
+                restaurant_ids: List of restaurant IDs to delete
+
+            Returns:
+                Dictionary with deletion statistics
+            """
+            try:
+                if not restaurant_ids:
+                    return {
+                        'deleted_count': 0,
+                        'message': 'No restaurant IDs provided'
+                    }
+
+                logger.info(f"🗑️ Deleting {len(restaurant_ids)} restaurants by ID")
+
+                # First get the restaurant details for logging
+                restaurants_query = self.supabase.table('restaurants')\
+                    .select('id, name, city')\
+                    .in_('id', restaurant_ids)\
+                    .execute()
+
+                restaurants_info = restaurants_query.data or []
+
+                # Log what we're deleting
+                for restaurant in restaurants_info:
+                    logger.info(f"  - Deleting: {restaurant['name']} in {restaurant['city']} (ID: {restaurant['id']})")
+
+                # Delete the restaurants
+                delete_result = self.supabase.table('restaurants')\
+                    .delete()\
+                    .in_('id', restaurant_ids)\
+                    .execute()
+
+                deleted_count = len(delete_result.data) if delete_result.data else 0
+
+                logger.info(f"✅ Successfully deleted {deleted_count} restaurants by ID")
+
+                return {
+                    'deleted_count': deleted_count,
+                    'deleted_restaurants': restaurants_info,
+                    'deletion_completed_at': datetime.now(timezone.utc).isoformat(),
+                    'message': f'Successfully deleted {deleted_count} restaurants'
+                }
+
+            except Exception as e:
+                logger.error(f"❌ Error deleting restaurants by ID: {e}")
+                return {
+                    'deleted_count': 0,
+                    'error': str(e),
+                    'message': 'Failed to delete restaurants by ID'
+                }
+        
+   
     # ============ DOMAIN INTELLIGENCE METHODS ============
-
-    # Add these updated methods to your Database class in utils/database.py
-
-    # ============ SIMPLIFIED DOMAIN INTELLIGENCE METHODS ============
 
     def save_domain_intelligence(self, domain: str, intelligence_data: Dict[str, Any]) -> bool:
         """Save domain intelligence data - SIMPLIFIED VERSION"""
@@ -558,6 +696,7 @@ class Database:
         # For now, always return None to force fresh searches
         return None
 
+    
     # ============ GEOCODING HELPER ============
 
     def geocode_address(self, address: str) -> Optional[Tuple[float, float]]:
