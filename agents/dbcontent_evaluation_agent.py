@@ -66,8 +66,9 @@ Your job is to decide if database results are sufficient for the user's query, o
 
 EVALUATION CRITERIA:
 
-1. **Query Match**: Do the restaurants match what the user is asking for?
+1. **Query Matcch**: Do the restaurants match what the user is asking for?
    - Cuisine type, dining style, price range, special requirements
+   - Do the result present a good choice of what the user asked for (for example, if they are asking for Italian, only pizza restaurants aren't enough)
 
 2. **Quantity**: Is there enough variety for the user to choose from?
    - 3+ restaurants = usually sufficient 
