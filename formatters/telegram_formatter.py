@@ -63,6 +63,19 @@ class TelegramFormatter:
         logger.info(f"✅ Successfully formatted {formatted_count} restaurants")
         return self._finalize_html(final_html)
 
+    def _format_address(self, address):
+        """Format address with Google Maps place link support"""
+        if not address or address == "Address unavailable":
+            return "📍 Address unavailable\n"
+
+        # Check for existing link format
+        link_match = re.search(r'<a href="([^"]+)"[^>]*>([^<]+)</a>', str(address))
+        if link_match:
+            url, address_text = link_match.groups()
+            return f'📍 <a href="{url}">{self._clean_text(address_text)}</a>\n'
+
+        return f"📍 {self._clean_text(str(address))}\n"
+
     def _format_single_restaurant(self, restaurant, index):
         """Format a single restaurant entry"""
         # Safely extract data with defaults
@@ -70,6 +83,10 @@ class TelegramFormatter:
         description = str(restaurant.get('description', 'No description available')).strip()
         address = restaurant.get('address', 'Address unavailable')
         sources = restaurant.get('sources', [])
+
+        # NEW: Get Google Maps data for proper mobile links
+        place_id = restaurant.get('place_id')
+        google_maps_url = restaurant.get('google_maps_url')
 
         # Skip if no valid name
         if not name or name == 'Unknown Restaurant':
@@ -81,7 +98,7 @@ class TelegramFormatter:
 
         parts = [
             f"<b>{index}. {name_escaped}</b>\n",
-            self._format_address(address),
+            self._format_address_with_place_link(address, place_id, google_maps_url),
             f"{desc_escaped}\n" if desc_escaped else "",
             self._format_sources(sources),
             "\n"  # Add spacing between restaurants
@@ -89,18 +106,29 @@ class TelegramFormatter:
 
         return ''.join(filter(None, parts))
 
-    def _format_address(self, address):
-        """Format address with link support"""
+    def _format_address_with_place_link(self, address, place_id=None, google_maps_url=None):
+        """Format address with proper Google Maps place link for mobile"""
         if not address or address == "Address unavailable":
             return "📍 Address unavailable\n"
 
-        # Check for existing link format
-        link_match = re.search(r'<a href="([^"]+)"[^>]*>([^<]+)</a>', str(address))
-        if link_match:
-            url, address_text = link_match.groups()
-            return f'📍 <a href="{url}">{self._clean_text(address_text)}</a>\n'
+        # Clean the address text
+        clean_address = self._clean_text(str(address))
 
-        return f"📍 {self._clean_text(str(address))}\n"
+        # Use place_id link if available (best for mobile)
+        if place_id:
+            maps_url = f"https://maps.google.com/maps/place/?q=place_id:{place_id}"
+            return f'📍 <a href="{maps_url}">{clean_address}</a>\n'
+
+        # Fallback to google_maps_url if available
+        elif google_maps_url:
+            return f'📍 <a href="{google_maps_url}">{clean_address}</a>\n'
+
+        # Last resort: search-based URL
+        else:
+            import urllib.parse
+            encoded_address = urllib.parse.quote(clean_address)
+            search_url = f"https://maps.google.com/maps?q={encoded_address}"
+            return f'📍 <a href="{search_url}">{clean_address}</a>\n'
 
     def _format_sources(self, sources):
         """Format source attribution"""

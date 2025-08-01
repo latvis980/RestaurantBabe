@@ -229,8 +229,12 @@ class FollowUpSearchAgent:
                     restaurant_name, destination, maps_info, extracted_country
                 )
 
-            # Add Google Maps URL if available
-            if maps_info.get("url"):
+            # Add Google Maps URL using place_id for proper mobile support
+            place_id = maps_info.get("place_id")
+            if place_id:
+                updated_restaurant["google_maps_url"] = f"https://maps.google.com/maps/place/?q=place_id:{place_id}"
+                updated_restaurant["place_id"] = place_id
+            elif maps_info.get("url"):
                 updated_restaurant["google_maps_url"] = maps_info["url"]
 
             # Add business status information

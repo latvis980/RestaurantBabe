@@ -33,9 +33,6 @@ class EditorAgent:
         ORIGINAL USER REQUEST: {{original_query}}
         DESTINATION: {{destination}}
 
-        ADDRESS FORMATTING RULE:
-        For addresses: Always format the address as a Google Maps link using this exact format: <a href="https://maps.google.com/maps?q={{address}}">{{address}}</a>
-
         SOURCE OUTPUT RULE:
         List 1–3 sources for each restaurant, if possible, avoid listing the same source for many restaurants in the list.
 
@@ -45,7 +42,7 @@ class EditorAgent:
           "restaurants": [
             {{
               "name": "Restaurant Name",
-              "address": "<a href=\"https://maps.google.com/maps?q=Full Address Here\">Full Address Here</a>",
+              "address": "Full Address Here",
               "description": "Engaging 25-45 word description highlighting features, with diplomatic notes about potential matches to user needs",
               "sources": ["domain1.com", "domain2.com", "domain3.com", etc.]
             }}
@@ -82,10 +79,7 @@ class EditorAgent:
 
         ORIGINAL USER REQUEST: {{original_query}}
         DESTINATION: {{destination}}
-
-        ADDRESS FORMATTING RULE:
-        For addresses: Always format the address as a Google Maps link using this exact format: <a href="https://maps.google.com/maps?q={{address}}">{{address}}</a>
-
+        
         SOURCE OUTPUT RULE:
         List 1–3 sources for each restaurant, if possible, avoid listing the same source for many restaurants in the list.
 
@@ -95,7 +89,7 @@ class EditorAgent:
           "restaurants": [
             {{
               "name": "Restaurant Name", 
-              "address": "<a href=\"https://maps.google.com/maps?q=Complete Address Here\">Complete Address Here</a>",
+              "address": "Full Address Here",
               "description": "Diplomatic 15-30 word description explaining why this restaurant suits the user, even if not a perfect match",
               "sources": ["domain1.com", "domain2.com", "domain3.com", etc.]
             }}
