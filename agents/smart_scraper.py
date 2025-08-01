@@ -16,6 +16,9 @@ import json
 from typing import Dict, List, Any, Optional
 from enum import Enum
 from urllib.parse import urlparse
+import httpx
+from bs4 import BeautifulSoup
+from readability import Document
 
 from agents.specialized_scraper import EaterTimeoutSpecializedScraper
 from agents.firecrawl_scraper import FirecrawlWebScraper
@@ -381,7 +384,6 @@ Focus on technical complexity, not content keywords.
             except Exception as e:
                 logger.warning(f"Failed to update domain intelligence for {domain}: {e}")
 
-    # Processing methods (simplified versions from your existing code)
     async def _process_specialized(self, urls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Process with specialized handlers (FREE)"""
         logger.info(f"🆓 Specialized processing: {len(urls)} URLs (NO COST)")
@@ -392,22 +394,190 @@ Focus on technical complexity, not content keywords.
         return results
 
     async def _process_simple_http(self, urls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Process with simple HTTP (0.1 credits each)"""
-        # Use your existing simple HTTP implementation
-        # ... (copy from your current smart_scraper.py)
-        pass
+        """Process URLs using simple HTTP scraping"""
+
+        results = []
+        semaphore = asyncio.Semaphore(8)  # Higher concurrency for simple requests
+
+        async def scrape_single_simple(result):
+            async with semaphore:
+                url = result.get("url", "")
+
+                try:
+                    async with httpx.AsyncClient(timeout=15.0) as client:
+                        response = await client.get(url, headers={
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                        })
+
+                        if response.status_code == 200:
+                            soup = BeautifulSoup(response.text, 'html.parser')
+
+                            # Clean content extraction
+                            for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
+                                tag.decompose()
+
+                            # Find main content
+                            main_content = (
+                                soup.find('main') or 
+                                soup.find('article') or 
+                                soup.find('div', class_=lambda x: x and 'content' in str(x).lower())
+                            )
+
+                            if main_content:
+                                content = main_content.get_text(separator='\n\n', strip=True)
+                            else:
+                                content = soup.get_text(separator='\n\n', strip=True)
+
+                            # Store raw content
+                            result["scraped_content"] = content
+                            result["scraping_success"] = True
+                            result["scraping_method"] = "simple_http"
+
+                            # Apply content sectioning
+                            await self._apply_content_sectioning(result, "simple_http")
+
+                            return result
+
+                except Exception as e:
+                    logger.warning(f"Simple HTTP scraping failed for {url}: {e}")
+
+                result["scraping_failed"] = True
+                result["scraping_method"] = "simple_http"
+                return result
+
+        tasks = [scrape_single_simple(result) for result in urls]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        return [r for r in results if r and not isinstance(r, Exception)]
 
     async def _process_enhanced_http(self, urls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Process with enhanced HTTP + readability (0.5 credits each)"""  
-        # Use your existing enhanced HTTP implementation
-        # ... (copy from your current smart_scraper.py)
-        pass
+        """Process URLs using enhanced HTTP with Readability"""
+
+        results = []
+        semaphore = asyncio.Semaphore(5)  # Moderate concurrency
+
+        async def scrape_single_enhanced(result):
+            async with semaphore:
+                url = result.get("url", "")
+
+                try:
+                    async with httpx.AsyncClient(timeout=20.0) as client:
+                        response = await client.get(url, headers={
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                        })
+
+                        if response.status_code == 200:
+                            # Use readability for content extraction
+                            from readability import Document
+                            doc = Document(response.text)
+
+                            readable_html = doc.summary()
+                            title = doc.title()
+
+                            # Parse cleaned HTML
+                            soup = BeautifulSoup(readable_html, 'html.parser')
+                            content = soup.get_text(separator='\n\n', strip=True)
+
+                            # Store results
+                            result["scraped_content"] = content
+                            result["scraped_title"] = title
+                            result["scraping_success"] = True
+                            result["scraping_method"] = "enhanced_http"
+
+                            # Apply content sectioning
+                            await self._apply_content_sectioning(result, "enhanced_http")
+
+                            return result
+
+                except Exception as e:
+                    logger.warning(f"Enhanced HTTP scraping failed for {url}: {e}")
+
+                result["scraping_failed"] = True
+                result["scraping_method"] = "enhanced_http"
+                return result
+
+        tasks = [scrape_single_enhanced(result) for result in urls]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        return [r for r in results if r and not isinstance(r, Exception)]
 
     async def _process_firecrawl(self, urls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Process with Firecrawl (10.0 credits each)"""
         logger.warning(f"💸 Firecrawl processing: {len(urls)} URLs (~{len(urls) * 10} credits)")
 
         return await self.firecrawl_scraper.scrape_search_results(urls)
+
+    def _extract_source_name(self, url: str) -> str:
+        """Extract readable source name from URL"""
+        try:
+            domain = urlparse(url).netloc.lower()
+            if domain.startswith('www.'):
+                domain = domain[4:]
+
+            # Known source mappings
+            source_mapping = {
+                'timeout.com': 'Time Out',
+                'eater.com': 'Eater',
+                'cntraveler.com': 'Condé Nast Traveler',
+                'guide.michelin.com': 'Michelin Guide',
+                'foodandwine.com': 'Food & Wine',
+                'bonappetit.com': 'Bon Appétit',
+                'theinfatuation.com': 'The Infatuation',
+                'zagat.com': 'Zagat',
+                'sortiraparis.com': 'Sortir à Paris',
+                'secretdeparis.com': 'Secret de Paris',
+                'myparisianlife.com': 'My Parisian Life'
+            }
+
+            for domain_part, source_name in source_mapping.items():
+                if domain_part in domain:
+                    return source_name
+
+            # Fallback to cleaned domain name
+            return domain.replace('.com', '').replace('.fr', '').title()
+
+        except Exception as e:
+            logger.warning(f"Failed to extract source name from {url}: {e}")
+            return "Unknown Source"
+
+    async def _apply_content_sectioning(self, content: str, url: str, source_method: str):
+        """
+        Apply content sectioning if available, otherwise use simple truncation.
+        """
+        try:
+            if hasattr(self, 'content_sectioner'):
+                # Use DeepSeek-powered content sectioning for 90% speed improvement
+                sectioning_result = await self.content_sectioner.process_content(
+                    content, url, source_method
+                )
+                return sectioning_result
+            else:
+                # Fallback to simple truncation if content sectioner not available
+                from agents.content_sectioning_agent import SectioningResult
+                max_length = 6000  # Default limit
+                truncated_content = content[:max_length] if len(content) > max_length else content
+
+                return SectioningResult(
+                    optimized_content=truncated_content,
+                    original_length=len(content),
+                    optimized_length=len(truncated_content),
+                    sections_identified=["simple_truncation"],
+                    restaurants_density=0.0,
+                    sectioning_method="simple_truncation",
+                    confidence=0.5
+                )
+        except Exception as e:
+            logger.error(f"Content sectioning failed for {url}: {e}")
+            # Simple fallback
+            max_length = 6000
+            truncated_content = content[:max_length] if len(content) > max_length else content
+
+            # Create a minimal result object
+            class SimpleResult:
+                def __init__(self, content):
+                    self.optimized_content = content
+
+            return SimpleResult(truncated_content)
 
     def _extract_domain(self, url: str) -> str:
         """Extract clean domain"""
