@@ -36,6 +36,9 @@ class EditorAgent:
         ADDRESS FORMATTING RULE:
         For addresses: Always format the address as a Google Maps link using this exact format: <a href="https://maps.google.com/maps?q={{address}}">{{address}}</a>
 
+        SOURCE OUTPUT RULE:
+        List 1–3 sources for each restaurant, if possible, avoid listing the same source for many restaurants in the list.
+
         OUTPUT FORMAT (keep it simple):
         Return ONLY valid JSON:
         {{
@@ -43,8 +46,8 @@ class EditorAgent:
             {{
               "name": "Restaurant Name",
               "address": "<a href=\"https://maps.google.com/maps?q=Full Address Here\">Full Address Here</a>",
-              "description": "Engaging 20-35 word description highlighting features, with diplomatic notes about potential matches to user needs",
-              "sources": ["domain1.com", "domain2.com"]
+              "description": "Engaging 25-45 word description highlighting features, with diplomatic notes about potential matches to user needs",
+              "sources": ["domain1.com", "domain2.com", "domain3.com", etc.]
             }}
           ]
         }}
@@ -83,6 +86,9 @@ class EditorAgent:
         ADDRESS FORMATTING RULE:
         For addresses: Always format the address as a Google Maps link using this exact format: <a href="https://maps.google.com/maps?q={{address}}">{{address}}</a>
 
+        SOURCE OUTPUT RULE:
+        List 1–3 sources for each restaurant, if possible, avoid listing the same source for many restaurants in the list.
+
         OUTPUT FORMAT:
         Return ONLY valid JSON:
         {{
@@ -91,7 +97,7 @@ class EditorAgent:
               "name": "Restaurant Name", 
               "address": "<a href=\"https://maps.google.com/maps?q=Complete Address Here\">Complete Address Here</a>",
               "description": "Diplomatic 15-30 word description explaining why this restaurant suits the user, even if not a perfect match",
-              "sources": ["domain1.com", "domain2.com"]
+              "sources": ["domain1.com", "domain2.com", "domain3.com", etc.]
             }}
           ]
         }}
