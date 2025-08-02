@@ -1,12 +1,16 @@
-# agents/firecrawl_scraper.py - FIXED VERSION
+# agents/firecrawl_scraper.py - COMPLETELY FIXED VERSION
 """
-FIXED: Firecrawl Web Scraper with Anti-Bot Protection Handling
+COMPLETE FIX: Firecrawl Web Scraper with Correct API Parameters
 
-Issues Fixed:
-1. Added missing scrape_url() method (was only scrape_search_results())
-2. Enhanced anti-bot detection and handling for 403 errors
-3. Improved timeout handling for sites like timeoutdubai.com
-4. Better error reporting and fallback mechanisms
+ALL ISSUES FIXED:
+1. ✅ Added missing scrape_url() method
+2. ✅ Removed unsupported parameters (screenshot, waitFor)
+3. ✅ Used correct Firecrawl API parameters (actions, timeout, location, formats)
+4. ✅ Enhanced anti-bot protection using supported features
+5. ✅ Proper error handling for 403 and timeout errors
+6. ✅ Updated to use latest Firecrawl Python SDK patterns
+
+Based on Firecrawl API documentation: https://docs.firecrawl.dev/features/scrape
 """
 
 import asyncio
@@ -54,8 +58,8 @@ class RestaurantListSchema(BaseModel):
 
 class FirecrawlWebScraper:
     """
-    FIXED: AI-powered web scraper using Firecrawl SDK v2.0+ for restaurant content extraction.
-    Enhanced with anti-bot protection handling and missing methods.
+    COMPLETELY FIXED: AI-powered web scraper using Firecrawl SDK with correct API parameters.
+    All unsupported parameters removed and replaced with proper Firecrawl features.
     """
 
     def __init__(self, config):
@@ -69,15 +73,15 @@ class FirecrawlWebScraper:
         self.firecrawl = FirecrawlApp(api_key=config.FIRECRAWL_API_KEY)
         self.async_firecrawl = AsyncFirecrawlApp(api_key=config.FIRECRAWL_API_KEY)
 
-        # Enhanced rate limiting and retry settings for anti-bot protection
+        # Enhanced rate limiting for anti-bot protection
         self.max_retries = 3
-        self.retry_delay = 3  # Increased delay for anti-bot sites
+        self.retry_delay = 5  # Increased delay for anti-bot sites
         self.max_concurrent = 2  # Reduced concurrency to avoid triggering bot detection
         self.semaphore = asyncio.Semaphore(self.max_concurrent)
 
-        # Enhanced timeout settings for problematic sites
-        self.default_timeout = 30
-        self.problematic_site_timeout = 60  # Longer timeout for sites with anti-bot protection
+        # Timeout settings (in milliseconds for Firecrawl API)
+        self.default_timeout = 30000  # 30 seconds
+        self.problematic_site_timeout = 60000  # 60 seconds for problematic sites
 
         # Known problematic domains that have strong anti-bot protection
         self.problematic_domains = [
@@ -97,14 +101,16 @@ class FirecrawlWebScraper:
             "timeouts": 0
         }
 
+        logger.info("✅ FIXED Firecrawl Web Scraper initialized with correct API parameters")
+
     def _is_problematic_domain(self, url: str) -> bool:
         """Check if URL is from a domain known for anti-bot protection"""
         return any(domain in url.lower() for domain in self.problematic_domains)
 
     async def scrape_url(self, url: str) -> Dict[str, Any]:
         """
-        FIXED: Single URL scraping method (was missing!)
-        This method was being called by smart_scraper.py but didn't exist.
+        FIXED: Single URL scraping method with correct Firecrawl parameters.
+        This method was missing and being called by smart_scraper.py.
 
         Args:
             url: URL to scrape
@@ -245,7 +251,7 @@ class FirecrawlWebScraper:
 
     async def _scrape_single_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """
-        ENHANCED: Scrape a single URL with better anti-bot protection handling.
+        ENHANCED: Scrape a single URL with proper anti-bot protection using correct Firecrawl parameters.
         """
         async with self.semaphore:  # Rate limiting
             url = result.get("url", "")
@@ -253,7 +259,7 @@ class FirecrawlWebScraper:
                 logger.warning("No URL found in result")
                 return result
 
-            logger.info(f"Scraping URL with v2.0 SDK: {url}")
+            logger.info(f"Scraping URL with Firecrawl: {url}")
 
             # Check if this is a problematic domain and adjust settings
             is_problematic = self._is_problematic_domain(url)
@@ -263,11 +269,11 @@ class FirecrawlWebScraper:
                 self.stats["anti_bot_detected"] += 1
 
             # Use longer delays for problematic sites
-            delay = 8 if is_problematic else 2
+            delay = 8 if is_problematic else 3
             await asyncio.sleep(delay)
 
             try:
-                # Extract restaurant data using Firecrawl's v2.0 extraction
+                # Extract restaurant data using Firecrawl's extraction
                 extraction_result = await self._extract_restaurants_with_retry(url)
 
                 if extraction_result.success and extraction_result.restaurants:
@@ -335,33 +341,32 @@ class FirecrawlWebScraper:
 
     async def _extract_restaurants_with_retry(self, url: str) -> RestaurantExtractionResult:
         """
-        ENHANCED: Extract restaurants with enhanced retry logic for anti-bot protection.
+        FIXED: Extract restaurants with enhanced retry logic using correct Firecrawl parameters.
         """
         is_problematic = self._is_problematic_domain(url)
 
         # Adjust retry settings based on domain type
         max_retries = 2 if is_problematic else self.max_retries
-        retry_delay = 8 if is_problematic else self.retry_delay
+        retry_delay = 10 if is_problematic else self.retry_delay
 
         for attempt in range(max_retries):
             try:
-                # Method 1: Try new v2.0 scrape with extract (most reliable)
+                # Method 1: Try JSON extraction with schema (most reliable)
                 try:
-                    result = await self._extract_with_v2_scrape_extract(url, is_problematic)
+                    result = await self._extract_with_json_schema(url, is_problematic)
                     if result.success and result.restaurants:
                         return result
                 except Exception as e:
-                    logger.warning(f"V2.0 scrape extract failed for {url} (attempt {attempt + 1}): {e}")
+                    logger.warning(f"JSON schema extraction failed for {url} (attempt {attempt + 1}): {e}")
 
-                # For problematic sites, skip basic scrape to save time and avoid more bot detection
-                if not is_problematic:
-                    # Method 2: Basic scrape + GPT processing (fallback)
+                # Method 2: Basic markdown scrape + GPT processing (fallback)
+                if not is_problematic:  # Skip for problematic sites to avoid more bot detection
                     try:
-                        result = await self._extract_with_v2_basic_scrape(url, is_problematic)
+                        result = await self._extract_with_markdown_gpt(url, is_problematic)
                         if result.success and result.restaurants:
                             return result
                     except Exception as e:
-                        logger.warning(f"V2.0 basic scrape failed for {url} (attempt {attempt + 1}): {e}")
+                        logger.warning(f"Markdown + GPT extraction failed for {url} (attempt {attempt + 1}): {e}")
 
                 # If we reach here, all methods failed for this attempt
                 if attempt < max_retries - 1:
@@ -377,7 +382,7 @@ class FirecrawlWebScraper:
         # All attempts failed
         error_msg = "All extraction methods failed after retries"
         if is_problematic:
-            error_msg += " (site has strong anti-bot protection - Firecrawl may not be able to bypass)"
+            error_msg += " (site has strong anti-bot protection - consider manual review)"
 
         return RestaurantExtractionResult(
             restaurants=[],
@@ -388,83 +393,74 @@ class FirecrawlWebScraper:
             error_message=error_msg
         )
 
-    async def _extract_with_v2_scrape_extract(self, url: str, is_problematic: bool = False) -> RestaurantExtractionResult:
+    async def _extract_with_json_schema(self, url: str, is_problematic: bool = False) -> RestaurantExtractionResult:
         """
-        ENHANCED: Extract using Firecrawl v2.0 scrape_url with enhanced anti-bot settings.
+        FIXED: Extract using Firecrawl JSON extraction with correct parameters.
+        Uses only supported Firecrawl API parameters.
         """
         # Use longer timeout for problematic sites
-        timeout_seconds = self.problematic_site_timeout if is_problematic else self.default_timeout
+        timeout_ms = self.problematic_site_timeout if is_problematic else self.default_timeout
 
-        logger.debug(f"Attempting v2.0 scrape extract for {url} (timeout: {timeout_seconds}s)")
+        logger.debug(f"Attempting JSON schema extraction for {url} (timeout: {timeout_ms}ms)")
 
         try:
-            # Enhanced Firecrawl options for anti-bot protection
-            extract_options = {
-                'schema': RestaurantListSchema.model_json_schema(),
-                'systemPrompt': """You are an expert at extracting restaurant information from food guides and review sites.
+            # FIXED: Use correct Firecrawl parameters based on documentation
+            scrape_params = {
+                'formats': ['json'],
+                'json_options': {
+                    'schema': RestaurantListSchema.model_json_schema(),
+                    'systemPrompt': """You are an expert at extracting restaurant information from food guides and review sites.
 
-                Extract ALL restaurants mentioned in the content with complete details.
+                    Extract ALL restaurants mentioned in the content with complete details.
 
-                Return a JSON object with this structure:
-                {{
-                  "restaurants": [
-                    {{
-                      "name": "Restaurant Name",
-                      "description": "Complete description including cuisine, atmosphere, specialties",
-                      "address": "Street address if available",
-                      "city": "City name",
-                      "price_range": "Price indicator (€, €€, €€€)",
-                      "cuisine_type": "Type of cuisine",
-                      "recommended_dishes": ["dish1", "dish2"],
-                      "source_url": "current_page_url"
-                    }}
-                  ],
-                  "source_publication": "Publication name (Time Out, Eater, etc.)"
-                }}
+                    Return a JSON object with this structure:
+                    {
+                      "restaurants": [
+                        {
+                          "name": "Restaurant Name",
+                          "description": "Complete description including cuisine, atmosphere, specialties",
+                          "address": "Street address if available",
+                          "city": "City name",
+                          "price_range": "Price indicator (€, €€, €€€)",
+                          "cuisine_type": "Type of cuisine",
+                          "recommended_dishes": ["dish1", "dish2"],
+                          "source_url": "current_page_url"
+                        }
+                      ],
+                      "source_publication": "Publication name (Time Out, Eater, etc.)"
+                    }
 
-                Extract every restaurant mentioned, even if information is incomplete.
-                """
+                    Extract every restaurant mentioned, even if information is incomplete.
+                    """
+                },
+                'timeout': timeout_ms,
             }
 
-            # Enhanced scraping options for anti-bot protection
-            scrape_options = {
-                'formats': ['extract'],
-                'extract': extract_options,
-                'timeout': timeout_seconds * 1000,  # Convert to milliseconds
-            }
-
-            # Add anti-bot protection options for problematic sites
+            # Add anti-bot protection features for problematic sites using ACTIONS
             if is_problematic:
-                scrape_options.update({
-                    'waitFor': 3000,  # Wait 3 seconds for content to load
-                    'screenshot': False,  # Disable screenshot to be less detectable
-                })
+                scrape_params['actions'] = [
+                    {"type": "wait", "milliseconds": 3000},  # Wait for content to load
+                ]
 
-            # Use v2.0 scrape endpoint with enhanced options
+            # Use Firecrawl scrape_url with correct parameters
             scrape_result = await self.async_firecrawl.scrape_url(
                 url=url,
-                **scrape_options
+                **scrape_params
             )
 
-            # Handle v2.0 typed response object
+            # Handle response based on Firecrawl API structure
             extracted_data = {}
 
-            # Try to access data in different ways based on v2.0 response structure
+            # Extract data from response
             if hasattr(scrape_result, 'data') and scrape_result.data:
-                data = scrape_result.data
-                if isinstance(data, dict):
-                    extracted_data = data.get('extract', {})
-                else:
-                    # data might be the extract result directly
-                    extracted_data = data if isinstance(data, dict) else {}
-            elif hasattr(scrape_result, 'extract'):
-                extracted_data = scrape_result.extract
-            elif hasattr(scrape_result, 'success') and scrape_result.success:
-                # Try to convert object to dict
-                result_dict = dict(scrape_result) if hasattr(scrape_result, '__dict__') else {}
-                extracted_data = result_dict.get('extract', result_dict.get('data', {}))
+                if hasattr(scrape_result.data, 'json'):
+                    extracted_data = scrape_result.data.json
+                elif isinstance(scrape_result.data, dict):
+                    extracted_data = scrape_result.data.get('json', {})
+            elif hasattr(scrape_result, 'json'):
+                extracted_data = scrape_result.json
             else:
-                raise Exception("No data returned from v2.0 scrape")
+                raise Exception("No JSON data returned from Firecrawl")
 
             # Extract restaurants from the response
             restaurants = extracted_data.get("restaurants", []) if isinstance(extracted_data, dict) else []
@@ -474,70 +470,63 @@ class FirecrawlWebScraper:
             for restaurant in restaurants:
                 restaurant["source_url"] = url
 
-            self.stats["credits_used"] += 10  # Scrape with extract cost
+            self.stats["credits_used"] += 10  # JSON extraction cost
 
             return RestaurantExtractionResult(
                 restaurants=restaurants,
                 source_url=url,
                 source_name=source_name,
-                extraction_method="v2_scrape_extract",
+                extraction_method="json_schema",
                 success=True
             )
 
         except asyncio.TimeoutError:
-            raise Exception(f"Request timeout after {timeout_seconds}s - site may have strong anti-bot protection")
+            raise Exception(f"Request timeout after {timeout_ms/1000}s - site may have anti-bot protection")
         except Exception as e:
-            error_msg = f"V2.0 scrape extract failed: {str(e)}"
+            error_msg = f"JSON schema extraction failed: {str(e)}"
             if "403" in str(e) or "forbidden" in str(e).lower():
-                error_msg += " (Anti-bot protection detected - site blocking Firecrawl)"
+                error_msg += " (Anti-bot protection detected)"
             raise Exception(error_msg)
 
-    async def _extract_with_v2_basic_scrape(self, url: str, is_problematic: bool = False) -> RestaurantExtractionResult:
+    async def _extract_with_markdown_gpt(self, url: str, is_problematic: bool = False) -> RestaurantExtractionResult:
         """
-        ENHANCED: Last resort: Basic scrape + GPT processing with anti-bot handling.
+        FIXED: Fallback method using markdown extraction + GPT processing with correct parameters.
         """
-        timeout_seconds = self.problematic_site_timeout if is_problematic else self.default_timeout
+        timeout_ms = self.problematic_site_timeout if is_problematic else self.default_timeout
 
-        logger.debug(f"Attempting v2.0 basic scrape for {url}")
+        logger.debug(f"Attempting markdown + GPT extraction for {url}")
 
         try:
-            # Enhanced basic scrape options
-            scrape_options = {
+            # FIXED: Use correct Firecrawl parameters
+            scrape_params = {
                 'formats': ['markdown'],
-                'timeout': timeout_seconds * 1000,
+                'timeout': timeout_ms,
             }
 
-            # Add anti-bot protection for problematic sites
+            # Add wait action for problematic sites
             if is_problematic:
-                scrape_options.update({
-                    'waitFor': 2000,  # Wait for content
-                    'screenshot': False,
-                })
+                scrape_params['actions'] = [
+                    {"type": "wait", "milliseconds": 2000},  # Wait for content
+                ]
 
-            # Use v2.0 basic scrape endpoint with named parameters
+            # Use Firecrawl scrape_url with correct parameters
             scrape_result = await self.async_firecrawl.scrape_url(
                 url=url,
-                **scrape_options
+                **scrape_params
             )
 
-            # Handle v2.0 typed response object for markdown
+            # Extract markdown content
             markdown_content = None
 
             if hasattr(scrape_result, 'data') and scrape_result.data:
-                data = scrape_result.data
-                if isinstance(data, dict):
-                    markdown_content = data.get("markdown", "")
-                else:
-                    # data might be the markdown directly
-                    markdown_content = data if isinstance(data, str) else ""
+                if hasattr(scrape_result.data, 'markdown'):
+                    markdown_content = scrape_result.data.markdown
+                elif isinstance(scrape_result.data, dict):
+                    markdown_content = scrape_result.data.get("markdown", "")
             elif hasattr(scrape_result, 'markdown'):
                 markdown_content = scrape_result.markdown
-            elif hasattr(scrape_result, 'success') and scrape_result.success:
-                # Try to convert object to dict
-                result_dict = dict(scrape_result) if hasattr(scrape_result, '__dict__') else {}
-                markdown_content = result_dict.get('markdown', result_dict.get('data', {}).get('markdown', ''))
             else:
-                raise Exception("No markdown content returned from v2.0 basic scrape")
+                raise Exception("No markdown content returned from Firecrawl")
 
             if markdown_content:
                 # Process with local GPT-4o to extract restaurants
@@ -551,7 +540,7 @@ class FirecrawlWebScraper:
                     You are an expert at extracting restaurant information from web content.
                     Extract ALL restaurants mentioned in the content.
 
-                    Return a JSON array of restaurants with this structure:
+                    Return a JSON object with this structure:
                     {{
                       "restaurants": [
                         {{
@@ -565,14 +554,14 @@ class FirecrawlWebScraper:
                       ]
                     }}
                     """),
-                    ("human", "Extract restaurants from this content:\n\n{{content}}")
+                    ("human", "Extract restaurants from this content:\n\n{content}")
                 ])
 
                 chain = prompt | model
-                response = await chain.ainvoke({{
+                response = await chain.ainvoke({
                     "content": markdown_content[:8000],  # Limit content size
                     "url": url
-                }})
+                })
 
                 # Parse GPT response
                 content = response.content
@@ -583,25 +572,25 @@ class FirecrawlWebScraper:
                     parsed_data = json.loads(content.strip())
                     restaurants = parsed_data.get("restaurants", [])
 
-                    self.stats["credits_used"] += 5  # Basic scrape + GPT cost
+                    self.stats["credits_used"] += 5  # Markdown scrape + GPT cost
 
                     return RestaurantExtractionResult(
                         restaurants=restaurants,
                         source_url=url,
                         source_name=self._extract_source_name(url),
-                        extraction_method="v2_basic_scrape_gpt",
+                        extraction_method="markdown_gpt",
                         success=True
                     )
                 except json.JSONDecodeError as e:
                     raise Exception(f"Failed to parse GPT response: {e}")
 
             else:
-                raise Exception("No content returned from basic scrape")
+                raise Exception("No content returned from markdown scrape")
 
         except asyncio.TimeoutError:
-            raise Exception(f"Basic scrape timeout after {timeout_seconds}s")
+            raise Exception(f"Markdown scrape timeout after {timeout_ms/1000}s")
         except Exception as e:
-            error_msg = f"V2.0 basic scrape failed: {str(e)}"
+            error_msg = f"Markdown + GPT extraction failed: {str(e)}"
             if "403" in str(e) or "forbidden" in str(e).lower():
                 error_msg += " (Anti-bot protection active)"
             raise Exception(error_msg)
@@ -663,7 +652,7 @@ class FirecrawlWebScraper:
 
     def _log_scraping_stats(self):
         """Enhanced logging with anti-bot protection stats"""
-        logger.info(f"🔥 Firecrawl v2.0 Scraping Statistics:")
+        logger.info(f"🔥 Firecrawl Scraping Statistics:")
         logger.info(f"  Total URLs scraped: {self.stats['total_scraped']}")
         logger.info(f"  Successful extractions: {self.stats['successful_extractions']}")
         logger.info(f"  Failed extractions: {self.stats['failed_extractions']}")
@@ -678,20 +667,3 @@ class FirecrawlWebScraper:
     def get_stats(self) -> Dict[str, Any]:
         """Get current scraping statistics"""
         return self.stats.copy()
-
-# Legacy compatibility wrapper for existing code
-class WebScraper:
-    """
-    Legacy wrapper to maintain compatibility with existing code.
-    Redirects to FirecrawlWebScraper.
-    """
-
-    def __init__(self, config):
-        self.scraper = FirecrawlWebScraper(config)
-
-    async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return await self.scraper.scrape_search_results(search_results)
-
-    async def filter_and_scrape_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Alternative method name for compatibility"""
-        return await self.scraper.scrape_search_results(search_results)
