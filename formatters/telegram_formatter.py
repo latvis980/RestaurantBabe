@@ -15,6 +15,13 @@ class TelegramFormatter:
 
     MAX_MESSAGE_LENGTH = 4096
 
+    def __init__(self, config=None):
+        """Initialize formatter with config for AI features"""
+        self.config = config
+
+    def __init__(self, config=None):
+        self.config = config
+
     def format_recommendations(self, recommendations_data):
         """Main entry point for formatting recommendations"""
         try:
@@ -142,7 +149,7 @@ Return only the cleaned address, nothing else."""
 
             response = client.chat.completions.create(
                 model="deepseek-chat",  # Light model for speed
-                messages=[{{"role": "user", "content": prompt}}],
+                messages=[{"role": "user", "content": prompt}],
                 max_tokens=100,
                 temperature=0.1  # Low temperature for consistency
             )

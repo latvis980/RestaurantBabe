@@ -56,7 +56,7 @@ class LangChainOrchestrator:
         self.dbcontent_evaluation_agent.set_brave_search_agent(self.search_agent)
 
         # Initialize formatter
-        self.telegram_formatter = TelegramFormatter()
+        self.telegram_formatter = TelegramFormatter(config)
 
         self.config = config
 
