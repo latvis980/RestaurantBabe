@@ -17,7 +17,7 @@ class FollowUpSearchAgent:
     3. Rating filtering and restaurant rejection based on Google ratings
     4. Filtering out closed restaurants (temporarily or permanently) with auto-deletion
     5. Saving coordinates back to database
-    6. FIXED: Proper address_components storage for street-only display
+    6. FIXED: Proper address_component storage for street-only display
     """
 
     def __init__(self, config):
@@ -43,7 +43,7 @@ class FollowUpSearchAgent:
             "user_ratings_total",
             "business_status",  # To check if restaurant is closed
             "opening_hours",    # Additional info about operating hours
-            "address_components"  # For country extraction AND street-only display
+            "address_component"  # For country extraction AND street-only display
         ]
 
     @log_function_call
@@ -133,7 +133,7 @@ class FollowUpSearchAgent:
         2. Checks if restaurants have moved to new locations
         3. Auto-deletes closed restaurants from database
         4. Filters by rating threshold
-        5. STORES address_components for proper street-only formatting
+        5. STORES address_component for proper street-only formatting
         6. Saves coordinates back to database
         """
         # Make a copy to avoid modifying the original
@@ -231,17 +231,17 @@ class FollowUpSearchAgent:
                     restaurant_name, destination, maps_info
                 )
 
-            # CRITICAL: Store place_id and address_components for proper formatting
+            # CRITICAL: Store place_id and address_component for proper formatting
             place_id = maps_info.get("place_id")
-            address_components = maps_info.get("address_components", [])
+            address_component = maps_info.get("address_component", [])
 
             if place_id:
                 updated_restaurant["place_id"] = place_id
                 logger.debug(f"✅ Stored place_id for {restaurant_name}: {place_id}")
 
-            if address_components:
-                updated_restaurant["address_components"] = address_components
-                logger.debug(f"✅ Stored address_components for {restaurant_name}")
+            if address_component:
+                updated_restaurant["address_component"] = address_component
+                logger.debug(f"✅ Stored address_component for {restaurant_name}")
 
             # Add business status information
             if business_status:
@@ -366,6 +366,8 @@ class FollowUpSearchAgent:
             first_result = results[0]
             place_id = first_result.get("place_id")
 
+            logger.info(f"🔍 Google Maps search for '{restaurant_name}': place_id = {place_id}")
+
             if not place_id:
                 logger.debug(f"No place_id in first result for: {search_query}")
                 return None
@@ -382,7 +384,7 @@ class FollowUpSearchAgent:
             rating = result_data.get("rating")
             user_ratings_total = result_data.get("user_ratings_total")
             business_status = result_data.get("business_status")
-            address_components = result_data.get("address_components", [])
+            address_component = result_data.get("address_component", [])
 
             return {
                 "formatted_address": formatted_address,
@@ -392,7 +394,7 @@ class FollowUpSearchAgent:
                 "place_id": place_id,
                 "url": result_data.get("url", f"https://www.google.com/maps/place/?q=place_id:{place_id}"),
                 "geometry": result_data.get("geometry", {}),
-                "address_components": address_components
+                "address_component": address_component
             }
 
         except googlemaps.exceptions.ApiError as e:

@@ -115,16 +115,17 @@ class TelegramFormatter:
         # Clean the street address for display
         clean_street = self._clean_text(street_address)
 
-        # Create the OFFICIAL Google Maps URL format
+        # Create Google Maps URL using official format
         if place_id and place_id.strip():
-            # Use place_id directly for precise restaurant location
-            maps_url = f"https://www.google.com/maps/place/?q=place_id:{place_id.strip()}"
-            logger.debug(f"Created place_id URL: {maps_url}")
+            # Use official format: query + query_place_id 
+            encoded_query = urllib.parse.quote(clean_street)
+            maps_url = f"https://www.google.com/maps/search/?api=1&query={encoded_query}&query_place_id={place_id.strip()}"
+            logger.debug(f"Created Maps URL with place_id: {maps_url}")
         else:
-            # Fallback: use full address for proper disambiguation
-            encoded_full_address = urllib.parse.quote(full_address)
-            maps_url = f"https://www.google.com/maps/search/?api=1&query={encoded_full_address}"
-            logger.debug(f"Created full address search URL: {maps_url}")
+            # Fallback: use full address 
+            encoded_address = urllib.parse.quote(full_address)
+            maps_url = f"https://www.google.com/maps/search/?api=1&query={encoded_address}"
+            logger.debug(f"Created Maps URL with address: {maps_url}")
 
         # Return properly formatted HTML link with street-only text
         return f'📍 <a href="{maps_url}">{clean_street}</a>\n'
