@@ -87,25 +87,83 @@ class TelegramFormatter:
         return ''.join(parts)
 
     def _format_address_link(self, address, place_id):
-        """Create Google Maps link - simple approach"""
+        """Create Google Maps link - use Google's official URL when available"""
         if not address or address == "Address unavailable":
             return "📍 Address unavailable\n"
 
-        # Extract street address (simple method)
+        # Extract street address for display
         street_address = self._extract_street(address)
         clean_street = self._clean_html(street_address)
 
-        # Create Google Maps URL (official format)
-        if place_id:
-            # Use place_id for accuracy
-            query = urllib.parse.quote(clean_street)
-            url = f"https://www.google.com/maps/search/?api=1&query={query}&query_place_id={place_id}"
-        else:
-            # Fallback to address search
-            query = urllib.parse.quote(clean_street)
-            url = f"https://www.google.com/maps/search/?api=1&query={query}"
+        # PRIORITY 1: Try to get the google_maps_url from restaurant data
+        # This should contain the official Google URL from Places API
+        google_url = None
+        if hasattr(self, '_current_restaurant') and self._current_restaurant:
+            google_url = (self._current_restaurant.get('google_maps_url') or 
+                         self._current_restaurant.get('google_url') or
+                         self._current_restaurant.get('url'))
 
-        return f'📍 <a href="{url}">{clean_street}</a>\n'
+            if google_url:
+                logger.debug(f"✅ Using official Google URL: {google_url}")
+            else:
+                logger.debug(f"⚠️ No Google URL found in restaurant data. Available keys: {list(self._current_restaurant.keys())}")
+
+        # PRIORITY 2: Create URL using place_id if we have it
+        if not google_url and place_id:
+            # Use the precision query method (most reliable for business listings)
+            encoded_address = urllib.parse.quote(f"{clean_street}")
+            google_url = f"https://www.google.com/maps/search/?api=1&query={encoded_address}&query_place_id={place_id}"
+            logger.debug(f"🔧 Created place_id URL: {google_url}")
+
+        # PRIORITY 3: Fallback to simple address search
+        if not google_url:
+            encoded_address = urllib.parse.quote(clean_street)
+            google_url = f"https://www.google.com/maps/search/?api=1&query={encoded_address}"
+            logger.debug(f"🔧 Created fallback URL: {google_url}")
+
+        return f'📍 <a href="{google_url}">{clean_street}</a>\n'
+
+    def _format_restaurant(self, restaurant, index):
+        """Format a single restaurant - simple and reliable"""
+        name = restaurant.get('name', '').strip()
+        if not name:
+            return ""
+
+        description = restaurant.get('description', '').strip()
+        address = restaurant.get('address', '')
+        sources = restaurant.get('sources', [])
+        place_id = restaurant.get('place_id')
+
+        # Store current restaurant for URL access
+        self._current_restaurant = restaurant
+
+        # Clean text for HTML (simple escaping)
+        name_clean = self._clean_html(name)
+        desc_clean = self._clean_html(description)
+
+        # Build restaurant entry
+        parts = [f"<b>{index}. {name_clean}</b>\n"]
+
+        # Add address with link
+        address_line = self._format_address_link(address, place_id)
+        if address_line:
+            parts.append(address_line)
+
+        # Add description
+        if desc_clean:
+            parts.append(f"{desc_clean}\n")
+
+        # Add sources
+        sources_line = self._format_sources(sources)
+        if sources_line:
+            parts.append(sources_line)
+
+        parts.append("\n")  # Spacing between restaurants
+
+        # Clear current restaurant
+        self._current_restaurant = None
+
+        return ''.join(parts)
 
     def _extract_street(self, full_address):
         """Extract street address using AI - handles international formats"""
@@ -115,11 +173,14 @@ class TelegramFormatter:
         try:
             # Use DeepSeek for smart address cleaning
             cleaned_address = self._ai_clean_address(full_address)
-            return cleaned_address if cleaned_address else "Address available"
+            if cleaned_address:
+                return cleaned_address
+            else:
+                logger.warning(f"AI cleaning failed, using full address: {full_address}")
+                return self._clean_html(full_address)  # Use full address as fallback
         except Exception as e:
-            logger.warning(f"AI address cleaning failed: {e}")
-            # Fallback to simple logic
-            return self._simple_extract_street(full_address)
+            logger.warning(f"AI address cleaning failed: {e}, using full address")
+            return self._clean_html(full_address)  # Use full address as fallback
 
     def _ai_clean_address(self, full_address):
         """Use DeepSeek to intelligently remove postal codes and countries"""
@@ -128,8 +189,8 @@ class TelegramFormatter:
 
             # Check if we have config and API key
             if not self.config or not getattr(self.config, 'DEEPSEEK_API_KEY', None):
-                logger.warning("No DeepSeek API key found, using simple extraction")
-                return self._simple_extract_street(full_address)
+                logger.warning("No DeepSeek API key found, using full address")
+                return self._clean_html(full_address)  # Return full address if no API key
 
             # Initialize DeepSeek client
             client = OpenAI(
@@ -140,10 +201,14 @@ class TelegramFormatter:
             prompt = f"""Clean this address by removing ONLY the postal code and country. Keep the street address and city.
 
 Examples:
-- "Via dei Tribunali, 94, 80139 Naples, Italy" → "Via dei Tribunali, 94, Naples"  
-- "123 Main St, New York, NY 10001, USA" → "123 Main St, New York, NY"
-- "Sheikh Mohammed bin Rashid Blvd - Downtown Dubai - Dubai - UAE" → "Sheikh Mohammed bin Rashid Blvd - Downtown Dubai - Dubai"
-- "Rua Augusta 123, 1100-048 Lisboa, Portugal" → "Rua Augusta 123, Lisboa"
+- Via dei Tribunali, 94, 80139 Naples, Italy → Via dei Tribunali, 94, Naples  
+- 123 Main St, New York, NY 10001, USA → 123 Main St, New York, NY
+- Sheikh Mohammed bin Rashid Blvd - Downtown Dubai - Dubai - UAE → Sheikh Mohammed bin Rashid Blvd - Downtown Dubai - Dubai
+- Rua Augusta 123, 1100-048 Lisboa, Portugal → Rua Augusta 123, Lisboa
+- 東京都渋谷区渋谷2-21-1, 150-8510 Japan → 東京都渋谷区渋谷2-21-1
+- Av. Santa Fe 1860, C1123ABN CABA, Argentina → Av. Santa Fe 1860, CABA
+- 上海市黄浦区南京东路300号, 200001 China → 上海市黄浦区南京东路300号
+- ул. Арбат, 12, 119019 Москва, Россия → ул. Арбат, 12, Москва
 
 Address to clean: "{full_address}"
 
@@ -163,12 +228,12 @@ Return only the cleaned address, nothing else."""
                 logger.debug(f"AI cleaned address: '{full_address}' → '{cleaned}'")
                 return cleaned
             else:
-                logger.warning(f"AI cleaning suspicious: '{full_address}' → '{cleaned}'")
-                return self._simple_extract_street(full_address)
+                logger.warning(f"AI cleaning suspicious: '{full_address}' → '{cleaned}', using full address")
+                return self._clean_html(full_address)  # Return full address if AI result is suspicious
 
         except Exception as e:
-            logger.error(f"DeepSeek API error: {e}")
-            return self._simple_extract_street(full_address)
+            logger.error(f"DeepSeek API error: {e}, using full address")
+            return self._clean_html(full_address)  # Return full address on any error
 
     def _simple_extract_street(self, full_address):
         """Fallback simple address extraction"""

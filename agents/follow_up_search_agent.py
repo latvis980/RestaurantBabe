@@ -233,13 +233,26 @@ class FollowUpSearchAgent:
                     restaurant_name, destination, maps_info, extracted_country
                 )
 
-            # CRITICAL: Store place_id and address_components for proper formatting
+            # Add Google Maps URL using official place_id format or Google's URL
             place_id = maps_info.get("place_id")
-            address_components = maps_info.get("address_components", [])
+            google_url = maps_info.get("url")  # Get Google's official URL
 
             if place_id:
                 updated_restaurant["place_id"] = place_id
                 logger.debug(f"✅ Stored place_id for {restaurant_name}: {place_id}")
+
+            # Store BOTH possible URL formats for maximum compatibility
+            if google_url:
+                # Use Google's official URL (most reliable)
+                updated_restaurant["google_maps_url"] = google_url
+                updated_restaurant["google_url"] = google_url
+                logger.debug(f"✅ Stored Google official URL for {restaurant_name}: {google_url}")
+            elif place_id:
+                # Fallback: create standard place_id URL
+                place_url = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
+                updated_restaurant["google_maps_url"] = place_url
+                updated_restaurant["google_url"] = place_url
+                logger.debug(f"✅ Created place_id URL for {restaurant_name}: {place_url}")
 
             if address_components:
                 updated_restaurant["address_components"] = address_components
