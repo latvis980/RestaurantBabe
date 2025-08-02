@@ -19,9 +19,6 @@ class TelegramFormatter:
         """Initialize formatter with config for AI features"""
         self.config = config
 
-    def __init__(self, config=None):
-        self.config = config
-
     def format_recommendations(self, recommendations_data):
         """Main entry point for formatting recommendations"""
         try:
@@ -129,9 +126,14 @@ class TelegramFormatter:
         try:
             from openai import OpenAI
 
+            # Check if we have config and API key
+            if not self.config or not getattr(self.config, 'DEEPSEEK_API_KEY', None):
+                logger.warning("No DeepSeek API key found, using simple extraction")
+                return self._simple_extract_street(full_address)
+
             # Initialize DeepSeek client
             client = OpenAI(
-                api_key=getattr(self.config, 'DEEPSEEK_API_KEY', None),
+                api_key=getattr(self.config, 'DEEPSEEK_API_KEY'),
                 base_url="https://api.deepseek.com"
             )
 
