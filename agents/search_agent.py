@@ -72,18 +72,21 @@ class BraveSearchAgent:
         - Articles in reputable local media discussing various dining options in an area
         - Food blog articles with restaurant recommendations
         - Travel articles mentioning multiple dining options
+        
         NOT VALID CONTENT (score < 0.3):
         - Official website of a single restaurant
         - ANYTHING on Tripadvisor, Yelp, OpenTable, RestaurantGuru and other UGC sites
+        - Wikipedia
         - Collections of restaurants on booking and delivery websites like Uber Eats, The Fork, Glovo, Bolt, Wolt, Mesa24, etc.
         - Social media content on Facebook and Instagram without professional curation
         - ANY Wanderlog content
-        - Individual restaurant menus
-        - Single restaurant reviews
+        - Single restaurant reviews (with exception of professional media)
         - Social media posts about individual dining experiences
         - Forum/Reddit discussions without professional curation
-        - Hotel booking sites
+        - Hotel booking sites like Booking.com, Agoda, Expedia, Jalan, etc.
+        - Websites of irrelevant businesses: real estate agencies, rental companies, tour booking sites, etc.
         - Video content (YouTube, TikTok, etc.)
+        
         SCORING CRITERIA:
         - Multiple restaurants mentioned (essential, with the only exception of single restaurant reviews in professional media)
         - Professional curation or expertise evident

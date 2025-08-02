@@ -7,6 +7,7 @@ import re
 import logging
 from html import escape
 import urllib.parse
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -50,78 +51,47 @@ class TelegramFormatter:
             logger.error(f"❌ Error in Telegram formatting: {e}")
             return self._no_results_message()
 
-    def _format_restaurant(self, restaurant, index):
-        """Format a single restaurant - simple and reliable"""
-        name = restaurant.get('name', '').strip()
-        if not name:
-            return ""
+    def _canonical_google_url(self, url: str, place_id: str = None) -> str:   # ➋  new
+        """Return https://maps.google.com/?cid=… or a place_id URL."""
+        if not url:
+            url = ""
 
-        description = restaurant.get('description', '').strip()
-        address = restaurant.get('address', '')
-        sources = restaurant.get('sources', [])
-        place_id = restaurant.get('place_id')
+        m = re.search(r"[?&]cid=(\d+)", url)
+        if m:                                        # already long form
+            return f"https://maps.google.com/?cid={m.group(1)}"
 
-        # Clean text for HTML (simple escaping)
-        name_clean = self._clean_html(name)
-        desc_clean = self._clean_html(description)
+        if "goo.gl/maps" in url or "maps.app.goo.gl" in url:  # short redirect
+            try:
+                r = requests.head(url, allow_redirects=True, timeout=3)
+                m = re.search(r"[?&]cid=(\d+)", r.url)
+                if m:
+                    return f"https://maps.google.com/?cid={m.group(1)}"
+            except requests.exceptions.RequestException:
+                pass   # fall through to place-id
 
-        # Build restaurant entry
-        parts = [f"<b>{index}. {name_clean}</b>\n"]
+        if place_id:                                   # last resort
+            return (f"https://www.google.com/maps/place/"
+                    f"?q=place_id:{place_id}")
 
-        # Add address with link
-        address_line = self._format_address_link(address, place_id)
-        if address_line:
-            parts.append(address_line)
-
-        # Add description
-        if desc_clean:
-            parts.append(f"{desc_clean}\n")
-
-        # Add sources
-        sources_line = self._format_sources(sources)
-        if sources_line:
-            parts.append(sources_line)
-
-        parts.append("\n")  # Spacing between restaurants
-
-        return ''.join(parts)
-
-    def _format_address_link(self, address, place_id):
-        """Create Google Maps link - use Google's official URL when available"""
+        return url or "#"
+    
+    def _format_address_link(self, address, place_id):          # ➌  replace
+        """Create Google-Maps link with canonical URL."""
         if not address or address == "Address unavailable":
             return "📍 Address unavailable\n"
 
-        # Extract street address for display
         street_address = self._extract_street(address)
-        clean_street = self._clean_html(street_address)
+        clean_street   = self._clean_html(street_address)
 
-        # PRIORITY 1: Try to get the google_maps_url from restaurant data
-        # This should contain the official Google URL from Places API
-        google_url = None
-        if hasattr(self, '_current_restaurant') and self._current_restaurant:
-            google_url = (self._current_restaurant.get('google_maps_url') or 
-                         self._current_restaurant.get('google_url') or
-                         self._current_restaurant.get('url'))
+        # -- pick whatever URL the agent stored ----------------------------
+        google_url = (self._current_restaurant.get("google_maps_url")     # may already be canonical
+                      or self._current_restaurant.get("google_url")
+                      or self._current_restaurant.get("url")
+                      or "")
 
-            if google_url:
-                logger.debug(f"✅ Using official Google URL: {google_url}")
-            else:
-                logger.debug(f"⚠️ No Google URL found in restaurant data. Available keys: {list(self._current_restaurant.keys())}")
+        google_url = self._canonical_google_url(google_url, place_id)     # normalise
 
-        # PRIORITY 2: Create URL using place_id if we have it
-        if not google_url and place_id:
-            # Use the precision query method (most reliable for business listings)
-            encoded_address = urllib.parse.quote(f"{clean_street}")
-            google_url = f"https://www.google.com/maps/search/?api=1&query={encoded_address}&query_place_id={place_id}"
-            logger.debug(f"🔧 Created place_id URL: {google_url}")
-
-        # PRIORITY 3: Fallback to simple address search
-        if not google_url:
-            encoded_address = urllib.parse.quote(clean_street)
-            google_url = f"https://www.google.com/maps/search/?api=1&query={encoded_address}"
-            logger.debug(f"🔧 Created fallback URL: {google_url}")
-
-        return f'📍 <a href="{google_url}">{clean_street}</a>\n'
+        return f'📍 <a href="{escape(google_url, quote=True)}">{clean_street}</a>\n'
 
     def _format_restaurant(self, restaurant, index):
         """Format a single restaurant - simple and reliable"""
