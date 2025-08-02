@@ -1,1154 +1,214 @@
 # formatters/telegram_formatter.py
 """
-Complete Telegram HTML formatter with CORRECT Google Maps URLs and street-only addresses
-FIXED VERSION - uses official Google Maps URL format from documentation
+SIMPLE Telegram HTML formatter - production approach
+Based on Telegram bot best practices: keep it simple and reliable
 """
 import re
 import logging
-from html import escape, unescape
+from html import escape
 import urllib.parse
 
 logger = logging.getLogger(__name__)
 
 class TelegramFormatter:
-    """Handles all Telegram HTML formatting for restaurant recommendations"""
+    """Simple, reliable Telegram HTML formatter following production best practices"""
 
     MAX_MESSAGE_LENGTH = 4096
-
-    def __init__(self):
-        self.allowed_tags = {'b', 'i', 'u', 's', 'a', 'code', 'pre'}
 
     def format_recommendations(self, recommendations_data):
         """Main entry point for formatting recommendations"""
         try:
-            logger.info("🔧 Starting Telegram formatting")
-
             main_list = recommendations_data.get("main_list", [])
-            logger.info(f"📋 Found {len(main_list)} restaurants to format")
+            logger.info(f"📋 Formatting {len(main_list)} restaurants for Telegram")
 
             if not main_list:
-                logger.warning("❌ No restaurants found to format")
-                return self.format_no_results()
+                return self._no_results_message()
 
-            formatted_html = self._format_restaurant_list(main_list)
-            logger.info("✅ Telegram formatting completed successfully")
+            # Build message parts
+            parts = ["<b>🍽️ Recommended Restaurants</b>\n\n"]
 
-            return formatted_html
+            for i, restaurant in enumerate(main_list, 1):
+                restaurant_text = self._format_restaurant(restaurant, i)
+                if restaurant_text:
+                    parts.append(restaurant_text)
+
+            parts.append("\n<i>Recommendations compiled from reputable restaurant guides and critics.</i>")
+
+            # Join and apply length limit
+            message = ''.join(parts)
+            if len(message) > self.MAX_MESSAGE_LENGTH:
+                message = message[:self.MAX_MESSAGE_LENGTH-3] + "…"
+
+            logger.info("✅ Telegram formatting completed")
+            return message
 
         except Exception as e:
             logger.error(f"❌ Error in Telegram formatting: {e}")
-            return self.format_no_results()
+            return self._no_results_message()
 
-    def _format_restaurant_list(self, restaurants):
-        """Format the main restaurant list"""
-        html_parts = ["<b>🍽️ Recommended Restaurants</b>\n\n"]
+    def _format_restaurant(self, restaurant, index):
+        """Format a single restaurant - simple and reliable"""
+        name = restaurant.get('name', '').strip()
+        if not name:
+            return ""
 
-        formatted_count = 0
-        for i, restaurant in enumerate(restaurants, 1):
-            try:
-                formatted_restaurant = self._format_single_restaurant(restaurant, i)
-                if formatted_restaurant:  # Only add if formatting succeeded
-                    html_parts.append(formatted_restaurant)
-                    formatted_count += 1
-            except Exception as e:
-                logger.error(f"❌ Error formatting restaurant {i}: {e}")
-                continue  # Skip this restaurant and continue with others
-
-        if formatted_count == 0:
-            return self.format_no_results()
-
-        html_parts.append(self._format_footer())
-
-        final_html = ''.join(html_parts)
-
-        logger.info(f"✅ Successfully formatted {formatted_count} restaurants")
-        return self._finalize_html(final_html)
-
-    def _format_single_restaurant(self, restaurant, index):
-        """Format a single restaurant entry"""
-        # Safely extract data with defaults
-        name = str(restaurant.get('name', 'Unknown Restaurant')).strip()
-        description = str(restaurant.get('description', 'No description available')).strip()
-        address = restaurant.get('address', 'Address unavailable')
+        description = restaurant.get('description', '').strip()
+        address = restaurant.get('address', '')
         sources = restaurant.get('sources', [])
-
-        # Get Google Maps data for proper links
         place_id = restaurant.get('place_id')
-        address_components = restaurant.get('address_components', [])
 
-        # Skip if no valid name
-        if not name or name == 'Unknown Restaurant':
-            return ""
+        # Clean text for HTML (simple escaping)
+        name_clean = self._clean_html(name)
+        desc_clean = self._clean_html(description)
 
-        # Clean and escape text
-        name_escaped = self._clean_text(name)
-        desc_escaped = self._clean_text(description)
+        # Build restaurant entry
+        parts = [f"<b>{index}. {name_clean}</b>\n"]
 
-        parts = [
-            f"<b>{index}. {name_escaped}</b>\n",
-            self._format_address_with_official_google_link(address, place_id, address_components),
-            f"{desc_escaped}\n" if desc_escaped else "",
-            self._format_sources(sources),
-            "\n"  # Add spacing between restaurants
-        ]
+        # Add address with link
+        address_line = self._format_address_link(address, place_id)
+        if address_line:
+            parts.append(address_line)
 
-        return ''.join(filter(None, parts))
+        # Add description
+        if desc_clean:
+            parts.append(f"{desc_clean}\n")
 
-    def _format_address_with_official_google_link(self, full_address, place_id=None, address_components=None):
-        """
-        Format address using OFFICIAL Google Maps URL format with AI-cleaned street address
+        # Add sources
+        sources_line = self._format_sources(sources)
+        if sources_line:
+            parts.append(sources_line)
 
-        URL Format: https://www.google.com/maps/search/?api=1&query=FALLBACK&query_place_id=PLACE_ID
-        Display Text: AI-cleaned street address (no postal code, city, country)
-        """
-        if not full_address or full_address == "Address unavailable":
+        parts.append("\n")  # Spacing between restaurants
+
+        return ''.join(parts)
+
+    def _format_address_link(self, address, place_id):
+        """Create Google Maps link - simple approach"""
+        if not address or address == "Address unavailable":
             return "📍 Address unavailable\n"
 
-        # Use AI to extract clean street address from full address
-        street_address = self._ai_extract_street_address(full_address)
+        # Extract street address (simple method)
+        street_address = self._extract_street(address)
+        clean_street = self._clean_html(street_address)
 
-        if not street_address:
-            return "📍 Address unavailable\n"
-
-        # Clean the street address for display
-        clean_street = self._clean_text(street_address)
-
-        # Create the OFFICIAL Google Maps URL format
-        if place_id and place_id.strip():
-            # Official format from Google documentation
-            fallback_query = urllib.parse.quote(clean_street)
-            maps_url = f"https://www.google.com/maps/search/?api=1&query={fallback_query}&query_place_id={place_id.strip()}"
-            logger.debug(f"Created official Google Maps URL: {maps_url}")
+        # Create Google Maps URL (official format)
+        if place_id:
+            # Use place_id for accuracy
+            query = urllib.parse.quote(clean_street)
+            url = f"https://www.google.com/maps/search/?api=1&query={query}&query_place_id={place_id}"
         else:
-            # Fallback: simple search URL
-            encoded_street = urllib.parse.quote(clean_street)
-            maps_url = f"https://www.google.com/maps/search/?api=1&query={encoded_street}"
-            logger.debug(f"Created fallback search URL: {maps_url}")
+            # Fallback to address search
+            query = urllib.parse.quote(clean_street)
+            url = f"https://www.google.com/maps/search/?api=1&query={query}"
 
-        # Return properly formatted HTML link with street-only text
-        return f'📍 <a href="{maps_url}">{clean_street}</a>\n'
+        return f'📍 <a href="{url}">{clean_street}</a>\n'
 
-    def _ai_extract_street_address(self, full_address):
-        """
-        Use simple AI logic to extract street address from full formatted address
-        Removes postal code, city, country - keeps only street number and name
-
-        Examples:
-        - "123 Main St, New York, NY 10001, USA" -> "123 Main St"
-        - "Via dei Tribunali, 94, 80139 Naples, Italy" -> "Via dei Tribunali, 94"
-        - "Sheikh Mohammed bin Rashid Blvd - Downtown Dubai - Dubai - UAE" -> "Sheikh Mohammed bin Rashid Blvd"
-        """
+    def _extract_street(self, full_address):
+        """Extract street address using AI - handles international formats"""
         if not full_address:
-            return ""
+            return "Address available"
 
-        # Clean input
-        address = str(full_address).strip()
+        try:
+            # Use DeepSeek for smart address cleaning
+            cleaned_address = self._ai_clean_address(full_address)
+            return cleaned_address if cleaned_address else "Address available"
+        except Exception as e:
+            logger.warning(f"AI address cleaning failed: {e}")
+            # Fallback to simple logic
+            return self._simple_extract_street(full_address)
 
-        # Split by commas
-        parts = [part.strip() for part in address.split(',')]
+    def _ai_clean_address(self, full_address):
+        """Use DeepSeek to intelligently remove postal codes and countries"""
+        try:
+            from openai import OpenAI
 
-        if len(parts) == 1:
-            # No commas - might be single street or foreign format
-            # Check if it contains postal code at the end
-            single_part = parts[0]
-            # Remove postal codes (numbers at the end)
-            cleaned = re.sub(r'\s+\d{4,6}\s*
+            # Initialize DeepSeek client
+            client = OpenAI(
+                api_key=getattr(self.config, 'DEEPSEEK_API_KEY', None),
+                base_url="https://api.deepseek.com"
+            )
 
-    def _format_sources(self, sources):
-        """Format source attribution"""
-        if not sources or not isinstance(sources, list):
-            return ""
+            prompt = f"""Clean this address by removing ONLY the postal code and country. Keep the street address and city.
 
-        valid_sources = []
-        for source in sources:
-            if source and str(source).strip():
-                cleaned_source = self._clean_text(str(source).strip())
-                if cleaned_source:
-                    valid_sources.append(cleaned_source)
+Examples:
+- "Via dei Tribunali, 94, 80139 Naples, Italy" → "Via dei Tribunali, 94, Naples"  
+- "123 Main St, New York, NY 10001, USA" → "123 Main St, New York, NY"
+- "Sheikh Mohammed bin Rashid Blvd - Downtown Dubai - Dubai - UAE" → "Sheikh Mohammed bin Rashid Blvd - Downtown Dubai - Dubai"
+- "Rua Augusta 123, 1100-048 Lisboa, Portugal" → "Rua Augusta 123, Lisboa"
 
-        if valid_sources:
-            sources_text = ", ".join(valid_sources[:3])  # Limit to 3 sources
-            return f"<i>✅ Sources: {sources_text}</i>\n"
+Address to clean: "{full_address}"
 
-        return ""
+Return only the cleaned address, nothing else."""
 
-    def _format_footer(self):
-        """Standard footer for recommendations"""
-        return "<i>Recommendations compiled from reputable restaurant guides and critics.</i>"
+            response = client.chat.completions.create(
+                model="deepseek-chat",  # Light model for speed
+                messages=[{{"role": "user", "content": prompt}}],
+                max_tokens=100,
+                temperature=0.1  # Low temperature for consistency
+            )
 
-    def format_no_results(self):
-        """Message when no restaurants found"""
-        return ("<b>Sorry, no restaurant recommendations found for your search.</b>\n\n"
-                "Try rephrasing your query or searching for a different area.")
+            cleaned = response.choices[0].message.content.strip()
 
-    def _clean_text(self, text):
-        """Clean and prepare text for HTML formatting - ROBUST VERSION"""
-        if not text:
-            return ""
-
-        text = str(text).strip()
-
-        # Remove any existing HTML tags first to avoid conflicts
-        text = re.sub(r'<[^>]*>', '', text)
-
-        # Decode any existing HTML entities to get clean text
-        text = unescape(text)
-
-        # Now escape the essential characters for Telegram HTML
-        # Do this in a specific order to avoid double-escaping
-
-        # 1. Escape ampersands first (but not existing entities)
-        text = re.sub(r'&(?!(?:amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)', '&amp;', text)
-
-        # 2. Escape < and >
-        text = text.replace('<', '&lt;').replace('>', '&gt;')
-
-        # 3. Remove or replace problematic characters that could break HTML
-        # Remove control characters except newlines and tabs
-        text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
-
-        # Remove null bytes
-        text = text.replace('\x00', '')
-
-        # Replace multiple whitespace with single space
-        text = re.sub(r'\s+', ' ', text)
-
-        return text.strip()
-
-    def _finalize_html(self, html):
-        """Apply final processing and length limits"""
-        # Sanitize HTML for Telegram
-        html = self._sanitize_for_telegram(html)
-
-        # Apply length limit
-        if len(html) > self.MAX_MESSAGE_LENGTH:
-            html = html[:self.MAX_MESSAGE_LENGTH-3] + "…"
-            logger.info(f"📏 Truncated message to {len(html)} characters")
-
-        return html
-
-    def _sanitize_for_telegram(self, text):
-        """
-        Ensure HTML is completely safe for Telegram API - FIXED VERSION
-        """
-        if not text:
-            return ""
-
-        # First, protect valid HTML tags by temporarily replacing them
-        valid_tag_pattern = r'<(/?)(?:b|i|u|s|a|code|pre)(?:\s[^>]*)?>'
-        valid_tags = []
-        placeholder_base = "___VALID_TAG_"
-
-        def replace_valid_tag(match):
-            tag_index = len(valid_tags)
-            valid_tags.append(match.group(0))
-            return f"{placeholder_base}{tag_index}___"
-
-        # Temporarily replace valid tags with placeholders
-        protected_text = re.sub(
-            valid_tag_pattern,
-            replace_valid_tag,
-            text,
-            flags=re.IGNORECASE
-        )
-
-        # Now escape any remaining < and > characters (these are invalid)
-        protected_text = protected_text.replace('<', '&lt;').replace('>', '&gt;')
-
-        # Restore the valid tags
-        for i, original_tag in enumerate(valid_tags):
-            placeholder = f"{placeholder_base}{i}___"
-            protected_text = protected_text.replace(placeholder, original_tag)
-
-        # Additional cleanup for safety
-        result_text = self._additional_html_cleanup(protected_text)
-
-        return result_text
-
-    def _additional_html_cleanup(self, text):
-        """Additional HTML cleanup without killing valid formatting"""
-
-        # Remove truly empty tag pairs, e.g. <b></b> or <i   ></i>
-        text = re.sub(
-            r'<(?P<tag>b|i|u|s|code|pre)\b[^>]*>\s*</(?P=tag)>',
-            '',
-            text,
-            flags=re.IGNORECASE | re.DOTALL
-        )
-
-        # Remove suspiciously long single tags
-        text = re.sub(r'<[^>]{100,}>', '', text)
-
-        # Ensure proper tag nesting
-        return self._fix_tag_nesting(text)
-
-    def _fix_tag_nesting(self, text):
-        """Fix HTML tag nesting using simple string parsing"""
-        allowed_tags = ['b', 'i', 'u', 's', 'a', 'code', 'pre']
-        open_tags = []
-        result = []
-        i = 0
-
-        while i < len(text):
-            if text[i] == '<':
-                # Find the end of the tag
-                end = text.find('>', i)
-                if end == -1:
-                    # No closing bracket, treat as escaped text
-                    result.append('&lt;')
-                    i += 1
-                    continue
-
-                tag_content = text[i+1:end].strip()
-
-                # Check if it's a closing tag
-                if tag_content.startswith('/'):
-                    tag_name = tag_content[1:].strip().lower()
-                    if tag_name in allowed_tags and open_tags and open_tags[-1] == tag_name:
-                        # Valid closing tag
-                        open_tags.pop()
-                        result.append(text[i:end+1])
-                    else:
-                        # Invalid closing tag, escape it
-                        result.append('&lt;' + tag_content + '&gt;')
-                else:
-                    # Opening tag
-                    tag_parts = tag_content.split(None, 1)
-                    tag_name = tag_parts[0].lower()
-
-                    if tag_name in allowed_tags:
-                        # Validate tag format
-                        if tag_name == 'a' and len(tag_parts) > 1:
-                            # Special validation for links
-                            if 'href=' in tag_parts[1] and '"' in tag_parts[1]:
-                                result.append(text[i:end+1])
-                                open_tags.append(tag_name)
-                            else:
-                                # Invalid link tag
-                                result.append('&lt;' + tag_content + '&gt;')
-                        else:
-                            # Valid formatting tag
-                            result.append(text[i:end+1])
-                            open_tags.append(tag_name)
-                    else:
-                        # Unknown tag, escape it
-                        result.append('&lt;' + tag_content + '&gt;')
-
-                i = end + 1
+            # Basic validation - cleaned address should be shorter than original
+            if cleaned and len(cleaned) < len(full_address) and len(cleaned) > 5:
+                logger.debug(f"AI cleaned address: '{full_address}' → '{cleaned}'")
+                return cleaned
             else:
-                result.append(text[i])
-                i += 1
-
-        # Close any remaining open tags
-        while open_tags:
-            tag = open_tags.pop()
-            result.append(f'</{tag}>')
-
-        return ''.join(result), '', single_part)
-            # Remove country names at the end
-            cleaned = re.sub(r'\s+(?:USA|US|UK|UAE|Italy|France|Spain|Germany|Portugal|Netherlands|Belgium)
-
-    def _format_sources(self, sources):
-        """Format source attribution"""
-        if not sources or not isinstance(sources, list):
-            return ""
-
-        valid_sources = []
-        for source in sources:
-            if source and str(source).strip():
-                cleaned_source = self._clean_text(str(source).strip())
-                if cleaned_source:
-                    valid_sources.append(cleaned_source)
-
-        if valid_sources:
-            sources_text = ", ".join(valid_sources[:3])  # Limit to 3 sources
-            return f"<i>✅ Sources: {sources_text}</i>\n"
-
-        return ""
-
-    def _format_footer(self):
-        """Standard footer for recommendations"""
-        return "<i>Recommendations compiled from reputable restaurant guides and critics.</i>"
-
-    def format_no_results(self):
-        """Message when no restaurants found"""
-        return ("<b>Sorry, no restaurant recommendations found for your search.</b>\n\n"
-                "Try rephrasing your query or searching for a different area.")
-
-    def _clean_text(self, text):
-        """Clean and prepare text for HTML formatting - ROBUST VERSION"""
-        if not text:
-            return ""
-
-        text = str(text).strip()
-
-        # Remove any existing HTML tags first to avoid conflicts
-        text = re.sub(r'<[^>]*>', '', text)
-
-        # Decode any existing HTML entities to get clean text
-        text = unescape(text)
-
-        # Now escape the essential characters for Telegram HTML
-        # Do this in a specific order to avoid double-escaping
-
-        # 1. Escape ampersands first (but not existing entities)
-        text = re.sub(r'&(?!(?:amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)', '&amp;', text)
-
-        # 2. Escape < and >
-        text = text.replace('<', '&lt;').replace('>', '&gt;')
-
-        # 3. Remove or replace problematic characters that could break HTML
-        # Remove control characters except newlines and tabs
-        text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
-
-        # Remove null bytes
-        text = text.replace('\x00', '')
-
-        # Replace multiple whitespace with single space
-        text = re.sub(r'\s+', ' ', text)
-
-        return text.strip()
-
-    def _finalize_html(self, html):
-        """Apply final processing and length limits"""
-        # Sanitize HTML for Telegram
-        html = self._sanitize_for_telegram(html)
-
-        # Apply length limit
-        if len(html) > self.MAX_MESSAGE_LENGTH:
-            html = html[:self.MAX_MESSAGE_LENGTH-3] + "…"
-            logger.info(f"📏 Truncated message to {len(html)} characters")
-
-        return html
-
-    def _sanitize_for_telegram(self, text):
-        """
-        Ensure HTML is completely safe for Telegram API - FIXED VERSION
-        """
-        if not text:
-            return ""
-
-        # First, protect valid HTML tags by temporarily replacing them
-        valid_tag_pattern = r'<(/?)(?:b|i|u|s|a|code|pre)(?:\s[^>]*)?>'
-        valid_tags = []
-        placeholder_base = "___VALID_TAG_"
-
-        def replace_valid_tag(match):
-            tag_index = len(valid_tags)
-            valid_tags.append(match.group(0))
-            return f"{placeholder_base}{tag_index}___"
-
-        # Temporarily replace valid tags with placeholders
-        protected_text = re.sub(
-            valid_tag_pattern,
-            replace_valid_tag,
-            text,
-            flags=re.IGNORECASE
-        )
-
-        # Now escape any remaining < and > characters (these are invalid)
-        protected_text = protected_text.replace('<', '&lt;').replace('>', '&gt;')
-
-        # Restore the valid tags
-        for i, original_tag in enumerate(valid_tags):
-            placeholder = f"{placeholder_base}{i}___"
-            protected_text = protected_text.replace(placeholder, original_tag)
-
-        # Additional cleanup for safety
-        result_text = self._additional_html_cleanup(protected_text)
-
-        return result_text
-
-    def _additional_html_cleanup(self, text):
-        """Additional HTML cleanup without killing valid formatting"""
-
-        # Remove truly empty tag pairs, e.g. <b></b> or <i   ></i>
-        text = re.sub(
-            r'<(?P<tag>b|i|u|s|code|pre)\b[^>]*>\s*</(?P=tag)>',
-            '',
-            text,
-            flags=re.IGNORECASE | re.DOTALL
-        )
-
-        # Remove suspiciously long single tags
-        text = re.sub(r'<[^>]{100,}>', '', text)
-
-        # Ensure proper tag nesting
-        return self._fix_tag_nesting(text)
-
-    def _fix_tag_nesting(self, text):
-        """Fix HTML tag nesting using simple string parsing"""
-        allowed_tags = ['b', 'i', 'u', 's', 'a', 'code', 'pre']
-        open_tags = []
-        result = []
-        i = 0
-
-        while i < len(text):
-            if text[i] == '<':
-                # Find the end of the tag
-                end = text.find('>', i)
-                if end == -1:
-                    # No closing bracket, treat as escaped text
-                    result.append('&lt;')
-                    i += 1
-                    continue
-
-                tag_content = text[i+1:end].strip()
-
-                # Check if it's a closing tag
-                if tag_content.startswith('/'):
-                    tag_name = tag_content[1:].strip().lower()
-                    if tag_name in allowed_tags and open_tags and open_tags[-1] == tag_name:
-                        # Valid closing tag
-                        open_tags.pop()
-                        result.append(text[i:end+1])
-                    else:
-                        # Invalid closing tag, escape it
-                        result.append('&lt;' + tag_content + '&gt;')
-                else:
-                    # Opening tag
-                    tag_parts = tag_content.split(None, 1)
-                    tag_name = tag_parts[0].lower()
-
-                    if tag_name in allowed_tags:
-                        # Validate tag format
-                        if tag_name == 'a' and len(tag_parts) > 1:
-                            # Special validation for links
-                            if 'href=' in tag_parts[1] and '"' in tag_parts[1]:
-                                result.append(text[i:end+1])
-                                open_tags.append(tag_name)
-                            else:
-                                # Invalid link tag
-                                result.append('&lt;' + tag_content + '&gt;')
-                        else:
-                            # Valid formatting tag
-                            result.append(text[i:end+1])
-                            open_tags.append(tag_name)
-                    else:
-                        # Unknown tag, escape it
-                        result.append('&lt;' + tag_content + '&gt;')
-
-                i = end + 1
-            else:
-                result.append(text[i])
-                i += 1
-
-        # Close any remaining open tags
-        while open_tags:
-            tag = open_tags.pop()
-            result.append(f'</{tag}>')
-
-        return ''.join(result), '', cleaned, flags=re.IGNORECASE)
-            return cleaned.strip()
-
-        # Multiple parts - analyze to find street part
-        street_candidates = []
-
-        for i, part in enumerate(parts):
-            part_lower = part.lower()
-
-            # Skip parts that are clearly not street addresses
-            if (re.search(r'^\d{4,6}
-
-    def _format_sources(self, sources):
-        """Format source attribution"""
-        if not sources or not isinstance(sources, list):
-            return ""
-
-        valid_sources = []
-        for source in sources:
-            if source and str(source).strip():
-                cleaned_source = self._clean_text(str(source).strip())
-                if cleaned_source:
-                    valid_sources.append(cleaned_source)
-
-        if valid_sources:
-            sources_text = ", ".join(valid_sources[:3])  # Limit to 3 sources
-            return f"<i>✅ Sources: {sources_text}</i>\n"
-
-        return ""
-
-    def _format_footer(self):
-        """Standard footer for recommendations"""
-        return "<i>Recommendations compiled from reputable restaurant guides and critics.</i>"
-
-    def format_no_results(self):
-        """Message when no restaurants found"""
-        return ("<b>Sorry, no restaurant recommendations found for your search.</b>\n\n"
-                "Try rephrasing your query or searching for a different area.")
-
-    def _clean_text(self, text):
-        """Clean and prepare text for HTML formatting - ROBUST VERSION"""
-        if not text:
-            return ""
-
-        text = str(text).strip()
-
-        # Remove any existing HTML tags first to avoid conflicts
-        text = re.sub(r'<[^>]*>', '', text)
-
-        # Decode any existing HTML entities to get clean text
-        text = unescape(text)
-
-        # Now escape the essential characters for Telegram HTML
-        # Do this in a specific order to avoid double-escaping
-
-        # 1. Escape ampersands first (but not existing entities)
-        text = re.sub(r'&(?!(?:amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)', '&amp;', text)
-
-        # 2. Escape < and >
-        text = text.replace('<', '&lt;').replace('>', '&gt;')
-
-        # 3. Remove or replace problematic characters that could break HTML
-        # Remove control characters except newlines and tabs
-        text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
-
-        # Remove null bytes
-        text = text.replace('\x00', '')
-
-        # Replace multiple whitespace with single space
-        text = re.sub(r'\s+', ' ', text)
-
-        return text.strip()
-
-    def _finalize_html(self, html):
-        """Apply final processing and length limits"""
-        # Sanitize HTML for Telegram
-        html = self._sanitize_for_telegram(html)
-
-        # Apply length limit
-        if len(html) > self.MAX_MESSAGE_LENGTH:
-            html = html[:self.MAX_MESSAGE_LENGTH-3] + "…"
-            logger.info(f"📏 Truncated message to {len(html)} characters")
-
-        return html
-
-    def _sanitize_for_telegram(self, text):
-        """
-        Ensure HTML is completely safe for Telegram API - FIXED VERSION
-        """
-        if not text:
-            return ""
-
-        # First, protect valid HTML tags by temporarily replacing them
-        valid_tag_pattern = r'<(/?)(?:b|i|u|s|a|code|pre)(?:\s[^>]*)?>'
-        valid_tags = []
-        placeholder_base = "___VALID_TAG_"
-
-        def replace_valid_tag(match):
-            tag_index = len(valid_tags)
-            valid_tags.append(match.group(0))
-            return f"{placeholder_base}{tag_index}___"
-
-        # Temporarily replace valid tags with placeholders
-        protected_text = re.sub(
-            valid_tag_pattern,
-            replace_valid_tag,
-            text,
-            flags=re.IGNORECASE
-        )
-
-        # Now escape any remaining < and > characters (these are invalid)
-        protected_text = protected_text.replace('<', '&lt;').replace('>', '&gt;')
-
-        # Restore the valid tags
-        for i, original_tag in enumerate(valid_tags):
-            placeholder = f"{placeholder_base}{i}___"
-            protected_text = protected_text.replace(placeholder, original_tag)
-
-        # Additional cleanup for safety
-        result_text = self._additional_html_cleanup(protected_text)
-
-        return result_text
-
-    def _additional_html_cleanup(self, text):
-        """Additional HTML cleanup without killing valid formatting"""
-
-        # Remove truly empty tag pairs, e.g. <b></b> or <i   ></i>
-        text = re.sub(
-            r'<(?P<tag>b|i|u|s|code|pre)\b[^>]*>\s*</(?P=tag)>',
-            '',
-            text,
-            flags=re.IGNORECASE | re.DOTALL
-        )
-
-        # Remove suspiciously long single tags
-        text = re.sub(r'<[^>]{100,}>', '', text)
-
-        # Ensure proper tag nesting
-        return self._fix_tag_nesting(text)
-
-    def _fix_tag_nesting(self, text):
-        """Fix HTML tag nesting using simple string parsing"""
-        allowed_tags = ['b', 'i', 'u', 's', 'a', 'code', 'pre']
-        open_tags = []
-        result = []
-        i = 0
-
-        while i < len(text):
-            if text[i] == '<':
-                # Find the end of the tag
-                end = text.find('>', i)
-                if end == -1:
-                    # No closing bracket, treat as escaped text
-                    result.append('&lt;')
-                    i += 1
-                    continue
-
-                tag_content = text[i+1:end].strip()
-
-                # Check if it's a closing tag
-                if tag_content.startswith('/'):
-                    tag_name = tag_content[1:].strip().lower()
-                    if tag_name in allowed_tags and open_tags and open_tags[-1] == tag_name:
-                        # Valid closing tag
-                        open_tags.pop()
-                        result.append(text[i:end+1])
-                    else:
-                        # Invalid closing tag, escape it
-                        result.append('&lt;' + tag_content + '&gt;')
-                else:
-                    # Opening tag
-                    tag_parts = tag_content.split(None, 1)
-                    tag_name = tag_parts[0].lower()
-
-                    if tag_name in allowed_tags:
-                        # Validate tag format
-                        if tag_name == 'a' and len(tag_parts) > 1:
-                            # Special validation for links
-                            if 'href=' in tag_parts[1] and '"' in tag_parts[1]:
-                                result.append(text[i:end+1])
-                                open_tags.append(tag_name)
-                            else:
-                                # Invalid link tag
-                                result.append('&lt;' + tag_content + '&gt;')
-                        else:
-                            # Valid formatting tag
-                            result.append(text[i:end+1])
-                            open_tags.append(tag_name)
-                    else:
-                        # Unknown tag, escape it
-                        result.append('&lt;' + tag_content + '&gt;')
-
-                i = end + 1
-            else:
-                result.append(text[i])
-                i += 1
-
-        # Close any remaining open tags
-        while open_tags:
-            tag = open_tags.pop()
-            result.append(f'</{tag}>')
-
-        return ''.join(result), part) or  # Pure postal codes
-                part_lower in ['usa', 'us', 'uk', 'uae', 'italy', 'france', 'spain', 'germany', 'portugal', 'netherlands', 'belgium'] or
-                re.search(r'^[A-Z]{2}
-
-    def _format_sources(self, sources):
-        """Format source attribution"""
-        if not sources or not isinstance(sources, list):
-            return ""
-
-        valid_sources = []
-        for source in sources:
-            if source and str(source).strip():
-                cleaned_source = self._clean_text(str(source).strip())
-                if cleaned_source:
-                    valid_sources.append(cleaned_source)
-
-        if valid_sources:
-            sources_text = ", ".join(valid_sources[:3])  # Limit to 3 sources
-            return f"<i>✅ Sources: {sources_text}</i>\n"
-
-        return ""
-
-    def _format_footer(self):
-        """Standard footer for recommendations"""
-        return "<i>Recommendations compiled from reputable restaurant guides and critics.</i>"
-
-    def format_no_results(self):
-        """Message when no restaurants found"""
-        return ("<b>Sorry, no restaurant recommendations found for your search.</b>\n\n"
-                "Try rephrasing your query or searching for a different area.")
-
-    def _clean_text(self, text):
-        """Clean and prepare text for HTML formatting - ROBUST VERSION"""
-        if not text:
-            return ""
-
-        text = str(text).strip()
-
-        # Remove any existing HTML tags first to avoid conflicts
-        text = re.sub(r'<[^>]*>', '', text)
-
-        # Decode any existing HTML entities to get clean text
-        text = unescape(text)
-
-        # Now escape the essential characters for Telegram HTML
-        # Do this in a specific order to avoid double-escaping
-
-        # 1. Escape ampersands first (but not existing entities)
-        text = re.sub(r'&(?!(?:amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)', '&amp;', text)
-
-        # 2. Escape < and >
-        text = text.replace('<', '&lt;').replace('>', '&gt;')
-
-        # 3. Remove or replace problematic characters that could break HTML
-        # Remove control characters except newlines and tabs
-        text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
-
-        # Remove null bytes
-        text = text.replace('\x00', '')
-
-        # Replace multiple whitespace with single space
-        text = re.sub(r'\s+', ' ', text)
-
-        return text.strip()
-
-    def _finalize_html(self, html):
-        """Apply final processing and length limits"""
-        # Sanitize HTML for Telegram
-        html = self._sanitize_for_telegram(html)
-
-        # Apply length limit
-        if len(html) > self.MAX_MESSAGE_LENGTH:
-            html = html[:self.MAX_MESSAGE_LENGTH-3] + "…"
-            logger.info(f"📏 Truncated message to {len(html)} characters")
-
-        return html
-
-    def _sanitize_for_telegram(self, text):
-        """
-        Ensure HTML is completely safe for Telegram API - FIXED VERSION
-        """
-        if not text:
-            return ""
-
-        # First, protect valid HTML tags by temporarily replacing them
-        valid_tag_pattern = r'<(/?)(?:b|i|u|s|a|code|pre)(?:\s[^>]*)?>'
-        valid_tags = []
-        placeholder_base = "___VALID_TAG_"
-
-        def replace_valid_tag(match):
-            tag_index = len(valid_tags)
-            valid_tags.append(match.group(0))
-            return f"{placeholder_base}{tag_index}___"
-
-        # Temporarily replace valid tags with placeholders
-        protected_text = re.sub(
-            valid_tag_pattern,
-            replace_valid_tag,
-            text,
-            flags=re.IGNORECASE
-        )
-
-        # Now escape any remaining < and > characters (these are invalid)
-        protected_text = protected_text.replace('<', '&lt;').replace('>', '&gt;')
-
-        # Restore the valid tags
-        for i, original_tag in enumerate(valid_tags):
-            placeholder = f"{placeholder_base}{i}___"
-            protected_text = protected_text.replace(placeholder, original_tag)
-
-        # Additional cleanup for safety
-        result_text = self._additional_html_cleanup(protected_text)
-
-        return result_text
-
-    def _additional_html_cleanup(self, text):
-        """Additional HTML cleanup without killing valid formatting"""
-
-        # Remove truly empty tag pairs, e.g. <b></b> or <i   ></i>
-        text = re.sub(
-            r'<(?P<tag>b|i|u|s|code|pre)\b[^>]*>\s*</(?P=tag)>',
-            '',
-            text,
-            flags=re.IGNORECASE | re.DOTALL
-        )
-
-        # Remove suspiciously long single tags
-        text = re.sub(r'<[^>]{100,}>', '', text)
-
-        # Ensure proper tag nesting
-        return self._fix_tag_nesting(text)
-
-    def _fix_tag_nesting(self, text):
-        """Fix HTML tag nesting using simple string parsing"""
-        allowed_tags = ['b', 'i', 'u', 's', 'a', 'code', 'pre']
-        open_tags = []
-        result = []
-        i = 0
-
-        while i < len(text):
-            if text[i] == '<':
-                # Find the end of the tag
-                end = text.find('>', i)
-                if end == -1:
-                    # No closing bracket, treat as escaped text
-                    result.append('&lt;')
-                    i += 1
-                    continue
-
-                tag_content = text[i+1:end].strip()
-
-                # Check if it's a closing tag
-                if tag_content.startswith('/'):
-                    tag_name = tag_content[1:].strip().lower()
-                    if tag_name in allowed_tags and open_tags and open_tags[-1] == tag_name:
-                        # Valid closing tag
-                        open_tags.pop()
-                        result.append(text[i:end+1])
-                    else:
-                        # Invalid closing tag, escape it
-                        result.append('&lt;' + tag_content + '&gt;')
-                else:
-                    # Opening tag
-                    tag_parts = tag_content.split(None, 1)
-                    tag_name = tag_parts[0].lower()
-
-                    if tag_name in allowed_tags:
-                        # Validate tag format
-                        if tag_name == 'a' and len(tag_parts) > 1:
-                            # Special validation for links
-                            if 'href=' in tag_parts[1] and '"' in tag_parts[1]:
-                                result.append(text[i:end+1])
-                                open_tags.append(tag_name)
-                            else:
-                                # Invalid link tag
-                                result.append('&lt;' + tag_content + '&gt;')
-                        else:
-                            # Valid formatting tag
-                            result.append(text[i:end+1])
-                            open_tags.append(tag_name)
-                    else:
-                        # Unknown tag, escape it
-                        result.append('&lt;' + tag_content + '&gt;')
-
-                i = end + 1
-            else:
-                result.append(text[i])
-                i += 1
-
-        # Close any remaining open tags
-        while open_tags:
-            tag = open_tags.pop()
-            result.append(f'</{tag}>')
-
-        return ''.join(result), part) or  # State codes like NY, CA
-                part_lower in ['downtown', 'city center', 'centre', 'centro']):
-                continue
-
-            # Look for street indicators
-            if (re.search(r'\d', part) and  # Contains numbers
-                any(word in part_lower for word in ['street', 'st', 'avenue', 'ave', 'road', 'rd', 'plaza', 'square', 'lane', 'ln', 'drive', 'dr', 'boulevard', 'blvd', 'way', 'via', 'rue', 'strada', 'calle'])):
-                street_candidates.append(part)
-            elif i == 0 and re.search(r'\d', part):
-                # First part with numbers is likely street
-                street_candidates.append(part)
-
-        # Return the best street candidate
-        if street_candidates:
-            return street_candidates[0].strip()
-
-        # Fallback: return first part if it looks like an address
-        first_part = parts[0]
-        if re.search(r'\d', first_part) or len(first_part) > 10:
-            return first_part.strip()
-
-        # Last resort: return first two parts joined
+                logger.warning(f"AI cleaning suspicious: '{full_address}' → '{cleaned}'")
+                return self._simple_extract_street(full_address)
+
+        except Exception as e:
+            logger.error(f"DeepSeek API error: {e}")
+            return self._simple_extract_street(full_address)
+
+    def _simple_extract_street(self, full_address):
+        """Fallback simple address extraction"""
+        parts = str(full_address).split(',')
+        street = parts[0].strip()
+
+        # Keep street + city (first two parts)
         if len(parts) >= 2:
-            return f"{parts[0]}, {parts[1]}".strip()
+            return f"{parts[0].strip()}, {parts[1].strip()}"
 
-        return parts[0].strip() if parts else ""
+        return street if street else "Address available"
 
     def _format_sources(self, sources):
-        """Format source attribution"""
+        """Format sources - simple approach"""
         if not sources or not isinstance(sources, list):
             return ""
 
-        valid_sources = []
-        for source in sources:
+        # Clean and limit sources
+        clean_sources = []
+        for source in sources[:3]:  # Max 3 sources
             if source and str(source).strip():
-                cleaned_source = self._clean_text(str(source).strip())
-                if cleaned_source:
-                    valid_sources.append(cleaned_source)
+                clean_source = self._clean_html(str(source).strip())
+                if clean_source:
+                    clean_sources.append(clean_source)
 
-        if valid_sources:
-            sources_text = ", ".join(valid_sources[:3])  # Limit to 3 sources
+        if clean_sources:
+            sources_text = ", ".join(clean_sources)
             return f"<i>✅ Sources: {sources_text}</i>\n"
 
         return ""
 
-    def _format_footer(self):
-        """Standard footer for recommendations"""
-        return "<i>Recommendations compiled from reputable restaurant guides and critics.</i>"
-
-    def format_no_results(self):
-        """Message when no restaurants found"""
-        return ("<b>Sorry, no restaurant recommendations found for your search.</b>\n\n"
-                "Try rephrasing your query or searching for a different area.")
-
-    def _clean_text(self, text):
-        """Clean and prepare text for HTML formatting - ROBUST VERSION"""
+    def _clean_html(self, text):
+        """Simple HTML cleaning - production approach"""
         if not text:
             return ""
 
+        # Basic HTML escaping (only what's needed)
         text = str(text).strip()
+        text = escape(text, quote=False)  # Escape HTML but keep quotes
 
-        # Remove any existing HTML tags first to avoid conflicts
-        text = re.sub(r'<[^>]*>', '', text)
+        # Remove any remaining HTML tags
+        text = re.sub(r'<[^>]+>', '', text)
 
-        # Decode any existing HTML entities to get clean text
-        text = unescape(text)
-
-        # Now escape the essential characters for Telegram HTML
-        # Do this in a specific order to avoid double-escaping
-
-        # 1. Escape ampersands first (but not existing entities)
-        text = re.sub(r'&(?!(?:amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)', '&amp;', text)
-
-        # 2. Escape < and >
-        text = text.replace('<', '&lt;').replace('>', '&gt;')
-
-        # 3. Remove or replace problematic characters that could break HTML
-        # Remove control characters except newlines and tabs
-        text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
-
-        # Remove null bytes
-        text = text.replace('\x00', '')
-
-        # Replace multiple whitespace with single space
+        # Replace multiple spaces with single space
         text = re.sub(r'\s+', ' ', text)
 
         return text.strip()
 
-    def _finalize_html(self, html):
-        """Apply final processing and length limits"""
-        # Sanitize HTML for Telegram
-        html = self._sanitize_for_telegram(html)
-
-        # Apply length limit
-        if len(html) > self.MAX_MESSAGE_LENGTH:
-            html = html[:self.MAX_MESSAGE_LENGTH-3] + "…"
-            logger.info(f"📏 Truncated message to {len(html)} characters")
-
-        return html
-
-    def _sanitize_for_telegram(self, text):
-        """
-        Ensure HTML is completely safe for Telegram API - FIXED VERSION
-        """
-        if not text:
-            return ""
-
-        # First, protect valid HTML tags by temporarily replacing them
-        valid_tag_pattern = r'<(/?)(?:b|i|u|s|a|code|pre)(?:\s[^>]*)?>'
-        valid_tags = []
-        placeholder_base = "___VALID_TAG_"
-
-        def replace_valid_tag(match):
-            tag_index = len(valid_tags)
-            valid_tags.append(match.group(0))
-            return f"{placeholder_base}{tag_index}___"
-
-        # Temporarily replace valid tags with placeholders
-        protected_text = re.sub(
-            valid_tag_pattern,
-            replace_valid_tag,
-            text,
-            flags=re.IGNORECASE
-        )
-
-        # Now escape any remaining < and > characters (these are invalid)
-        protected_text = protected_text.replace('<', '&lt;').replace('>', '&gt;')
-
-        # Restore the valid tags
-        for i, original_tag in enumerate(valid_tags):
-            placeholder = f"{placeholder_base}{i}___"
-            protected_text = protected_text.replace(placeholder, original_tag)
-
-        # Additional cleanup for safety
-        result_text = self._additional_html_cleanup(protected_text)
-
-        return result_text
-
-    def _additional_html_cleanup(self, text):
-        """Additional HTML cleanup without killing valid formatting"""
-
-        # Remove truly empty tag pairs, e.g. <b></b> or <i   ></i>
-        text = re.sub(
-            r'<(?P<tag>b|i|u|s|code|pre)\b[^>]*>\s*</(?P=tag)>',
-            '',
-            text,
-            flags=re.IGNORECASE | re.DOTALL
-        )
-
-        # Remove suspiciously long single tags
-        text = re.sub(r'<[^>]{100,}>', '', text)
-
-        # Ensure proper tag nesting
-        return self._fix_tag_nesting(text)
-
-    def _fix_tag_nesting(self, text):
-        """Fix HTML tag nesting using simple string parsing"""
-        allowed_tags = ['b', 'i', 'u', 's', 'a', 'code', 'pre']
-        open_tags = []
-        result = []
-        i = 0
-
-        while i < len(text):
-            if text[i] == '<':
-                # Find the end of the tag
-                end = text.find('>', i)
-                if end == -1:
-                    # No closing bracket, treat as escaped text
-                    result.append('&lt;')
-                    i += 1
-                    continue
-
-                tag_content = text[i+1:end].strip()
-
-                # Check if it's a closing tag
-                if tag_content.startswith('/'):
-                    tag_name = tag_content[1:].strip().lower()
-                    if tag_name in allowed_tags and open_tags and open_tags[-1] == tag_name:
-                        # Valid closing tag
-                        open_tags.pop()
-                        result.append(text[i:end+1])
-                    else:
-                        # Invalid closing tag, escape it
-                        result.append('&lt;' + tag_content + '&gt;')
-                else:
-                    # Opening tag
-                    tag_parts = tag_content.split(None, 1)
-                    tag_name = tag_parts[0].lower()
-
-                    if tag_name in allowed_tags:
-                        # Validate tag format
-                        if tag_name == 'a' and len(tag_parts) > 1:
-                            # Special validation for links
-                            if 'href=' in tag_parts[1] and '"' in tag_parts[1]:
-                                result.append(text[i:end+1])
-                                open_tags.append(tag_name)
-                            else:
-                                # Invalid link tag
-                                result.append('&lt;' + tag_content + '&gt;')
-                        else:
-                            # Valid formatting tag
-                            result.append(text[i:end+1])
-                            open_tags.append(tag_name)
-                    else:
-                        # Unknown tag, escape it
-                        result.append('&lt;' + tag_content + '&gt;')
-
-                i = end + 1
-            else:
-                result.append(text[i])
-                i += 1
-
-        # Close any remaining open tags
-        while open_tags:
-            tag = open_tags.pop()
-            result.append(f'</{tag}>')
-
-        return ''.join(result)
+    def _no_results_message(self):
+        """Simple no results message"""
+        return ("<b>Sorry, no restaurant recommendations found for your search.</b>\n\n"
+                "Try rephrasing your query or searching for a different area.")
