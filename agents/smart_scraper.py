@@ -78,50 +78,57 @@ class SmartRestaurantScraper:
         # Simple AI prompt - no hardcoded domains, minimal complexity
         self.analysis_prompt = ChatPromptTemplate.from_messages([
             ("system", """
-You are an expert at analyzing websites to determine the optimal scraping strategy.
+        You are an expert web crawling strategist. Your task is to recommend the optimal scraping strategy based **purely on technical complexity** of the target page, NOT its content topic or genre.
 
-Since these pages are already filtered for restaurant content, focus only on TECHNICAL requirements:
+        Available strategies:
 
-🟢 SIMPLE_HTTP (0.1 credits):
-- Static HTML sites where content loads immediately
-- Simple blogs, basic news sites
-- Content clearly visible in initial HTML response
+        🟢 SIMPLE_HTTP (0.1 credits):
+        - Static HTML pages where main content is fully available in the initial server response
+        - Minimal or no JavaScript required to render content
+        - No complex lazy-loading or client-side API calls
 
-🟡 ENHANCED_HTTP (0.5 credits):  
-- Modern magazine sites with some JavaScript
-- Content in HTML but needs cleaning/extraction
-- Professional publications with moderate complexity
+        🟡 ENHANCED_HTTP (0.5 credits):  
+        - Pages with moderate client-side scripting
+        - Content mostly in HTML but requires cleaning or minor JavaScript execution
+        - Typical modern news or magazine sites using CMS platforms with some dynamic elements
 
-🔴 FIRECRAWL (10.0 credits):
-- Heavy JavaScript where content loads dynamically  
-- React/Vue/Angular single-page applications
-- Anti-bot protection or complex authentication
-- Interactive sites requiring browser rendering
+        🔴 FIRECRAWL (10.0 credits):
+        - Heavy JavaScript rendering (React, Vue, Angular SPA)
+        - Content not visible in raw HTML (requires headless browser to load)
+        - Infinite scroll, API-driven loading, or anti-bot protections (CAPTCHA, bot detection, auth walls)
+        - Sites with significant client-side hydration or interactive UI
 
-Examples (guidance only, analyze each site individually):
-- Simple food blogs, government tourism → SIMPLE_HTTP
-- Professional food magazines → ENHANCED_HTTP
-- Complex interactive platforms, anti-bot sites → FIRECRAWL
+        ---
 
-Return only:
-{{
-    "strategy": "SIMPLE_HTTP|ENHANCED_HTTP|FIRECRAWL",
-    "confidence": 0.0-1.0,
-    "reasoning": "Brief technical explanation"
-}}
+        Analyze these **technical markers**:
+        - Presence and count of `<script>` tags, inline JS
+        - Detected frameworks (React, Vue, Angular)
+        - Whether text content is present in initial HTML or only minimal placeholders
+        - Lazy-loading indicators (`data-src`, infinite scroll scripts)
+        - Complex or obfuscated DOM structure
+        - Any signs of bot-blocking or login walls
+
+        Output strictly in JSON:
+
+        {
+            "strategy": "SIMPLE_HTTP|ENHANCED_HTTP|FIRECRAWL",
+            "confidence": 0.0-1.0,
+            "reasoning": "Technical explanation of why this strategy is required"
+        }
             """),
             ("human", """
-Analyze this URL for scraping strategy:
+        Analyze this URL and return the scraping strategy based on technical complexity only:
 
-URL: {url}
-Domain: {domain}
-Title: {title}
-Content preview: {content_preview}
-JavaScript indicators: {js_indicators}
+        URL: {url}
+        Domain: {domain}
+        Title: {title}
+        Content preview: {content_preview}
+        JavaScript indicators: {js_indicators}
 
-Focus on technical complexity, not content keywords.
+        Focus on technical factors (rendering, JS execution, complexity), ignore content topic or keywords.
             """)
         ])
+
 
     @property 
     def specialized_scraper(self):

@@ -13,11 +13,11 @@ class FollowUpSearchAgent:
     """
     Enhanced follow-up search agent that handles:
     1. Address verification for ALL restaurants using Google Maps API
-    2. Follow-up searches to check if restaurants have moved locations
+    2. Country extraction from Google Maps formatted addresses 
     3. Rating filtering and restaurant rejection based on Google ratings
     4. Filtering out closed restaurants (temporarily or permanently) with auto-deletion
-    5. Saving coordinates back to database
-    6. FIXED: Proper address_component storage for street-only display
+    5. Saving coordinates and corrected country data back to database
+    6. FIXED: Proper address_components storage for street-only display
     """
 
     def __init__(self, config):
@@ -43,7 +43,7 @@ class FollowUpSearchAgent:
             "user_ratings_total",
             "business_status",  # To check if restaurant is closed
             "opening_hours",    # Additional info about operating hours
-            "address_component"  # For country extraction AND street-only display
+            "address_components"  # For country extraction AND street-only display
         ]
 
     @log_function_call
@@ -57,6 +57,7 @@ class FollowUpSearchAgent:
             destination=destination
         )
 
+    @log_function_call
     def perform_follow_up_searches(
         self,
         edited_results: Dict[str, List[Dict[str, Any]]],
@@ -64,10 +65,10 @@ class FollowUpSearchAgent:
         destination: str = "Unknown"
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Performs follow-up searches for ALL restaurants and filters based on:
+        Verifies addresses for ALL restaurants and filters based on:
         1. Google ratings (below minimum threshold)
         2. Business status (closed restaurants)
-        3. Location verification to check if restaurants have moved
+        3. ALSO extracts and corrects country information from Google Maps addresses
         """
 
         main_list = edited_results.get("main_list", [])
@@ -80,7 +81,7 @@ class FollowUpSearchAgent:
         rejected_count = 0
         closed_count = 0
         coordinates_saved_count = 0
-        location_verified_count = 0
+        country_extracted_count = 0
 
         for restaurant in main_list:
             result = self._verify_and_filter_restaurant(restaurant, destination)
@@ -98,19 +99,19 @@ class FollowUpSearchAgent:
                 # Count if coordinates were added
                 if result.get("coordinates_saved_to_db"):
                     coordinates_saved_count += 1
-                # Count if location was verified
-                if result.get("location_verified"):
-                    location_verified_count += 1
+                # Count if country was extracted/corrected
+                if result.get("country_extracted_from_address"):
+                    country_extracted_count += 1
 
         final_result = {"enhanced_results": {"main_list": verified_restaurants}}
 
-        logger.info(f"✅ Follow-up searches and verification complete for {destination}")
+        logger.info(f"✅ Comprehensive verification complete for {destination}")
         logger.info(f"   - Original count: {len(main_list)}")
         logger.info(f"   - Passed filter: {len(verified_restaurants)}")
         logger.info(f"   - Rejected (low rating): {rejected_count}")
         logger.info(f"   - Rejected (closed): {closed_count}")
         logger.info(f"   - Coordinates saved to DB: {coordinates_saved_count}")
-        logger.info(f"   - Locations verified: {location_verified_count}")
+        logger.info(f"   - Countries extracted from addresses: {country_extracted_count}")
 
         # Log overall statistics
         dump_chain_state("follow_up_search_complete", {
@@ -120,7 +121,7 @@ class FollowUpSearchAgent:
             "rejected_count": rejected_count,
             "closed_count": closed_count,
             "coordinates_saved_count": coordinates_saved_count,
-            "location_verified_count": location_verified_count,
+            "country_extracted_count": country_extracted_count,
             "min_rating": self.min_acceptable_rating
         })
 
@@ -129,12 +130,12 @@ class FollowUpSearchAgent:
     def _verify_and_filter_restaurant(self, restaurant: Dict[str, Any], destination: str) -> Optional[Dict[str, Any]]:
         """
         Enhanced version that:
-        1. Performs follow-up search for ALL restaurants using name + city format
-        2. Checks if restaurants have moved to new locations
+        1. Verifies addresses for ALL restaurants (not just those marked for verification)
+        2. Extracts country from Google Maps formatted addresses
         3. Auto-deletes closed restaurants from database
         4. Filters by rating threshold
-        5. STORES address_component for proper street-only formatting
-        6. Saves coordinates back to database
+        5. STORES address_components for proper street-only formatting
+        6. Saves coordinates and country data back to database
         """
         # Make a copy to avoid modifying the original
         updated_restaurant = restaurant.copy()
@@ -150,7 +151,7 @@ class FollowUpSearchAgent:
         maps_info = self._search_google_maps(restaurant_name, destination)
 
         coordinates_saved = False
-        location_verified = False
+        country_extracted = False
 
         if maps_info:
             # Check if restaurant is closed first
@@ -195,13 +196,18 @@ class FollowUpSearchAgent:
 
                 logger.info(f"✅ {restaurant_name} passed rating filter: {rating}")
 
-            
-            # Update address information from Google Maps follow-up search
+            # ENHANCED: Always update address information from Google Maps AND extract country
             formatted_address = maps_info.get("formatted_address")
             if formatted_address:
                 old_address = restaurant.get("address", "")
                 updated_restaurant["address"] = formatted_address
-                location_verified = True
+
+                # Extract country from the formatted address 
+                extracted_country = self._extract_country_from_address(formatted_address)
+                if extracted_country:
+                    updated_restaurant["country"] = extracted_country
+                    country_extracted = True
+                    logger.info(f"🌍 Extracted country: {extracted_country} for {restaurant_name}")
 
                 # Remove "address" from missing_info if present
                 missing_info = updated_restaurant.get("missing_info", [])
@@ -214,10 +220,6 @@ class FollowUpSearchAgent:
                     logger.debug(f"   Old: {old_address}")
                     logger.debug(f"   New: {formatted_address}")
 
-                # Check if restaurant has potentially moved
-                if old_address and old_address != formatted_address:
-                    logger.info(f"🔄 Potential location change detected for {restaurant_name}")
-
             # Add coordinates for ALL restaurants
             geometry = maps_info.get("geometry", {})
             location = geometry.get("location", {})
@@ -228,20 +230,20 @@ class FollowUpSearchAgent:
 
                 # Save coordinates and country back to database
                 coordinates_saved = self._update_database_with_geodata(
-                    restaurant_name, destination, maps_info
+                    restaurant_name, destination, maps_info, extracted_country
                 )
 
-            # CRITICAL: Store place_id and address_component for proper formatting
+            # CRITICAL: Store place_id and address_components for proper formatting
             place_id = maps_info.get("place_id")
-            address_component = maps_info.get("address_component", [])
+            address_components = maps_info.get("address_components", [])
 
             if place_id:
                 updated_restaurant["place_id"] = place_id
                 logger.debug(f"✅ Stored place_id for {restaurant_name}: {place_id}")
 
-            if address_component:
-                updated_restaurant["address_component"] = address_component
-                logger.debug(f"✅ Stored address_component for {restaurant_name}")
+            if address_components:
+                updated_restaurant["address_components"] = address_components
+                logger.debug(f"✅ Stored address_components for {restaurant_name}")
 
             # Add business status information
             if business_status:
@@ -256,15 +258,15 @@ class FollowUpSearchAgent:
             })
 
             # Log successful verification
-            dump_chain_state("follow_up_search_verified", {
+            dump_chain_state("address_verified", {
                 "restaurant": restaurant_name,
                 "destination": destination,
                 "verified_address": formatted_address,
+                "extracted_country": extracted_country,
                 "coordinates": [location.get("lat"), location.get("lng")] if location.get("lat") else None,
                 "rating": rating if rating else "N/A",
                 "business_status": business_status,
-                "saved_to_database": coordinates_saved,
-                "location_verified": location_verified
+                "saved_to_database": coordinates_saved
             })
 
         else:
@@ -284,10 +286,65 @@ class FollowUpSearchAgent:
 
         # Add flags to track database updates
         updated_restaurant["coordinates_saved_to_db"] = coordinates_saved
-        updated_restaurant["location_verified"] = location_verified
+        updated_restaurant["country_extracted_from_address"] = country_extracted
 
         return updated_restaurant
 
+    def _extract_country_from_address(self, formatted_address: str) -> Optional[str]:
+        """
+        Extract country from Google Maps formatted address
+
+        Google Maps addresses typically end with the country name.
+        Examples:
+        - "123 Main St, New York, NY 10001, USA" -> "USA"
+        - "Rua Augusta 123, 1100-048 Lisboa, Portugal" -> "Portugal" 
+        - "1-1-1 Shibuya, Tokyo 150-0002, Japan" -> "Japan"
+        """
+        try:
+            if not formatted_address:
+                return None
+
+            # Split by commas and take the last part (usually country)
+            parts = [part.strip() for part in formatted_address.split(',')]
+
+            if not parts:
+                return None
+
+            # The last part is usually the country
+            potential_country = parts[-1].strip()
+
+            # Clean up common patterns
+            # Remove postal codes (numbers at the end)
+            potential_country = re.sub(r'\s+\d+.*$', '', potential_country)
+
+            # Handle specific country name mappings/cleaning
+            country_mappings = {
+                'USA': 'United States',
+                'US': 'United States', 
+                'UK': 'United Kingdom',
+                'UAE': 'United Arab Emirates'
+            }
+
+            # Clean the country name
+            potential_country = potential_country.strip()
+
+            # Apply mappings if needed
+            if potential_country in country_mappings:
+                potential_country = country_mappings[potential_country]
+
+            # Basic validation - country should be alphabetic and reasonable length
+            if (potential_country and 
+                len(potential_country) >= 2 and 
+                len(potential_country) <= 50 and
+                re.match(r'^[a-zA-Z\s\-\.]+$', potential_country)):
+
+                return potential_country
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error extracting country from address '{formatted_address}': {e}")
+            return None
 
     def _delete_closed_restaurant_from_database(self, restaurant_name: str, city: str, business_status: str):
         """
@@ -366,8 +423,6 @@ class FollowUpSearchAgent:
             first_result = results[0]
             place_id = first_result.get("place_id")
 
-            logger.info(f"🔍 Google Maps search for '{restaurant_name}': place_id = {place_id}")
-
             if not place_id:
                 logger.debug(f"No place_id in first result for: {search_query}")
                 return None
@@ -384,7 +439,7 @@ class FollowUpSearchAgent:
             rating = result_data.get("rating")
             user_ratings_total = result_data.get("user_ratings_total")
             business_status = result_data.get("business_status")
-            address_component = result_data.get("address_component", [])
+            address_components = result_data.get("address_components", [])
 
             return {
                 "formatted_address": formatted_address,
@@ -394,7 +449,7 @@ class FollowUpSearchAgent:
                 "place_id": place_id,
                 "url": result_data.get("url", f"https://www.google.com/maps/place/?q=place_id:{place_id}"),
                 "geometry": result_data.get("geometry", {}),
-                "address_component": address_component
+                "address_components": address_components
             }
 
         except googlemaps.exceptions.ApiError as e:
@@ -405,14 +460,15 @@ class FollowUpSearchAgent:
             logger.error(f"Unexpected error searching Google Maps for {restaurant_name} in {city}: {e}")
             return None
 
-    def _update_database_with_geodata(self, restaurant_name: str, city: str, maps_info: Dict[str, Any]) -> bool:
+    def _update_database_with_geodata(self, restaurant_name: str, city: str, maps_info: Dict[str, Any], extracted_country: str = None) -> bool:
         """
-        Save address and coordinates back to the Supabase database
+        Save address, coordinates, and country back to the Supabase database
 
         Args:
             restaurant_name: Name of the restaurant
             city: City name
-            maps_info: Google Maps information from follow-up search
+            maps_info: Google Maps information
+            extracted_country: Country extracted from formatted address
         """
         try:
             # Use the database interface
@@ -446,6 +502,11 @@ class FollowUpSearchAgent:
                         'last_updated': datetime.now().isoformat()
                     }
 
+                    # Update country if we extracted one and current is missing/Unknown
+                    if (extracted_country and 
+                        (not current_country or current_country.lower() in ['unknown', '', 'null'])):
+                        update_data['country'] = extracted_country
+                        logger.info(f"🌍 Updating country: {restaurant_name} -> {extracted_country}")
 
                     # Update the restaurant
                     result = db.supabase.table('restaurants')\
@@ -455,6 +516,8 @@ class FollowUpSearchAgent:
 
                     if result.data:
                         logger.info(f"📍 Updated database: {restaurant_name} at {coordinates}")
+                        if extracted_country:
+                            logger.info(f"🌍 Country set to: {extracted_country}")
                         return True
                     else:
                         logger.error(f"❌ Failed to update restaurant in database: {restaurant_name}")
