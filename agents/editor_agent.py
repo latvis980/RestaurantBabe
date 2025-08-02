@@ -174,9 +174,10 @@ Extract restaurants using the diplomatic concierge approach. Include good option
                 else:
                     mode = "unknown"
 
-            # Determine content source
+            # Use content_source from ContentEvaluationAgent if available
             if content_source:
                 source = content_source
+                logger.info(f"📋 Using content source from evaluation: {source}")
             else:
                 # Auto-detect source based on available content
                 if database_restaurants and scraped_results:
@@ -187,6 +188,7 @@ Extract restaurants using the diplomatic concierge approach. Include good option
                     source = "web_search"
                 else:
                     source = "unknown"
+                logger.info(f"📋 Auto-detected content source: {source}")
 
             logger.info(f"✏️ Editor processing {mode} content for: {destination}")
             logger.info(f"📝 Content source: {source}")
@@ -237,38 +239,74 @@ Extract restaurants using the diplomatic concierge approach. Include good option
     def _process_hybrid_content(self, database_restaurants, scraped_results, raw_query, destination, evaluation_context):
         """Process hybrid content (both database and scraped)"""
         logger.info("🔗 Processing hybrid content")
-
-        # For now, combine both sources
-        # In the future, this could intelligently merge or prioritize sources
+        logger.info(f"📊 Database restaurants: {len(database_restaurants) if database_restaurants else 0}")
+        logger.info(f"📊 Scraped results: {len(scraped_results) if scraped_results else 0}")
 
         try:
             all_restaurants = []
 
-            # Process database restaurants first
+            # Process database restaurants first (these were preserved by ContentEvaluationAgent)
             if database_restaurants:
+                logger.info("🗃️ Processing preserved database restaurants")
                 db_result = self._process_database_restaurants(database_restaurants, raw_query, destination)
-                all_restaurants.extend(db_result.get('edited_results', {}).get('main_list', []))
+                db_restaurants = db_result.get('edited_results', {}).get('main_list', [])
 
-            # Then process scraped content
+                # Mark database restaurants as preserved
+                for restaurant in db_restaurants:
+                    restaurant['_source_type'] = 'database_preserved'
+
+                all_restaurants.extend(db_restaurants)
+                logger.info(f"✅ Added {len(db_restaurants)} database restaurants")
+
+            # Then process scraped content (additional search results)
             if scraped_results:
+                logger.info("🌐 Processing additional web search results")
                 scraped_result = self._process_scraped_content(scraped_results, raw_query, destination)
-                all_restaurants.extend(scraped_result.get('edited_results', {}).get('main_list', []))
+                web_restaurants = scraped_result.get('edited_results', {}).get('main_list', [])
 
-            # Remove duplicates based on restaurant name
+                # Mark web restaurants as additional
+                for restaurant in web_restaurants:
+                    restaurant['_source_type'] = 'web_additional'
+
+                all_restaurants.extend(web_restaurants)
+                logger.info(f"✅ Added {len(web_restaurants)} web search restaurants")
+
+            # Remove duplicates based on restaurant name with preference for database
             seen_names = set()
             unique_restaurants = []
+
+            # First pass: Add database restaurants (preserved ones get priority)
             for restaurant in all_restaurants:
                 name = restaurant.get('name', '').lower().strip()
-                if name and name not in seen_names:
+                if name and name not in seen_names and restaurant.get('_source_type') == 'database_preserved':
                     seen_names.add(name)
                     unique_restaurants.append(restaurant)
+
+            # Second pass: Add web restaurants if not already present
+            for restaurant in all_restaurants:
+                name = restaurant.get('name', '').lower().strip()
+                if name and name not in seen_names and restaurant.get('_source_type') == 'web_additional':
+                    seen_names.add(name)
+                    unique_restaurants.append(restaurant)
+
+            # Clean up metadata before returning
+            for restaurant in unique_restaurants:
+                restaurant.pop('_source_type', None)
+
+            logger.info(f"🎯 Final hybrid result: {len(unique_restaurants)} unique restaurants")
 
             # Generate follow-up queries for address verification
             follow_up_queries = self._generate_follow_up_queries(unique_restaurants, destination)
 
             return {
                 "edited_results": {"main_list": unique_restaurants},
-                "follow_up_queries": follow_up_queries
+                "follow_up_queries": follow_up_queries,
+                "processing_notes": {
+                    "mode": "hybrid",
+                    "database_count": len(database_restaurants) if database_restaurants else 0,
+                    "web_count": len(scraped_results) if scraped_results else 0,
+                    "final_count": len(unique_restaurants)
+                }
             }
 
         except Exception as e:
@@ -359,7 +397,7 @@ Address: {address}
 Cuisine Tags: {', '.join(cuisine_tags[:5]) if cuisine_tags else 'None'}
 Mention Count: {mention_count}
 Sources: {', '.join(clean_sources[:3]) if clean_sources else 'None'}
-Raw Description Sample: {raw_description[:300] if raw_description else 'No description available'}...
+Raw Description: {raw_description if raw_description else 'No description available'}
 ---"""
             formatted_restaurants.append(formatted_restaurant)
 

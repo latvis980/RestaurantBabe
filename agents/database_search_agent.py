@@ -77,7 +77,7 @@ Prioritize quality over quantity.
         logger.info("✅ Simplified DatabaseSearchAgent initialized")
 
     @log_function_call
-    def search_and_extract(self, query_analysis: Dict[str, Any]) -> Dict[str, Any]:
+    def search_and_evaluate(self, query_analysis: Dict[str, Any]) -> Dict[str, Any]:
         """
         SIMPLIFIED: Main method that just searches and filters
         NO quality evaluation - that's ContentEvaluationAgent's job
@@ -91,14 +91,18 @@ Prioritize quality over quantity.
 
             if destination == "Unknown":
                 logger.info("⚠️ No destination detected")
-                return self._create_empty_response("no_destination")
+                error_response = self._create_empty_response("no_destination")
+                error_response["raw_query"] = raw_query
+                return error_response
 
             # STEP 1: Get all restaurants for the city
             all_restaurants = self._get_restaurants_for_city(destination)
 
             if not all_restaurants:
                 logger.info("📭 No restaurants found in database for this city")
-                return self._create_empty_response("no_restaurants_in_city")
+                error_response = self._create_empty_response("no_restaurants_in_city")
+                error_response["raw_query"] = raw_query
+                return error_response
 
             logger.info(f"📊 Found {len(all_restaurants)} restaurants for {destination}")
 
@@ -111,21 +115,26 @@ Prioritize quality over quantity.
 
             if not filtered_restaurants:
                 logger.info("📭 No relevant restaurants after filtering")
-                return self._create_empty_response("no_relevant_results")
+                error_response = self._create_empty_response("no_relevant_results")
+                error_response["raw_query"] = raw_query
+                return error_response
 
             logger.info(f"✅ Found {len(filtered_restaurants)} relevant restaurants")
 
             # Return results WITHOUT quality evaluation
             return {
-                "database_restaurants": filtered_restaurants,
-                "has_content": len(filtered_restaurants) > 0,
+                "database_restaurants": filtered_restaurants,  # STANDARDIZED
+                "has_database_content": len(filtered_restaurants) > 0,  # STANDARDIZED
                 "restaurant_count": len(filtered_restaurants),
-                "destination": destination
+                "destination": destination,
+                "raw_query": raw_query  # CRITICAL: Preserve for content evaluation
             }
 
         except Exception as e:
             logger.error(f"❌ Error in database search: {e}")
-            return self._create_empty_response(f"error: {str(e)}")
+            error_response = self._create_empty_response(f"error: {str(e)}")
+            error_response["raw_query"] = query_analysis.get("raw_query", query_analysis.get("query", ""))
+            return error_response
 
     def _get_restaurants_for_city(self, city: str) -> List[Dict[str, Any]]:
         """Get all restaurants for a city from database"""
@@ -237,6 +246,133 @@ Prioritize quality over quantity.
 
         return selected_restaurants
 
+    # Add this method to your DatabaseSearchAgent class
+
+    def _get_full_restaurant_details(self, filtered_restaurants: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Extract full restaurant details including descriptions for filtered restaurants
+        """
+        try:
+            from utils.database import get_database
+            db = get_database()
+
+            detailed_restaurants = []
+            restaurant_ids = [str(r.get('id')) for r in filtered_restaurants]
+
+            logger.info(f"📋 Getting full details for {len(restaurant_ids)} filtered restaurants")
+
+            # Get full restaurant details using IDs
+            for restaurant_id in restaurant_ids:
+                try:
+                    # Get complete restaurant data from database
+                    result = db.supabase.table('restaurants')\
+                        .select('*')\
+                        .eq('id', restaurant_id)\
+                        .execute()
+
+                    if result.data:
+                        full_restaurant = result.data[0]
+
+                        # Preserve AI filtering metadata
+                        filtered_restaurant = next(
+                            (r for r in filtered_restaurants if str(r.get('id')) == restaurant_id), 
+                            {}
+                        )
+
+                        # Add AI relevance metadata
+                        full_restaurant['_relevance_score'] = filtered_restaurant.get('_relevance_score', 0)
+                        full_restaurant['_reasoning'] = filtered_restaurant.get('_reasoning', '')
+
+                        # Ensure description is present
+                        if not full_restaurant.get('raw_description'):
+                            logger.warning(f"⚠️ Restaurant {restaurant_id} ({full_restaurant.get('name')}) missing description")
+                        else:
+                            logger.debug(f"✅ Restaurant {restaurant_id} has description: {len(full_restaurant.get('raw_description', ''))} chars")
+
+                        detailed_restaurants.append(full_restaurant)
+                    else:
+                        logger.warning(f"⚠️ Restaurant {restaurant_id} not found in database")
+
+                except Exception as e:
+                    logger.error(f"❌ Error getting details for restaurant {restaurant_id}: {e}")
+                    continue
+
+            logger.info(f"✅ Retrieved full details for {len(detailed_restaurants)} restaurants")
+
+            # Log description availability
+            with_descriptions = sum(1 for r in detailed_restaurants if r.get('raw_description'))
+            logger.info(f"📄 Descriptions available: {with_descriptions}/{len(detailed_restaurants)} restaurants")
+
+            return detailed_restaurants
+
+        except Exception as e:
+            logger.error(f"❌ Error getting full restaurant details: {e}")
+            return filtered_restaurants  # Return original if full details fail
+
+    # Update your search_and_evaluate method to use this:
+
+    @log_function_call
+    def search_and_evaluate(self, query_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        UPDATED: Main method that searches, filters, AND gets full details including descriptions
+        """
+        try:
+            logger.info("🗃️ STARTING DATABASE SEARCH")
+
+            # Extract data from query analysis
+            destination = query_analysis.get("destination", "Unknown")
+            raw_query = query_analysis.get("raw_query", query_analysis.get("query", ""))
+
+            if destination == "Unknown":
+                logger.info("⚠️ No destination detected")
+                error_response = self._create_empty_response("no_destination")
+                error_response["raw_query"] = raw_query
+                return error_response
+
+            # STEP 1: Get all restaurants for the city
+            all_restaurants = self._get_restaurants_for_city(destination)
+
+            if not all_restaurants:
+                logger.info("📭 No restaurants found in database for this city")
+                error_response = self._create_empty_response("no_restaurants_in_city")
+                error_response["raw_query"] = raw_query
+                return error_response
+
+            logger.info(f"📊 Found {len(all_restaurants)} restaurants for {destination}")
+
+            # STEP 2: Filter restaurants in single API call
+            filtered_restaurants = self._batch_filter_restaurants(
+                all_restaurants, 
+                raw_query, 
+                destination
+            )
+
+            if not filtered_restaurants:
+                logger.info("📭 No relevant restaurants after filtering")
+                error_response = self._create_empty_response("no_relevant_results")
+                error_response["raw_query"] = raw_query
+                return error_response
+
+            logger.info(f"✅ Found {len(filtered_restaurants)} relevant restaurants")
+
+            # STEP 3: Get full details including descriptions for filtered restaurants
+            detailed_restaurants = self._get_full_restaurant_details(filtered_restaurants)
+
+            # Return results with full details
+            return {
+                "database_restaurants": detailed_restaurants,  # NOW WITH FULL DETAILS
+                "has_database_content": len(detailed_restaurants) > 0,
+                "restaurant_count": len(detailed_restaurants),
+                "destination": destination,
+                "raw_query": raw_query  # PRESERVE for content evaluation
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error in database search: {e}")
+            error_response = self._create_empty_response(f"error: {str(e)}")
+            error_response["raw_query"] = query_analysis.get("raw_query", query_analysis.get("query", ""))
+            return error_response
+
     def _fallback_keyword_matching(self, restaurants: List[Dict[str, Any]], raw_query: str) -> List[Dict[str, Any]]:
         """
         Simple keyword matching fallback when AI fails
@@ -282,7 +418,7 @@ Prioritize quality over quantity.
         """Create response when no restaurants found"""
         return {
             "database_restaurants": [],
-            "has_content": False,
+            "has_database_content": False,  # STANDARDIZED
             "restaurant_count": 0,
             "reason": reason
         }

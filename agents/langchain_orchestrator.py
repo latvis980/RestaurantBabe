@@ -78,11 +78,12 @@ class LangChainOrchestrator:
         """Build pipeline with ContentEvaluationAgent integration"""
 
         # Step 1: Analyze Query
+        # Step 1: Analyze Query
         self.analyze_query = RunnableLambda(
             lambda x: {
                 **self.query_analyzer.analyze(x["query"]),
                 "query": x["query"],
-                "raw_query": x["query"]
+                "raw_query": x.get("raw_query", x["query"])  # Preserve original
             },
             name="analyze_query"
         )
@@ -147,28 +148,26 @@ class LangChainOrchestrator:
 
     def _check_database_coverage(self, x):
         """
-        UPDATED: Enhanced to pass raw query to DatabaseSearchAgent.
-
         SIMPLIFIED: Pure routing method that delegates ALL database logic to DatabaseSearchAgent.
         The orchestrator only handles routing - no business logic here.
         """
         try:
             logger.info("🗃️ ROUTING TO DATABASE SEARCH AGENT")
 
-            # Pass the raw query along with other data
+            # Ensure raw_query flows to database search
             query_data_with_raw = {
                 **x,
-                "raw_query": x.get("raw_query", x.get("query", ""))  # Ensure raw query is passed
+                "raw_query": x.get("raw_query", x.get("query", ""))
             }
 
-            # Delegate everything to the DatabaseSearchAgent
+            # Delegate everything to the DatabaseSearchAgent  
             database_result = self.database_search_agent.search_and_evaluate(query_data_with_raw)
 
-            # Simple merge and return - no logic here, but preserve raw query
+            # Preserve raw_query through the pipeline
             return {
                 **x, 
                 **database_result,
-                "raw_query": x.get("raw_query", x.get("query", ""))  # Preserve raw query
+                "raw_query": x.get("raw_query", x.get("query", ""))
             }
 
         except Exception as e:
@@ -327,7 +326,7 @@ class LangChainOrchestrator:
                 # DATABASE BRANCH: Process database restaurants
                 logger.info("🗃️ Processing DATABASE restaurants")
 
-                database_restaurants = x.get("final_database_content", [])
+                database_restaurants = x.get("database_restaurants", [])  # STANDARDIZED NAME
 
                 if not database_restaurants:
                     logger.warning("⚠️ No database results to process")
@@ -630,14 +629,13 @@ class LangChainOrchestrator:
         self.stats["cost_savings"] += scraper_stats.get('cost_saved_vs_all_firecrawl', 0)
 
     @log_function_call
-    def process_query(self, user_query: str, user_preferences: dict = None) -> dict:
+    def process_query(self, user_query: str) -> dict:
         """
         Process a restaurant query through the complete pipeline.
 
         Args:
             user_query: The user's restaurant request
-            user_preferences: Optional user preferences dict
-
+            
         Returns:
             Dict with telegram_formatted_text and other results
         """
@@ -652,9 +650,8 @@ class LangChainOrchestrator:
 
                 # Prepare input data (UPDATED to include raw query from the start)
                 input_data = {
-                    "query": user_query,
-                    "raw_query": user_query,  # Add raw query from the beginning
-                    "user_preferences": user_preferences or {}
+                    "query": user_query,           # For processing/analysis
+                    "raw_query": user_query       # PRESERVE original
                 }
 
                 # Execute the chain

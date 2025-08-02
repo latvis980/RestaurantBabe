@@ -62,31 +62,49 @@ class ContentEvaluationAgent:
         """System prompt for evaluating database content quality"""
         return """You are a restaurant recommendation evaluator.
 
-Your job is to decide if database results are sufficient for the user's query, or if web search is needed.
+    Your job is to decide if database results are sufficient for the user's query, or if web search is needed.
 
-EVALUATION CRITERIA:
+    EVALUATION CRITERIA:
 
-1. **Query Match**: Do the restaurants match what the user is asking for?
-   - Cuisine type, dining style, price range, special requirements
+    1. **Query Match**: Do the restaurants match what the user is asking for?
+       - Cuisine type, dining style, price range, special requirements
 
-2. **Quantity**: Is there enough variety for the user to choose from?
-   - 3+ restaurants = usually sufficient 
-   - 1-2 restaurants = may need web search for more options
-   - 0 restaurants = definitely need web search
+    2. **Quantity**: Is there enough variety for the user to choose from?
+       - 4+ restaurants = usually sufficient 
+       - 1-3 restaurants = may need web search for more options
+       - 0 restaurants = definitely need web search
 
-3. **Quality**: Are the restaurant details sufficient?
-   - Name, location, cuisine type should be present
-   - Descriptions should be meaningful
+    3. **Quality**: Are the restaurant details sufficient?
+       - Name, location, cuisine type should be present
+       - Descriptions should be meaningful
 
-DECISION LOGIC:
-- If database results are good matches with sufficient quantity → USE DATABASE
-- If results don't match query well → TRIGGER WEB SEARCH  
-- If too few results (less than 3) → TRIGGER WEB SEARCH
-- If no results → TRIGGER WEB SEARCH
+    DECISION LOGIC:
+    - If database results are perfect matches with sufficient quantity (4+) → USE DATABASE
+    - If results don't match query well at all → TRIGGER WEB SEARCH (discard database results)
+    - If results match well but need more variety (1-3 good matches) → TRIGGER WEB SEARCH (preserve database results for hybrid)
+    - If results partially match but descriptions are too brief → TRIGGER WEB SEARCH (preserve partial matches for hybrid)
+    - If results match cuisine but wrong style/price → TRIGGER WEB SEARCH (preserve relevant ones for hybrid)
+    - If no results → TRIGGER WEB SEARCH (nothing to preserve)
 
-OUTPUT: JSON with decision and reasoning
+    HYBRID MODE INDICATORS:
+    Use these phrases in your reasoning when database results should be PRESERVED and SUPPLEMENTED:
+    - "good matches but need more variety"
+    - "limited options, supplement with additional search"
+    - "relevant results but too few choices"
+    - "matches found but expand selection"
+    - "preserve these and find more options"
 
-IMPORTANT: Always return valid JSON. If you're unsure, err on the side of triggering web search."""
+    DISCARD MODE INDICATORS:
+    Use these phrases when database results should be DISCARDED completely:
+    - "poor matches for the query"
+    - "doesn't match user requirements"
+    - "wrong cuisine type entirely"
+    - "completely irrelevant results"
+    - "start fresh with web search"
+
+    OUTPUT: JSON with decision and reasoning
+
+    IMPORTANT: Always return valid JSON. Your reasoning phrase determines whether results are preserved (hybrid) or discarded (fresh search)."""
 
     def _get_evaluation_human_prompt(self) -> str:
         """Human prompt template for evaluation"""
@@ -124,7 +142,7 @@ Return ONLY valid JSON in this exact format:
             logger.info("🧠 STARTING COMPLETE EVALUATION AND ROUTING")
 
             # Extract required data (business logic moved here from orchestrator)
-            database_restaurants = pipeline_data.get("database_results", [])
+            database_restaurants = pipeline_data.get("database_restaurants", [])
             raw_query = pipeline_data.get("raw_query", pipeline_data.get("query", ""))
             destination = pipeline_data.get("destination", "Unknown")
 
@@ -156,6 +174,7 @@ Return ONLY valid JSON in this exact format:
             logger.error(f"❌ Error in evaluation and routing: {e}")
             return self._handle_evaluation_error(pipeline_data, e)
 
+
     def _use_database_content(self, pipeline_data: Dict[str, Any], database_restaurants: List[Dict], evaluation: Dict) -> Dict[str, Any]:
         """Handle the database content route - all business logic here"""
         logger.info("✅ Using database content")
@@ -171,14 +190,17 @@ Return ONLY valid JSON in this exact format:
                 "evaluation_summary": {"reason": "database_sufficient"}
             },
             "content_source": "database",
-            "trigger_web_search": False,
-            "skip_web_search": True,  # Control main search step
-            "final_database_content": database_restaurants
+            "skip_web_search": True,  # STANDARDIZED FLAG
+            "database_restaurants": database_restaurants,  # STANDARDIZED for editor
+            "raw_query": pipeline_data.get("raw_query")  # PRESERVE
         }
 
     def _trigger_web_search_workflow(self, pipeline_data: Dict[str, Any], reasoning: str) -> Dict[str, Any]:
         """Handle the web search route - trigger BraveSearchAgent and return results"""
         logger.info("🌐 Triggering web search workflow")
+
+        # Extract database restaurants for hybrid mode check
+        database_restaurants = pipeline_data.get("database_restaurants", [])
 
         try:
             # FIXED: Actually trigger web search when evaluation fails or database is insufficient
@@ -198,24 +220,32 @@ Return ONLY valid JSON in this exact format:
 
                 logger.info(f"✅ Web search completed: {len(search_results)} results found")
 
+                # Determine if we should preserve database results for hybrid mode
+                preserved_database_restaurants = []
+                use_hybrid = self._should_use_hybrid_mode(database_restaurants, reasoning)
+                if use_hybrid:
+                    preserved_database_restaurants = database_restaurants
+                    logger.info(f"💾 Preserving {len(preserved_database_restaurants)} database results for hybrid mode")
+                    logger.info(f"🔄 Reason for hybrid: {reasoning}")
+
                 # Return with web search results - make sure they flow to scraping
                 return {
                     **pipeline_data,
                     "evaluation_result": {
                         "database_sufficient": False,
                         "trigger_web_search": True,
-                        "content_source": "web_search",
+                        "content_source": "hybrid" if preserved_database_restaurants else "web_search",
                         "reasoning": reasoning,
                         "quality_score": 0.3,
                         "evaluation_summary": {"reason": "database_insufficient"}
                     },
-                    "content_source": "web_search",
-                    "trigger_web_search": True,
-                    "skip_web_search": False,  # FIXED: Don't skip - let orchestrator handle the results we provide
-                    "search_results": search_results,  # Results already found
-                    "final_database_content": [],
+                    "content_source": "hybrid" if preserved_database_restaurants else "web_search",
+                    "skip_web_search": False,
+                    "search_results": search_results,
+                    "database_restaurants": preserved_database_restaurants,  # PRESERVE for editor
+                    "raw_query": pipeline_data.get("raw_query"),  # PRESERVE
                     "optimized_content": {
-                        "database_restaurants": [],
+                        "database_restaurants": preserved_database_restaurants,
                         "scraped_results": []  # Will be filled by scraper
                     }
                 }
@@ -233,9 +263,9 @@ Return ONLY valid JSON in this exact format:
                         "evaluation_summary": {"reason": "database_insufficient"}
                     },
                     "content_source": "web_search",
-                    "trigger_web_search": True,
                     "skip_web_search": False,  # Allow main search step
-                    "final_database_content": [],
+                    "database_restaurants": [],
+                    "raw_query": pipeline_data.get("raw_query"),  # PRESERVE
                     "optimized_content": {
                         "database_restaurants": [],
                         "scraped_results": []
@@ -255,7 +285,7 @@ Return ONLY valid JSON in this exact format:
         dump_chain_state("content_evaluation_error", {
             "error": str(error),
             "raw_query": pipeline_data.get("raw_query", "unknown"),
-            "database_count": len(pipeline_data.get("database_results", []))
+            "database_count": len(pipeline_data.get("database_restaurants", []))
         })
 
         # FIXED: When AI evaluation fails, trigger web search instead of using all database results
@@ -294,7 +324,7 @@ Return ONLY valid JSON in this exact format:
                     "trigger_web_search": True,
                     "skip_web_search": False,  # FIXED: Don't skip - let orchestrator handle the results we provide
                     "search_results": search_results,  # Results already found
-                    "final_database_content": [],
+                    "database_restaurants": [],
                     "optimized_content": {
                         "database_restaurants": [],
                         "scraped_results": []  # Will be filled by scraper
@@ -316,7 +346,7 @@ Return ONLY valid JSON in this exact format:
                     "content_source": "web_search",
                     "trigger_web_search": True,
                     "skip_web_search": False,  # Allow main search step
-                    "final_database_content": []
+                    "database_restaurants": []
                 }
 
         except Exception as search_error:
@@ -335,7 +365,7 @@ Return ONLY valid JSON in this exact format:
                 "content_source": "web_search",
                 "trigger_web_search": True,
                 "skip_web_search": False,
-                "final_database_content": []
+                "database_restaurants": []
             }
 
     def _evaluate_with_ai(self, restaurants: List[Dict], raw_query: str, destination: str) -> Dict[str, Any]:
@@ -414,16 +444,88 @@ Return ONLY valid JSON in this exact format:
         summary_lines = []
         for i, restaurant in enumerate(restaurants[:10], 1):  # Limit to first 10
             name = restaurant.get('name', 'Unknown')
-            cuisine = restaurant.get('cuisine_type', 'Unknown cuisine')
-            rating = restaurant.get('google_rating', 'No rating')
-            price = restaurant.get('price_level', 'Unknown price')
+            cuisine_tags = restaurant.get('cuisine_tags', [])
+            cuisine = ', '.join(cuisine_tags) if cuisine_tags else 'Unknown cuisine'
+            mention_count = restaurant.get('mention_count', 0)
+            sources = len(restaurant.get('sources', []))
 
-            summary_lines.append(f"{i}. {name} - {cuisine}, Rating: {rating}, Price: {price}")
+            # Show brief description if available
+            raw_description = restaurant.get('raw_description', '')
+
+            # Basic restaurant info
+            summary_lines.append(f"{i}. {name} - {cuisine}, Mentions: {mention_count}, Sources: {sources}")
+
+            # Add description if it exists and has content
+            if raw_description and raw_description.strip():  # ✅ FIXED: Check for actual content
+                description_preview = raw_description[:300] + "..." if len(raw_description) > 300 else raw_description
+                summary_lines.append(f"   Description: {description_preview}")
+            else:
+                summary_lines.append(f"   Description: [No description available]")
 
         if len(restaurants) > 10:
             summary_lines.append(f"... and {len(restaurants) - 10} more restaurants")
 
         return "\n".join(summary_lines)
+
+    def _should_use_hybrid_mode(self, database_restaurants: List[Dict], reasoning: str) -> bool:
+        """Determine if we should use hybrid mode (preserve DB + add web search)"""
+        # Only consider hybrid if we have some database results
+        if len(database_restaurants) == 0:
+            return False
+
+        reasoning_lower = reasoning.lower()
+
+        # HYBRID MODE: Preserve and supplement
+        hybrid_indicators = [
+            "good matches but need more variety",
+            "limited options, supplement", 
+            "relevant results but too few",
+            "matches found but expand",
+            "preserve these and find more",
+            "need more variety",
+            "too few choices",
+            "expand selection",
+            "supplement with additional",
+            "more options needed",
+            "limited variety",
+            "few results",
+            "additional restaurants"
+        ]
+
+        # DISCARD MODE: Start fresh (opposite of hybrid)
+        discard_indicators = [
+            "poor matches for the query",
+            "doesn't match user requirements", 
+            "wrong cuisine type entirely",
+            "completely irrelevant",
+            "start fresh with web search",
+            "poor matches",
+            "wrong cuisine",
+            "irrelevant results",
+            "doesn't match",
+            "completely wrong",
+            "poor quality matches"
+        ]
+
+        # Check for discard indicators first (they override hybrid)
+        if any(indicator in reasoning_lower for indicator in discard_indicators):
+            logger.info(f"🗑️ Discard mode detected: {reasoning}")
+            return False
+
+        # Check for hybrid indicators
+        if any(indicator in reasoning_lower for indicator in hybrid_indicators):
+            logger.info(f"🔄 Hybrid mode detected: {reasoning}")
+            return True
+
+        # Default: if we have 1-3 restaurants and no explicit discard signal, use hybrid
+        if 1 <= len(database_restaurants) <= 3:
+            logger.info(f"🔄 Default hybrid mode: {len(database_restaurants)} restaurants found")
+            return True
+
+        # If we have 4+ restaurants but AI still says web search, it's probably quality issues
+        # Default to hybrid to preserve any good ones
+        logger.info(f"🔄 Fallback hybrid mode: preserving {len(database_restaurants)} restaurants")
+        return True
 
     def get_stats(self) -> Dict[str, Any]:
         """Get evaluation statistics"""
