@@ -1,0 +1,140 @@
+AI INPUT DATA EXPORT
+==================================================
+
+Original Query: best brunch restaurants in Berlin
+Destination: Berlin
+Search Intent: best brunch restaurants in Berlin | beste Brunch-Restaurants in Berlin
+Restaurant Count: 8
+
+RESTAURANT DATA (as sent to AI):
+------------------------------
+ID: 5 | Silo Coffee | Tags: local ingredients, mid-range, contemporary, cafe, breakfast, casual dining, modern, brunch, casual, coffee | Mentions: 3
+ID: 1 | Blumental | Tags: seasonal, healthy, brunch, plant-focused, sustainable, modern, vegan, vegetarian, eco-friendly, casual | Mentions: 2
+ID: 3 | Rocket + Basil | Tags: fusion, persian, seasonal, casual dining, brunch, modern, catering, middle eastern, breakfast | Mentions: 2
+ID: 4 | Bonvivant Cocktail Bistro | Tags: modern european, creative cuisine, michelin starred, brunch, upscale, foraged ingredients, innovative, cocktails, fine dining | Mentions: 2
+ID: 400 | Gorilla | Tags: bakery, italian, casual, mid-range, artisanal | Mentions: 1
+ID: 401 | Albatross | Tags: bakery, artisanal, casual, mid-range, innovative | Mentions: 1
+ID: 402 | A Never Ever Ending Love Story | Tags: brunch, contemporary, casual, mid-range, instagram-worthy | Mentions: 1
+ID: 403 | Lonely Hearts Cafe | Tags: american, brunch, casual, mid-range, modern | Mentions: 1
+
+RAW RESTAURANT OBJECTS:
+------------------------------
+1. {
+  "id": 5,
+  "name": "Silo Coffee",
+  "cuisine_tags": [
+    "local ingredients",
+    "mid-range",
+    "contemporary",
+    "cafe",
+    "breakfast",
+    "casual dining",
+    "modern",
+    "brunch",
+    "casual",
+    "coffee"
+  ],
+  "mention_count": 3
+}
+2. {
+  "id": 1,
+  "name": "Blumental",
+  "cuisine_tags": [
+    "seasonal",
+    "healthy",
+    "brunch",
+    "plant-focused",
+    "sustainable",
+    "modern",
+    "vegan",
+    "vegetarian",
+    "eco-friendly",
+    "casual"
+  ],
+  "mention_count": 2
+}
+3. {
+  "id": 3,
+  "name": "Rocket + Basil",
+  "cuisine_tags": [
+    "fusion",
+    "persian",
+    "seasonal",
+    "casual dining",
+    "brunch",
+    "modern",
+    "catering",
+    "middle eastern",
+    "breakfast"
+  ],
+  "mention_count": 2
+}
+4. {
+  "id": 4,
+  "name": "Bonvivant Cocktail Bistro",
+  "cuisine_tags": [
+    "modern european",
+    "creative cuisine",
+    "michelin starred",
+    "brunch",
+    "upscale",
+    "foraged ingredients",
+    "innovative",
+    "cocktails",
+    "fine dining"
+  ],
+  "mention_count": 2
+}
+5. {
+  "id": 400,
+  "name": "Gorilla",
+  "cuisine_tags": [
+    "bakery",
+    "italian",
+    "casual",
+    "mid-range",
+    "artisanal"
+  ],
+  "mention_count": 1
+}
+6. {
+  "id": 401,
+  "name": "Albatross",
+  "cuisine_tags": [
+    "bakery",
+    "artisanal",
+    "casual",
+    "mid-range",
+    "innovative"
+  ],
+  "mention_count": 1
+}
+7. {
+  "id": 402,
+  "name": "A Never Ever Ending Love Story",
+  "cuisine_tags": [
+    "brunch",
+    "contemporary",
+    "casual",
+    "mid-range",
+    "instagram-worthy"
+  ],
+  "mention_count": 1
+}
+8. {
+  "id": 403,
+  "name": "Lonely Hearts Cafe",
+  "cuisine_tags": [
+    "american",
+    "brunch",
+    "casual",
+    "mid-range",
+    "modern"
+  ],
+  "mention_count": 1
+}
+
+
+AI PROMPT TEMPLATE:
+------------------------------
+input_variables=['destination', 'restaurants_text', 'search_queries'] input_types={} partial_variables={} messages=[HumanMessagePromptTemplate(prompt=PromptTemplate(input_variables=['destination', 'restaurants_text', 'search_queries'], input_types={}, partial_variables={}, template='\n        SEARCH INTENT: {search_queries}\n        LOCATION: {destination}\n\n        You are analyzing restaurants from our database to find matches for this search intent.\n\n        RESTAURANT LIST (Basic Data):\n        {restaurants_text}\n\n        TASK: Return restaurant IDs that match the search intent.\n\n        IMPORTANT: Use the exact numbers shown after "ID:" in the list above. For example, if you see "ID: 5 | Silo Coffee", use 5 as the id.\n\n        MATCHING CRITERIA:\n        - Cuisine type alignment with search terms\n        - Dining style match (casual, fine dining, wine bar, etc.)\n        - Special features mentioned in search (vegan, natural wine, coffee, etc.)\n        - General atmosphere/vibe from cuisine tags\n\n        OUTPUT: Return ONLY valid JSON with matching restaurant IDs:\n        {{\n            "selected_restaurants": [\n                {{\n                    "id": "ID",\n                    "relevance_score": score,\n                    "reasoning": "why this matches the search intent"\n                }}\n            ]\n        }}\n\n        Include restaurants that are good matches. Focus on quality over quantity.\n        '), additional_kwargs={})]

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 class DatabaseSearchAgent:
     """
-    CORRECTED: Implements proper 4-step database search flow
+    Implements proper 4-step database search flow
 
     Flow:
     1. Extract destination from query analysis
@@ -52,38 +52,37 @@ class DatabaseSearchAgent:
 
         # AI filtering prompt - uses search_queries (optimized) not raw_query (verbose)
         self.batch_analysis_prompt = ChatPromptTemplate.from_template("""
-SEARCH INTENT: {{search_queries}}
-LOCATION: {{destination}}
+        SEARCH INTENT: {search_queries}
+        LOCATION: {destination}
 
-You are analyzing restaurants from our database to find matches for this search intent.
+        You are analyzing restaurants from our database to find matches for this search intent.
 
-RESTAURANT LIST (Basic Data):
-{{restaurants_text}}
+        RESTAURANT LIST (Basic Data):
+        {restaurants_text}
 
-TASK: Return restaurant IDs that match the search intent.
+        TASK: Return restaurant IDs that match the search intent.
 
-MATCHING CRITERIA:
-- Cuisine type alignment with search terms
-- Dining style match (casual, fine dining, wine bar, etc.)
-- Special features mentioned in search (vegan, natural wine, coffee, etc.)
-- General atmosphere/vibe from cuisine tags
+        IMPORTANT: Use the exact numbers shown after "ID:" in the list above. For example, if you see "ID: 5 | Silo Coffee", use 5 as the id.
 
-SEARCH INTENT ANALYSIS:
-The search queries represent the user's refined intent - match restaurants that would satisfy these specific searches.
+        MATCHING CRITERIA:
+        - Cuisine type alignment with search terms
+        - Dining style match (casual, fine dining, wine bar, etc.)
+        - Special features mentioned in search (vegan, natural wine, coffee, etc.)
+        - General atmosphere/vibe from cuisine tags
 
-OUTPUT: Return ONLY valid JSON with matching restaurant IDs:
-{{
-    "selected_restaurants": [
+        OUTPUT: Return ONLY valid JSON with matching restaurant IDs:
         {{
-            "id": "restaurant_id",
-            "relevance_score": 0.9,
-            "reasoning": "why this matches the search intent"
+            "selected_restaurants": [
+                {{
+                    "id": "ID",
+                    "relevance_score": score,
+                    "reasoning": "why this matches the search intent"
+                }}
+            ]
         }}
-    ]
-}}
 
-Include restaurants that are good matches. Focus on quality over quantity.
-""")
+        Include restaurants that are good matches. Focus on quality over quantity.
+        """)
 
         logger.info("✅ Corrected DatabaseSearchAgent initialized (4-step flow)")
 
