@@ -1,5 +1,6 @@
-{pkgs}: {
+{ pkgs }: {
   deps = [
-    pkgs.bash
+    pkgs.bashInteractive
+    pkgs.bash-completion
   ];
 }
