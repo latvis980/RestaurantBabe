@@ -1,18 +1,17 @@
 # agents/dbcontent_evaluation_agent.py
 """
-ENHANCED Content Evaluation Agent
+ENHANCED Content Evaluation Agent with Restaurant Selection
 
-Handles all business logic for:
-1. Evaluating database results sufficiency 
-2. Making routing decisions (database vs web search)
-3. Triggering BraveSearchAgent when needed
-4. Standardizing response structure for the pipeline
+Enhanced from the simplified version to add:
+1. Restaurant selection from full database results
+2. Splitting into database_restaurants_final vs database_restaurants_hybrid
+3. Better evaluation that analyzes descriptions for matching
+4. Maintains the clean simplified flow and orchestrator compatibility
 """
 
 import logging
 from typing import Dict, List, Any, Optional
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 import json
 
 from utils.debug_utils import log_function_call, dump_chain_state
@@ -21,11 +20,14 @@ logger = logging.getLogger(__name__)
 
 class ContentEvaluationAgent:
     """
-    ENHANCED agent that:
-    - Evaluates database content quality
-    - Makes routing decisions (database vs web search)  
-    - Triggers BraveSearchAgent when web search is needed
-    - Handles all evaluation business logic
+    ENHANCED: Single prompt evaluator with restaurant selection and splitting
+
+    Flow:
+    1. Receives restaurant data from database search agent
+    2. Evaluates AND selects best matching restaurants with single AI call
+    3. Splits into final vs hybrid categories based on quantity and quality
+    4. Routes: database sufficient OR web search (with hybrid mode)
+    5. Maintains all orchestrator compatibility
     """
 
     def __init__(self, config):
@@ -36,110 +38,28 @@ class ContentEvaluationAgent:
             model=config.OPENAI_MODEL,
             temperature=0.1,
             api_key=config.OPENAI_API_KEY,
-            max_tokens=config.OPENAI_MAX_TOKENS_BY_COMPONENT.get('content_evaluation', 1024)
+            max_tokens=config.OPENAI_MAX_TOKENS_BY_COMPONENT.get('content_evaluation', 3072)  # Increased for selection
         )
-
-        # Evaluation prompt - database quality assessment
-        self.evaluation_prompt = ChatPromptTemplate.from_messages([
-            ("system", self._get_evaluation_system_prompt()),
-            ("human", self._get_evaluation_human_prompt())
-        ])
-
-        # Create evaluation chain
-        self.evaluation_chain = self.evaluation_prompt | self.llm
 
         # Will be injected by orchestrator to avoid circular imports
         self.brave_search_agent = None
 
-        logger.info("✅ ENHANCED ContentEvaluationAgent initialized")
+        logger.info("✅ ENHANCED ContentEvaluationAgent initialized with restaurant selection")
 
     def set_brave_search_agent(self, brave_search_agent):
         """Inject BraveSearchAgent to avoid circular imports"""
         self.brave_search_agent = brave_search_agent
         logger.info("🔗 BraveSearchAgent injected into ContentEvaluationAgent")
 
-    def _get_evaluation_system_prompt(self) -> str:
-        """System prompt for evaluating database content quality"""
-        return """You are a restaurant recommendation evaluator.
-
-    Your job is to decide if database results are sufficient for the user's query, or if web search is needed.
-
-    EVALUATION CRITERIA:
-
-    1. **Query Match**: Do the restaurants match what the user is asking for?
-       - Cuisine type, dining style, price range, special requirements
-
-    2. **Quantity**: Is there enough variety for the user to choose from?
-       - 4+ restaurants = usually sufficient 
-       - 1-3 restaurants = may need web search for more options
-       - 0 restaurants = definitely need web search
-
-    3. **Quality**: Are the restaurant details sufficient?
-       - Name, location, cuisine type should be present
-       - Descriptions should be meaningful
-
-    DECISION LOGIC:
-    - If database results are perfect matches with sufficient quantity (4+) → USE DATABASE
-    - If results don't match query well at all → TRIGGER WEB SEARCH (discard database results)
-    - If results match well but need more variety (1-3 good matches) → TRIGGER WEB SEARCH (preserve database results for hybrid)
-    - If results partially match but descriptions are too brief → TRIGGER WEB SEARCH (preserve partial matches for hybrid)
-    - If results match cuisine but wrong style/price → TRIGGER WEB SEARCH (preserve relevant ones for hybrid)
-    - If no results → TRIGGER WEB SEARCH (nothing to preserve)
-
-    HYBRID MODE INDICATORS:
-    Use these phrases in your reasoning when database results should be PRESERVED and SUPPLEMENTED:
-    - "good matches but need more variety"
-    - "limited options, supplement with additional search"
-    - "relevant results but too few choices"
-    - "matches found but expand selection"
-    - "preserve these and find more options"
-
-    DISCARD MODE INDICATORS:
-    Use these phrases when database results should be DISCARDED completely:
-    - "poor matches for the query"
-    - "doesn't match user requirements"
-    - "wrong cuisine type entirely"
-    - "completely irrelevant results"
-    - "start fresh with web search"
-
-    OUTPUT: JSON with decision and reasoning
-
-    IMPORTANT: Always return valid JSON. Your reasoning phrase determines whether results are preserved (hybrid) or discarded (fresh search)."""
-
-    def _get_evaluation_human_prompt(self) -> str:
-        """Human prompt template for evaluation"""
-        return """USER QUERY: "{{raw_query}}"
-DESTINATION: {{destination}}
-
-DATABASE RESTAURANTS ({{restaurant_count}} found):
-{{restaurants_summary}}
-
-Evaluate if these database results are sufficient for the user's query.
-
-Return ONLY valid JSON in this exact format:
-{{
-    "database_sufficient": true/false,
-    "trigger_web_search": true/false,
-    "reasoning": "brief explanation of your decision",
-    "quality_score": 0.8
-}}"""
-
     @log_function_call
     def evaluate_and_route(self, pipeline_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        MAIN METHOD: Complete evaluation workflow with routing and BraveSearchAgent integration.
+        ENHANCED: Complete evaluation workflow with restaurant selection and splitting
 
-        Takes the full pipeline data and returns standardized routing decision.
-        Handles all business logic including web search triggering.
-
-        Args:
-            pipeline_data: Full pipeline data from orchestrator
-
-        Returns:
-            Dict with standardized routing decision and updated pipeline data
+        Maintains orchestrator compatibility while adding restaurant selection
         """
         try:
-            logger.info("🧠 STARTING COMPLETE EVALUATION AND ROUTING")
+            logger.info("🧠 STARTING ENHANCED EVALUATION WITH RESTAURANT SELECTION")
 
             # Extract required data (business logic moved here from orchestrator)
             database_restaurants = pipeline_data.get("database_restaurants", [])
@@ -154,30 +74,223 @@ Return ONLY valid JSON in this exact format:
                 logger.info("📝 No database content - triggering web search")
                 return self._trigger_web_search_workflow(pipeline_data, "No restaurants found in database")
 
-            # AI evaluation for non-empty results
-            evaluation = self._evaluate_with_ai(database_restaurants, raw_query, destination)
+            # ENHANCED: AI evaluation + restaurant selection in single call
+            evaluation = self._evaluate_and_select_with_ai(database_restaurants, raw_query, destination)
 
             database_sufficient = evaluation.get('database_sufficient', False)
             trigger_web_search = evaluation.get('trigger_web_search', True)
+            selected_restaurants_data = evaluation.get('selected_restaurants', [])
+
+            # Map selected restaurant IDs back to full restaurant data
+            selected_restaurants = self._map_selected_restaurants(selected_restaurants_data, database_restaurants)
 
             logger.info(f"🎯 Database sufficient: {database_sufficient}")
+            logger.info(f"🎯 Selected restaurants: {len(selected_restaurants)}")
             logger.info(f"🌐 Trigger web search: {trigger_web_search}")
             logger.info(f"💭 Reasoning: {evaluation.get('reasoning', 'No reasoning')}")
 
-            # Route based on evaluation
+            # ENHANCED: Route with restaurant splitting
             if database_sufficient:
-                return self._use_database_content(pipeline_data, database_restaurants, evaluation)
+                return self._use_database_content_final(pipeline_data, selected_restaurants, evaluation)
             else:
-                return self._trigger_web_search_workflow(pipeline_data, evaluation.get('reasoning', 'Database insufficient'))
+                return self._trigger_web_search_with_hybrid(pipeline_data, selected_restaurants, evaluation)
 
         except Exception as e:
-            logger.error(f"❌ Error in evaluation and routing: {e}")
+            logger.error(f"❌ Error in enhanced evaluation and routing: {e}")
             return self._handle_evaluation_error(pipeline_data, e)
 
+    def _evaluate_and_select_with_ai(self, restaurants: List[Dict], raw_query: str, destination: str) -> Dict[str, Any]:
+        """
+        ENHANCED: Single AI call that evaluates AND selects best matching restaurants
 
-    def _use_database_content(self, pipeline_data: Dict[str, Any], database_restaurants: List[Dict], evaluation: Dict) -> Dict[str, Any]:
-        """Handle the database content route - all business logic here"""
-        logger.info("✅ Using database content")
+        Based on the simplified version but now includes restaurant selection
+        """
+        try:
+            # Format complete restaurant data for AI analysis (include descriptions for selection)
+            restaurants_data = self._format_restaurants_for_selection(restaurants)
+
+            # ENHANCED PROMPT: Evaluation + Selection in single call
+            evaluation_prompt = f"""You are evaluating database restaurant results for a user query AND selecting the best matches.
+
+USER QUERY: "{raw_query}"
+DESTINATION: {destination}
+DATABASE RESULTS: {len(restaurants)} restaurants found
+
+{restaurants_data}
+
+**STAGE 1: EVALUATE**: Are these database results sufficient, or do we need web search?
+
+CRITERIA:
+1. Query Match: Do restaurants match what user wants? (cuisine, style, price range, etc.)
+2. Quantity: Enough variety? (4+ = usually sufficient)
+3. Quality: Meaningful details and relevance?
+
+**STAGE 2: SELECT**: Choose the BEST matching restaurants from the list above.
+- Analyze descriptions carefully, not just names and cuisine tags
+- Only select restaurants that truly match the user's query
+- Include relevance scores and reasoning for each selection
+
+**STAGE 3: ROUTE** 
+FOLLOW THIS LOGIC:
+• Perfect matches + sufficient quantity (4+) → USE DATABASE
+• Poor matches → TRIGGER WEB SEARCH (discard results)  
+• Good matches but need variety → TRIGGER WEB SEARCH (preserve matching results for hybrid)
+• Partial matches → TRIGGER WEB SEARCH (preserve matching results for hybrid)
+• No results → TRIGGER WEB SEARCH (discard)
+
+HYBRID MODE (preserve + supplement):
+In reasoning, use phrases like: "good matches but need more variety", "limited options supplement", "relevant results but too few"
+
+DISCARD MODE (start fresh):
+In reasoning, use phrases like: "poor matches for the query", "doesn't match requirements", "completely irrelevant"
+
+Return ONLY JSON:
+{{
+    "database_sufficient": true/false,
+    "trigger_web_search": true/false, 
+    "reasoning": "brief explanation",
+    "quality_score": 0.8,
+    "selected_restaurants": [
+        {{
+            "id": "restaurant_id",
+            "relevance_score": 0.9,
+            "match_reasoning": "why this restaurant matches the query"
+        }}
+    ]
+}}
+
+IMPORTANT: Use exact restaurant IDs from the data above. Only select restaurants that match the user's query."""
+
+            # Get AI evaluation + selection
+            response = self.llm.invoke(evaluation_prompt)
+
+            # Parse response (same logic as simplified version)
+            content = response.content.strip()
+
+            # Clean up JSON response
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+
+            content = content.replace('```', '').strip()
+            if content.startswith('json'):
+                content = content[4:].strip()
+
+            if not content:
+                logger.warning("⚠️ AI returned empty evaluation")
+                raise ValueError("Empty AI response")
+
+            logger.debug(f"🔍 AI evaluation response: {content}")
+
+            # Parse JSON
+            try:
+                evaluation = json.loads(content)
+            except json.JSONDecodeError as json_error:
+                logger.error(f"❌ JSON parsing failed: {json_error}")
+                logger.error(f"📄 Raw content: '{content}'")
+                raise ValueError(f"Invalid JSON response: {content[:100]}...")
+
+            # Validate required fields
+            required_fields = ['database_sufficient', 'trigger_web_search', 'reasoning']
+            missing_fields = [field for field in required_fields if field not in evaluation]
+
+            if missing_fields:
+                logger.warning(f"⚠️ Missing fields: {missing_fields}")
+                evaluation.setdefault('database_sufficient', False)
+                evaluation.setdefault('trigger_web_search', True)
+                evaluation.setdefault('reasoning', 'Incomplete evaluation')
+                evaluation.setdefault('quality_score', 0.3)
+                evaluation.setdefault('selected_restaurants', [])
+
+            # Log selection results
+            selected_count = len(evaluation.get('selected_restaurants', []))
+            logger.info(f"✅ AI evaluation complete: {evaluation.get('reasoning', 'No reasoning')}")
+            logger.info(f"🎯 Selected {selected_count}/{len(restaurants)} restaurants")
+
+            return evaluation
+
+        except Exception as e:
+            logger.error(f"❌ Error in AI evaluation and selection: {e}")
+            raise e
+
+    def _format_restaurants_for_selection(self, restaurants: List[Dict[str, Any]]) -> str:
+        """
+        Format restaurant data for AI evaluation - include descriptions for proper selection
+        """
+        formatted_restaurants = []
+
+        for restaurant in restaurants:
+            restaurant_id = restaurant.get('id', 'unknown')
+            name = restaurant.get('name', 'Unknown')
+            cuisine_tags = ', '.join(restaurant.get('cuisine_tags', []))
+
+            # Include description for better matching
+            description = restaurant.get('raw_description', restaurant.get('description', ''))
+            description_preview = description[:300] + "..." if len(description) > 300 else description
+
+            mention_count = restaurant.get('mention_count', 1)
+
+            # Format with key details for evaluation and selection
+            restaurant_entry = f"""ID: {restaurant_id} | {name}
+Cuisine: {cuisine_tags} | Mentions: {mention_count}
+Description: {description_preview}
+---"""
+
+            formatted_restaurants.append(restaurant_entry)
+
+        return "\n".join(formatted_restaurants)
+
+    def _map_selected_restaurants(self, selected_data: List[Dict[str, Any]], all_restaurants: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Map AI-selected restaurant IDs back to FULL restaurant data with selection metadata
+
+        CRITICAL: This preserves ALL restaurant data (name, description, sources, etc.)
+        """
+        selected_restaurants = []
+
+        # Create lookup dict for fast access to COMPLETE restaurant objects
+        restaurant_lookup = {str(r.get('id')): r for r in all_restaurants}
+
+        for selection in selected_data:
+            restaurant_id = str(selection.get('id', ''))
+
+            if restaurant_id in restaurant_lookup:
+                # Get the COMPLETE restaurant object (with all fields)
+                restaurant = restaurant_lookup[restaurant_id].copy()
+
+                # Preserve ALL original data: name, raw_description, sources, cuisine_tags, etc.
+                # The restaurant object already contains everything from database search agent step 4:
+                # - id, name, cuisine_tags, mention_count  
+                # - raw_description (full text)
+                # - sources (where the data came from)
+                # - All other database fields
+
+                # Add AI selection metadata on top of existing data
+                restaurant['_relevance_score'] = selection.get('relevance_score', 0)
+                restaurant['_match_reasoning'] = selection.get('match_reasoning', '')
+                restaurant['_ai_selected'] = True
+
+                selected_restaurants.append(restaurant)
+
+                # Log what data we're preserving
+                desc_length = len(restaurant.get('raw_description', ''))
+                sources_count = len(restaurant.get('sources', []))
+                logger.debug(f"✅ Selected restaurant {restaurant_id}: {restaurant.get('name')} "
+                           f"(desc: {desc_length} chars, sources: {sources_count})")
+            else:
+                logger.warning(f"⚠️ AI selected restaurant ID {restaurant_id} not found in database data")
+
+        logger.info(f"🎯 Mapped {len(selected_restaurants)} complete restaurant objects with full data")
+        return selected_restaurants
+
+    def _use_database_content_final(self, pipeline_data: Dict[str, Any], selected_restaurants: List[Dict], evaluation: Dict) -> Dict[str, Any]:
+        """
+        ENHANCED: Handle database-only route with selected restaurants
+
+        Returns database_restaurants_final for editor (4+ sufficient restaurants)
+        """
+        logger.info(f"✅ Using database content - {len(selected_restaurants)} selected restaurants")
 
         return {
             **pipeline_data,
@@ -187,23 +300,126 @@ Return ONLY valid JSON in this exact format:
                 "content_source": "database",
                 "reasoning": evaluation.get('reasoning', 'Database content sufficient'),
                 "quality_score": evaluation.get('quality_score', 0.8),
-                "evaluation_summary": {"reason": "database_sufficient"}
+                "evaluation_summary": {"reason": "database_sufficient"},
+                "selected_count": len(selected_restaurants)
             },
             "content_source": "database",
-            "skip_web_search": True,  # STANDARDIZED FLAG
-            "database_restaurants": database_restaurants,  # STANDARDIZED for editor
+            "skip_web_search": True,  # STANDARDIZED FLAG for orchestrator
+            "database_restaurants_final": selected_restaurants,  # NEW: Final results for editor
+            "database_restaurants_hybrid": [],  # Empty for database-only route
+            "database_restaurants": selected_restaurants,  # LEGACY: Maintain compatibility
             "raw_query": pipeline_data.get("raw_query")  # PRESERVE
         }
 
-    def _trigger_web_search_workflow(self, pipeline_data: Dict[str, Any], reasoning: str) -> Dict[str, Any]:
-        """Handle the web search route - trigger BraveSearchAgent and return results"""
-        logger.info("🌐 Triggering web search workflow")
+    def _trigger_web_search_with_hybrid(self, pipeline_data: Dict[str, Any], selected_restaurants: List[Dict], evaluation: Dict) -> Dict[str, Any]:
+        """
+        ENHANCED: Handle web search route with hybrid mode support
 
-        # Extract database restaurants for hybrid mode check
+        Determines whether to preserve selected restaurants for hybrid or discard them
+        """
+        reasoning = evaluation.get('reasoning', 'Database insufficient')
+        logger.info(f"🌐 Triggering web search workflow: {reasoning}")
+
+        # Determine hybrid mode based on reasoning and selected restaurant quality
+        use_hybrid = self._should_use_hybrid_mode(selected_restaurants, reasoning)
+
+        # NEW: Split restaurants based on hybrid decision
+        if use_hybrid:
+            database_restaurants_final = []  # No final results - need web search
+            database_restaurants_hybrid = selected_restaurants  # Preserve for hybrid
+            content_source = "hybrid"
+            logger.info(f"🔄 Hybrid mode: preserving {len(database_restaurants_hybrid)} selected restaurants")
+        else:
+            database_restaurants_final = []  # No final results - need web search
+            database_restaurants_hybrid = []  # Discard all - start fresh
+            content_source = "web_search"
+            logger.info(f"🗑️ Discard mode: starting fresh web search")
+
+        try:
+            # Trigger web search when evaluation determines database is insufficient
+            if self.brave_search_agent:
+                logger.info("🚀 Executing web search through BraveSearchAgent")
+
+                # Prepare search data
+                search_queries = pipeline_data.get('search_queries', [])
+                destination = pipeline_data.get('destination', 'Unknown')
+                query_metadata = {
+                    'is_english_speaking': pipeline_data.get('is_english_speaking', True),
+                    'local_language': pipeline_data.get('local_language')
+                }
+
+                # Execute search immediately
+                search_results = self.brave_search_agent.search(search_queries, destination, query_metadata)
+
+                logger.info(f"✅ Web search completed: {len(search_results)} results found")
+
+                # ENHANCED: Return with proper restaurant splitting
+                return {
+                    **pipeline_data,
+                    "evaluation_result": {
+                        "database_sufficient": False,
+                        "trigger_web_search": True,
+                        "content_source": content_source,
+                        "reasoning": reasoning,
+                        "quality_score": evaluation.get('quality_score', 0.3),
+                        "evaluation_summary": {"reason": "database_insufficient"},
+                        "selected_count": len(selected_restaurants),
+                        "hybrid_mode": use_hybrid
+                    },
+                    "content_source": content_source,
+                    "skip_web_search": False,  # Let orchestrator handle search results we provide
+                    "search_results": search_results,  # Results already found by internal search
+                    "database_restaurants_final": database_restaurants_final,  # NEW: Final results (empty for web search)
+                    "database_restaurants_hybrid": database_restaurants_hybrid,  # NEW: Hybrid results  
+                    "database_restaurants": database_restaurants_hybrid,  # LEGACY: Maintain compatibility
+                    "raw_query": pipeline_data.get("raw_query"),  # PRESERVE
+                    "optimized_content": {
+                        "database_restaurants": database_restaurants_hybrid,
+                        "scraped_results": []  # Will be filled by scraper
+                    }
+                }
+            else:
+                logger.warning("⚠️ BraveSearchAgent not available - falling back to routing flags")
+                # Return routing decision for main web search pipeline
+                return {
+                    **pipeline_data,
+                    "evaluation_result": {
+                        "database_sufficient": False,
+                        "trigger_web_search": True,
+                        "content_source": content_source,
+                        "reasoning": reasoning,
+                        "quality_score": evaluation.get('quality_score', 0.3),
+                        "evaluation_summary": {"reason": "database_insufficient"},
+                        "selected_count": len(selected_restaurants),
+                        "hybrid_mode": use_hybrid
+                    },
+                    "content_source": content_source,
+                    "skip_web_search": False,  # Allow main search step
+                    "database_restaurants_final": database_restaurants_final,  # NEW: Empty for web search
+                    "database_restaurants_hybrid": database_restaurants_hybrid,  # NEW: Hybrid or empty
+                    "database_restaurants": database_restaurants_hybrid,  # LEGACY: Maintain compatibility
+                    "raw_query": pipeline_data.get("raw_query"),  # PRESERVE
+                    "optimized_content": {
+                        "database_restaurants": database_restaurants_hybrid,
+                        "scraped_results": []
+                    }
+                }
+
+        except Exception as e:
+            logger.error(f"❌ Error in web search workflow: {e}")
+            return self._handle_evaluation_error(pipeline_data, e)
+
+    def _trigger_web_search_workflow(self, pipeline_data: Dict[str, Any], reasoning: str) -> Dict[str, Any]:
+        """
+        Handle the web search route - for backwards compatibility (when no selected restaurants)
+        """
+        logger.info("🌐 Triggering web search workflow (no selection)")
+
+        # This is the old method for when we have no selected restaurants
         database_restaurants = pipeline_data.get("database_restaurants", [])
 
         try:
-            # FIXED: Actually trigger web search when evaluation fails or database is insufficient
+            # Trigger web search when evaluation determines database is insufficient
             if self.brave_search_agent:
                 logger.info("🚀 Executing web search through BraveSearchAgent")
 
@@ -221,31 +437,41 @@ Return ONLY valid JSON in this exact format:
                 logger.info(f"✅ Web search completed: {len(search_results)} results found")
 
                 # Determine if we should preserve database results for hybrid mode
-                preserved_database_restaurants = []
                 use_hybrid = self._should_use_hybrid_mode(database_restaurants, reasoning)
-                if use_hybrid:
-                    preserved_database_restaurants = database_restaurants
-                    logger.info(f"💾 Preserving {len(preserved_database_restaurants)} database results for hybrid mode")
-                    logger.info(f"🔄 Reason for hybrid: {reasoning}")
 
-                # Return with web search results - make sure they flow to scraping
+                if use_hybrid:
+                    database_restaurants_final = []
+                    database_restaurants_hybrid = database_restaurants  # Preserve all
+                    content_source = "hybrid"
+                    logger.info(f"🔄 Hybrid mode: preserving {len(database_restaurants_hybrid)} database restaurants")
+                else:
+                    database_restaurants_final = []
+                    database_restaurants_hybrid = []  # Discard all
+                    content_source = "web_search"
+                    logger.info(f"🗑️ Discard mode: starting fresh web search")
+
+                # Return with web search results
                 return {
                     **pipeline_data,
                     "evaluation_result": {
                         "database_sufficient": False,
                         "trigger_web_search": True,
-                        "content_source": "hybrid" if preserved_database_restaurants else "web_search",
+                        "content_source": content_source,
                         "reasoning": reasoning,
                         "quality_score": 0.3,
-                        "evaluation_summary": {"reason": "database_insufficient"}
+                        "evaluation_summary": {"reason": "database_insufficient"},
+                        "selected_count": 0,
+                        "hybrid_mode": use_hybrid
                     },
-                    "content_source": "hybrid" if preserved_database_restaurants else "web_search",
+                    "content_source": content_source,
                     "skip_web_search": False,
                     "search_results": search_results,
-                    "database_restaurants": preserved_database_restaurants,  # PRESERVE for editor
+                    "database_restaurants_final": database_restaurants_final,  # NEW: Empty for web search
+                    "database_restaurants_hybrid": database_restaurants_hybrid,  # NEW: Hybrid or empty
+                    "database_restaurants": database_restaurants_hybrid,  # LEGACY: Maintain compatibility
                     "raw_query": pipeline_data.get("raw_query"),  # PRESERVE
                     "optimized_content": {
-                        "database_restaurants": preserved_database_restaurants,
+                        "database_restaurants": database_restaurants_hybrid,
                         "scraped_results": []  # Will be filled by scraper
                     }
                 }
@@ -260,11 +486,15 @@ Return ONLY valid JSON in this exact format:
                         "content_source": "web_search",
                         "reasoning": reasoning,
                         "quality_score": 0.3,
-                        "evaluation_summary": {"reason": "database_insufficient"}
+                        "evaluation_summary": {"reason": "database_insufficient"},
+                        "selected_count": 0,
+                        "hybrid_mode": False
                     },
                     "content_source": "web_search",
                     "skip_web_search": False,  # Allow main search step
-                    "database_restaurants": [],
+                    "database_restaurants_final": [],  # NEW: Empty for web search
+                    "database_restaurants_hybrid": [],  # NEW: Empty
+                    "database_restaurants": [],  # LEGACY: Empty
                     "raw_query": pipeline_data.get("raw_query"),  # PRESERVE
                     "optimized_content": {
                         "database_restaurants": [],
@@ -278,7 +508,7 @@ Return ONLY valid JSON in this exact format:
 
     def _handle_evaluation_error(self, pipeline_data: Dict[str, Any], error: Exception) -> Dict[str, Any]:
         """
-        FIXED: Centralized error handling that triggers actual web search instead of just returning ALL database results
+        ENHANCED: Error handling that triggers web search and maintains new restaurant splitting
         """
         logger.error(f"❌ Evaluation error: {error}")
 
@@ -288,7 +518,7 @@ Return ONLY valid JSON in this exact format:
             "database_count": len(pipeline_data.get("database_restaurants", []))
         })
 
-        # FIXED: When AI evaluation fails, trigger web search instead of using all database results
+        # When AI evaluation fails, trigger web search instead of using all database results
         logger.info("🔧 AI evaluation failed - triggering web search as fallback")
 
         try:
@@ -309,7 +539,7 @@ Return ONLY valid JSON in this exact format:
 
                 logger.info(f"✅ Fallback web search completed: {len(search_results)} results found")
 
-                # Return web search results instead of database fallback
+                # Return web search results with new restaurant splitting format
                 return {
                     **pipeline_data,
                     "evaluation_result": {
@@ -317,14 +547,18 @@ Return ONLY valid JSON in this exact format:
                         "trigger_web_search": True,
                         "content_source": "web_search",
                         "reasoning": f"AI evaluation failed ({str(error)}) - using web search fallback",
-                        "evaluation_summary": {"reason": "evaluation_error_web_search_fallback"}
+                        "evaluation_summary": {"reason": "evaluation_error_web_search_fallback"},
+                        "selected_count": 0,
+                        "hybrid_mode": False
                     },
                     "evaluation_error": str(error),
                     "content_source": "web_search",
                     "trigger_web_search": True,
-                    "skip_web_search": False,  # FIXED: Don't skip - let orchestrator handle the results we provide
+                    "skip_web_search": False,
                     "search_results": search_results,  # Results already found
-                    "database_restaurants": [],
+                    "database_restaurants_final": [],  # NEW: Empty due to error
+                    "database_restaurants_hybrid": [],  # NEW: Empty due to error
+                    "database_restaurants": [],  # LEGACY: Empty due to error
                     "optimized_content": {
                         "database_restaurants": [],
                         "scraped_results": []  # Will be filled by scraper
@@ -332,7 +566,7 @@ Return ONLY valid JSON in this exact format:
                 }
             else:
                 logger.warning("⚠️ BraveSearchAgent not available for fallback - using routing flags")
-                # Fallback: trigger web search when evaluation fails (old behavior but cleaner)
+                # Fallback: trigger web search when evaluation fails
                 return {
                     **pipeline_data,
                     "evaluation_result": {
@@ -340,18 +574,22 @@ Return ONLY valid JSON in this exact format:
                         "trigger_web_search": True,
                         "content_source": "web_search",
                         "reasoning": f"AI evaluation failed ({str(error)}) - triggering web search",
-                        "evaluation_summary": {"reason": "evaluation_error"}
+                        "evaluation_summary": {"reason": "evaluation_error"},
+                        "selected_count": 0,
+                        "hybrid_mode": False
                     },
                     "evaluation_error": str(error),
                     "content_source": "web_search",
                     "trigger_web_search": True,
                     "skip_web_search": False,  # Allow main search step
-                    "database_restaurants": []
+                    "database_restaurants_final": [],  # NEW: Empty due to error
+                    "database_restaurants_hybrid": [],  # NEW: Empty due to error
+                    "database_restaurants": []  # LEGACY: Empty due to error
                 }
 
         except Exception as search_error:
             logger.error(f"❌ Fallback web search also failed: {search_error}")
-            # If web search also fails, we have no choice but to use a simple fallback
+            # If web search also fails, return error response with new format
             return {
                 **pipeline_data,
                 "evaluation_result": {
@@ -359,118 +597,28 @@ Return ONLY valid JSON in this exact format:
                     "trigger_web_search": True,
                     "content_source": "web_search",
                     "reasoning": f"Both AI evaluation and web search failed - using routing fallback",
-                    "evaluation_summary": {"reason": "complete_evaluation_failure"}
+                    "evaluation_summary": {"reason": "complete_evaluation_failure"},
+                    "selected_count": 0,
+                    "hybrid_mode": False
                 },
                 "evaluation_error": f"AI: {str(error)}, Search: {str(search_error)}",
                 "content_source": "web_search",
                 "trigger_web_search": True,
                 "skip_web_search": False,
-                "database_restaurants": []
+                "database_restaurants_final": [],  # NEW: Empty due to error
+                "database_restaurants_hybrid": [],  # NEW: Empty due to error
+                "database_restaurants": []  # LEGACY: Empty due to error
             }
 
-    def _evaluate_with_ai(self, restaurants: List[Dict], raw_query: str, destination: str) -> Dict[str, Any]:
+    def _should_use_hybrid_mode(self, selected_restaurants: List[Dict], reasoning: str) -> bool:
         """
-        IMPROVED: Use AI to evaluate database content with better error handling
+        ENHANCED: Determine hybrid mode based on selected restaurants and reasoning
+
+        Updated to work with selected restaurants instead of all database restaurants
         """
-        try:
-            # Prepare restaurant summary for AI evaluation
-            restaurants_summary = self._create_restaurants_summary(restaurants)
-
-            # Format the evaluation prompt
-            formatted_prompt = self.evaluation_prompt.format_messages(
-                raw_query=raw_query,
-                destination=destination,
-                restaurant_count=len(restaurants),
-                restaurants_summary=restaurants_summary
-            )
-
-            # Get AI evaluation
-            response = self.evaluation_chain.invoke({"messages": formatted_prompt})
-
-            # Parse response with improved error handling
-            content = response.content.strip()
-
-            # Clean up response - handle various formats
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
-
-            # Additional cleanup for common AI response patterns
-            content = content.replace('```', '').strip()
-            if content.startswith('json'):
-                content = content[4:].strip()
-
-            # Handle empty content
-            if not content:
-                logger.warning("⚠️ AI returned empty evaluation - using fallback")
-                raise ValueError("Empty AI response")
-
-            logger.debug(f"🔍 AI evaluation response: {content}")
-
-            # Parse JSON with better error handling
-            try:
-                evaluation = json.loads(content)
-            except json.JSONDecodeError as json_error:
-                logger.error(f"❌ JSON parsing failed: {json_error}")
-                logger.error(f"📄 Raw content: '{content}'")
-                raise ValueError(f"Invalid JSON response: {content[:100]}...")
-
-            # Validate required fields
-            required_fields = ['database_sufficient', 'trigger_web_search', 'reasoning']
-            missing_fields = [field for field in required_fields if field not in evaluation]
-
-            if missing_fields:
-                logger.warning(f"⚠️ AI evaluation missing fields: {missing_fields}")
-                # Fill in missing fields with safe defaults
-                evaluation.setdefault('database_sufficient', False)
-                evaluation.setdefault('trigger_web_search', True)
-                evaluation.setdefault('reasoning', 'Incomplete AI evaluation')
-                evaluation.setdefault('quality_score', 0.3)
-
-            logger.info(f"✅ AI evaluation successful: {evaluation.get('reasoning', 'No reasoning')}")
-            return evaluation
-
-        except Exception as e:
-            logger.error(f"❌ Error in AI evaluation: {e}")
-            # Re-raise to be handled by _handle_evaluation_error
-            raise e
-
-    def _create_restaurants_summary(self, restaurants: List[Dict]) -> str:
-        """Create a concise summary of restaurants for AI evaluation"""
-        if not restaurants:
-            return "No restaurants available"
-
-        summary_lines = []
-        for i, restaurant in enumerate(restaurants[:10], 1):  # Limit to first 10
-            name = restaurant.get('name', 'Unknown')
-            cuisine_tags = restaurant.get('cuisine_tags', [])
-            cuisine = ', '.join(cuisine_tags) if cuisine_tags else 'Unknown cuisine'
-            mention_count = restaurant.get('mention_count', 0)
-            sources = len(restaurant.get('sources', []))
-
-            # Show brief description if available
-            raw_description = restaurant.get('raw_description', '')
-
-            # Basic restaurant info
-            summary_lines.append(f"{i}. {name} - {cuisine}, Mentions: {mention_count}, Sources: {sources}")
-
-            # Add description if it exists and has content
-            if raw_description and raw_description.strip():  # ✅ FIXED: Check for actual content
-                description_preview = raw_description[:300] + "..." if len(raw_description) > 300 else raw_description
-                summary_lines.append(f"   Description: {description_preview}")
-            else:
-                summary_lines.append(f"   Description: [No description available]")
-
-        if len(restaurants) > 10:
-            summary_lines.append(f"... and {len(restaurants) - 10} more restaurants")
-
-        return "\n".join(summary_lines)
-
-    def _should_use_hybrid_mode(self, database_restaurants: List[Dict], reasoning: str) -> bool:
-        """Determine if we should use hybrid mode (preserve DB + add web search)"""
-        # Only consider hybrid if we have some database results
-        if len(database_restaurants) == 0:
+        # Only consider hybrid if we have selected restaurants
+        if len(selected_restaurants) == 0:
+            logger.info("🗑️ No selected restaurants - discard mode")
             return False
 
         reasoning_lower = reasoning.lower()
@@ -517,20 +665,34 @@ Return ONLY valid JSON in this exact format:
             logger.info(f"🔄 Hybrid mode detected: {reasoning}")
             return True
 
-        # Default: if we have 1-3 restaurants and no explicit discard signal, use hybrid
-        if 1 <= len(database_restaurants) <= 3:
-            logger.info(f"🔄 Default hybrid mode: {len(database_restaurants)} restaurants found")
+        # ENHANCED: Default logic based on selected restaurant count and quality
+        if 1 <= len(selected_restaurants) <= 3:
+            # Check if selected restaurants have good relevance scores
+            avg_score = sum(r.get('_relevance_score', 0) for r in selected_restaurants) / len(selected_restaurants)
+            if avg_score >= 0.7:
+                logger.info(f"🔄 High-quality hybrid mode: {len(selected_restaurants)} good matches (avg score: {avg_score:.2f})")
+                return True
+            else:
+                logger.info(f"🗑️ Low-quality selected restaurants: avg score {avg_score:.2f} - discard mode")
+                return False
+
+        # If we have 4+ selected restaurants but AI still says web search, it's probably variety issues
+        # Default to hybrid to preserve the good ones
+        if len(selected_restaurants) >= 4:
+            logger.info(f"🔄 Variety hybrid mode: preserving {len(selected_restaurants)} selected restaurants")
             return True
 
-        # If we have 4+ restaurants but AI still says web search, it's probably quality issues
-        # Default to hybrid to preserve any good ones
-        logger.info(f"🔄 Fallback hybrid mode: preserving {len(database_restaurants)} restaurants")
+        # Fallback to hybrid if uncertain
+        logger.info(f"🔄 Fallback hybrid mode: preserving {len(selected_restaurants)} selected restaurants")
         return True
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get evaluation statistics"""
+        """
+        ENHANCED: Get evaluation statistics with selection metrics
+        """
         return {
-            "agent_type": "content_evaluation",
+            "agent_type": "enhanced_content_evaluation_with_selection",
             "has_brave_search_agent": self.brave_search_agent is not None,
-            "model": self.config.OPENAI_MODEL
+            "model": self.config.OPENAI_MODEL,
+            "features": ["restaurant_selection", "final_hybrid_splitting", "single_ai_call"]
         }

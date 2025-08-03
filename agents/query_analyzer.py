@@ -19,8 +19,7 @@ class QueryAnalyzer:
         Your task is to extract key information and prepare search queries for a web search.
 
         SEARCH STRATEGY:
-        1. Identify PRIMARY search parameters that are likely to have existing curated lists online
-           and transform the user's request into search terms that will find these curated lists.
+        1. Identify PRIMARY search parameters that are likely to return comprehensive good quality results online and transform the user's request into search terms that will find these curated lists.
 
            EXAMPLES OF TRANSFORMATIONS:
            - User asks: "Where can I take my wife for our anniversary in Paris?"
@@ -37,7 +36,7 @@ class QueryAnalyzer:
              Search query: "new restaurants in London 2025"    
 
         GUIDELINES:
-        1. Extract the destination (only the city name, standartized international form) from the query. If the user is using a shortened name or a nickname,like LA, Frisco or Big Apple, convert it to the full city name. 
+        1. Extract the destination (only the city name, standartized international form) from the query. If the name has special characters, discard of them. If the user is using a shortened name or a nickname,like LA, Frisco or Big Apple, convert it to the full city name. 
         2. Determine if the destination is English-speaking or not  
         3. For USA destinations add the word "media" to the search query
         4. For non-English speaking destinations, identify the local language

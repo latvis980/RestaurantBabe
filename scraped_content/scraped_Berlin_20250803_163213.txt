@@ -1,0 +1,391 @@
+
+
+--- FROM https://www.cremeguides.com/en/berlin/food/breakfast/ ---
+
+Restaurant 1: Spindler
+Description: One of the best brunches in the city
+City: Berlin
+
+Restaurant 2: Bonvivant
+Description: Brunch at a Michelin Star restaurant
+City: Berlin
+
+Restaurant 3: No Fire no Glory
+Description: Coffee Cocktails for Brunch
+City: Berlin
+
+Restaurant 4: Café Blumental
+Description: Zero waste and love of plants
+City: Berlin
+
+Restaurant 5: Oeuf
+Description: Breakfast in Wedding
+City: Berlin
+
+Restaurant 6: Gorilla Bakery
+Description: A creative brunch in Schöneberg
+City: Berlin
+
+Restaurant 7: Mars Silent Green
+Description: Green Brunch in Wedding
+City: Berlin
+
+Restaurant 8: 21 gramm
+Description: Unwinding inside a former chapel
+City: Berlin
+
+Restaurant 9: Benedict
+Description: Breakfast around the clock
+City: Berlin
+
+Restaurant 10: Frühstück 3000
+Description: Caviar for the most important meal of the day
+City: Berlin
+
+Restaurant 11: Eat 91
+Description: A favourite for Breakfast, Coffee and Lunch
+City: Berlin
+
+Restaurant 12: The Future Breakfast
+Description: A Fresh Take on Breakfast
+City: Berlin
+
+Restaurant 13: Die Stulle
+Description: Fresh Cooking and Excellent Breakfast
+City: Berlin
+
+Restaurant 14: Neumanns
+Description: Open-Faced Sandwiches from Breakfast to Late Lunch
+City: Berlin
+
+Restaurant 15: Spreegold
+Description: Fresh Food Around the Clock
+City: Berlin
+
+Restaurant 16: Literature Café Wintergarten
+Description: A True Gem on Kurfürstendamm
+City: Berlin
+
+Restaurant 17: Schneeweiß
+Description: Breakfast and Brunch in Berlin
+City: Berlin
+
+Restaurant 18: What do you fancy love?
+Description: Hip Youngsters Find Their Way Back to Kurfürstendamm
+City: Berlin
+
+Restaurant 19: Freischwimmer
+Description: Chillin at the Kreuzberg Flutgraben
+City: Berlin
+
+Restaurant 20: Klipper
+Description: Breakfast with Spree-view at Plänterwald
+City: Berlin
+
+Restaurant 21: Van Loon
+Description: Feasting on the Landwehr Canal
+City: Berlin
+
+Restaurant 22: Café Einstein
+Description: A Little Bit of Vienna in Berlin
+City: Berlin
+
+--- FROM https://www.qiez.de/brunch-berlin-fruehstueck-bestenliste-top-10-qiez/ ---
+
+Restaurant 1: Blumental
+Description: Das Gründungs-Kollektiv überträgt die Wärme seiner Freundschaft in das nachhaltige Café. Hier gibt es vegane und vegetarische Köstlichkeiten wie Sauerteigbrote, gegrillten Spitzkohl, BBQ-Pilze, Shakshuka und die leckeren Pink Pancakes.
+Address: Engeldamm 64, 10179 Berlin
+Cuisine: Vegan, Vegetarisch
+Recommended Dishes: Amore Ajvar, Lax, Pink Pancakes
+
+Restaurant 2: Venue
+Description: Das Café Venue im Weserkiez zaubert Frühstück ganz nach deinem Geschmack. Hier kannst du dir dein eigenes kleines Frühstücksbuffet aus einer Art Tapasmenü zusammenstellen.
+Address: Weserstraße 172, 12045 Berlin
+Cuisine: International
+Recommended Dishes: Greens, Eggs, Dairy, Meat and Fish
+
+Restaurant 3: Geist im Glas
+Description: Eine Neuköllner Bar mit unverputzten Wänden und ausgefallenen Frühstücksvariationen. Hier kannst du am Wochenende bis 15:00 Uhr einen Boozy Brunch genießen.
+Address: Lenaustraße 2, 12047 Berlin
+Cuisine: Bar, International
+Recommended Dishes: Huevos Rancheros, Käsewaffel, Sausage Gravy
+
+Restaurant 4: Oeuf Berlin
+Description: Ein Café mit ausgezeichneten Frühstücken, das französische, deutsche und angelsächsische Klassiker anbietet. Besonders bekannt für das beste Croque Monsieur der Stadt.
+Address: Reinickendorfer Straße 110, 13347 Berlin
+Cuisine: Französisch
+Recommended Dishes: Croque Monsieur, French Toast, Vegan BBQ
+
+Restaurant 5: Tucker Brunch Bar
+Description: In der Tucker Brunch Bar werden dir australische Frühstücksklassiker und ungewöhnliche Leckereien serviert. Ein idealer Ort, um in den Tag zu starten.
+Address: Wühlischstraße 1, 10245 Berlin
+Cuisine: Australisch
+Recommended Dishes: Açai-Bowls, Eggs Benedict, Burrito Bowl
+
+Restaurant 6: Benedict
+Description: Ein Frühstücksrestaurant, das zu einer israelischen Kette gehört. Hier kannst du am Wochenende bis 23:00 Uhr frühstücken und die berühmten Eggs Benedict in verschiedenen Variationen genießen.
+Address: Nicht angegeben
+Cuisine: International, Israelisch
+Recommended Dishes: Eggs Benedict, Pancakes
+
+--- FROM https://mitvergnuegen.com/2024/orte-fruehstueck-brunch-berlin/ ---
+
+Restaurant 1: Lotta Tagesbar
+Description: Das Café, in dem ihr neben Kaffee und Brunch auch Kuchen und Gebäck, Salat, Weine, Cocktails und Aperitivo-Snacks wie eingelegtes Gemüse und hausgemachtes Brot bekommt, gehört zur Wilmina-Familie und macht Feinschmecker*innen und Architektur-Fans glücklich. Auf der Karte stehen Waffeln, Granola, Grilled Cheese Sandwich und das gegrillte Sauerteigbrot, das aktuell mit weißem Bohnen-Hummus, geschmolzenen Tomaten, Pistazie, Sesam und Petersilienöl serviert wird.
+Address: Pestalozzistrasse 56, 10627 Berlin
+Cuisine: Café, Brunch
+Recommended Dishes: Waffeln, Granola, Grilled Cheese Sandwich, gegrilltes Sauerteigbrot
+
+Restaurant 2: Windback Coffee
+Description: Ein nettes Café mit gutem Kaffee und leckerem Frühstück und Lunch. Auf dem Menü stehen Granola mit frischem Obst, Grilled Sandwiches, Eggs Benedict in verschiedenen Varianten, French Toast sowie hausgemachte Kuchen, Salate, Lunchbowls, frischgepresste Säfte und richtig guter Kaffee.
+Address: Windscheidstraße 19, 10627 Berlin
+Cuisine: Café, Frühstück
+Recommended Dishes: Granola mit frischem Obst, Grilled Sandwiches, Eggs Benedict, French Toast
+
+Restaurant 3: Silo
+Description: Neben richtig gutem und hausgeröstetem Kaffee und Avocado-Toast bekommt ihr bei Silo auch hervorragende Sandwiches, feinen Schmaus wie getrüffelte Pilze oder Buttermilch Pancakes und natürlich Eier jeglicher Art.
+Address: Gabriel-Max-Straße 4, 10245 Berlin
+Cuisine: Café, Frühstück
+Recommended Dishes: Avocado-Toast, Sandwiches, Buttermilch Pancakes
+
+Restaurant 4: 44 Brekkie
+Description: Hier findet ihr den Trend der Egg Drop Sandwiches, die zwischen zwei dicken Brioche-Scheiben Rührei und wahlweise Lachs, Bacon, Avocado, Kapern und spicy Mayo enthalten. Außerdem gibt es auch den Klassiker: Pochierte Eier auf Sauerteigbrot mit Avocado und Co.
+Address: Gabriel-Max-Straße 2, 10245 Berlin
+Cuisine: Café, Frühstück
+Recommended Dishes: Egg Drop Sandwiches, Pochierte Eier auf Sauerteigbrot, Avomaniac mit Sauerteigbrot und Avocado
+
+--- FROM https://www.cntraveller.de/artikel/beste-brunch-spots-in-berlin ---
+
+Restaurant 1: Bonvivant Cocktail Bistro
+Description: Sterneküche trifft Brunch. Im Bonvivant Cocktail Bistro sind positive Überraschungen garantiert. Küchenchef Nikodemus Berger zieht regelmäßig los und sammelt was die Berliner Parks und Wälder so hergeben: Bärlauch für die Suppe vorweg, Tannen-Vinaigrette zum Kohlrabi und die Robinienblüte für das Eis zum Pastinaken-Dessert wird im Park am Gleisdreieck gerupft. Eklig? Keineswegs. „Delikat, präzise und wunderschön präsentiert“ schreibt der Guide Michelin in seiner Begründung für den Stern, der dem Bistro eine “Küche voller Finesse” bescheinigt. Da können wir nur zustimmen. Zum Brunch ist der Crispy Fried Austernpilz besonders empfehlenswert, der mit einem orange-grünen Raster aus Zitronencreme und Schnittlauchmayo serviert wird. Die Eggs Benedict auf Sauerteigbrot überzeugen mit einer Miso-Hollandaise aus Nussbutter mit Wildkräutern.
+Address: Goltzstraße 32, 10781 Berlin
+Cuisine: International, Brunch
+Recommended Dishes: Crispy Fried Austernpilz, Eggs Benedict auf Sauerteigbrot
+
+Restaurant 2: Two Trick Pony
+Description: Garys Job im Finanzwesen brachte Jason Starmer und Gary Young vor sechs Jahren nach Berlin – ein Glücksfall für die hiesige Brunch-Landschaft. Die beiden vereinen zahlreiche kulturelle Einflüsse, die sich im Menu von Two Trick Pony widerspiegeln: Jason wuchs in der südafrikanischen Stadt Durban auf, wo eine große indische Community lebt und kocht. Gary stammt aus Irland. Gemeinsam lebten sie viele Jahre in London. Auf ihrer Speisekarte finden sich britische Gerichte, die aus ihrer Zeit in Großbritannien stammen, ebenso wie Gerichte mit indischen Kochtraditionen und welche mit Akzenten aus dem östlichen Mittelmeerraum. Sein Lieblingsgericht von der Speisekarte? „Eier mit Mangold”, eine Abwandlung klassischer Frühstücksgerichte wie Eggs Florentine, die durch die wunderbare türkische Eierspeise Çılbır inspiriert wurde.
+Address: Bergmannstraße 52, 10961 Berlin
+Cuisine: British, Indian, Mediterranean
+Recommended Dishes: Eier mit Mangold
+
+Restaurant 3: Blumental
+Description: Ein Kollektiv aus Berlin? Groundbreaking! Das Team des Blumental setzt sich aus Gastronom:innen, Köch:innen und Designer:innen zusammen, die teilweise schon lebenslang befreundet sind. Das drückt sich nicht nur in der Gestaltung des Ortes aus, das Café, Restaurant, Bar und Coworking-Space in einem ist, sondern auch darin, dass die Küche keine Geheimnisse vor den Gästen hat. Alles ist offen, leicht und pflanzenfokussiert. Gekocht wird mitten im Raum. Die vegan-vegetarische Küche verweist auf das Thema des Blumental, das eine kleine Oase voller Pflanzen inmitten der Stadt darstellt.
+Address: Engeldamm 64, 10179 Berlin
+Cuisine: Vegan, Vegetarian
+Recommended Dishes: BBQ Fantastico, Cabbage Cravings
+
+Restaurant 4: House of Tandoor im Hoxton Charlottenburg
+Description: Indisch zum Frühstück? Sicherlich nicht jedermanns Sache, aber in Berlin natürlich möglich. Das House of Tandoor im Designhotel The Hoxton in Charlottenburg ermöglicht Gästen eine kulinarische Rundreise durch Nordindien bereits zum Frühstück. Ein bisschen von allem, was die nordindische Küche hergibt, versammelt sich hier auf einer gigantischen Platte: Cremige Dips und Currys, darunter das Geräucherte Tomaten-Chili, Tamarinden-Chutney und Auberginen-Raita, werden serviert zu Bhaji Zwiebelringen und Fritten mit Nimbu-Masala-Würze. In der vegetarischen Variante kommen Blumenkohl aus dem Tandoor-Ofen, Rote-Beete-Kebabs und Old Dheli Paneer Makhani auf den Tisch.
+Address: Meinekestraße 18-19, 10719 Berlin
+Cuisine: Indian
+Recommended Dishes: Mighty Thali-Platte, Masala Chai
+
+--- FROM https://www.cremeguides.com/berlin/top-10-fruehstueck-und-brunch/ ---
+
+Restaurant 1: Frühstück 3000
+Description: Das wahrscheinliche edelste Frühstück Berlins gibt es im Frühstück 3000. Neben dem Lokal in Schöneberg gibt es seit Kurzem auch einen weiteren Standort in Kreuzberg. Aber egal wo und wann, die edle Brunch-Kreationen im Frühstück 3000 begeistern immer. Da gibt es zum Beispiel das „Chicken 3000“: eine Cheddarwaffel mit Crispy Chicken und köstlichem Chilli-Bacon-Karamell oder auch das himmlisches Frenchtoast, für alle die es lieber süß mögen.
+Address: Bülowstraße 101, 10783 Berlin-Schöneberg; Fromet-und-Moses-Mendelssohn-Platz 9, 10969 Berlin-Kreuzberg
+Cuisine: Brunch
+Recommended Dishes: Chicken 3000, Frenchtoast
+
+Restaurant 2: Bonvivant
+Description: In der Cocktailbar Bonvivant gibt es nicht nur fantastische Getränke, sondern auch einen wundervollen Brunch, der sich ebenso sehen lassen kann, wie das elegante Ambiente der Schöneberger Institution. Von Mittwoch bis Sonntag kann man sich hier an Bonvivant-Klassikern wie Eggs Benedict oder dem berühmten Tomatenbrot ergötzen, aber auch neue Kreationen wie grüne Shakshuka, welches uns besonders begeistert hat, finden sich auf der kreativen und rein vegetarischen Brunch-Karte.
+Address: Goltzstraße 32, 10781 Berlin-Schöneberg
+Cuisine: Vegetarisch, Brunch
+Recommended Dishes: Eggs Benedict, grüne Shakshuka, Pancake mit Karamellfüllung
+
+Restaurant 3: Two Trick Pony
+Description: In der Bergmannstraße in Kreuzberg werden bei Two Trick Pony wunderbar üppiges, britisch inspiriertes Frühstück und Brunch serviert. Hier wurde tatsächlich an alles gedacht für den perfekten morgendlichen Genuss: alle Gerichte können als glutenfreie Variante, mit Brot von Aera, bestellt werden, es gibt leckere vegetarische und vegane Optionen und alles ist saisonal und regional, weshalb die Karte regelmäßig wechselt.
+Address: Bergmannstraße 52, 10961 Berlin-Kreuzberg
+Cuisine: Britisch, Brunch
+Recommended Dishes: British Breakfast, Grapefruit-Prosecco
+
+Restaurant 4: Rocket + Basil
+Description: Im Rocket + Basil in Tiergarten tauchen wir in die wunderbare Welt der persischen Küche ein. Neben traditionellen persischen Gerichten, wie zum Beispiel köstlichem Eintopf, gibt es hier vor allem eine herrliche Mischung an internationalen Köstlichkeiten mit persischem Einfluss. Gibt es unter der Woche eine abwechslungsreiche Auswahl an Lunchgerichten, verwandelt sich das Café am Samstag und Sonntag zu einem hervorragenden Brunch-Café.
+Address: Lützowstraße 22, 10785 Berlin-Tiergarten
+Cuisine: Persisch, Brunch
+
+Restaurant 5: Blumental
+Description: Das im Frühjahr 2023 eröffnete Kreuzberger Frühstückslokal am Engelbecken ist ein Lichtblick im Umfeld des Kotti. Ganz im wörtlichen Sinn, denn der ausgedehnte, helle Innenraum mit seinen vielen Pflanzen und einzelnen Farbsprenklern gleicht einer kleinen Oase. Auf der Karte stehen verschiedene Frühstücks- und Brunchteller – stets vegan, aber auf Wunsch mit Ei – und dazu verschiedenste Kuchenkreationen.
+Address: Engeldamm 64, 10179 Berlin-Kreuzberg
+Cuisine: Vegan, Brunch
+
+Restaurant 6: Gorilla Bäckerei
+Description: Die Schöneberger Dependance der Gorilla Bäckerei, direkt am EUREF Campus, bietet am Wochenende neben köstlichen Backwaren und saftiger Pizza einen ausgewogenen à la carte Brunch. Im weitläufigen Innenraum mit seinen hohen Wänden, großen Fenstern und Holzelementen oder bei gutem Wetter auf der großen Terrasse, lassen sich hier herzhaft belegte Brioches, Porridges, Granola und vieles mehr genießen.
+Address: 10829 Berlin-Schöneberg
+Cuisine: Bäckerei, Brunch
+
+Restaurant 7: Benedict
+Description: Ein Ort, an dem beim Thema Frühstück kein Weg vorbeiführt. Gleich von 8 bis 22 Uhr bekommt man hier wirklich alles, was man sich zum Start in den Tag (oder auch zum Ausklang) nur vorstellen kann. Die süßen und herzhaften Kreationen sind international inspiriert, angefangen mit den vermutlich dicksten und fluffigsten Pancakes der Stadt bis hin zur Eisbein-Stulle oder opulenten Arrangements.
+Address: Uhlandstraße 49, 10719 Berlin-Wilmersdorf
+Cuisine: International, Frühstück
+Recommended Dishes: Pancakes, Eisbein-Stulle
+
+Restaurant 8: Frea Bakery
+Description: Genau wie im Restaurant Frea wird auch in der Frea Bakery nachhaltig, tierproduktfrei und gesund gekocht. Hier gibt es eine große Auswahl an veganen Backwaren und Frühstücksoptionen.
+Address: Nicht angegeben
+Cuisine: Vegan, Bäckerei
+
+--- FROM https://tracksandthecity.de/berlin-fruehstueck-und-brunch/ ---
+
+Restaurant 1: Distrikt Coffee
+Description: Den besten French Toast Berlins, ach was, ganz Deutschlands, bekommst du im Distrikt Coffee. Ich lehne mich damit weit aus dem Fenster? Vermutlich, denn gerade in Berlin gibt es harte Konkurrenz an der Arme-Ritter-Front. Wer aber einmal den French Toast mit Blaubeerkompott, karamellisierten Walnüssen und reichlich Créme Fraiche und Ahornsirup probiert hat, wird mir vermutlich zustimmen. Ein paar weitere Gerichte wie Salsiccia- und Kichererbsenragout oder geräucherter Makrelenbagel beweisen den Mut zu Unkonventionellem, die klassische Avocado auf Sauerteigbrot gibt’s aber auch – schließlich sind wir hier immer noch in Berlin-Mitte. Das Frühstück im Distrikt Coffee wird von Montag bis Samstag serviert. Einfach vorbeikommen, reserviert wird nicht.
+Address: Bergstraße 68
+City: Berlin
+Cuisine: Café
+Price Range: €€
+Recommended Dishes: French Toast, Salsiccia-Ragout, Kichererbsenragout, geräucherter Makrelenbagel, Avocado auf Sauerteigbrot
+Rating: N/A
+
+--- FROM https://www.1000thingsmagazine.com/de/a/1665276/brunch-in-berlin/ ---
+
+Restaurant 1: Frühstück 3000
+Description: Frühstück 3000 in Berlin ist ein wahres Frühstücksparadies, das mit kreativen und vielseitigen Gerichten begeistert. Von herzhaften und süßen Frühstücksgerichten bis hin zu kreativen Ei-Variationen könnt ihr hier ausgiebig schlemmen. Wer etwas Ausgefallenes sucht, sollte die Schokoladen Stachelbeer Trifle probieren oder den French Toast mit Creme Brûlée. Oder ihr bestellt euch den leckeren Frühstücksburrito mit BBQ-Pilze, Tofu-Rührei, Salsa Verde, eingelegte Gurken und Kartoffeln.
+Address: Bülowstraße 101, 10783 Berlin
+Cuisine: Breakfast
+Recommended Dishes: Schokoladen Stachelbeer Trifle, French Toast mit Creme Brûlée, Frühstücksburrito
+
+Restaurant 2: Blumental
+Description: Nahe dem Engeldamm, etwas abseits vom trubeligen Kottbusser Tor, befindet sich das Blumental – ein lichtdurchflutetes Frühstückscafé mit großen Fenstern. Die liebevoll gestaltete Einrichtung mit Pflanzen und bunten Holzstühlen lädt zum Verweilen und Entspannen ein. Auf der Karte locken kreative Gerichte wie Pink Pancakes, das „Lax“-Sauerteigbrot mit Karottenlachs und „Amore Ajvar“ mit Auberginenpaste – und das alles rein vegan.
+Address: Engeldamm 64, 10179 Berlin
+Cuisine: Vegan Breakfast
+Recommended Dishes: Pink Pancakes, Lax Sauerteigbrot, Amore Ajvar
+
+Restaurant 3: 21gramm
+Description: Das Café 21gramm, das in einem ehemaligen Friedhofsgebäude an der Hermannstraße untergebracht ist, serviert euch leckere Brunch-Gerichte in Kapellenambiente. Probiert hier unbedingt das Shakshuka oder die Croque Madame auf Brioche mit Schinken, Gruyère, Spiegelei und grünem Salat.
+Address: Hermannstraße 179, 12049 Berlin
+Cuisine: Brunch
+Recommended Dishes: Shakshuka, Croque Madame, Armer Ritter
+
+Restaurant 4: Café au Lait
+Description: Für alle Breakfast-Lovers bietet auch das Café au Lait in Wilmersdorf ein wahres Verwöhnprogramm. Das Interieur ist modern und warm, mit einer Sofa-Lounge, die perfekt zum Zurücklehnen und Genießen einlädt. Ob Pancakes, Avocado-Toast oder kreative Bowls – hier gibt es für jeden Geschmack das Richtige.
+Address: Kantstraße 110, 10627 Berlin
+Cuisine: Breakfast
+Recommended Dishes: Café au Lait Frühstück für zwei, Porridge Bowl
+
+--- FROM https://www.top10berlin.de/en/cat/eating-257/sunday-brunch-1158 ---
+
+Restaurant 1: Sunday brunch at martas Restaurant Alvis
+Description: Sunday brunch at martas Restaurant Alvis, a gourmet experience, perfect for a get-together with friends and family in a central location.
+City: Mitte
+Rating: 4.9
+
+Restaurant 2: The Reed
+Description: Enjoy a healthy Sunday brunch at The Reed at Alexanderplatz in Berlin-Mitte with live DJ music.
+City: Mitte
+Rating: 4.6
+
+Restaurant 3: Anjoy
+Description: Every Sunday the Vietnamese restaurant Anjoy offers an Asian brunch buffet in Berlin-Prenzlauer Berg.
+City: Prenzlauer Berg
+Rating: 4.6
+
+Restaurant 4: Cappuccino Grand Café
+Description: The Cappuccino Grand Café is a breakfast paradise with a large selection of healthy options in Berlin Mitte.
+City: Mitte
+Rating: 4.6
+
+Restaurant 5: Restaurant Sæson
+Description: The Restaurant Sæson at the Hotel Lulu Guldsmeden in Berlin-Tiergarten offers fresh, international cuisine. A highlight of the Sæson is the Sunday brunch with international delicacies.
+City: Tiergarten
+Rating: 4.6
+
+Restaurant 6: Café Restaurant Morgenland
+Description: Café Morgenland in Berlin-Kreuzberg is well known and loved for its delicious brunch. Here you can get oriental and international specialties.
+City: Kreuzberg
+Rating: 4.5
+
+Restaurant 7: Eierschale Dahlem
+Description: A classic among the Berlin brunch locations is Eierschale in Berlin-Dahlem.
+City: Dahlem
+Rating: 4.4
+
+Restaurant 8: Mövenpick Restaurant Zur Historischen Mühle
+Description: The Sunday breakfast brunch at Mövenpick Restaurant in Potsdam nearby the famous royal palace Sanssouci is a dream came true for brunch lovers.
+City: Brandenburg
+Rating: 4.2
+
+Restaurant 9: Park Café Pusteblume
+Description: The Cafe-Restaurant Pusteblume is situated right next to the green opening of Volkspark in Schöneberg-Wilmersdorf.
+City: Wilmersdorf
+Rating: 4.2
+
+Restaurant 10: Casalot
+Description: A large selection of Meze, the Jordan starters, can be found on the Casalot's menu. Grilled vegetables, spicy lamb spits from the charcoal grill, chicken liver on pomegranate sauce or a traditional dish from a Moroccan tajine will tingle your taste buds.
+City: Mitte
+Rating: 3.9
+
+--- FROM https://www.visitberlin.de/en/breakfast-brunch ---
+
+<html><body><div><div class="teaser-search__text"><p>
+        
+    Distrikt Coffee is a trendy meeting point in Mitte, where the coffee comes from small Berlin roasteries and is prepared by trained baristas. The menu is dedicated to trendy superfood, with ingredients such as acai, chia seeds and goji berries. If the weather's good, outdoor areas are available, but...
+
+
+  
+                  </p><p class="nopr"> 		<span class="icon-link icon-link--arrow"><b class="icon-link__label">Read more</b><svg role="presentation"><use xlink:href="/themes/custom/visitberlin/build/svg-sprite/icons.svg#vb-arrow--right"></use></svg></span> </p>
+        
+                      </div>
+    
+  </div></body></html>
+
+--- FROM https://www.timeout.com/berlin/restaurants/best-brunch-in-berlin ---
+
+<html><body><div><div id="content" class="_annotation_vyjtl_78 _content_1t3mx_1 contentAnnotation" data-component="annotation" data-testid="annotation_testID"><p><span>So, you’re in <a href="https://www.timeout.com/berlin">Berlin</a> for the weekend, and you’ve just experienced its nightlife scene for the very first time. Chances are you’re feeling a little worse for wear, and you’re in desperate need of some buttery eggs, some innocuous protein and of course, some avocado. Yep, you’re in need of some brunch. And lucky for you, Berlin has it in buckets. </span></p>
+<p><span>From Insta-worthy vegan doughnuts to Lebanese spreads, there’s a million and one different places to get your fix in the city, but only a selection of them are really, really great. So we’ve picked the best brunch spots in town that are worth the trip (and your hard-earned cash). So put on those sunnies, find a spot in the sun and get that flat white down ya. You’ll feel better in no time. </span></p>
+<p><strong>RECOMMENDED: <br>🍴 The best <a href="https://www.timeout.com/berlin/restaurants/best-restaurants-in-berlin">restaurants in Berlin<br></a>📍 The best <a href="https://www.timeout.com/berlin/things-to-do/best-things-to-do-in-berlin">things to do in Berlin <br></a>🎨 The best <a href="https://www.timeout.com/berlin/things-to-do/best-art-museums-and-galleries-in-berlin">art galleries in Berlin</a><a href="https://www.timeout.com/berlin/things-to-do/best-museums-in-berlin"><br></a>🏘️ The best <a href="https://www.timeout.com/berlin/hotels/the-best-airbnb-venues-in-berlin">Airbnbs in Berlin</a></strong></p>
+<meta charset="utf-8">
+<p><em><span mce-data-marked="1">This guide was recently updated by <a href="https://www.timeout.com/profile/kate-bettes">Kate Bettes</a>, a writer based in Berlin</span></em><em><span>. At Time Out, all of our </span></em><a href="https://www.timeout.com/travel/travel-guides"><em><span>travel guides</span></em></a><em><span> are written by local writers who know their cities inside out. For more about how we curate, see our </span></em><a href="https://www.timeout.com/about/editorial-guidelines"><em><span>editorial guidelines</span></em></a><em><span>. </span></em></p></div></div></body></html>
+
+--- FROM https://www.berliner-zeitung.de/panorama/geheime-innenhoefe-und-bluehende-gaerten-die-besten-orte-in-berlin-zum-brunch-li.2344129 ---
+
+<html><body><div><div data-testid="articleBody" id="articleBody" class="article_body__6Oq3d"><p class="article_paragraph__hXYKJ article_paragraph_end-of-article-icon__tzjPO">Die Sommerferien haben begonnen, die <a href="https://www.berliner-zeitung.de/stil-individualitaet/last-minute-shopping-vor-dem-urlaub-drei-tolle-adressen-in-berlin-mitte-li.2340253">Urlaubszeit</a> bricht an: Endlich kann sich Berlin von seiner charmanten Seite zeigen. So zumindest die große Hoffnung, nachdem sich die Hauptstadt wochenlang in dicke Wolken gehüllt hat und von nicht enden wollenden <a href="https://www.berliner-zeitung.de/panorama/regenwetter-in-berlin-in-diesen-5-cafes-koennen-sie-sich-trotzdem-eine-gute-zeit-machen-li.2339799">Regenschauern</a> geplagt wurde.<br><br>Zum Glück verspricht der Wetterbericht jetzt den Sommer, nach dem wir uns alle in den vergangenen Wochen gesehnt haben. Da die Sonnenstrahlen jetzt besonders wertvoll sind, bietet es sich an, direkt morgens ein gemütliches Plätzchen im Freien zum Brunchen aufzusuchen. Wir haben eine Liste mit den fünf schönsten Cafés zusammengestellt, in denen man idyllisch draußen sitzen kann.</p><p class="article_end-of-content__SEkdd" id="endOfContent"></p></div></div></body></html>
+
+--- FROM https://www.tip-berlin.de/essen-trinken/fruehstueck/brunch-berlin/ ---
+
+<html><body><div><div class="entry-content">
+                
+<p>Brunch in Berlin ist ein Happening. Hier bleibt man gern lange wach und am nächsten Tag entsprechend lange im Bett. Und dann? Braucht es eine zünftige Stärkung! Es gibt viele gute Brunch-Restaurants in Berlin, und ob die Eier nun pochiert oder als Benedikt verkauft werden, ist uns am Ende völlig egal. Hauptsache, es schmeckt. Von deftig bis hip: Das sind die besten Orte für Brunch in Berlin. </p>
+
+
+
+<hr class="wp-block-separator has-css-opacity">
+
+
+
+<h2 class="wp-block-heading">Brunch in Berlin: Bei YaMe NumNums schmeckt’s australisch- südostasiatisch</h2>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="" alt="Brunch in Berlin Südostasien meets Australien: Der Brunch bei YaMe NumNums überrascht mit besonderen Geschmackswelten." class="wp-image-4013449" data-lazy-srcset="https://www.tip-berlin.de/wp-content/uploads/2020/07/yame_numnums_hospitality_digital_gmbh_metro_ag_d28725a5-2970.jpg 1500w, https://www.tip-berlin.de/wp-content/uploads/2020/07/yame_numnums_hospitality_digital_gmbh_metro_ag_d28725a5-2970-200x133.jpg 200w, https://www.tip-berlin.de/wp-content/uploads/2020/07/yame_numnums_hospitality_digital_gmbh_metro_ag_d28725a5-2970-320x213.jpg 320w, https://www.tip-berlin.de/wp-content/uploads/2020/07/yame_numnums_hospitality_digital_gmbh_metro_ag_d28725a5-2970-350x233.jpg 350w, https://www.tip-berlin.de/wp-content/uploads/2020/07/yame_numnums_hospitality_digital_gmbh_metro_ag_d28725a5-2970-760x507.jpg 760w, https://www.tip-berlin.de/wp-content/uploads/2020/07/yame_numnums_hospitality_digital_gmbh_metro_ag_d28725a5-2970-290x193.jpg 290w, https://www.tip-berlin.de/wp-content/uploads/2020/07/yame_numnums_hospitality_digital_gmbh_metro_ag_d28725a5-2970-735x490.jpg 735w" data-lazy-sizes="(max-width: 1500px) 100vw, 1500px" data-lazy-src="https://www.tip-berlin.de/wp-content/uploads/2020/07/yame_numnums_hospitality_digital_gmbh_metro_ag_d28725a5-2970.jpg"><noscript><img decoding="async" src="https://www.tip-berlin.de/wp-content/uploads/2020/07/yame_numnums_hospitality_digital_gmbh_metro_ag_d28725a5-2970.jpg" alt="Brunch in Berlin Südostasien meets Australien: Der Brunch bei YaMe NumNums überrascht mit besonderen Geschmackswelten." class="wp-image-4013449" srcset="https://www.tip-berlin.de/wp-content/uploads/2020/07/yame_numnums_hospitality_digital_gmbh_metro_ag_d28725a5-2970.jpg 1500w, https://www.tip-berlin.de/wp-content/uploads/2020/07/yame_numnums_hospitality_digital_gmbh_metro_ag_d28725a5-2970-200x133.jpg 200w, https://www.tip-berlin.de/wp-content/uploads/2020/07/yame_numnums_hospitality_digital_gmbh_metro_ag_d28725a5-2970-320x213.jpg 320w, https://www.tip-berlin.de/wp-content/uploads/2020/07/yame_numnums_hospitality_digital_gmbh_metro_ag_d28725a5-2970-350x233.jpg 350w, https://www.tip-berlin.de/wp-content/uploads/2020/07/yame_numnums_hospitality_digital_gmbh_metro_ag_d28725a5-2970-760x507.jpg 760w, https://www.tip-berlin.de/wp-content/uploads/2020/07/yame_numnums_hospitality_digital_gmbh_metro_ag_d28725a5-2970-290x193.jpg 290w, https://www.tip-berlin.de/wp-content/uploads/2020/07/yame_numnums_hospitality_digital_gmbh_metro_ag_d28725a5-2970-735x490.jpg 735w" sizes="(max-width: 1500px) 100vw, 1500px"></noscript><figcaption class="wp-element-caption">Südostasien meets Australien: Der Brunch bei YaMe NumNums überrascht mit besonderen Geschmackswelten. Foto: Giovanni Dominice/Fuat Arslan</figcaption></figure>
+
+
+
+<p>Im YaMe NumNums verschmilzt Brunch nach australischer Art mit südostasiatischen Aromen. Klassiker wie Brioche und French Toast mit Speck werden mit Kimchi und Ingwersirup, thailändischem Basilikum, Tofu-Tempura und Ingwer kombiniert. Dazu gibt es Jasmintee oder vietnamesischem Kaffee – und mittlerweile <a href="https://www.tip-berlin.de/essen-trinken/restaurants/yame-numnums-neukoelln/" target="_blank" rel="noreferrer noopener">auch Sushi. Das lest ihr in unserem Artikel übers YaMe NumNums</a>. </p>    
+    
+
+
+
+<ul class="wp-block-list">
+<li><strong>YaMe NumNums</strong> Flughafenstraße 46, Neukölln, Sa+So 10-15 Uhr, Tel. 0177/32 47 05 7, <a href="http://yamenumnums.eatbu.com/" target="_blank" rel="noreferrer noopener">online</a></li>
+</ul>
+
+
+
+<hr class="wp-block-separator has-css-opacity">
+
+
+
+<h2 class="wp-block-heading">Für deftigen Brunch und einen Kater-Cocktail zu Geist im Glas</h2>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="" alt="Brunch in Berlin Zum leckeren Brunch bestellt man bei Geist im Glas am besten eine Bloody Mary!" class="wp-image-4013446" data-lazy-srcset="https://www.tip-berlin.de/wp-content/uploads/2020/07/summer-brunch_c_ooooh_berlin.jpeg 1500w, https://www.tip-berlin.de/wp-content/uploads/2020/07/summer-brunch_c_ooooh_berlin-200x199.jpeg 200w, https://www.tip-berlin.de/wp-content/uploads/2020/07/summer-brunch_c_ooooh_berlin-320x319.jpeg 320w, https://www.tip-berlin.de/wp-content/uploads/2020/07/summer-brunch_c_ooooh_berlin-251x250.jpeg 251w, https://www.tip-berlin.de/wp-content/uploads/2020/07/summer-brunch_c_ooooh_berlin-547x545.jpeg 547w, https://www.tip-berlin.de/wp-content/uploads/2020/07/summer-brunch_c_ooooh_berlin-290x289.jpeg 290w, https://www.tip-berlin.de/wp-content/uploads/2020/07/summer-brunch_c_ooooh_berlin-735x732.jpeg 735w" data-lazy-sizes="(max-width: 1500px) 100vw, 1500px" data-lazy-src="https://www.tip-berlin.de/wp-content/uploads/2020/07/summer-brunch_c_ooooh_berlin.jpeg"><noscript><img decoding="async" src="https://www.tip-berlin.de/wp-content/uploads/2020/07/summer-brunch_c_ooooh_berlin.jpeg" alt="Brunch in Berlin Zum leckeren Brunch bestellt man bei Geist im Glas am besten eine Bloody Mary!" class="wp-image-4013446" srcset="https://www.tip-berlin.de/wp-content/uploads/2020/07/summer-brunch_c_ooooh_berlin.jpeg 1500w, https://www.tip-berlin.de/wp-content/uploads/2020/07/summer-brunch_c_ooooh_berlin-200x199.jpeg 200w, https://www.tip-berlin.de/wp-content/uploads/2020/07/summer-brunch_c_ooooh_berlin-320x319.jpeg 320w, https://www.tip-berlin.de/wp-
+
+--- FROM https://all.accor.com/a/de/limitless/thematics/luxury-travel/luxus-brunch-berlin.html ---
+
+<html><body><div><div class="ace-paragraph__content"><p>In der Cafébar <i>No Fire no glory, </i>Nähe <b>Kollwitzplatz</b>, wird Kaffeekultur vom Feinsten zelebriert. Die Kaffeebohnen werden handgeerntet, sorgfältig aufbereitet, direkt gehandelt und in kleinen Trommelröstern schonend langsam bei niedrigen Temperaturen hell geröstet. Bei keinem Filterkaffee und Espresso liegt die Röstung mehr als 15 Tage zurück, die Bohnen werden erst nach der Bestellung gemahlen. Dann ist der Brunch neben den Specialty Coffees hier womöglich Nebensache? Von wegen! Die Menükarte ist klein, aber köstlich. Wer könnte Speisen mit den Namen wie „Kurkuma Granola“, „Paradisi Beetichoke“ oder „The Bomb“ auch widerstehen?</p>
+</div>
+        
+        
+    </div></body></html>
