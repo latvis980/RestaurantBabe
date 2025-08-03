@@ -250,21 +250,35 @@ class LangChainOrchestrator:
             return {**x, "search_results": []}
 
     def _scrape_step(self, x):
-        """Enhanced scrape step with smart restaurant scraper"""
+        """
+        ENHANCED: Updated scrape step to handle hybrid mode properly
+        """
         try:
-            # Check if we should skip scraping (database branch)
-            if x.get("content_source") == "database":
-                logger.info("⏭️ SKIPPING SCRAPING - using database content")
+            content_source = x.get("content_source", "unknown")
+
+            # Check if we should skip scraping (database-only branch)
+            if content_source == "database":
+                logger.info("⏭️ SKIPPING SCRAPING - using database-only content")
                 logger.info("⏭️ → NO FILES SENT TO SUPABASE MANAGER (using existing data)")
                 return {**x, "scraped_results": []}
 
-            logger.info("🤖 SMART SCRAPING PIPELINE STARTING")  # ENHANCED
+            # For hybrid and web_search, we need to scrape
+            logger.info("🤖 SMART SCRAPING PIPELINE STARTING")
+
+            if content_source == "hybrid":
+                logger.info("🔄 → HYBRID MODE: Will combine with preserved database results")
+            else:
+                logger.info("🌐 → WEB-ONLY MODE: Fresh web search results")
+
             logger.info("🤖 → WILL SEND FILES TO SUPABASE MANAGER AFTER SCRAPING")
 
             search_results = x.get("search_results", [])
 
             if not search_results:
                 logger.warning("⚠️ No search results to scrape")
+                # For hybrid mode, this is OK - we still have database results
+                if content_source == "hybrid":
+                    logger.info("🔄 Hybrid mode: No web results to scrape, will use database results only")
                 return {**x, "scraped_results": []}
 
             def run_scraping():
@@ -308,28 +322,43 @@ class LangChainOrchestrator:
             }
 
         except Exception as e:
-            logger.error(f"❌ Error in smart scraping step: {e}")
+            logger.error(f"❌ Error in enhanced scraping step: {e}")
             return {**x, "scraped_results": []}
 
     def _edit_step(self, x):
         """
-        FIXED: Updated to use correct parameter names for EditorAgent
+        ENHANCED: Updated to handle new restaurant field names and hybrid mode
+
+        Now handles:
+        - database_restaurants_final: 4+ sufficient restaurants (database-only)
+        - database_restaurants_hybrid: 1-3 restaurants for hybrid mode
+        - scraped_results: web search results
+        - Hybrid mode: combines database_restaurants_hybrid + scraped_results
         """
         try:
-            logger.info("✏️ ROUTING TO EDITOR AGENT")
+            logger.info("✏️ ENHANCED ROUTING TO EDITOR AGENT")
 
             content_source = x.get("content_source", "unknown")
             raw_query = x.get("raw_query", x.get("query", ""))
             destination = x.get("destination", "Unknown")
 
+            # NEW: Get enhanced restaurant field names
+            database_restaurants_final = x.get("database_restaurants_final", [])
+            database_restaurants_hybrid = x.get("database_restaurants_hybrid", [])
+            scraped_results = x.get("scraped_results", [])
+
+            logger.info(f"📊 Content analysis:")
+            logger.info(f"   database_restaurants_final: {len(database_restaurants_final)}")
+            logger.info(f"   database_restaurants_hybrid: {len(database_restaurants_hybrid)}")
+            logger.info(f"   scraped_results: {len(scraped_results)}")
+            logger.info(f"   content_source: {content_source}")
+
             if content_source == "database":
-                # DATABASE BRANCH: Process database restaurants
-                logger.info("🗃️ Processing DATABASE restaurants")
+                # DATABASE-ONLY BRANCH: Use database_restaurants_final
+                logger.info("🗃️ Processing DATABASE-ONLY content")
 
-                database_restaurants = x.get("database_restaurants", [])  # STANDARDIZED NAME
-
-                if not database_restaurants:
-                    logger.warning("⚠️ No database results to process")
+                if not database_restaurants_final:
+                    logger.warning("⚠️ No final database results to process")
                     return {
                         **x,
                         "raw_query": raw_query,
@@ -337,21 +366,42 @@ class LangChainOrchestrator:
                         "follow_up_queries": []
                     }
 
-                # FIXED: Use correct parameter names
+                # Use database_restaurants_final for database-only route
                 edit_output = self.editor_agent.edit(
                     scraped_results=None,
-                    database_restaurants=database_restaurants,
+                    database_restaurants=database_restaurants_final,  # Use final results
                     raw_query=raw_query, 
                     destination=destination
                 )
 
-                logger.info(f"✅ Formatted {len(edit_output.get('edited_results', {}).get('main_list', []))} database restaurants")
+                logger.info(f"✅ Formatted {len(edit_output.get('edited_results', {}).get('main_list', []))} final database restaurants")
 
-            else:
-                # WEB SEARCH BRANCH: Process scraped content
-                logger.info("🌐 Processing SCRAPED content")
+            elif content_source == "hybrid":
+                # HYBRID BRANCH: Combine database_restaurants_hybrid + scraped_results
+                logger.info("🔄 Processing HYBRID content (database + web)")
 
-                scraped_results = x.get("scraped_results", [])
+                if not database_restaurants_hybrid and not scraped_results:
+                    logger.warning("⚠️ No hybrid content to process")
+                    return {
+                        **x,
+                        "raw_query": raw_query,
+                        "edited_results": {"main_list": []},
+                        "follow_up_queries": []
+                    }
+
+                # Pass both database hybrid results AND scraped results
+                edit_output = self.editor_agent.edit(
+                    scraped_results=scraped_results,
+                    database_restaurants=database_restaurants_hybrid,  # Use hybrid results
+                    raw_query=raw_query,
+                    destination=destination
+                )
+
+                logger.info(f"✅ Processed hybrid content: {len(database_restaurants_hybrid)} database + {len(scraped_results)} scraped")
+
+            elif content_source == "web_search":
+                # WEB-ONLY BRANCH: Use only scraped_results
+                logger.info("🌐 Processing WEB-ONLY content")
 
                 if not scraped_results:
                     logger.warning("⚠️ No scraped results to process")
@@ -362,15 +412,40 @@ class LangChainOrchestrator:
                         "follow_up_queries": []
                     }
 
-                # FIXED: Use correct parameter names
+                # Use only scraped results for web-only route
                 edit_output = self.editor_agent.edit(
                     scraped_results=scraped_results,
-                    database_restaurants=None,
+                    database_restaurants=None,  # No database content
                     raw_query=raw_query,
                     destination=destination
                 )
 
-                logger.info(f"✅ Processed {len(edit_output.get('edited_results', {}).get('main_list', []))} restaurants from scraped content")
+                logger.info(f"✅ Processed {len(edit_output.get('edited_results', {}).get('main_list', []))} restaurants from web content")
+
+            else:
+                # FALLBACK: Try to process whatever we have
+                logger.warning(f"⚠️ Unknown content_source: {content_source} - attempting fallback")
+
+                # Check for legacy database_restaurants field
+                legacy_database_restaurants = x.get("database_restaurants", [])
+
+                if database_restaurants_final:
+                    database_content = database_restaurants_final
+                elif database_restaurants_hybrid:
+                    database_content = database_restaurants_hybrid
+                elif legacy_database_restaurants:
+                    database_content = legacy_database_restaurants
+                else:
+                    database_content = None
+
+                edit_output = self.editor_agent.edit(
+                    scraped_results=scraped_results if scraped_results else None,
+                    database_restaurants=database_content,
+                    raw_query=raw_query,
+                    destination=destination
+                )
+
+                logger.info("✅ Fallback processing completed")
 
             return {
                 **x,
@@ -380,7 +455,8 @@ class LangChainOrchestrator:
             }
 
         except Exception as e:
-            logger.error(f"❌ Error in edit step: {e}")
+            logger.error(f"❌ Error in enhanced edit step: {e}")
+            logger.error(f"Available data keys: {list(x.keys())}")
             dump_chain_state("edit_error", {"error": str(e), "available_keys": list(x.keys())}, error=e)
             return {
                 **x,
