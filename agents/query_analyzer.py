@@ -37,7 +37,7 @@ class QueryAnalyzer:
              Search query: "new restaurants in London 2025"    
 
         GUIDELINES:
-        1. Extract the destination (city/country) from the query
+        1. Extract the destination (only the city name, standartized international form) from the query. If the user is using a shortened name or a nickname,like LA, Frisco or Big Apple, convert it to the full city name. 
         2. Determine if the destination is English-speaking or not  
         3. For USA destinations add the word "media" to the search query
         4. For non-English speaking destinations, identify the local language
@@ -48,7 +48,7 @@ class QueryAnalyzer:
         OUTPUT FORMAT:
         Respond with a JSON object containing:
         {{
-          "destination": "extracted city/country", 
+          "destination": "extracted city", 
           "is_english_speaking": true/false,
           "is_usa": true/false,
           "local_language": "language name (if not English-speaking)",
