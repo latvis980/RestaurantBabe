@@ -315,7 +315,7 @@ Description: {description_preview}
         """
         ENHANCED: Handle web search route with hybrid mode support
 
-        Determines whether to preserve selected restaurants for hybrid or discard them
+        FIXED: Ensure search queries are properly passed to orchestrator search step
         """
         reasoning = evaluation.get('reasoning', 'Database insufficient')
         logger.info(f"🌐 Triggering web search workflow: {reasoning}")
@@ -340,8 +340,24 @@ Description: {description_preview}
             if self.brave_search_agent:
                 logger.info("🚀 Executing web search through BraveSearchAgent")
 
-                # Prepare search data
+                # FIXED: Prepare search data with multiple query formats for compatibility
                 search_queries = pipeline_data.get('search_queries', [])
+                english_queries = pipeline_data.get('english_queries', [])
+                local_queries = pipeline_data.get('local_queries', [])
+
+                # Ensure we have search queries in the expected format
+                if not search_queries and (english_queries or local_queries):
+                    search_queries = english_queries + local_queries
+                    logger.info(f"🔧 Combined queries for search: {len(english_queries)} English + {len(local_queries)} local")
+
+                # Fallback: generate from raw query if no queries available
+                if not search_queries:
+                    raw_query = pipeline_data.get('raw_query', '')
+                    destination = pipeline_data.get('destination', 'Unknown')
+                    if raw_query and destination != 'Unknown':
+                        search_queries = [f"best restaurants {raw_query} {destination}"]
+                        logger.info("🔧 Generated fallback search queries")
+
                 destination = pipeline_data.get('destination', 'Unknown')
                 query_metadata = {
                     'is_english_speaking': pipeline_data.get('is_english_speaking', True),
@@ -353,7 +369,7 @@ Description: {description_preview}
 
                 logger.info(f"✅ Web search completed: {len(search_results)} results found")
 
-                # ENHANCED: Return with proper restaurant splitting
+                # ENHANCED: Return with proper restaurant splitting and FIXED search query passing
                 return {
                     **pipeline_data,
                     "evaluation_result": {
@@ -373,6 +389,10 @@ Description: {description_preview}
                     "database_restaurants_hybrid": database_restaurants_hybrid,  # NEW: Hybrid results  
                     "database_restaurants": database_restaurants_hybrid,  # LEGACY: Maintain compatibility
                     "raw_query": pipeline_data.get("raw_query"),  # PRESERVE
+                    # FIXED: Ensure search queries are available for orchestrator search step
+                    "search_queries": search_queries,  # For orchestrator compatibility
+                    "english_queries": english_queries,  # Original format
+                    "local_queries": local_queries,  # Original format
                     "optimized_content": {
                         "database_restaurants": database_restaurants_hybrid,
                         "scraped_results": []  # Will be filled by scraper
@@ -380,6 +400,15 @@ Description: {description_preview}
                 }
             else:
                 logger.warning("⚠️ BraveSearchAgent not available - falling back to routing flags")
+
+                # FIXED: Ensure search queries are passed even without BraveSearchAgent
+                search_queries = pipeline_data.get('search_queries', [])
+                english_queries = pipeline_data.get('english_queries', [])
+                local_queries = pipeline_data.get('local_queries', [])
+
+                if not search_queries and (english_queries or local_queries):
+                    search_queries = english_queries + local_queries
+
                 # Return routing decision for main web search pipeline
                 return {
                     **pipeline_data,
@@ -399,6 +428,10 @@ Description: {description_preview}
                     "database_restaurants_hybrid": database_restaurants_hybrid,  # NEW: Hybrid or empty
                     "database_restaurants": database_restaurants_hybrid,  # LEGACY: Maintain compatibility
                     "raw_query": pipeline_data.get("raw_query"),  # PRESERVE
+                    # FIXED: Pass search queries to orchestrator
+                    "search_queries": search_queries,
+                    "english_queries": english_queries,
+                    "local_queries": local_queries,
                     "optimized_content": {
                         "database_restaurants": database_restaurants_hybrid,
                         "scraped_results": []

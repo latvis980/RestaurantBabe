@@ -202,7 +202,9 @@ class LangChainOrchestrator:
 
     def _search_step(self, x):
         """
-        CLEAN: Pass essential query analyzer metadata to search agent for intelligent routing
+        FIXED: Handle search queries properly for both English and local language searches
+
+        The search agent expects 'search_queries' parameter and handles the language categorization internally
         """
         try:
             logger.info("🔍 SEARCH STEP")
@@ -212,28 +214,52 @@ class LangChainOrchestrator:
                 logger.info("⏭️ Skipping web search - database provided sufficient results")
                 return {**x, "search_results": []}
 
-            # Get search queries and destination
-            search_queries = x.get("search_queries", [])
+            # FIXED: Get search queries from multiple possible sources
+            search_queries = []
             destination = x.get("destination", "Unknown")
 
-            if not search_queries or destination == "Unknown":
-                logger.warning("Missing search queries or destination for web search")
-                logger.warning(f"Available keys in x: {list(x.keys())}")
+            # Try different query field names based on where the search was triggered
+            if x.get("search_queries"):
+                # From query analyzer (original flow)
+                search_queries = x.get("search_queries", [])
+                logger.info("📝 Using search_queries from query analyzer")
+            elif x.get("english_queries") or x.get("local_queries"):
+                # From query analyzer (enhanced format)
+                english_queries = x.get("english_queries", [])
+                local_queries = x.get("local_queries", [])
+                search_queries = english_queries + local_queries
+                logger.info(f"📝 Combining queries: {len(english_queries)} English + {len(local_queries)} local")
+            else:
+                # Fallback: generate from raw query
+                raw_query = x.get("raw_query", x.get("query", ""))
+                if raw_query and destination != "Unknown":
+                    search_queries = [f"best restaurants {raw_query} {destination}"]
+                    logger.info("📝 Generated fallback search query from raw query")
+
+            # Validate we have queries and destination
+            if not search_queries:
+                logger.warning("❌ No search queries available")
+                logger.warning(f"Available keys: {list(x.keys())}")
                 return {**x, "search_results": []}
 
-            logger.info(f"🌐 Using {len(search_queries)} AI-generated search queries:")
+            if destination == "Unknown":
+                logger.warning("❌ No destination available for search")
+                return {**x, "search_results": []}
+
+            logger.info(f"🌐 Executing search with {len(search_queries)} queries:")
             for i, query in enumerate(search_queries, 1):
                 logger.info(f"  {i}. {query}")
 
-            # CLEAN: Prepare essential query analyzer metadata only
+            # Prepare query metadata for search agent (for language categorization)
             query_metadata = {
                 'is_english_speaking': x.get('is_english_speaking', True),
                 'local_language': x.get('local_language')
             }
 
-            logger.info(f"🧠 Passing query metadata to search agent")
+            logger.info(f"🧠 Query metadata: English-speaking={query_metadata['is_english_speaking']}, Local={query_metadata.get('local_language', 'None')}")
 
-            # Pass metadata to search agent for intelligent routing
+            # Execute search through search agent
+            # The search agent will handle language categorization internally
             search_results = self.search_agent.search(search_queries, destination, query_metadata)
 
             logger.info(f"✅ Web search completed: {len(search_results)} results")
@@ -246,7 +272,8 @@ class LangChainOrchestrator:
 
         except Exception as e:
             logger.error(f"❌ Error in search step: {e}")
-            logger.error(f"Available data: {x.keys()}")
+            logger.error(f"Available data keys: {list(x.keys())}")
+            logger.error(f"Query data: english_queries={x.get('english_queries', [])}, local_queries={x.get('local_queries', [])}, search_queries={x.get('search_queries', [])}")
             return {**x, "search_results": []}
 
     def _scrape_step(self, x):
