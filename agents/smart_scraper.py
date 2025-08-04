@@ -31,6 +31,7 @@ from bs4 import BeautifulSoup
 from readability import Document
 
 from agents.specialized_scraper import EaterTimeoutSpecializedScraper
+from utils.database_domain_intelligence import get_domain_intelligence_manager
 from agents.firecrawl_scraper import FirecrawlWebScraper
 from agents.content_sectioning_agent import ContentSectioningAgent
 from langchain_openai import ChatOpenAI
@@ -38,6 +39,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from utils.database import get_database
 
 logger = logging.getLogger(__name__)
+
+manager = get_domain_intelligence_manager()
 
 class ScrapingStrategy(Enum):
     """Scraping strategies aligned with database"""
@@ -230,12 +233,21 @@ EXAMPLES:
     async def _get_cached_strategy(self, domain: str) -> Optional[str]:
         """Get cached strategy from domain intelligence table"""
         try:
-            intelligence = self.database.get_domain_intelligence(domain)
-            if intelligence and intelligence.get('confidence', 0) > 0.6:
-                return intelligence.get('strategy')
+            from utils.database_domain_intelligence import get_domain_intelligence_manager
+
+            manager = get_domain_intelligence_manager()
+            url = f"https://{domain}/"
+
+            cached_strategy = manager.get_cached_strategy(url)
+
+            if cached_strategy:
+                logger.debug(f"🧠 Found cached strategy for {domain}: {cached_strategy}")
+
+            return cached_strategy
+
         except Exception as e:
-            logger.debug(f"Error fetching domain intelligence for {domain}: {e}")
-        return None
+            logger.debug(f"Error fetching cached strategy for {domain}: {e}")
+            return None
 
     async def _classify_strategy_with_ai(self, url: str) -> str:
         """Use AI to classify strategy for new domains"""

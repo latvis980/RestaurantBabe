@@ -1,11 +1,9 @@
-# main.py - Updated to use orchestrator singleton
+# main.py - Updated to use orchestrator singleton with domain intelligence
 import os
 import logging
 import time
 import traceback
-
 os.makedirs("debug_logs", exist_ok=True)
-
 import config
 from pydantic import config as pydantic_config
 from utils.orchestrator_manager import initialize_orchestrator
@@ -28,8 +26,17 @@ if hasattr(config, 'LANGSMITH_API_KEY') and config.LANGSMITH_API_KEY:
 else:
     logger.warning("LangSmith API key not found - tracing disabled")
 
-# Initialize database
+# Initialize databases
 initialize_db(config)
+
+# ADD THIS: Initialize domain intelligence database
+try:
+    from utils.database_domain_intelligence import initialize_domain_intelligence
+    initialize_domain_intelligence(config)
+    logger.info("✅ Domain intelligence database initialized")
+except Exception as e:
+    logger.warning(f"⚠️ Domain intelligence initialization failed: {e}")
+    logger.warning("Domain intelligence features will be disabled")
 
 def setup_orchestrator():
     """
