@@ -97,9 +97,10 @@ class WebScrapeTest:
                 f.write("=" * 60 + "\n")
                 search_start_time = time.time()
 
-                search_results = await self.search_agent.search_restaurants(
-                    analyzed_query, 
-                    force_search=True  # Force web search, bypass database
+                search_results = await self.search_agent.search(
+                    analyzed_query.get('search_queries', []), 
+                    analyzed_query.get('destination', 'Unknown'),
+                    analyzed_query  # Pass query metadata
                 )
                 search_time = time.time() - search_start_time
 
@@ -137,7 +138,13 @@ class WebScrapeTest:
                         "firecrawl_success_rate": 0.0
                     }
 
-                enriched_results = await self.scraper.scrape_search_results(search_results)
+                # Check if scraper method is async or sync
+                try:
+                    # Try async first (SmartRestaurantScraper is async)
+                    enriched_results = await self.scraper.scrape_search_results(search_results)
+                except TypeError:
+                    # Fallback to sync if not async
+                    enriched_results = self.scraper.scrape_search_results(search_results)
                 scraping_time = time.time() - scraping_start_time
 
                 f.write(f"Enhanced Processing Time: {scraping_time:.2f}s\n")

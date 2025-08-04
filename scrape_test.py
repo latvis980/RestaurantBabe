@@ -104,7 +104,7 @@ class ScrapeTest:
                 f.write("=" * 60 + "\n")
                 db_search_start_time = time.time()
 
-                database_results = await self.database_search_agent.search_restaurants(analyzed_query)
+                database_results = self.database_search_agent.search_and_evaluate(analyzed_query)
                 db_search_time = time.time() - db_search_start_time
                 pipeline_data['database_results'] = database_results
 
@@ -129,9 +129,11 @@ class ScrapeTest:
 
                 if database_results:
                     eval_start_time = time.time()
-                    evaluation_result = await self.dbcontent_evaluation_agent.evaluate_database_content(
-                        analyzed_query, database_results
-                    )
+                    evaluation_result = self.dbcontent_evaluation_agent.evaluate_and_route({
+                        **analyzed_query,
+                        'database_restaurants': database_results.get('database_restaurants', []),
+                        'raw_query': restaurant_query
+                    })
                     eval_time = time.time() - eval_start_time
                     pipeline_data['evaluation_result'] = evaluation_result
 
@@ -153,7 +155,11 @@ class ScrapeTest:
                     f.write("=" * 60 + "\n")
                     web_search_start_time = time.time()
 
-                    search_results = await self.search_agent.search_restaurants(analyzed_query)
+                    search_results = await self.search_agent.search(
+                        analyzed_query.get('search_queries', []), 
+                        analyzed_query.get('destination', 'Unknown'),
+                        analyzed_query  # Pass query metadata
+                    )
                     web_search_time = time.time() - web_search_start_time
                     pipeline_data['search_results'] = search_results
 
@@ -196,7 +202,13 @@ class ScrapeTest:
                             "firecrawl_success_rate": 0.0
                         }
 
-                    enriched_results = await self.scraper.scrape_search_results(search_results)
+                    # Check if scraper method is async or sync
+                    try:
+                        # Try async first (SmartRestaurantScraper is async)
+                        enriched_results = await self.scraper.scrape_search_results(search_results)
+                    except TypeError:
+                        # Fallback to sync if not async
+                        enriched_results = self.scraper.scrape_search_results(search_results)
                     scraping_time = time.time() - scraping_start_time
                     pipeline_data['enriched_results'] = enriched_results
 
@@ -350,10 +362,17 @@ class ScrapeTest:
                             all_content.append(content_item)
 
                 if all_content:
-                    # Process with editor agent
-                    editor_result = await self.editor_agent.process_search_results(
-                        analyzed_query, all_content
-                    )
+                    # Process with editor agent (check if it's async or sync)
+                    try:
+                        # Try async first
+                        editor_result = await self.editor_agent.process_search_results(
+                            analyzed_query, all_content
+                        )
+                    except TypeError:
+                        # Fallback to sync if not async
+                        editor_result = self.editor_agent.process_search_results(
+                            analyzed_query, all_content
+                        )
                     editor_time = time.time() - editor_start_time
                     pipeline_data['editor_result'] = editor_result
 
