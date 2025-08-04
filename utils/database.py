@@ -802,15 +802,6 @@ def get_user_preferences(user_id: str) -> Optional[Dict[str, Any]]:
     """Legacy user preferences (disabled in simplified schema)"""
     return None
 
-# Deprecated RAG functions (return safe defaults)
-def save_scraped_content(source_url: str, content: str, restaurant_mentions: Optional[List[str]] = None, source_domain: str = None) -> bool:
-    """DEPRECATED: RAG disabled in simplified schema"""
-    return True
-
-def search_similar_content(query: str, limit: int = 10) -> List[Dict[str, Any]]:
-    """DEPRECATED: Vector search disabled in simplified schema"""
-    return []
-
 # ============ BACKWARDS COMPATIBILITY FOR MAIN.PY ============
 
 # For main.py to work without changes
