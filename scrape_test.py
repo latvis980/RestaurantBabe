@@ -88,7 +88,7 @@ class ScrapeTest:
                 f.write("=" * 60 + "\n")
                 query_start_time = time.time()
 
-                analyzed_query = await self.query_analyzer.analyze_query(restaurant_query)
+                analyzed_query = self.query_analyzer.analyze(restaurant_query)
                 query_time = time.time() - query_start_time
                 pipeline_data['analyzed_query'] = analyzed_query
 
