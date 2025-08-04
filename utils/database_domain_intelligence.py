@@ -64,53 +64,44 @@ class DomainIntelligenceManager:
             **kwargs: Additional data like restaurants_found, content_length, etc.
 
         Returns:
-            bool: True if intelligence was saved successfully
+            bool: Success status
         """
         try:
             domain = self._extract_domain(url)
-            if not domain:
-                logger.warning(f"Could not extract domain from URL: {url}")
-                return False
+            current_time = datetime.now(timezone.utc).isoformat()
 
-            # Skip learning for specialized scraping (free strategy, no need to learn)
-            if scraping_method == "specialized":
-                logger.debug(f"🆓 Skipping domain intelligence for specialized scraping: {domain}")
-                return True
+            # Get existing domain data
+            existing_data = self.get_domain_intelligence(domain)
 
-            # Check if domain already exists
-            existing = self.supabase.table('domain_intelligence')\
-                .select('*')\
-                .eq('domain', domain)\
-                .execute()
-
-            if existing.data:
+            if existing_data:
                 # Update existing record
-                current = existing.data[0]
+                total_attempts = existing_data.get('total_attempts', 0) + 1
+                success_count = existing_data.get('success_count', 0) + (1 if scraping_success else 0)
 
-                # Calculate new statistics
-                total_attempts = current.get('total_attempts', 0) + 1
-                success_count = current.get('success_count', 0) + (1 if scraping_success else 0)
+                # Calculate new confidence and cost
                 confidence = success_count / total_attempts if total_attempts > 0 else 0
-
-                # Update strategy if this was successful (learn from success)
-                strategy_to_save = scraping_method if scraping_success else current.get('strategy', scraping_method)
-                cost_per_scrape = self._get_strategy_cost(strategy_to_save)
+                cost_per_scrape = self._get_strategy_cost(scraping_method)
 
                 update_data = {
-                    'strategy': strategy_to_save,
+                    'strategy': scraping_method,
                     'total_attempts': total_attempts,
                     'success_count': success_count,
                     'confidence': confidence,
                     'cost_per_scrape': cost_per_scrape,
-                    'updated_at': datetime.now(timezone.utc).isoformat()
+                    'last_scraped': current_time,
+                    'restaurants_found': kwargs.get('restaurants_found', existing_data.get('restaurants_found', 0)),
+                    'avg_content_length': kwargs.get('content_length', existing_data.get('avg_content_length', 0))
                 }
 
-                self.supabase.table('domain_intelligence')\
+                result = self.supabase.table('domain_intelligence')\
                     .update(update_data)\
                     .eq('domain', domain)\
                     .execute()
 
-                logger.debug(f"📊 Updated domain intelligence: {domain} -> {strategy_to_save} (confidence: {confidence:.2f})")
+                # Invalidate cache
+                self._invalidate_domain_cache(domain)
+
+                logger.debug(f"🔄 Updated domain intelligence for {domain}: {scraping_method} (confidence: {confidence:.2f})")
 
             else:
                 # Create new record
@@ -124,37 +115,30 @@ class DomainIntelligenceManager:
                     'success_count': 1 if scraping_success else 0,
                     'confidence': confidence,
                     'cost_per_scrape': cost_per_scrape,
-                    'created_at': datetime.now(timezone.utc).isoformat(),
-                    'updated_at': datetime.now(timezone.utc).isoformat()
+                    'first_seen': current_time,
+                    'last_scraped': current_time,
+                    'restaurants_found': kwargs.get('restaurants_found', 0),
+                    'avg_content_length': kwargs.get('content_length', 0)
                 }
 
-                self.supabase.table('domain_intelligence')\
+                result = self.supabase.table('domain_intelligence')\
                     .insert(insert_data)\
                     .execute()
 
-                logger.debug(f"➕ Created domain intelligence: {domain} -> {scraping_method} (confidence: {confidence:.2f})")
-
-            # Update cache
-            self._invalidate_domain_cache(domain)
+                logger.info(f"🆕 Created domain intelligence for {domain}: {scraping_method} (confidence: {confidence:.2f})")
 
             return True
 
         except Exception as e:
-            logger.error(f"❌ Error saving scrape result for {domain}: {e}")
+            logger.error(f"❌ Error saving scrape result for {url}: {e}")
             return False
-
-    # Legacy method for backward compatibility
-    def save_scrape_success(self, url: str, strategy: str, success: bool, restaurants_found: int = 0) -> bool:
-        """Legacy method - redirects to save_scrape_result for compatibility"""
-        return self.save_scrape_result(url, strategy, success, restaurants_found=restaurants_found)
 
     def batch_save_scrape_results(self, scrape_results: List[Dict[str, Any]]) -> int:
         """
-        Batch save multiple scraping results for efficiency
-        Compatible with smart scraper result format
+        Batch save multiple scrape results for efficiency
 
         Args:
-            scrape_results: List of result dicts with 'url', 'scraping_method', 'scraping_success', etc.
+            scrape_results: List of scrape result dictionaries
 
         Returns:
             int: Number of successfully saved results
@@ -162,49 +146,31 @@ class DomainIntelligenceManager:
         saved_count = 0
 
         for result in scrape_results:
-            try:
-                url = result.get('url')
-                scraping_method = result.get('scraping_method')  # Updated field name
-                scraping_success = result.get('scraping_success', False)  # Updated field name
+            url = result.get('url', '')
+            scraping_method = result.get('scraping_method', 'enhanced_http')
+            scraping_success = result.get('scraping_success', False)
 
-                # Handle legacy field names for backward compatibility
-                if not scraping_method:
-                    scraping_method = result.get('strategy')
-                if scraping_success is None:
-                    scraping_success = result.get('success', False)
-
-                # Convert strategy enum to string if needed
-                if hasattr(scraping_method, 'value'):
-                    scraping_method = scraping_method.value
-
-                if url and scraping_method:
-                    if self.save_scrape_result(url, scraping_method, scraping_success, **result):
-                        saved_count += 1
-
-            except Exception as e:
-                logger.warning(f"Error processing batch result: {e}")
-                continue
+            if self.save_scrape_result(url, scraping_method, scraping_success, **result):
+                saved_count += 1
 
         logger.info(f"💾 Batch saved {saved_count}/{len(scrape_results)} domain intelligence records")
         return saved_count
 
-    # ============ DOMAIN INTELLIGENCE RETRIEVAL ============
+    # ============ PRE-SCRAPE LOOKUP METHODS ============
 
     def get_cached_strategy(self, url: str) -> Optional[str]:
         """
-        Get cached strategy for a domain (used by smart scraper _get_cached_strategy)
-        Compatible with smart scraper pattern
+        Get cached scraping strategy for a URL (used BEFORE scraping)
+        Compatible with smart scraper _get_cached_strategy() pattern
 
         Args:
-            url: URL to get strategy for
+            url: The URL to get strategy for
 
         Returns:
-            str: Recommended strategy ('simple_http', 'enhanced_http', 'firecrawl') or None
+            str or None: Strategy name if cached and reliable, None otherwise
         """
         try:
             domain = self._extract_domain(url)
-            if not domain:
-                return None
 
             # Check cache first
             cached_data = self._get_from_domain_cache(domain)
@@ -242,7 +208,10 @@ class DomainIntelligenceManager:
             return None
 
         except Exception as e:
-                def get_domain_intelligence(self, domain: str) -> Optional[Dict[str, Any]]:
+            logger.error(f"❌ Error getting cached strategy for {url}: {e}")
+            return None
+
+    def get_domain_intelligence(self, domain: str) -> Optional[Dict[str, Any]]:
         """
         Get complete domain intelligence data for a domain
         Compatible with database.py interface
