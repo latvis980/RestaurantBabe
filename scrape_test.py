@@ -155,7 +155,7 @@ class ScrapeTest:
                     f.write("=" * 60 + "\n")
                     web_search_start_time = time.time()
 
-                    search_results = await self.search_agent.search(
+                    search_results = self.search_agent.search(
                         analyzed_query.get('search_queries', []), 
                         analyzed_query.get('destination', 'Unknown'),
                         analyzed_query  # Pass query metadata
