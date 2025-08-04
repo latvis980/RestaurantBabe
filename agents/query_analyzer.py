@@ -36,7 +36,30 @@ class QueryAnalyzer:
              Search query: "new restaurants in London 2025"    
 
         GUIDELINES:
-        1. Extract the destination (only the city name, standartized international form) from the query. IMPORTANT: If the name of the city has special characters (ñ, ç, é, è, ã, ô, ö, etc.), change them to basic Latin letters (n, c, e, a, o, etc.). If the user is using a shortened name or a nickname,like LA, Frisco or Big Apple, convert it to the full city name. 
+        1. Extract the destination (only the city name). 
+        
+        CRITICAL RULE FOR DESTINATION: Convert ALL special characters to basic Latin letters:
+           - ñ → n, ç → c, é → e, è → e, ê → e, ë → e
+           - á → a, à → a, â → a, ä → a, ã → a, å → a
+           - í → i, ì → i, î → i, ï → i
+           - ó → o, ò → o, ô → o, ö → o, õ → o, ø → o
+           - ú → u, ù → u, û → u, ü → u
+           - Remove any accent marks, tildes, cedillas, umlauts, etc.
+
+           EXAMPLES:
+           - "Olhão" → "Olhao"
+           - "São Paulo" → "Sao Paulo"  
+           - "Zürich" → "Zurich"
+           - "Málaga" → "Malaga"
+           - "Kraków" → "Krakow"
+           - "München" → "Munchen"
+
+           Also convert nicknames to full names:
+           - "LA" → "Los Angeles"
+           - "NYC" → "New York"
+           - "Frisco" → "San Francisco"
+           - "Big Apple" → "New York"
+        
         2. Determine if the destination is English-speaking or not  
         3. For USA destinations add the word "media" to the search query
         4. For non-English speaking destinations, identify the local language

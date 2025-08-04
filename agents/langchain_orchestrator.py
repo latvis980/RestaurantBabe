@@ -200,11 +200,14 @@ class LangChainOrchestrator:
             # Let the ContentEvaluationAgent handle error logic
             return self.dbcontent_evaluation_agent._handle_evaluation_error(x, e)
 
+    # Fix for agents/langchain_orchestrator.py _search_step method
+
     def _search_step(self, x):
         """
-        FIXED: Handle search queries properly for both English and local language searches
+        FIXED: Handle search queries properly and ensure destination flows correctly
 
-        The search agent expects 'search_queries' parameter and handles the language categorization internally
+        The issue was that destination could be lost when coming from content evaluation agent.
+        This fix ensures destination is preserved from multiple sources and passed correctly to search agent.
         """
         try:
             logger.info("🔍 SEARCH STEP")
@@ -214,9 +217,25 @@ class LangChainOrchestrator:
                 logger.info("⏭️ Skipping web search - database provided sufficient results")
                 return {**x, "search_results": []}
 
+            # FIXED: Get destination from multiple possible sources
+            destination = None
+
+            # Try to get destination from various pipeline sources
+            if x.get("destination"):
+                destination = x.get("destination")
+                logger.info(f"📍 Using destination from main pipeline: {destination}")
+            elif x.get("query_analysis", {}).get("destination"):
+                destination = x.get("query_analysis", {}).get("destination")
+                logger.info(f"📍 Using destination from query_analysis: {destination}")
+            elif x.get("evaluation_result", {}).get("destination"):
+                destination = x.get("evaluation_result", {}).get("destination") 
+                logger.info(f"📍 Using destination from evaluation_result: {destination}")
+            else:
+                destination = "Unknown"
+                logger.warning("⚠️ No destination found in pipeline data")
+
             # FIXED: Get search queries from multiple possible sources
             search_queries = []
-            destination = x.get("destination", "Unknown")
 
             # Try different query field names based on where the search was triggered
             if x.get("search_queries"):
@@ -240,40 +259,60 @@ class LangChainOrchestrator:
             if not search_queries:
                 logger.warning("❌ No search queries available")
                 logger.warning(f"Available keys: {list(x.keys())}")
-                return {**x, "search_results": []}
+                # Don't return empty - try to generate from raw query one more time
+                raw_query = x.get("raw_query", x.get("query", ""))
+                if raw_query:
+                    search_queries = [f"restaurants {raw_query}"]
+                    logger.info(f"🔧 Emergency fallback: generated query from raw_query: {search_queries}")
+                else:
+                    return {**x, "search_results": []}
 
             if destination == "Unknown":
                 logger.warning("❌ No destination available for search")
-                return {**x, "search_results": []}
+                logger.warning(f"Pipeline data keys: {list(x.keys())}")
+                # Don't fail completely - try to extract destination from search queries
+                for query in search_queries:
+                    # Simple heuristic to extract potential city names
+                    words = query.lower().split()
+                    if 'in' in words:
+                        in_index = words.index('in')
+                        if in_index < len(words) - 1:
+                            potential_destination = words[in_index + 1].title()
+                            destination = potential_destination
+                            logger.info(f"🔧 Extracted destination from query: {destination}")
+                            break
 
-            logger.info(f"🌐 Executing search with {len(search_queries)} queries:")
-            for i, query in enumerate(search_queries, 1):
-                logger.info(f"  {i}. {query}")
+                if destination == "Unknown":
+                    logger.error("❌ Cannot proceed without destination")
+                    return {**x, "search_results": []}
 
-            # Prepare query metadata for search agent (for language categorization)
+            # Prepare query metadata for search agent
             query_metadata = {
                 'is_english_speaking': x.get('is_english_speaking', True),
                 'local_language': x.get('local_language')
             }
 
-            logger.info(f"🧠 Query metadata: English-speaking={query_metadata['is_english_speaking']}, Local={query_metadata.get('local_language', 'None')}")
+            logger.info(f"🌐 Executing search with {len(search_queries)} queries:")
+            for i, query in enumerate(search_queries, 1):
+                logger.info(f"  {i}. {query}")
+            logger.info(f"📍 Destination: {destination}")
 
-            # Execute search through search agent
-            # The search agent will handle language categorization internally
+            # FIXED: Call search agent with correct parameters
             search_results = self.search_agent.search(search_queries, destination, query_metadata)
 
-            logger.info(f"✅ Web search completed: {len(search_results)} results")
+            logger.info(f"✅ Search completed: {len(search_results)} results found")
 
             return {
-                **x, 
-                "raw_query": x.get("raw_query", x.get("query", "")),  # Preserve raw query
-                "search_results": search_results
+                **x,
+                "search_results": search_results,
+                "destination": destination,  # Ensure destination flows forward
+                "search_queries": search_queries  # Preserve search queries
             }
 
         except Exception as e:
-            logger.error(f"❌ Error in search step: {e}")
-            logger.error(f"Available data keys: {list(x.keys())}")
-            logger.error(f"Query data: english_queries={x.get('english_queries', [])}, local_queries={x.get('local_queries', [])}, search_queries={x.get('search_queries', [])}")
+            logger.error(f"❌ Error executing search: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return {**x, "search_results": []}
 
     def _scrape_step(self, x):

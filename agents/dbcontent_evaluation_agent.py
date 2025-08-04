@@ -311,72 +311,67 @@ Description: {description_preview}
             "raw_query": pipeline_data.get("raw_query")  # PRESERVE
         }
 
-    def _trigger_web_search_with_hybrid(self, pipeline_data: Dict[str, Any], selected_restaurants: List[Dict], evaluation: Dict) -> Dict[str, Any]:
+    # Fix for agents/dbcontent_evaluation_agent.py
+    # Ensure destination is always preserved when triggering web search
+
+    def _trigger_web_search_with_hybrid(self, pipeline_data: Dict[str, Any], selected_restaurants: List[Dict], evaluation: Dict[str, Any]) -> Dict[str, Any]:
         """
-        ENHANCED: Handle web search route with hybrid mode support
-
-        FIXED: Ensure search queries are properly passed to orchestrator search step
+        ENHANCED: Trigger web search while preserving selected restaurants for hybrid mode
+        FIXED: Ensure destination is always preserved in the response
         """
-        reasoning = evaluation.get('reasoning', 'Database insufficient')
-        logger.info(f"🌐 Triggering web search workflow: {reasoning}")
-
-        # Determine hybrid mode based on reasoning and selected restaurant quality
-        use_hybrid = self._should_use_hybrid_mode(selected_restaurants, reasoning)
-
-        # NEW: Split restaurants based on hybrid decision
-        if use_hybrid:
-            database_restaurants_final = []  # No final results - need web search
-            database_restaurants_hybrid = selected_restaurants  # Preserve for hybrid
-            content_source = "hybrid"
-            logger.info(f"🔄 Hybrid mode: preserving {len(database_restaurants_hybrid)} selected restaurants")
-        else:
-            database_restaurants_final = []  # No final results - need web search
-            database_restaurants_hybrid = []  # Discard all - start fresh
-            content_source = "web_search"
-            logger.info(f"🗑️ Discard mode: starting fresh web search")
+        logger.info(f"🌐 Triggering web search with {len(selected_restaurants)} restaurants for hybrid mode")
 
         try:
+            # Determine hybrid strategy based on selected restaurants
+            use_hybrid = self._should_use_hybrid_mode(selected_restaurants, evaluation.get('reasoning', ''))
+
+            if use_hybrid:
+                database_restaurants_final = []
+                database_restaurants_hybrid = selected_restaurants
+                content_source = "hybrid"
+                logger.info(f"🔄 Hybrid mode: preserving {len(database_restaurants_hybrid)} selected restaurants")
+            else:
+                database_restaurants_final = []
+                database_restaurants_hybrid = []
+                content_source = "web_search"
+                logger.info(f"🗑️ Discard mode: starting fresh web search")
+
+            # FIXED: Always preserve destination from pipeline_data
+            destination = pipeline_data.get('destination', 'Unknown')
+            if destination == 'Unknown':
+                logger.warning("⚠️ Destination is Unknown in content evaluation - this may cause search failures")
+
             # Trigger web search when evaluation determines database is insufficient
             if self.brave_search_agent:
                 logger.info("🚀 Executing web search through BraveSearchAgent")
 
-                # FIXED: Prepare search data with multiple query formats for compatibility
+                # Prepare search data
                 search_queries = pipeline_data.get('search_queries', [])
-                english_queries = pipeline_data.get('english_queries', [])
-                local_queries = pipeline_data.get('local_queries', [])
-
-                # Ensure we have search queries in the expected format
-                if not search_queries and (english_queries or local_queries):
-                    search_queries = english_queries + local_queries
-                    logger.info(f"🔧 Combined queries for search: {len(english_queries)} English + {len(local_queries)} local")
-
-                # Fallback: generate from raw query if no queries available
-                if not search_queries:
-                    raw_query = pipeline_data.get('raw_query', '')
-                    destination = pipeline_data.get('destination', 'Unknown')
-                    if raw_query and destination != 'Unknown':
-                        search_queries = [f"best restaurants {raw_query} {destination}"]
-                        logger.info("🔧 Generated fallback search queries")
-
-                destination = pipeline_data.get('destination', 'Unknown')
                 query_metadata = {
                     'is_english_speaking': pipeline_data.get('is_english_speaking', True),
                     'local_language': pipeline_data.get('local_language')
                 }
+
+                # Fallback: generate from raw query if no queries available
+                if not search_queries:
+                    raw_query = pipeline_data.get('raw_query', '')
+                    if raw_query and destination != 'Unknown':
+                        search_queries = [f"best restaurants {raw_query} {destination}"]
+                        logger.info("🔧 Generated fallback search queries")
 
                 # Execute search immediately
                 search_results = self.brave_search_agent.search(search_queries, destination, query_metadata)
 
                 logger.info(f"✅ Web search completed: {len(search_results)} results found")
 
-                # ENHANCED: Return with proper restaurant splitting and FIXED search query passing
+                # ENHANCED: Return with proper restaurant splitting and FIXED destination preservation
                 return {
                     **pipeline_data,
                     "evaluation_result": {
                         "database_sufficient": False,
                         "trigger_web_search": True,
                         "content_source": content_source,
-                        "reasoning": reasoning,
+                        "reasoning": evaluation.get('reasoning', 'Database insufficient'),
                         "quality_score": evaluation.get('quality_score', 0.3),
                         "evaluation_summary": {"reason": "database_insufficient"},
                         "selected_count": len(selected_restaurants),
@@ -389,10 +384,11 @@ Description: {description_preview}
                     "database_restaurants_hybrid": database_restaurants_hybrid,  # NEW: Hybrid results  
                     "database_restaurants": database_restaurants_hybrid,  # LEGACY: Maintain compatibility
                     "raw_query": pipeline_data.get("raw_query"),  # PRESERVE
+                    "destination": destination,  # FIXED: Always preserve destination
                     # FIXED: Ensure search queries are available for orchestrator search step
                     "search_queries": search_queries,  # For orchestrator compatibility
-                    "english_queries": english_queries,  # Original format
-                    "local_queries": local_queries,  # Original format
+                    "english_queries": pipeline_data.get('english_queries', []),  # Original format
+                    "local_queries": pipeline_data.get('local_queries', []),  # Original format
                     "optimized_content": {
                         "database_restaurants": database_restaurants_hybrid,
                         "scraped_results": []  # Will be filled by scraper
@@ -416,7 +412,7 @@ Description: {description_preview}
                         "database_sufficient": False,
                         "trigger_web_search": True,
                         "content_source": content_source,
-                        "reasoning": reasoning,
+                        "reasoning": evaluation.get('reasoning', 'Database insufficient'),
                         "quality_score": evaluation.get('quality_score', 0.3),
                         "evaluation_summary": {"reason": "database_insufficient"},
                         "selected_count": len(selected_restaurants),
@@ -428,12 +424,118 @@ Description: {description_preview}
                     "database_restaurants_hybrid": database_restaurants_hybrid,  # NEW: Hybrid or empty
                     "database_restaurants": database_restaurants_hybrid,  # LEGACY: Maintain compatibility
                     "raw_query": pipeline_data.get("raw_query"),  # PRESERVE
+                    "destination": destination,  # FIXED: Always preserve destination
                     # FIXED: Pass search queries to orchestrator
-                    "search_queries": search_queries,
-                    "english_queries": english_queries,
-                    "local_queries": local_queries,
+                    "search_queries": search_queries,  # For orchestrator compatibility
+                    "english_queries": english_queries,  # Original format
+                    "local_queries": local_queries,  # Original format
                     "optimized_content": {
                         "database_restaurants": database_restaurants_hybrid,
+                        "scraped_results": []
+                    }
+                }
+
+        except Exception as e:
+            logger.error(f"❌ Error in web search workflow: {e}")
+            return self._handle_evaluation_error(pipeline_data, e)
+
+
+    def _trigger_web_search_workflow(self, pipeline_data: Dict[str, Any], reasoning: str) -> Dict[str, Any]:
+        """
+        Handle the web search route - for backwards compatibility (when no selected restaurants)
+        FIXED: Ensure destination is always preserved
+        """
+        logger.info("🌐 Triggering web search workflow (no selection)")
+
+        # This is the old method for when we have no selected restaurants
+        database_restaurants = pipeline_data.get("database_restaurants", [])
+
+        # FIXED: Always preserve destination
+        destination = pipeline_data.get('destination', 'Unknown')
+        if destination == 'Unknown':
+            logger.warning("⚠️ Destination is Unknown in web search workflow - this may cause search failures")
+
+        try:
+            # Trigger web search when evaluation determines database is insufficient
+            if self.brave_search_agent:
+                logger.info("🚀 Executing web search through BraveSearchAgent")
+
+                # Prepare search data
+                search_queries = pipeline_data.get('search_queries', [])
+                query_metadata = {
+                    'is_english_speaking': pipeline_data.get('is_english_speaking', True),
+                    'local_language': pipeline_data.get('local_language')
+                }
+
+                # Execute search immediately
+                search_results = self.brave_search_agent.search(search_queries, destination, query_metadata)
+
+                logger.info(f"✅ Web search completed: {len(search_results)} results found")
+
+                # Determine if we should preserve database results for hybrid mode
+                use_hybrid = self._should_use_hybrid_mode(database_restaurants, reasoning)
+
+                if use_hybrid:
+                    database_restaurants_final = []
+                    database_restaurants_hybrid = database_restaurants  # Preserve all
+                    content_source = "hybrid"
+                    logger.info(f"🔄 Hybrid mode: preserving {len(database_restaurants_hybrid)} database restaurants")
+                else:
+                    database_restaurants_final = []
+                    database_restaurants_hybrid = []  # Discard all
+                    content_source = "web_search"
+                    logger.info(f"🗑️ Discard mode: starting fresh web search")
+
+                # Return with web search results
+                return {
+                    **pipeline_data,
+                    "evaluation_result": {
+                        "database_sufficient": False,
+                        "trigger_web_search": True,
+                        "content_source": content_source,
+                        "reasoning": reasoning,
+                        "quality_score": 0.3,
+                        "evaluation_summary": {"reason": "database_insufficient"},
+                        "selected_count": 0,
+                        "hybrid_mode": use_hybrid
+                    },
+                    "content_source": content_source,
+                    "skip_web_search": False,
+                    "search_results": search_results,
+                    "database_restaurants_final": database_restaurants_final,  # NEW: Empty for web search
+                    "database_restaurants_hybrid": database_restaurants_hybrid,  # NEW: Hybrid or empty
+                    "database_restaurants": database_restaurants_hybrid,  # LEGACY: Maintain compatibility
+                    "raw_query": pipeline_data.get("raw_query"),  # PRESERVE
+                    "destination": destination,  # FIXED: Always preserve destination
+                    "optimized_content": {
+                        "database_restaurants": database_restaurants_hybrid,
+                        "scraped_results": []  # Will be filled by scraper
+                    }
+                }
+            else:
+                logger.warning("⚠️ BraveSearchAgent not available - falling back to routing flags")
+                # Return routing decision for main web search pipeline
+                return {
+                    **pipeline_data,
+                    "evaluation_result": {
+                        "database_sufficient": False,
+                        "trigger_web_search": True,
+                        "content_source": "web_search",
+                        "reasoning": reasoning,
+                        "quality_score": 0.3,
+                        "evaluation_summary": {"reason": "database_insufficient"},
+                        "selected_count": 0,
+                        "hybrid_mode": False
+                    },
+                    "content_source": "web_search",
+                    "skip_web_search": False,  # Allow main search step
+                    "database_restaurants_final": [],  # NEW: Empty for web search
+                    "database_restaurants_hybrid": [],  # NEW: Empty
+                    "database_restaurants": [],  # LEGACY: Empty
+                    "raw_query": pipeline_data.get("raw_query"),  # PRESERVE
+                    "destination": destination,  # FIXED: Always preserve destination
+                    "optimized_content": {
+                        "database_restaurants": [],
                         "scraped_results": []
                     }
                 }
