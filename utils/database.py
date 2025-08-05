@@ -1,4 +1,4 @@
-# utils/database.py - CLEAN VERSION: Restaurant database operations only
+# utils/database.py - SIMPLIFIED: Direct Supabase interface (no wrapper)
 import logging
 import hashlib
 import json
@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 
 class Database:
     """
-    Clean Supabase database interface for restaurant operations.
-    Focus: Restaurant CRUD operations, source quality tracking, and basic database management.
+    Direct Supabase database interface for the AI-powered restaurant bot.
+    Simplified, single-purpose database class with clear naming.
     """
 
     def __init__(self, config):
@@ -93,10 +93,16 @@ class Database:
             logger.error(f"❌ Error storing source quality: {e}")
             return False
 
+    # Also add this convenience function at the bottom of utils/database.py
+
+    def store_source_quality_data(destination: str, url: str, score: float) -> bool:
+        """Store source quality data - convenience function"""
+        return get_database().store_source_quality(destination, url, score)
+    
     # ============ RESTAURANT METHODS ============
 
     def save_restaurant(self, restaurant_data: Dict[str, Any]) -> Optional[str]:
-        """Save restaurant with simplified coordinate handling"""
+        """Save restaurant with new simplified schema - SAFER coordinate approach"""
         try:
             name = restaurant_data.get('name', '').strip()
             city = restaurant_data.get('city', '').strip()
@@ -194,6 +200,20 @@ class Database:
             logger.error(f"Error saving restaurant: {e}")
             return None
 
+    def _geocode_address(self, address: str) -> Optional[Tuple[float, float]]:
+        """Geocode an address to get coordinates using the same approach as the older implementation"""
+        try:
+            if not self.geocoder:
+                return None
+
+            location = self.geocoder.geocode(address, timeout=10)
+            if location:
+                return (location.latitude, location.longitude)
+            return None
+        except Exception as e:
+            logger.error(f"Error geocoding address '{address}': {e}")
+            return None
+
     def _find_existing_restaurant(self, name: str, city: str) -> Optional[Dict]:
         """Find existing restaurant by name and city"""
         try:
@@ -242,6 +262,51 @@ class Database:
             logger.error(f"Error searching restaurants by cuisine: {e}")
             return []
 
+    def update_restaurant_geodata(self, restaurant_id: int, address: str, coordinates: Tuple[float, float]):
+        """Update restaurant with address and coordinates - SAFER approach"""
+        try:
+            lat, lng = coordinates
+
+            # First update the address
+            update_data = {
+                'address': address,
+                'last_updated': datetime.now().isoformat()
+            }
+
+            self.supabase.table('restaurants')\
+                .update(update_data)\
+                .eq('id', restaurant_id)\
+                .execute()
+
+            # Use RPC function for coordinates (safer than raw SQL)
+            try:
+                # Try using RPC first (if the function exists in your Supabase)
+                self.supabase.rpc('update_restaurant_coordinates', {
+                    'restaurant_id': restaurant_id,
+                    'lat': lat,
+                    'lng': lng
+                }).execute()
+                logger.info(f"📍 Updated geodata for restaurant ID: {restaurant_id} with coords ({lat}, {lng}) via RPC")
+            except Exception as rpc_error:
+                # Fallback: use the latitude/longitude columns approach like your old implementation
+                logger.warning(f"RPC failed, using fallback coordinate storage: {rpc_error}")
+
+                # Update with separate lat/lng columns (like your old working implementation)
+                coord_update = {
+                    'latitude': lat,
+                    'longitude': lng
+                }
+
+                self.supabase.table('restaurants')\
+                    .update(coord_update)\
+                    .eq('id', restaurant_id)\
+                    .execute()
+
+                logger.info(f"📍 Updated geodata for restaurant ID: {restaurant_id} with coords ({lat}, {lng}) via lat/lng columns")
+
+        except Exception as e:
+            logger.error(f"Error updating geodata: {e}")
+
     def get_restaurants_by_preference_tags(self, city: str, preference_tags: List[str], limit: int = 20) -> List[Dict[str, Any]]:
         """Get restaurants that match any of the preference tags"""
         try:
@@ -260,197 +325,308 @@ class Database:
             return []
 
     def get_restaurants_by_coordinates(self, center: Tuple[float, float], radius_km: float, limit: int = 20) -> List[Dict[str, Any]]:
-        """Get restaurants within a geographic radius (requires PostGIS)"""
-        try:
-            # This requires PostGIS extensions in Supabase
-            # For now, return empty list as a placeholder
-            logger.warning("Geographic search not implemented - requires PostGIS")
-            return []
 
-        except Exception as e:
-            logger.error(f"Error getting restaurants by coordinates: {e}")
-            return []
 
-    def update_restaurant_geodata(self, restaurant_id: int, address: str, coordinates: Tuple[float, float]):
-        """Update restaurant with address and coordinates"""
-        try:
-            lat, lng = coordinates
 
-            # Update the restaurant record
-            update_data = {
-                'address': address,
-                'latitude': lat,
-                'longitude': lng,
-                'last_updated': datetime.now().isoformat()
-            }
+        
 
-            self.supabase.table('restaurants')\
-                .update(update_data)\
-                .eq('id', restaurant_id)\
-                .execute()
+        def delete_closed_restaurants(self, business_status: str = None) -> Dict[str, Any]:
+            """
+            Delete restaurants that are permanently or temporarily closed from the database
 
-            logger.info(f"📍 Updated geodata for restaurant ID: {restaurant_id} with coords ({lat}, {lng})")
+            Args:
+                business_status: Specific status to delete ('CLOSED_PERMANENTLY', 'CLOSED_TEMPORARILY') 
+                                If None, deletes both types of closed restaurants
 
-        except Exception as e:
-            logger.error(f"Error updating geodata: {e}")
+            Returns:
+                Dictionary with deletion statistics
+            """
+            try:
+                logger.info("🗑️ Starting closed restaurant deletion process")
 
-    def delete_closed_restaurants(self, business_status: str = None) -> Dict[str, Any]:
-        """
-        Delete restaurants that are permanently or temporarily closed from the database
+                # Step 1: Find restaurants to delete based on business status
+                if business_status:
+                    # Delete specific closure type
+                    query = self.supabase.table('restaurants')\
+                        .select('id, name, city, business_status')\
+                        .eq('business_status', business_status)
+                else:
+                    # Delete all closed restaurants (both temporarily and permanently)
+                    query = self.supabase.table('restaurants')\
+                        .select('id, name, city, business_status')\
+                        .in_('business_status', ['CLOSED_PERMANENTLY', 'CLOSED_TEMPORARILY'])
 
-        Args:
-            business_status: Specific status to delete ('CLOSED_PERMANENTLY', 'CLOSED_TEMPORARILY') 
-                            If None, deletes both types of closed restaurants
+                result = query.execute()
+                restaurants_to_delete = result.data or []
 
-        Returns:
-            Dictionary with deletion statistics
-        """
-        try:
-            logger.info("🗑️ Starting closed restaurant deletion process")
+                if not restaurants_to_delete:
+                    logger.info("✅ No closed restaurants found to delete")
+                    return {
+                        'deleted_count': 0,
+                        'deleted_restaurants': [],
+                        'message': 'No closed restaurants found'
+                    }
 
-            # Step 1: Find restaurants to delete based on business status
-            if business_status:
-                # Delete specific closure type
-                query = self.supabase.table('restaurants')\
-                    .select('id, name, city, business_status')\
-                    .eq('business_status', business_status)
-            else:
-                # Delete all closed restaurants (both temporarily and permanently)
-                query = self.supabase.table('restaurants')\
-                    .select('id, name, city, business_status')\
-                    .in_('business_status', ['CLOSED_PERMANENTLY', 'CLOSED_TEMPORARILY'])
+                # Step 2: Log what we're about to delete
+                logger.info(f"Found {len(restaurants_to_delete)} closed restaurants to delete:")
+                deleted_restaurants = []
 
-            result = query.execute()
-            restaurants_to_delete = result.data or []
+                for restaurant in restaurants_to_delete:
+                    restaurant_info = {
+                        'id': restaurant['id'],
+                        'name': restaurant['name'],
+                        'city': restaurant['city'],
+                        'business_status': restaurant.get('business_status', 'Unknown')
+                    }
+                    deleted_restaurants.append(restaurant_info)
+                    logger.info(f"  - {restaurant['name']} in {restaurant['city']} ({restaurant.get('business_status', 'Unknown')})")
 
-            if not restaurants_to_delete:
-                logger.info("✅ No closed restaurants found to delete")
+                # Step 3: Delete the restaurants
+                restaurant_ids = [r['id'] for r in restaurants_to_delete]
+
+                delete_result = self.supabase.table('restaurants')\
+                    .delete()\
+                    .in_('id', restaurant_ids)\
+                    .execute()
+
+                deleted_count = len(delete_result.data) if delete_result.data else 0
+
+                logger.info(f"✅ Successfully deleted {deleted_count} closed restaurants from database")
+
+                return {
+                    'deleted_count': deleted_count,
+                    'deleted_restaurants': deleted_restaurants,
+                    'deletion_completed_at': datetime.now(timezone.utc).isoformat(),
+                    'message': f'Successfully deleted {deleted_count} closed restaurants'
+                }
+
+            except Exception as e:
+                logger.error(f"❌ Error deleting closed restaurants: {e}")
                 return {
                     'deleted_count': 0,
                     'deleted_restaurants': [],
-                    'message': 'No closed restaurants found'
+                    'error': str(e),
+                    'message': 'Failed to delete closed restaurants'
                 }
 
-            # Step 2: Log what we're about to delete
-            logger.info(f"Found {len(restaurants_to_delete)} closed restaurants to delete:")
-            deleted_restaurants = []
+        def delete_restaurants_by_ids(self, restaurant_ids: List[int]) -> Dict[str, Any]:
+            """
+            Delete specific restaurants by their IDs
 
-            for restaurant in restaurants_to_delete:
-                restaurant_info = {
-                    'id': restaurant['id'],
-                    'name': restaurant['name'],
-                    'city': restaurant['city'],
-                    'business_status': restaurant.get('business_status', 'Unknown')
+            Args:
+                restaurant_ids: List of restaurant IDs to delete
+
+            Returns:
+                Dictionary with deletion statistics
+            """
+            try:
+                if not restaurant_ids:
+                    return {
+                        'deleted_count': 0,
+                        'message': 'No restaurant IDs provided'
+                    }
+
+                logger.info(f"🗑️ Deleting {len(restaurant_ids)} restaurants by ID")
+
+                # First get the restaurant details for logging
+                restaurants_query = self.supabase.table('restaurants')\
+                    .select('id, name, city')\
+                    .in_('id', restaurant_ids)\
+                    .execute()
+
+                restaurants_info = restaurants_query.data or []
+
+                # Log what we're deleting
+                for restaurant in restaurants_info:
+                    logger.info(f"  - Deleting: {restaurant['name']} in {restaurant['city']} (ID: {restaurant['id']})")
+
+                # Delete the restaurants
+                delete_result = self.supabase.table('restaurants')\
+                    .delete()\
+                    .in_('id', restaurant_ids)\
+                    .execute()
+
+                deleted_count = len(delete_result.data) if delete_result.data else 0
+
+                logger.info(f"✅ Successfully deleted {deleted_count} restaurants by ID")
+
+                return {
+                    'deleted_count': deleted_count,
+                    'deleted_restaurants': restaurants_info,
+                    'deletion_completed_at': datetime.now(timezone.utc).isoformat(),
+                    'message': f'Successfully deleted {deleted_count} restaurants'
                 }
-                deleted_restaurants.append(restaurant_info)
-                logger.info(f"  - {restaurant['name']} in {restaurant['city']} ({restaurant.get('business_status', 'Unknown')})")
 
-            # Step 3: Delete the restaurants
-            restaurant_ids = [r['id'] for r in restaurants_to_delete]
-
-            delete_result = self.supabase.table('restaurants')\
-                .delete()\
-                .in_('id', restaurant_ids)\
-                .execute()
-
-            deleted_count = len(delete_result.data) if delete_result.data else 0
-
-            logger.info(f"✅ Successfully deleted {deleted_count} closed restaurants from database")
-
-            return {
-                'deleted_count': deleted_count,
-                'deleted_restaurants': deleted_restaurants,
-                'deletion_completed_at': datetime.now(timezone.utc).isoformat(),
-                'message': f'Successfully deleted {deleted_count} closed restaurants'
-            }
-
-        except Exception as e:
-            logger.error(f"❌ Error deleting closed restaurants: {e}")
-            return {
-                'deleted_count': 0,
-                'deleted_restaurants': [],
-                'error': str(e),
-                'message': 'Failed to delete closed restaurants'
-            }
-
-    def delete_restaurants_by_ids(self, restaurant_ids: List[int]) -> Dict[str, Any]:
-        """
-        Delete specific restaurants by their IDs
-
-        Args:
-            restaurant_ids: List of restaurant IDs to delete
-
-        Returns:
-            Dictionary with deletion statistics
-        """
-        try:
-            if not restaurant_ids:
+            except Exception as e:
+                logger.error(f"❌ Error deleting restaurants by ID: {e}")
                 return {
                     'deleted_count': 0,
-                    'message': 'No restaurant IDs provided'
+                    'error': str(e),
+                    'message': 'Failed to delete restaurants by ID'
+                }
+        
+   
+    # ============ DOMAIN INTELLIGENCE METHODS ============
+
+    def save_domain_intelligence(self, domain: str, intelligence_data: Dict[str, Any]) -> bool:
+        """Save domain intelligence data - SIMPLIFIED VERSION"""
+        try:
+            # For the simplified table, we use the update_domain_stats function instead
+            # This method is kept for compatibility but delegates to the SQL function
+
+            strategy = intelligence_data.get('strategy', 'enhanced_http')
+            success_count = intelligence_data.get('success_count', 0)
+            total_attempts = max(intelligence_data.get('total_attempts', 1), 1)
+
+            # Calculate if this represents a success based on the data
+            success_rate = success_count / total_attempts
+            is_success = success_rate > 0.5  # Treat as success if > 50% success rate
+
+            # Use the SQL function to update
+            self.supabase.rpc('update_domain_stats', {
+                'p_domain': domain,
+                'p_strategy': strategy,
+                'p_success': is_success
+            }).execute()
+
+            logger.debug(f"💾 Saved domain intelligence for {domain}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error saving domain intelligence for {domain}: {e}")
+            return False
+
+    def get_domain_intelligence(self, domain: str) -> Optional[Dict[str, Any]]:
+        """Get domain intelligence data - SIMPLIFIED VERSION"""
+        try:
+            result = self.supabase.table('domain_intelligence')\
+                .select('*')\
+                .eq('domain', domain)\
+                .execute()
+
+            if result.data:
+                # Convert to the format expected by the smart scraper
+                data = result.data[0]
+                return {
+                    'domain': data['domain'],
+                    'strategy': data['strategy'],
+                    'confidence': data['confidence'],
+                    'success_count': data['success_count'],
+                    'total_attempts': data['total_attempts'],
+                    'cost_per_scrape': data['cost_per_scrape'],
+                    'created_at': data['created_at'],
+                    'updated_at': data['updated_at']
                 }
 
-            logger.info(f"🗑️ Deleting {len(restaurant_ids)} restaurants by ID")
-
-            # First get the restaurant details for logging
-            restaurants_query = self.supabase.table('restaurants')\
-                .select('id, name, city')\
-                .in_('id', restaurant_ids)\
-                .execute()
-
-            restaurants_info = restaurants_query.data or []
-
-            # Log what we're deleting
-            for restaurant in restaurants_info:
-                logger.info(f"  - Deleting: {restaurant['name']} in {restaurant['city']} (ID: {restaurant['id']})")
-
-            # Delete the restaurants
-            delete_result = self.supabase.table('restaurants')\
-                .delete()\
-                .in_('id', restaurant_ids)\
-                .execute()
-
-            deleted_count = len(delete_result.data) if delete_result.data else 0
-
-            logger.info(f"✅ Successfully deleted {deleted_count} restaurants by ID")
-
-            return {
-                'deleted_count': deleted_count,
-                'deleted_restaurants': restaurants_info,
-                'deletion_completed_at': datetime.now(timezone.utc).isoformat(),
-                'message': f'Successfully deleted {deleted_count} restaurants'
-            }
+            return None
 
         except Exception as e:
-            logger.error(f"❌ Error deleting restaurants by ID: {e}")
-            return {
-                'deleted_count': 0,
-                'error': str(e),
-                'message': 'Failed to delete restaurants by ID'
-            }
+            logger.error(f"Error getting domain intelligence for {domain}: {e}")
+            return None
 
-    # ============ GEOCODING HELPER ============
-
-    def geocode_address(self, address: str) -> Optional[Tuple[float, float]]:
-        """Geocode an address to get coordinates"""
+    def update_domain_success(self, domain: str, success: bool, restaurants_found: int = 0):
+        """Update domain success/failure counts - SIMPLIFIED VERSION"""
         try:
-            if not self.geocoder:
-                logger.warning("Geocoder not available")
-                return None
+            # Get current data to determine strategy
+            current = self.get_domain_intelligence(domain)
 
-            location = self.geocoder.geocode(address, timeout=10)
-            if location:
-                return (location.latitude, location.longitude)
-            return None
+            if current:
+                strategy = current['strategy']
+            else:
+                # Default strategy for new domains
+                strategy = 'enhanced_http'
+
+            # Use the SQL function to update
+            self.supabase.rpc('update_domain_stats', {
+                'p_domain': domain,
+                'p_strategy': strategy,
+                'p_success': success
+            }).execute()
+
+            logger.debug(f"Updated domain intelligence for {domain}: success={success}")
 
         except Exception as e:
-            logger.error(f"Error geocoding address '{address}': {e}")
-            return None
+            logger.error(f"Error updating domain success for {domain}: {e}")
 
+    def get_trusted_domains(self, min_confidence: float = None) -> List[str]:
+        """Get list of trusted domains based on success rate - SIMPLIFIED VERSION"""
+        try:
+            min_conf = min_confidence or 0.7
+
+            result = self.supabase.table('domain_intelligence')\
+                .select('domain')\
+                .gte('confidence', min_conf)\
+                .gte('total_attempts', 2)\
+                .execute()
+
+            return [row['domain'] for row in result.data]
+
+        except Exception as e:
+            logger.error(f"Error getting trusted domains: {e}")
+            return []
+
+    def load_all_domain_intelligence(self) -> List[Dict[str, Any]]:
+        """Load all domain intelligence records - SIMPLIFIED VERSION"""
+        try:
+            result = self.supabase.table('domain_intelligence')\
+                .select('*')\
+                .order('confidence', desc=True)\
+                .execute()
+            return result.data
+        except Exception as e:
+            logger.error(f"Error loading domain intelligence: {e}")
+            return []
+
+    def get_domain_intelligence_stats(self) -> Dict[str, Any]:
+        """Get domain intelligence statistics"""
+        try:
+            # Get all domain data
+            all_domains = self.load_all_domain_intelligence()
+
+            if not all_domains:
+                return {
+                    'total_domains': 0,
+                    'strategy_breakdown': {},
+                    'average_confidence': 0,
+                    'high_confidence_domains': 0
+                }
+
+            # Calculate statistics
+            strategy_counts = {}
+            total_confidence = 0
+            high_confidence_count = 0
+
+            for domain in all_domains:
+                strategy = domain.get('strategy', 'unknown')
+                strategy_counts[strategy] = strategy_counts.get(strategy, 0) + 1
+
+                confidence = domain.get('confidence', 0)
+                total_confidence += confidence
+
+                if confidence >= 0.8:
+                    high_confidence_count += 1
+
+            return {
+                'total_domains': len(all_domains),
+                'strategy_breakdown': strategy_counts,
+                'average_confidence': round(total_confidence / len(all_domains), 2),
+                'high_confidence_domains': high_confidence_count,
+                'confidence_rate': round((high_confidence_count / len(all_domains)) * 100, 1)
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting domain intelligence stats: {e}")
+            return {
+                'total_domains': 0,
+                'strategy_breakdown': {},
+                'average_confidence': 0,
+                'high_confidence_domains': 0
+            }
+            
     # ============ STATISTICS AND MONITORING ============
 
     def get_database_stats(self) -> Dict[str, Any]:
-        """Get database statistics for monitoring"""
+        """Get database statistics for monitoring - FIXED VERSION"""
         try:
             stats = {}
 
@@ -458,7 +634,12 @@ class Database:
             restaurants_count = self.supabase.table('restaurants').select('id', count='exact').execute()
             stats['total_restaurants'] = restaurants_count.count
 
-            # Get cities manually (no group_by in current Supabase client)
+            # Count domains
+            domains_count = self.supabase.table('domain_intelligence').select('domain', count='exact').execute()
+            stats['total_domains'] = domains_count.count
+
+            # FIXED: Remove group_by which doesn't exist in current Supabase client
+            # Get cities using a simple approach
             try:
                 cities_result = self.supabase.table('restaurants')\
                     .select('city')\
@@ -481,7 +662,7 @@ class Database:
             # Coordinate coverage
             with_coords = self.supabase.table('restaurants')\
                 .select('id', count='exact')\
-                .not_.is_('latitude', 'null')\
+                .not_.is_('coordinates', 'null')\
                 .execute()
 
             stats['coordinate_coverage'] = {
@@ -497,6 +678,7 @@ class Database:
             logger.error(f"Error getting database stats: {e}")
             return {
                 'total_restaurants': 0,
+                'total_domains': 0,
                 'top_cities': [],
                 'coordinate_coverage': {'coverage_percentage': 0}
             }
@@ -513,6 +695,25 @@ class Database:
         """Get cached search results (placeholder)"""
         # For now, always return None to force fresh searches
         return None
+
+    
+    # ============ GEOCODING HELPER ============
+
+    def geocode_address(self, address: str) -> Optional[Tuple[float, float]]:
+        """Geocode an address to get coordinates"""
+        try:
+            if not self.geocoder:
+                logger.warning("Geocoder not available")
+                return None
+
+            location = self.geocoder.geocode(address, timeout=10)
+            if location:
+                return (location.latitude, location.longitude)
+            return None
+
+        except Exception as e:
+            logger.error(f"Error geocoding address '{address}': {e}")
+            return None
 
 # ============ GLOBAL DATABASE INSTANCE ============
 
@@ -557,6 +758,26 @@ def search_restaurants_by_cuisine(city: str, cuisine_tags: List[str], limit: int
     """Search restaurants by cuisine tags"""
     return get_database().search_restaurants_by_cuisine(city, cuisine_tags, limit)
 
+def save_domain_intelligence(domain: str, intelligence_data: Dict[str, Any]) -> bool:
+    """Save domain intelligence data"""
+    return get_database().save_domain_intelligence(domain, intelligence_data)
+
+def get_domain_intelligence(domain: str) -> Optional[Dict[str, Any]]:
+    """Get domain intelligence data"""
+    return get_database().get_domain_intelligence(domain)
+
+def update_domain_success(domain: str, success: bool, restaurants_found: int = 0):
+    """Update domain success metrics"""
+    get_database().update_domain_success(domain, success, restaurants_found)
+
+def get_trusted_domains(min_confidence: float = None) -> List[str]:
+    """Get list of trusted domains"""
+    return get_database().get_trusted_domains(min_confidence)
+
+def load_all_domain_intelligence() -> List[Dict[str, Any]]:
+    """Load all domain intelligence records"""
+    return get_database().load_all_domain_intelligence()
+
 def cache_search_results(query: str, results: Dict[str, Any]) -> bool:
     """Cache search results"""
     return get_database().cache_search_results(query, results)
@@ -565,59 +786,30 @@ def get_cached_results(query: str) -> Optional[Dict[str, Any]]:
     """Get cached search results"""
     return get_database().get_cached_results(query)
 
-# ============ DOMAIN INTELLIGENCE COMPATIBILITY STUBS ============
-# These maintain compatibility with existing code that expects domain intelligence
-# in database.py but redirect to the dedicated domain intelligence module
+# ============ LEGACY COMPATIBILITY STUBS ============
+# These prevent errors but don't do anything with the simplified schema
 
-def save_domain_intelligence(domain: str, intelligence_data: Dict[str, Any]) -> bool:
-    """Save domain intelligence data - redirects to domain intelligence module"""
-    try:
-        from utils.database_domain_intelligence import save_domain_intelligence_from_scraper
-        return save_domain_intelligence_from_scraper(domain, intelligence_data)
-    except ImportError:
-        logger.warning("Domain intelligence module not available")
-        return False
+def add_to_search_history(user_id: str, query: str, results_count: int = 0):
+    """Legacy user history tracking (disabled in simplified schema)"""
+    logger.debug(f"Search history tracking disabled: {user_id} searched for {query}")
 
-def get_domain_intelligence(domain: str) -> Optional[Dict[str, Any]]:
-    """Get domain intelligence data - redirects to domain intelligence module"""
-    try:
-        from utils.database_domain_intelligence import get_domain_intelligence_manager
-        manager = get_domain_intelligence_manager()
-        return manager.get_domain_intelligence(domain)
-    except ImportError:
-        logger.warning("Domain intelligence module not available")
-        return None
+def save_user_preferences(user_id: str, preferences: Dict[str, Any]) -> bool:
+    """Legacy user preferences (disabled in simplified schema)"""
+    logger.debug(f"User preferences disabled: {user_id}")
+    return True
 
-def update_domain_success(domain: str, success: bool, restaurants_found: int = 0):
-    """Update domain success metrics - redirects to domain intelligence module"""
-    try:
-        from utils.database_domain_intelligence import get_domain_intelligence_manager
-        manager = get_domain_intelligence_manager()
-        # Construct fake URL for compatibility
-        fake_url = f"https://{domain}/"
-        manager.save_scrape_result(fake_url, "enhanced_http", success, restaurants_found=restaurants_found)
-    except ImportError:
-        logger.warning("Domain intelligence module not available")
+def get_user_preferences(user_id: str) -> Optional[Dict[str, Any]]:
+    """Legacy user preferences (disabled in simplified schema)"""
+    return None
 
-def get_trusted_domains(min_confidence: float = None) -> List[str]:
-    """Get list of trusted domains - redirects to domain intelligence module"""
-    try:
-        from utils.database_domain_intelligence import get_domain_intelligence_manager
-        manager = get_domain_intelligence_manager()
-        return manager.get_trusted_domains(min_confidence or 0.7)
-    except ImportError:
-        logger.warning("Domain intelligence module not available")
-        return []
+# Deprecated RAG functions (return safe defaults)
+def save_scraped_content(source_url: str, content: str, restaurant_mentions: Optional[List[str]] = None, source_domain: str = None) -> bool:
+    """DEPRECATED: RAG disabled in simplified schema"""
+    return True
 
-def load_all_domain_intelligence() -> List[Dict[str, Any]]:
-    """Load all domain intelligence records - redirects to domain intelligence module"""
-    try:
-        from utils.database_domain_intelligence import get_domain_intelligence_manager
-        manager = get_domain_intelligence_manager()
-        return manager.load_all_domain_intelligence()
-    except ImportError:
-        logger.warning("Domain intelligence module not available")
-        return []
+def search_similar_content(query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """DEPRECATED: Vector search disabled in simplified schema"""
+    return []
 
 # ============ BACKWARDS COMPATIBILITY FOR MAIN.PY ============
 
