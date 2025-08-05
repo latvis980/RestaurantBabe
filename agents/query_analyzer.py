@@ -59,7 +59,12 @@ class QueryAnalyzer:
            - "NYC" → "New York"
            - "Frisco" → "San Francisco"
            - "Big Apple" → "New York"
-        
+
+           If user mentions a specific neighbourhood of a larger city, include both the neighbourhood and te city in queries, but only save the city as destination. For example:
+
+           - User asks: "Where can I eat in the Marais?". Output: queries: "restaurants in Marais, Paris", destination: "Paris"
+           - User asks: "Best places to eat in the East Village". Output: queries: "restaurants in East Village, New York", destination: "New York"               - User asks: "Good Jewish cuisine in Kazimierz". Output: queries: "Jewish restaurants in Kazimierz, Krakow", destination: "Krakow"
+           
         2. Determine if the destination is English-speaking or not  
         3. For USA destinations add the word "media" to the search query
         4. For non-English speaking destinations, identify the local language
