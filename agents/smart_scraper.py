@@ -304,44 +304,11 @@ Return ONLY the strategy name, nothing else.
         # Combine all results
         all_results = step2_results + step3_results + step4_results
 
-        # CRITICAL: Ensure all results have proper sources for the pipeline
-        all_results = self._ensure_sources_in_results(all_results)
-
         # Update total stats
         self.stats["total_processed"] += len(search_results)
         self._update_cost_estimates()
 
         return all_results
-
-    def _ensure_sources_in_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        CRITICAL: Ensure all results have proper sources for the Supabase pipeline
-        This is one of the most important parameters for the whole app
-        """
-        for result in results:
-            url = result.get("url", "")
-            if not url:
-                continue
-
-            # Extract domain for the pipeline
-            source_domain = self._extract_domain(url)
-
-            # Ensure sources are properly formatted for the pipeline
-            if "sources" not in result:
-                result["sources"] = [url]
-            elif not isinstance(result["sources"], list):
-                result["sources"] = [url]
-            elif url not in result["sources"]:
-                result["sources"].append(url)
-
-            # Ensure domain and URL are available for downstream processing
-            result["source_domain"] = source_domain
-            result["source_url"] = url
-
-            # Log source assignment for debugging
-            logger.debug(f"🔗 Source assigned: {url} → domain: {source_domain}")
-
-        return results
 
     async def _try_specialized_scraping(self, result: Dict[str, Any]) -> bool:
         """Try specialized scraping (RSS/sitemap) first - bypasses 4-step process"""
@@ -394,7 +361,8 @@ Return ONLY the strategy name, nothing else.
     async def _classify_strategy_with_ai(self, url: str) -> str:
         """FIXED: Use AI to classify strategy for new domains - returns only simple_http or enhanced_http"""
         try:
-            logger.info(f"🤖 AI analyzing new domain: {self._extract_domain(url)}")
+            domain = self._extract_domain(url)  # Only use for logging
+            logger.info(f"🤖 AI analyzing new domain: {domain}")
 
             # Use the corrected prompt
             messages = self.analysis_prompt.format_messages(url=url)
@@ -443,15 +411,12 @@ Return ONLY the strategy name, nothing else.
             # Apply content sectioning for restaurant extraction
             sectioned_result = await self._apply_sectioning(content, url)
 
-            # CRITICAL: Ensure sources are properly saved in result
+            # Keep original result structure - editor expects specific format
             result.update({
                 "scraping_method": "simple_http",
                 "scraping_success": True,
                 "scraped_content": sectioned_result.get("content", content),
-                "restaurants_found": sectioned_result.get("restaurants_found", []),
-                "source_domain": sectioned_result.get("source_domain"),  # CRITICAL for pipeline
-                "source_url": sectioned_result.get("source_url"),       # CRITICAL for pipeline
-                "sources": [url]  # CRITICAL: Ensure sources array is always present
+                "restaurants_found": sectioned_result.get("restaurants_found", [])
             })
 
             logger.info(f"✅ Simple HTTP success for {url}")
@@ -489,15 +454,12 @@ Return ONLY the strategy name, nothing else.
             # Apply content sectioning for restaurant extraction
             sectioned_result = await self._apply_sectioning(content_text, url)
 
-            # CRITICAL: Ensure sources are properly saved in result
+            # Keep original result structure - editor expects specific format
             result.update({
                 "scraping_method": "enhanced_http",
                 "scraping_success": True,
                 "scraped_content": sectioned_result.get("content", content_text),
-                "restaurants_found": sectioned_result.get("restaurants_found", []),
-                "source_domain": sectioned_result.get("source_domain"),  # CRITICAL for pipeline
-                "source_url": sectioned_result.get("source_url"),       # CRITICAL for pipeline
-                "sources": [url]  # CRITICAL: Ensure sources array is always present
+                "restaurants_found": sectioned_result.get("restaurants_found", [])
             })
 
             logger.info(f"✅ Enhanced HTTP success for {url}")
@@ -518,17 +480,12 @@ Return ONLY the strategy name, nothing else.
             scraped_data = await self.firecrawl_scraper.scrape_url(url)
 
             if scraped_data.get("success", False):
-                # CRITICAL: Ensure sources are properly saved in result
-                source_domain = self._extract_domain(url)
-
+                # Keep original result structure - editor expects specific format
                 result.update({
                     "scraping_method": "firecrawl",
                     "scraping_success": True,
                     "scraped_content": scraped_data.get("content", ""),
-                    "restaurants_found": scraped_data.get("restaurants_found", []),
-                    "source_domain": source_domain,  # CRITICAL for pipeline
-                    "source_url": url,               # CRITICAL for pipeline
-                    "sources": [url]  # CRITICAL: Ensure sources array is always present
+                    "restaurants_found": scraped_data.get("restaurants_found", [])
                 })
                 logger.info(f"✅ Firecrawl success for {url}")
                 return True
@@ -546,25 +503,14 @@ Return ONLY the strategy name, nothing else.
             self.stats["sectioning_calls"] += 1
             sectioned_result = await self.content_sectioner.process_content(content, url)
 
-            # CRITICAL: Extract and include source domain for the entire pipeline
-            source_domain = self._extract_domain(url)
-
             return {
                 "content": sectioned_result.optimized_content or content,
-                "restaurants_found": getattr(sectioned_result, 'restaurants_found', []),
-                "source_domain": source_domain,  # CRITICAL: Pass source through pipeline
-                "source_url": url  # CRITICAL: Keep full URL for reference
+                "restaurants_found": getattr(sectioned_result, 'restaurants_found', [])
             }
 
         except Exception as e:
             logger.debug(f"Content sectioning failed for {url}: {e}")
-            source_domain = self._extract_domain(url)
-            return {
-                "content": content, 
-                "restaurants_found": [],
-                "source_domain": source_domain,  # CRITICAL: Even on failure, pass source
-                "source_url": url
-            }
+            return {"content": content, "restaurants_found": []}
 
     async def _save_domain_intelligence(self, domain: str, strategy: str):
         """Save domain intelligence AFTER successful scrape"""
@@ -600,7 +546,12 @@ Return ONLY the strategy name, nothing else.
             logger.error(f"Failed to save domain intelligence for {domain}: {e}")
 
     def _extract_domain(self, url: str) -> str:
-        """Extract domain from URL"""
+        """
+        Extract domain from URL - ONLY used internally for domain intelligence
+
+        NOTE: This is NOT used for sources pipeline - editor handles that.
+        This is only for domain intelligence operations within the smart scraper.
+        """
         try:
             parsed = urlparse(url)
             return parsed.netloc.lower().replace('www.', '')
