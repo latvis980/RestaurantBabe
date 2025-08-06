@@ -386,6 +386,188 @@ try:
 except ValueError as e:
     print(f"❌ Configuration error: {e}")
 
+# config.py - ADDITIONS for Human Mimic Integration
+"""
+Add these settings to your existing config.py file
+"""
+
+# ============================================================================
+# HUMAN MIMIC SCRAPER CONFIGURATION (ADD TO EXISTING CONFIG)
+# ============================================================================
+
+# Enable Human Mimic scraper (replaces most Firecrawl usage)
+HUMAN_MIMIC_ENABLED = os.environ.get("HUMAN_MIMIC_ENABLED", "true").lower() == "true"
+
+# Human Mimic performance settings
+HUMAN_MIMIC_MAX_CONCURRENT = int(os.environ.get("HUMAN_MIMIC_MAX_CONCURRENT", "2"))  # Railway optimal
+HUMAN_MIMIC_DEFAULT_TIMEOUT = int(os.environ.get("HUMAN_MIMIC_DEFAULT_TIMEOUT", "30000"))  # 30s default
+HUMAN_MIMIC_SLOW_TIMEOUT = int(os.environ.get("HUMAN_MIMIC_SLOW_TIMEOUT", "60000"))   # 60s for slow sites
+
+# Human-like timing settings
+HUMAN_MIMIC_LOAD_WAIT = float(os.environ.get("HUMAN_MIMIC_LOAD_WAIT", "3.0"))       # Human reading time
+HUMAN_MIMIC_INTERACTION_DELAY = float(os.environ.get("HUMAN_MIMIC_INTERACTION_DELAY", "0.5"))  # Action delay
+
+# Known slow domains (can be extended)
+HUMAN_MIMIC_SLOW_DOMAINS = [
+    'guide.michelin.com',
+    'timeout.com', 
+    'zagat.com',
+    'opentable.com',
+    'resy.com'
+]
+
+# ============================================================================
+# UPDATED SCRAPING STRATEGY COSTS (UPDATE YOUR EXISTING)
+# ============================================================================
+
+# Updated strategy costs with Human Mimic
+STRATEGY_COSTS = {
+    "specialized": 0.0,      # FREE - RSS/Sitemap
+    "simple_http": 0.1,      # Basic HTTP
+    "enhanced_http": 0.5,    # HTTP + readability
+    "human_mimic": 2.0,      # NEW - Browser automation 
+    "firecrawl": 10.0,       # Expensive fallback only
+}
+
+# Strategy priority order (most preferred first)
+STRATEGY_PRIORITY = [
+    "specialized",
+    "simple_http", 
+    "enhanced_http",
+    "human_mimic",     # NEW - before firecrawl
+    "firecrawl"
+]
+
+# ============================================================================
+# AI PROMPT CONFIGURATION UPDATES
+# ============================================================================
+
+# Updated strategy descriptions for AI classification
+STRATEGY_DESCRIPTIONS = {
+    "simple_http": "Static HTML pages with minimal JavaScript",
+    "enhanced_http": "Moderate JavaScript, content mostly in HTML", 
+    "human_mimic": "Dynamic content requiring JavaScript execution, modern restaurant/content sites without anti-bot protection",
+    "firecrawl": "Heavy anti-bot protection, CAPTCHA, authentication walls - use sparingly"
+}
+
+# Domain hints for strategy selection (can be learned over time)
+DOMAIN_STRATEGY_HINTS = {
+    # Restaurant sites that work well with Human Mimic
+    'timeout.com': 'human_mimic',
+    'eater.com': 'human_mimic', 
+    'guide.michelin.com': 'human_mimic',
+    'zagat.com': 'human_mimic',
+    'thrillist.com': 'human_mimic',
+    'foodandwine.com': 'human_mimic',
+    'bonappetit.com': 'human_mimic',
+
+    # News sites that might work with enhanced HTTP
+    'reuters.com': 'enhanced_http',
+    'bbc.com': 'enhanced_http',
+    'cnn.com': 'enhanced_http',
+
+    # Sites that likely need Firecrawl (heavily protected)
+    'cloudflare.com': 'firecrawl',  # Obviously protected
+    # Add more as you discover them
+}
+
+# ============================================================================
+# PERFORMANCE AND MONITORING
+# ============================================================================
+
+# Human Mimic monitoring settings
+HUMAN_MIMIC_STATS_LOG_INTERVAL = 10  # Log stats every N requests
+HUMAN_MIMIC_DOMAIN_LEARNING_ENABLED = True  # Learn slow domains automatically
+
+# Cost optimization settings
+COST_OPTIMIZATION_ENABLED = True
+MAX_FIRECRAWL_PERCENTAGE = 20  # Max % of requests that should use expensive Firecrawl
+
+# Performance monitoring
+LOG_STRATEGY_DISTRIBUTION = True  # Log strategy usage distribution
+LOG_COST_SAVINGS = True          # Log cost savings vs all-Firecrawl
+
+# ============================================================================
+# RAILWAY DEPLOYMENT SPECIFIC
+# ============================================================================
+
+# Railway resource optimization
+RAILWAY_MEMORY_LIMIT_MB = int(os.environ.get("RAILWAY_MEMORY_LIMIT_MB", "512"))
+HUMAN_MIMIC_MEMORY_PER_CONTEXT_MB = 80  # Estimated memory per browser context
+
+# Auto-scale concurrent contexts based on available memory
+def get_optimal_concurrent_contexts():
+    """Calculate optimal number of concurrent contexts based on available memory"""
+    available_memory = RAILWAY_MEMORY_LIMIT_MB - 200  # Reserve 200MB for other processes
+    max_contexts = available_memory // HUMAN_MIMIC_MEMORY_PER_CONTEXT_MB
+    return min(max(max_contexts, 1), HUMAN_MIMIC_MAX_CONCURRENT)
+
+# Use dynamic concurrent limit if memory-constrained
+HUMAN_MIMIC_DYNAMIC_CONCURRENT = get_optimal_concurrent_contexts()
+
+# ============================================================================
+# INTEGRATION FLAGS
+# ============================================================================
+
+# Feature flags for gradual rollout
+REPLACE_FIRECRAWL_WITH_HUMAN_MIMIC = os.environ.get("REPLACE_FIRECRAWL_WITH_HUMAN_MIMIC", "true").lower() == "true"
+KEEP_FIRECRAWL_AS_FALLBACK = os.environ.get("KEEP_FIRECRAWL_AS_FALLBACK", "true").lower() == "true"
+
+# A/B testing settings (if you want to compare)
+AB_TEST_HUMAN_MIMIC_PERCENTAGE = int(os.environ.get("AB_TEST_HUMAN_MIMIC_PERCENTAGE", "100"))  # % of requests to use Human Mimic
+
+# ============================================================================
+# VALIDATION FUNCTION UPDATES
+# ============================================================================
+
+def validate_human_mimic_config():
+    """Validate Human Mimic configuration"""
+    if HUMAN_MIMIC_ENABLED:
+        # Check that Playwright dependencies are available
+        try:
+            from playwright.async_api import async_playwright
+            print("✅ Playwright available for Human Mimic scraper")
+        except ImportError:
+            print("❌ Warning: Playwright not available, Human Mimic scraper disabled")
+            return False
+
+        # Validate timing settings
+        if HUMAN_MIMIC_LOAD_WAIT < 0.5:
+            print("⚠️ Warning: HUMAN_MIMIC_LOAD_WAIT very low, may miss dynamic content")
+
+        if HUMAN_MIMIC_MAX_CONCURRENT > 5:
+            print("⚠️ Warning: High concurrent contexts may exceed Railway memory limits")
+
+        print(f"✅ Human Mimic configured: {HUMAN_MIMIC_MAX_CONCURRENT} concurrent contexts")
+        return True
+    else:
+        print("ℹ️ Human Mimic scraper disabled")
+        return False
+
+# ============================================================================
+# USAGE EXAMPLES
+# ============================================================================
+
+"""
+Example environment variables for Railway:
+
+HUMAN_MIMIC_ENABLED=true
+HUMAN_MIMIC_MAX_CONCURRENT=2
+HUMAN_MIMIC_DEFAULT_TIMEOUT=30000
+HUMAN_MIMIC_SLOW_TIMEOUT=60000
+HUMAN_MIMIC_LOAD_WAIT=3.0
+REPLACE_FIRECRAWL_WITH_HUMAN_MIMIC=true
+KEEP_FIRECRAWL_AS_FALLBACK=true
+
+These settings will:
+- Enable Human Mimic scraper
+- Use 2 concurrent browser contexts (optimal for Railway)
+- 30s default timeout, 60s for slow sites
+- 3 second human reading wait
+- Replace most Firecrawl usage
+- Keep Firecrawl as fallback for protected sites
+"""
+
 # ============================================================================
 # LEGACY COMPATIBILITY
 # ============================================================================
