@@ -24,7 +24,6 @@ from readability import Document
 
 from agents.specialized_scraper import EaterTimeoutSpecializedScraper
 from agents.human_mimic_scraper import HumanMimicScrapingStrategy
-from agents.firecrawl_scraper import FirecrawlWebScraper  # Keep as fallback
 from agents.content_sectioning_agent import ContentSectioningAgent
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -38,7 +37,6 @@ class ScrapingStrategy(Enum):
     SIMPLE_HTTP = "simple_http"      # 0.1 credits
     ENHANCED_HTTP = "enhanced_http"  # 0.5 credits
     HUMAN_MIMIC = "human_mimic"      # 2.0 credits - NEW!
-    FIRECRAWL = "firecrawl"         # 10.0 credits - fallback only
 
 class SmartRestaurantScraper:
     """
@@ -49,7 +47,6 @@ class SmartRestaurantScraper:
     2. Simple HTTP for static content
     3. Enhanced HTTP for light JS
     4. Human Mimic for dynamic content (REPLACES most Firecrawl)
-    5. Firecrawl only for heavily protected sites
     """
 
     def __init__(self, config):
@@ -66,7 +63,6 @@ class SmartRestaurantScraper:
         # Lazy initialization of scrapers
         self._specialized_scraper = None
         self._human_mimic_scraper = None
-        self._firecrawl_scraper = None  # Keep as fallback
         self._content_sectioner = None
 
         # Updated stats tracking with Human Mimic
@@ -76,9 +72,7 @@ class SmartRestaurantScraper:
             "ai_analysis_calls": 0,
             "domain_cache_hits": 0,
             "new_domains_learned": 0,
-            "total_cost_estimate": 0.0,
-            "cost_saved_vs_all_firecrawl": 0.0,
-            "human_mimic_replacements": 0  # Track Firecrawl replacements
+            "total_cost_estimate": 0.0
         }
 
         # Updated AI prompt to include Human Mimic strategy
@@ -105,19 +99,9 @@ class SmartRestaurantScraper:
         - SPAs with moderate complexity
         - Perfect for: Timeout, Eater, Michelin, most restaurant guides
 
-        🔴 FIRECRAWL (10.0 credits):
-        - Heavy anti-bot protection (CAPTCHA, bot detection)
-        - Complex authentication walls
-        - Sites that actively block headless browsers
-        - Infinite scroll with complex lazy loading
-        - Last resort only
-
-        IMPORTANT: Most modern restaurant/content sites should use HUMAN_MIMIC, not FIRECRAWL.
-        Only recommend FIRECRAWL for sites with clear anti-bot measures.
-
         Output in JSON format:
         {{
-            "strategy": "SIMPLE_HTTP|ENHANCED_HTTP|HUMAN_MIMIC|FIRECRAWL",
+            "strategy": "SIMPLE_HTTP|ENHANCED_HTTP|HUMAN_MIMIC",
             "confidence": 0.0-1.0,
             "reasoning": "Technical explanation"
         }}
@@ -150,12 +134,6 @@ class SmartRestaurantScraper:
             self._human_mimic_scraper = HumanMimicScrapingStrategy(self.config)
         return self._human_mimic_scraper
 
-    @property
-    def firecrawl_scraper(self):
-        """Firecrawl as fallback for protected sites only"""
-        if self._firecrawl_scraper is None:
-            self._firecrawl_scraper = FirecrawlWebScraper(self.config)
-        return self._firecrawl_scraper
 
     @property
     def content_sectioner(self):
@@ -197,8 +175,6 @@ class SmartRestaurantScraper:
                 scraped = await self._scrape_enhanced_http(results)
             elif strategy == ScrapingStrategy.HUMAN_MIMIC:
                 scraped = await self._scrape_human_mimic(results)  # NEW!
-            elif strategy == ScrapingStrategy.FIRECRAWL:
-                scraped = await self._scrape_firecrawl(results)
             else:
                 scraped = results
 
@@ -322,8 +298,7 @@ class SmartRestaurantScraper:
                 strategy_mapping = {
                     'SIMPLE_HTTP': ScrapingStrategy.SIMPLE_HTTP,
                     'ENHANCED_HTTP': ScrapingStrategy.ENHANCED_HTTP,
-                    'HUMAN_MIMIC': ScrapingStrategy.HUMAN_MIMIC,
-                    'FIRECRAWL': ScrapingStrategy.FIRECRAWL
+                    'HUMAN_MIMIC': ScrapingStrategy.HUMAN_MIMIC
                 }
 
                 strategy = strategy_mapping.get(strategy_name, ScrapingStrategy.HUMAN_MIMIC)
@@ -383,8 +358,7 @@ class SmartRestaurantScraper:
                     'specialized': ScrapingStrategy.SPECIALIZED,
                     'simple_http': ScrapingStrategy.SIMPLE_HTTP,
                     'enhanced_http': ScrapingStrategy.ENHANCED_HTTP,
-                    'human_mimic': ScrapingStrategy.HUMAN_MIMIC,
-                    'firecrawl': ScrapingStrategy.FIRECRAWL
+                    'human_mimic': ScrapingStrategy.HUMAN_MIMIC
                 }
                 return strategy_mapping.get(strategy_name)
         except Exception as e:
@@ -536,15 +510,6 @@ class SmartRestaurantScraper:
 
         return result
 
-    async def _scrape_firecrawl(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Firecrawl scraping as fallback for heavily protected sites"""
-        logger.info(f"🔴 Firecrawl scraping {len(results)} URLs (fallback only)")
-
-        try:
-            return await self.firecrawl_scraper.scrape_search_results(results)
-        except Exception as e:
-            logger.error(f"Firecrawl scraping failed: {e}")
-            return [{**r, 'scraping_success': False, 'scraping_error': str(e)} for r in results]
 
     def _calculate_cost_savings(self):
         """Calculate cost savings with Human Mimic strategy"""
@@ -553,8 +518,7 @@ class SmartRestaurantScraper:
             ScrapingStrategy.SPECIALIZED: 0.0,
             ScrapingStrategy.SIMPLE_HTTP: 0.1,
             ScrapingStrategy.ENHANCED_HTTP: 0.5,
-            ScrapingStrategy.HUMAN_MIMIC: 2.0,   # NEW!
-            ScrapingStrategy.FIRECRAWL: 10.0
+            ScrapingStrategy.HUMAN_MIMIC: 2.0
         }
 
         # Calculate actual cost
@@ -567,8 +531,6 @@ class SmartRestaurantScraper:
 
         # Calculate savings vs all Firecrawl
         total_urls = self.stats["total_processed"]
-        all_firecrawl_cost = total_urls * 10.0
-        self.stats["cost_saved_vs_all_firecrawl"] = all_firecrawl_cost - actual_cost
 
     def get_stats(self) -> Dict[str, Any]:
         """Get comprehensive statistics including Human Mimic metrics"""
@@ -590,7 +552,6 @@ class SmartRestaurantScraper:
             "domain_cache_hits": 0,
             "new_domains_learned": 0,
             "total_cost_estimate": 0.0,
-            "cost_saved_vs_all_firecrawl": 0.0,
             "human_mimic_replacements": 0
         }
 

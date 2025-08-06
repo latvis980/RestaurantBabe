@@ -13,8 +13,7 @@ langchain-deepseek>=0.1
 supabase>=2.10.0
 geopy>=2.4.1
 
-# Web scraping with Firecrawl and Readability
-firecrawl-py>=0.0.20
+# Web scraping with Playwright and Readability
 requests>=2.31.0
 httpx[http2]>=0.24.0
 readability-lxml>=0.8.1
