@@ -46,14 +46,6 @@ class TransparentEditorTest:
         """
         total_start_time = time.time()
 
-        # Create files
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        scraped_filename = f"scraped_content_{timestamp}.txt"
-        edited_filename = f"edited_results_{timestamp}.txt"
-
-        scraped_filepath = os.path.join(tempfile.gettempdir(), scraped_filename)
-        edited_filepath = os.path.join(tempfile.gettempdir(), edited_filename)
-
         logger.info(f"🧪 Testing Editor Pipeline: {restaurant_query}")
 
         try:
@@ -65,16 +57,18 @@ class TransparentEditorTest:
 
             query_result = self.query_analyzer.analyze(restaurant_query)
             destination = query_result.get('destination', 'Unknown')
+            search_queries = query_result.get('search_queries', [restaurant_query])
 
             step1_time = time.time() - step1_start
 
             # =================================================================
-            # STEP 2: SEARCH
+            # STEP 2: SEARCH - FIXED: Pass destination parameter
             # =================================================================
             logger.info("🔍 Step 2: Web Search")
             step2_start = time.time()
 
-            search_results = await self.search_agent.search(restaurant_query)
+            # FIXED: BraveSearchAgent needs destination parameter
+            search_results = await self.search_agent.search(search_queries, destination)
 
             step2_time = time.time() - step2_start
 
@@ -121,22 +115,16 @@ class TransparentEditorTest:
             step4_time = time.time() - step4_start
 
             # =================================================================
-            # STEP 5: SAVE SCRAPED CONTENT
+            # STEP 5: PRE-EDITOR ANALYSIS
             # =================================================================
-            logger.info("💾 Step 5: Save Scraped Content")
-            self._save_scraped_content_analysis(cleaned_results, restaurant_query, destination, scraped_filepath)
-
-            # =================================================================
-            # STEP 6: PRE-EDITOR ANALYSIS
-            # =================================================================
-            logger.info("🔍 Step 6: Pre-Editor Analysis")
+            logger.info("🔍 Step 5: Pre-Editor Analysis")
             pre_analysis = self._analyze_content_before_editor(cleaned_results, destination)
 
             # =================================================================
-            # STEP 7: EDITOR PROCESSING (using existing editor)
+            # STEP 6: EDITOR PROCESSING (using existing editor)
             # =================================================================
-            logger.info("✏️ Step 7: Editor Processing")
-            step7_start = time.time()
+            logger.info("✏️ Step 6: Editor Processing")
+            step6_start = time.time()
 
             # Prepare for existing editor
             editor_input = []
@@ -157,56 +145,54 @@ class TransparentEditorTest:
                 destination=destination
             )
 
-            step7_time = time.time() - step7_start
+            step6_time = time.time() - step6_start
 
             # =================================================================
-            # STEP 8: POST-EDITOR ANALYSIS
+            # STEP 7: ANALYSIS & SEND TO TELEGRAM - FIXED
             # =================================================================
-            logger.info("📊 Step 8: Post-Editor Analysis")
+            logger.info("📊 Step 7: Analysis & Send to Telegram")
 
             total_time = time.time() - total_start_time
 
-            self._save_editor_transparency_analysis(
-                edited_filepath, restaurant_query, destination, 
-                cleaned_results, editor_output, pre_analysis,
-                {
-                    'step1_time': step1_time,
-                    'step2_time': step2_time,
-                    'step3_time': step3_time,
-                    'step4_time': step4_time,
-                    'step7_time': step7_time,
-                    'total_time': total_time,
-                    'search_results_count': len(search_results),
-                    'scraped_results_count': len(scraping_results),
-                    'cleaned_results_count': len(cleaned_results),
-                    'final_restaurants_count': len(editor_output.get('edited_results', {}).get('main_list', []))
-                }
-            )
+            timing_data = {
+                'step1_time': step1_time,
+                'step2_time': step2_time,
+                'step3_time': step3_time,
+                'step4_time': step4_time,
+                'step6_time': step6_time,
+                'total_time': total_time,
+                'search_results_count': len(search_results),
+                'scraped_results_count': len(scraping_results),
+                'cleaned_results_count': len(cleaned_results),
+                'final_restaurants_count': len(editor_output.get('edited_results', {}).get('main_list', []))
+            }
 
-            # =================================================================
-            # STEP 9: SEND RESULTS - FIXED
-            # =================================================================
+            # FIXED: Send directly to Telegram instead of temp files
             if bot and self.admin_chat_id:
-                self._send_results_to_admin(
-                    bot, scraped_filepath, edited_filepath, restaurant_query, editor_output
+                self._send_analysis_to_telegram(
+                    bot, restaurant_query, destination, cleaned_results, 
+                    editor_output, pre_analysis, timing_data
                 )
 
-            return edited_filepath
+            return "Analysis sent to Telegram"
 
         except Exception as e:
             logger.error(f"❌ Error in editor pipeline test: {e}")
 
-            # Save error
-            with open(edited_filepath, 'w', encoding='utf-8') as f:
-                f.write("EDITOR PIPELINE TEST ERROR\n")
-                f.write(f"Query: {restaurant_query}\n")
-                f.write(f"Error: {str(e)}\n")
-                f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+            # Send error to Telegram if possible
+            if bot and self.admin_chat_id:
+                error_msg = (
+                    f"❌ <b>Editor Test Failed</b>\n\n"
+                    f"📝 Query: <code>{restaurant_query}</code>\n"
+                    f"🔥 Error: <code>{str(e)}</code>\n"
+                    f"⏱ Time: {datetime.now().isoformat()}"
+                )
+                try:
+                    bot.send_message(self.admin_chat_id, error_msg, parse_mode='HTML')
+                except:
+                    pass
 
-                import traceback
-                f.write(f"\nTraceback:\n{traceback.format_exc()}\n")
-
-            return edited_filepath
+            return f"Error: {str(e)}"
 
     def _analyze_content_before_editor(self, cleaned_results: List[Dict], destination: str) -> Dict[str, Any]:
         """
@@ -263,245 +249,158 @@ class TransparentEditorTest:
             'source_analysis': source_analysis
         }
 
-    def _save_scraped_content_analysis(self, cleaned_results: List[Dict], query: str, destination: str, filepath: str):
-        """
-        Save detailed scraped content for transparency
-        """
-        try:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write("SCRAPED CONTENT TRANSPARENCY ANALYSIS\n")
-                f.write("=" * 80 + "\n")
-                f.write(f"Query: {query}\n")
-                f.write(f"Destination: {destination}\n")
-                f.write(f"Timestamp: {datetime.now().isoformat()}\n")
-                f.write(f"Sources Found: {len(cleaned_results)}\n")
-                f.write("=" * 80 + "\n\n")
-
-                # Summary by source
-                f.write("CONTENT SUMMARY BY SOURCE\n")
-                f.write("-" * 40 + "\n")
-
-                for i, result in enumerate(cleaned_results, 1):
-                    content = result.get('cleaned_content', '')
-                    url = result.get('url', '')
-                    domain = url.split('/')[2] if '/' in url and len(url.split('/')) > 2 else 'unknown'
-
-                    f.write(f"{i}. {domain}\n")
-                    f.write(f"   Length: {len(content):,} chars\n")
-                    f.write(f"   Quality: {'✅ Rich' if len(content) > 2000 else '⚠️ Medium' if len(content) > 500 else '❌ Poor'}\n")
-                    f.write(f"   URL: {url}\n\n")
-
-                # Full content
-                f.write("FULL CONTENT (INPUT TO EDITOR)\n")
-                f.write("=" * 80 + "\n\n")
-
-                for i, result in enumerate(cleaned_results, 1):
-                    content = result.get('cleaned_content', '')
-                    if content and len(content.strip()) > 100:
-                        f.write(f"SOURCE {i}\n")
-                        f.write("-" * 60 + "\n")
-                        f.write(content)
-                        f.write("\n" + "=" * 80 + "\n\n")
-
-        except Exception as e:
-            logger.error(f"❌ Error saving scraped content: {e}")
-
-    def _save_editor_transparency_analysis(
-        self, filepath: str, query: str, destination: str,
-        cleaned_results: List[Dict], editor_output: Dict[str, Any], 
-        pre_analysis: Dict[str, Any], timing_data: Dict[str, Any]
+    def _send_analysis_to_telegram(
+        self, bot, query: str, destination: str, cleaned_results: List[Dict], 
+        editor_output: Dict[str, Any], pre_analysis: Dict[str, Any], timing_data: Dict[str, Any]
     ):
         """
-        Save comprehensive editor decision analysis
+        Send comprehensive analysis directly to Telegram (no temp files)
         """
         try:
             restaurants = editor_output.get('edited_results', {}).get('main_list', [])
 
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write("EDITOR DECISION TRANSPARENCY ANALYSIS\n")
-                f.write("=" * 80 + "\n")
-                f.write(f"Query: {query}\n")
-                f.write(f"Destination: {destination}\n")
-                f.write(f"Timestamp: {datetime.now().isoformat()}\n")
-                f.write(f"Editor: Production EditorAgent (unchanged)\n")
-                f.write("=" * 80 + "\n\n")
-
-                # =================================================================
-                # INPUT ANALYSIS
-                # =================================================================
-                f.write("INPUT CONTENT ANALYSIS\n")
-                f.write("-" * 40 + "\n")
-                f.write(f"Total Sources: {pre_analysis['total_sources']}\n")
-                f.write(f"Total Content: {pre_analysis['total_chars']:,} characters\n")
-                f.write(f"Restaurant Mentions: {pre_analysis['total_restaurant_mentions']}\n")
-                f.write(f"Destination Mentions: {pre_analysis['total_destination_mentions']}\n")
-                f.write(f"Estimated Restaurants: {pre_analysis['estimated_restaurants']}\n")
-                f.write(f"Average Quality Score: {pre_analysis['avg_quality']:.1f}/10\n")
-                f.write(f"Geographic Relevance: {pre_analysis['geographic_relevance']:.1f}/10\n\n")
-
-                # Source details
-                f.write("SOURCE-BY-SOURCE PREDICTION:\n")
-                for i, source in enumerate(pre_analysis['source_analysis'], 1):
-                    f.write(f"  {i}. {source['domain']} - {source['estimated_restaurants']} restaurants expected\n")
-
-                f.write("\n")
-
-                # =================================================================
-                # EDITOR OUTPUT ANALYSIS
-                # =================================================================
-                f.write("EDITOR OUTPUT ANALYSIS\n")
-                f.write("-" * 40 + "\n")
-                f.write(f"Restaurants Extracted: {len(restaurants)}\n")
-                f.write(f"Expected vs Actual: {pre_analysis['estimated_restaurants']} → {len(restaurants)}\n")
-
-                actual = len(restaurants)
-                expected = pre_analysis['estimated_restaurants']
-
-                if actual == expected:
-                    f.write("✅ EXTRACTION MATCHES PREDICTION\n")
-                elif actual < expected:
-                    f.write("⚠️ FEWER THAN EXPECTED (Quality filtering or content structure)\n")
-                else:
-                    f.write("📈 MORE THAN EXPECTED (Rich content)\n")
-
-                f.write("\n")
-
-                # Individual restaurant details
-                if restaurants:
-                    f.write("EXTRACTED RESTAURANTS:\n")
-                    for i, restaurant in enumerate(restaurants, 1):
-                        name = restaurant.get('name', 'Unknown')
-                        cuisine = restaurant.get('cuisine', 'Unknown')
-                        neighborhood = restaurant.get('neighborhood', 'Unknown')
-                        f.write(f"  {i}. {name}\n")
-                        f.write(f"     Cuisine: {cuisine}\n")
-                        f.write(f"     Location: {neighborhood}\n\n")
-
-                # =================================================================
-                # DECISION ANALYSIS
-                # =================================================================
-                f.write("EDITOR DECISION ANALYSIS\n")
-                f.write("-" * 40 + "\n")
-
-                if actual == 5:
-                    f.write("✅ 5 RESTAURANTS = TYPICAL GOOD RESULT\n")
-                    f.write("This indicates:\n")
-                    f.write("  • Editor found exactly 5 high-quality restaurants\n")
-                    f.write("  • Content quality was sufficient for extraction\n")
-                    f.write("  • No hardcoded limit - just what was available\n\n")
-
-                elif actual == 0:
-                    f.write("❌ 0 RESTAURANTS = CONTENT ISSUE\n")
-                    f.write("This suggests:\n")
-                    f.write("  • Sources don't contain structured restaurant info\n")
-                    f.write("  • Content is too general or low-quality\n")
-                    f.write("  • Search targeting needs improvement\n\n")
-
-                elif actual < 5:
-                    f.write(f"⚠️ {actual} RESTAURANTS = LIMITED CONTENT\n")
-                    f.write("This suggests:\n")
-                    f.write("  • Sources have some but limited restaurant info\n")
-                    f.write("  • Editor extracted all available options\n")
-                    f.write("  • Quality over quantity approach\n\n")
-
-                else:
-                    f.write(f"📈 {actual} RESTAURANTS = RICH CONTENT\n")
-                    f.write("This indicates:\n")
-                    f.write("  • Excellent source content quality\n")
-                    f.write("  • Multiple restaurants per source\n")
-                    f.write("  • Editor successfully extracted comprehensive list\n\n")
-
-                # =================================================================
-                # RECOMMENDATIONS
-                # =================================================================
-                f.write("OPTIMIZATION RECOMMENDATIONS\n")
-                f.write("-" * 40 + "\n")
-
-                if pre_analysis['geographic_relevance'] < 5:
-                    f.write("TO IMPROVE DESTINATION TARGETING:\n")
-                    f.write("  1. Verify destination parsing is correct\n")
-                    f.write("  2. Include neighborhood names in search\n")
-                    f.write("  3. Target local tourism/food sites\n\n")
-
-                if pre_analysis['avg_quality'] < 6:
-                    f.write("TO IMPROVE CONTENT QUALITY:\n")
-                    f.write("  1. Target editorial content vs user-generated\n")
-                    f.write("  2. Include professional food critics\n")
-                    f.write("  3. Avoid aggregator sites\n\n")
-
-                # =================================================================
-                # PERFORMANCE METRICS
-                # =================================================================
-                f.write("PERFORMANCE METRICS\n")
-                f.write("-" * 40 + "\n")
-                f.write(f"Total Time: {timing_data['total_time']:.2f}s\n")
-                f.write(f"Editor Time: {timing_data['step7_time']:.2f}s\n")
-                f.write(f"Extraction Rate: {actual / max(len(cleaned_results), 1):.1f} restaurants/source\n")
-
-                if timing_data['step7_time'] > 0:
-                    chars_per_sec = pre_analysis['total_chars'] / timing_data['step7_time']
-                    f.write(f"Processing Speed: {chars_per_sec:,.0f} chars/second\n")
-
-                f.write("\n")
-
-                # =================================================================
-                # CONCLUSION
-                # =================================================================
-                f.write("CONCLUSION\n")
-                f.write("-" * 40 + "\n")
-
-                if actual == 5:
-                    f.write("✅ 5 RESTAURANTS IS LIKELY CORRECT\n")
-                    f.write("The editor found exactly what was extractable from the content.\n")
-                    f.write("This is quality-driven selection, not a hardcoded limit.\n\n")
-                elif actual == 0:
-                    f.write("❌ CONTENT QUALITY ISSUE\n")
-                    f.write("The sources don't contain extractable restaurant information.\n")
-                    f.write("Need better search targeting or different sources.\n\n")
-                else:
-                    f.write(f"📊 {actual} RESTAURANTS EXTRACTED\n")
-                    f.write("Editor performance aligns with content quality.\n\n")
-
-                f.write("✅ TRANSPARENCY ANALYSIS COMPLETE\n")
-                f.write("=" * 80 + "\n")
-
-        except Exception as e:
-            logger.error(f"❌ Error saving editor analysis: {e}")
-
-    def _send_results_to_admin(
-        self, bot, scraped_filepath: str, edited_filepath: str, 
-        query: str, editor_results: Dict[str, Any]
-    ):
-        """
-        Send results to admin with summary (SYNC function)
-        """
-        try:
-            restaurants = editor_results.get('edited_results', {}).get('main_list', [])
-
-            summary = (
-                f"✏️ <b>Editor Pipeline Test Complete</b>\n\n"
-                f"📝 Query: <code>{query}</code>\n"
-                f"🍽️ Restaurants Found: {len(restaurants)}\n\n"
-                f"📄 <b>Files Generated:</b>\n"
-                f"1. 📄 Scraped Content Analysis\n"
-                f"2. ✏️ Editor Decision Transparency\n\n"
-                f"🎯 <b>Pipeline:</b> Web Search → Scraping → Text Cleaner → Editor\n"
-                f"🔍 <b>Focus:</b> Why {len(restaurants)} restaurants were extracted"
+            # =================================================================
+            # SCRAPED CONTENT ANALYSIS MESSAGE
+            # =================================================================
+            scraped_analysis = self._build_scraped_content_message(
+                query, destination, cleaned_results
             )
 
-            bot.send_message(self.admin_chat_id, summary, parse_mode='HTML')
+            bot.send_message(
+                self.admin_chat_id, 
+                scraped_analysis, 
+                parse_mode='HTML'
+            )
 
-            # Send files
-            with open(scraped_filepath, 'rb') as f:
-                bot.send_document(self.admin_chat_id, f, caption=f"📄 Scraped Content: {query}")
+            # =================================================================
+            # EDITOR DECISION ANALYSIS MESSAGE
+            # =================================================================
+            editor_analysis = self._build_editor_decision_message(
+                query, destination, restaurants, pre_analysis, timing_data
+            )
 
-            with open(edited_filepath, 'rb') as f:
-                bot.send_document(self.admin_chat_id, f, caption=f"✏️ Editor Analysis: {query}")
+            bot.send_message(
+                self.admin_chat_id, 
+                editor_analysis, 
+                parse_mode='HTML'
+            )
 
-            logger.info("✅ Successfully sent transparent editor test results")
+            # =================================================================
+            # DETAILED CONTENT (if short enough for Telegram)
+            # =================================================================
+            if len(cleaned_results) <= 3 and all(len(r.get('cleaned_content', '')) < 2000 for r in cleaned_results):
+                content_details = self._build_content_details_message(cleaned_results)
+                bot.send_message(
+                    self.admin_chat_id, 
+                    content_details, 
+                    parse_mode='HTML'
+                )
+
+            logger.info("✅ Successfully sent transparent editor test results to Telegram")
 
         except Exception as e:
-            logger.error(f"❌ Failed to send results: {e}")
+            logger.error(f"❌ Failed to send results to Telegram: {e}")
+
+    def _build_scraped_content_message(self, query: str, destination: str, cleaned_results: List[Dict]) -> str:
+        """Build scraped content analysis message"""
+        msg = (
+            f"📄 <b>SCRAPED CONTENT ANALYSIS</b>\n\n"
+            f"📝 Query: <code>{query}</code>\n"
+            f"🏙️ Destination: <b>{destination}</b>\n"
+            f"📊 Sources: {len(cleaned_results)}\n\n"
+            f"<b>CONTENT SUMMARY:</b>\n"
+        )
+
+        for i, result in enumerate(cleaned_results, 1):
+            content = result.get('cleaned_content', '')
+            url = result.get('url', '')
+            domain = url.split('/')[2] if '/' in url and len(url.split('/')) > 2 else 'unknown'
+
+            quality = "✅ Rich" if len(content) > 2000 else "⚠️ Medium" if len(content) > 500 else "❌ Poor"
+
+            msg += f"{i}. <code>{domain}</code>\n"
+            msg += f"   Length: {len(content):,} chars\n"
+            msg += f"   Quality: {quality}\n\n"
+
+        return msg
+
+    def _build_editor_decision_message(
+        self, query: str, destination: str, restaurants: List[Dict], 
+        pre_analysis: Dict[str, Any], timing_data: Dict[str, Any]
+    ) -> str:
+        """Build editor decision analysis message"""
+        actual = len(restaurants)
+        expected = pre_analysis['estimated_restaurants']
+
+        msg = (
+            f"✏️ <b>EDITOR DECISION ANALYSIS</b>\n\n"
+            f"📝 Query: <code>{query}</code>\n"
+            f"🏙️ Destination: <b>{destination}</b>\n"
+            f"🍽️ Restaurants Found: <b>{actual}</b>\n"
+            f"📊 Expected: {expected}\n\n"
+            f"<b>INPUT ANALYSIS:</b>\n"
+            f"• Sources: {pre_analysis['total_sources']}\n"
+            f"• Content: {pre_analysis['total_chars']:,} chars\n"
+            f"• Restaurant Mentions: {pre_analysis['total_restaurant_mentions']}\n"
+            f"• Quality Score: {pre_analysis['avg_quality']:.1f}/10\n\n"
+        )
+
+        # Analysis based on results
+        if actual == 5:
+            msg += "✅ <b>5 RESTAURANTS = TYPICAL RESULT</b>\n"
+            msg += "Editor found exactly what was extractable.\n"
+            msg += "Quality-driven selection, not hardcoded limit.\n\n"
+        elif actual == 0:
+            msg += "❌ <b>0 RESTAURANTS = CONTENT ISSUE</b>\n"
+            msg += "Sources lack structured restaurant info.\n"
+            msg += "Need better search targeting.\n\n"
+        elif actual < 5:
+            msg += f"⚠️ <b>{actual} RESTAURANTS = LIMITED CONTENT</b>\n"
+            msg += "Editor extracted all available options.\n"
+            msg += "Quality over quantity approach.\n\n"
+        else:
+            msg += f"📈 <b>{actual} RESTAURANTS = RICH CONTENT</b>\n"
+            msg += "Excellent source content quality.\n"
+            msg += "Comprehensive extraction success.\n\n"
+
+        # Performance metrics
+        msg += f"<b>PERFORMANCE:</b>\n"
+        msg += f"• Total Time: {timing_data['total_time']:.1f}s\n"
+        msg += f"• Editor Time: {timing_data['step6_time']:.1f}s\n"
+        msg += f"• Processing Rate: {actual / max(len(pre_analysis['source_analysis']), 1):.1f} restaurants/source\n\n"
+
+        # Restaurant list
+        if restaurants:
+            msg += f"<b>EXTRACTED RESTAURANTS:</b>\n"
+            for i, restaurant in enumerate(restaurants[:8], 1):  # Limit to 8 for Telegram
+                name = restaurant.get('name', 'Unknown')
+                cuisine = restaurant.get('cuisine', 'Unknown')
+                msg += f"{i}. <b>{name}</b> ({cuisine})\n"
+
+            if len(restaurants) > 8:
+                msg += f"... and {len(restaurants) - 8} more\n"
+
+        return msg
+
+    def _build_content_details_message(self, cleaned_results: List[Dict]) -> str:
+        """Build detailed content message for small datasets"""
+        msg = "📋 <b>DETAILED CONTENT</b>\n\n"
+
+        for i, result in enumerate(cleaned_results, 1):
+            content = result.get('cleaned_content', '')
+            domain = result.get('url', '').split('/')[2] if result.get('url') else 'unknown'
+
+            if len(content) > 1500:  # Truncate for Telegram limits
+                content = content[:1500] + "..."
+
+            msg += f"<b>SOURCE {i}: {domain}</b>\n"
+            msg += f"<code>{content}</code>\n\n"
+
+            if len(msg) > 3500:  # Stay under Telegram's 4096 char limit
+                msg += "... (truncated for length)"
+                break
+
+        return msg
 
 
 # =================================================================
