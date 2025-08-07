@@ -36,9 +36,9 @@ class SupabaseStorageManager:
 
             if not bucket_exists:
                 # FIX: Create bucket with correct Supabase Python client format
-                # The create_bucket method expects: bucket_id, options=None
+                # The create_bucket method expects: bucket_name (positional), options
                 response = self.client.storage.create_bucket(
-                    bucket_id=self.bucket_name,  # Use bucket_id parameter name
+                    self.bucket_name,  # Bucket name as first positional argument
                     options={
                         "public": False,  # Keep scraped content private
                         "file_size_limit": 10485760,  # Use snake_case instead of camelCase
