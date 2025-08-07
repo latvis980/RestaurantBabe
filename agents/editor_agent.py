@@ -592,52 +592,117 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
         return "\n\n" + "="*50 + "\n\n".join(content_parts)
 
-    def _post_process_results(self, response, source_type, destination):
-        """Post-process AI response to ensure valid format"""
+    def _post_process_results(self, ai_output, source_type, destination):
+        """
+        Process AI output for both database and scraped results
+        FIXED: Handle AIMessage objects correctly
+        """
         try:
-            # Handle both BaseMessage and dict responses
-            if hasattr(response, 'content'):
-                content = response.content
+            logger.info(f"🔍 Processing AI output from {source_type}")
+
+            # FIX: Handle both AIMessage objects and direct strings
+            if hasattr(ai_output, 'content'):
+                # This is an AIMessage from LangChain
+                content = ai_output.content
+            elif isinstance(ai_output, str):
+                # This is already a string
+                content = ai_output
             else:
-                content = str(response)
+                # Try to convert to string
+                content = str(ai_output)
 
-            # Parse JSON response
-            parsed = json.loads(content)
-            restaurants = parsed.get('restaurants', [])
+            content = content.strip()
 
-            # Ensure all restaurants have required fields
-            processed_restaurants = []
+            # FIXED: Better handling of markdown code blocks
+            # Remove markdown code blocks if present
+            if "```json" in content:
+                # Extract content between ```json and ```
+                start = content.find("```json") + 7
+                end = content.find("```", start)
+                if end != -1:
+                    content = content[start:end].strip()
+            elif "```" in content:
+                # Extract content between first ``` and second ```
+                start = content.find("```") + 3
+                end = content.find("```", start)
+                if end != -1:
+                    content = content[start:end].strip()
+
+            # Check if it's actually JSON
+            if not content.startswith('{') and not content.startswith('['):
+                logger.error(f"AI output doesn't look like JSON: {content[:200]}...")
+                return self._fallback_response()
+
+            # Parse the JSON
+            parsed_data = json.loads(content)
+
+            # Handle both direct restaurant list and nested structure
+            if isinstance(parsed_data, list):
+                # Direct list of restaurants
+                restaurants = parsed_data
+            elif isinstance(parsed_data, dict):
+                # Nested structure
+                restaurants = parsed_data.get("restaurants", [])
+            else:
+                logger.error(f"Unexpected AI output format: {type(parsed_data)}")
+                return self._fallback_response()
+
+            logger.info(f"📋 Parsed {len(restaurants)} restaurants from AI response")
+
+            # Simple validation and cleaning
+            cleaned_restaurants = []
+            seen_names = set()
+
             for restaurant in restaurants:
-                if not restaurant.get('name'):
+                # Handle both dict and non-dict restaurant objects
+                if not isinstance(restaurant, dict):
+                    logger.warning(f"Skipping non-dict restaurant: {restaurant}")
                     continue
 
-                # Clean and validate sources
-                sources = restaurant.get('sources', [])
-                if sources:
-                    # Remove any excluded domains
-                    excluded_domains = ['tripadvisor.com', 'yelp.com', 'opentable.com', 'google.com']
-                    cleaned_sources = [
-                        source for source in sources
-                        if not any(excluded in source.lower() for excluded in excluded_domains)
-                    ]
-                    restaurant['sources'] = cleaned_sources[:3]  # Limit to 3 sources
+                name = restaurant.get("name", "").strip()
+                if not name or name.lower() in seen_names:
+                    logger.debug(f"Skipping duplicate or empty restaurant: {name}")
+                    continue
 
-                processed_restaurants.append(restaurant)
+                seen_names.add(name.lower())
 
-            logger.info(f"✅ Post-processed {len(processed_restaurants)} restaurants from {source_type}")
+                # Keep the simple structure from your original implementation
+                cleaned_restaurant = {
+                    "name": name,
+                    "address": restaurant.get("address", "Requires verification"),
+                    "description": restaurant.get("description", "").strip(),
+                    "sources": restaurant.get("sources", [])
+                }
 
-            # Return in expected format but without follow_up_queries yet
+                # Validate description
+                description_length = len(cleaned_restaurant["description"])
+                if description_length < 10:
+                    logger.warning(f"Short description for {name}: {cleaned_restaurant['description']}")
+                elif description_length > 200:
+                    logger.warning(f"Long description for {name}: {description_length} chars")
+
+                cleaned_restaurants.append(cleaned_restaurant)
+
+            logger.info(f"✅ Cleaned and validated {len(cleaned_restaurants)} restaurants")
+
+            # Generate follow-up queries for address verification
+            follow_up_queries = self._generate_follow_up_queries(cleaned_restaurants, destination)
+
             return {
-                "edited_results": {"main_list": processed_restaurants},
-                "follow_up_queries": []  # Will be generated after selection
+                "edited_results": {
+                    "main_list": cleaned_restaurants
+                },
+                "follow_up_queries": follow_up_queries
             }
 
         except json.JSONDecodeError as e:
-            logger.error(f"❌ Failed to parse AI response: {e}")
-            logger.error(f"Response content: {content[:500]}...")
+            logger.error(f"Failed to parse AI output as JSON: {e}")
+            logger.error(f"Raw AI output: {content[:500] if 'content' in locals() else 'Unable to extract content'}...")
             return self._fallback_response()
         except Exception as e:
-            logger.error(f"❌ Error in post-processing: {e}")
+            logger.error(f"Error in post-processing: {e}")
+            logger.error(f"AI output type: {type(ai_output)}")
+            logger.error(f"AI output: {str(ai_output)[:200]}...")
             return self._fallback_response()
 
     def _extract_domain(self, url):
