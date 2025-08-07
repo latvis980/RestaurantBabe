@@ -242,52 +242,191 @@ class TransparentEditorTest:
         editor_output: Dict[str, Any], pre_analysis: Dict[str, Any], timing_data: Dict[str, Any]
     ):
         """
-        Send comprehensive analysis directly to Telegram (no temp files)
+        Send files only - no messages
         """
         try:
-            restaurants = editor_output.get('edited_results', {}).get('main_list', [])
+            # =================================================================
+            # CREATE AND SEND SCRAPED CONTENT FILE
+            # =================================================================
+            scraped_content_file = self._create_scraped_content_file(query, destination, cleaned_results, pre_analysis)
 
-            # =================================================================
-            # SCRAPED CONTENT ANALYSIS MESSAGE
-            # =================================================================
-            scraped_analysis = self._build_scraped_content_message(
-                query, destination, cleaned_results
-            )
-
-            bot.send_message(
-                self.admin_chat_id, 
-                scraped_analysis, 
-                parse_mode='HTML'
-            )
-
-            # =================================================================
-            # EDITOR DECISION ANALYSIS MESSAGE
-            # =================================================================
-            editor_analysis = self._build_editor_decision_message(
-                query, destination, restaurants, pre_analysis, timing_data
-            )
-
-            bot.send_message(
-                self.admin_chat_id, 
-                editor_analysis, 
-                parse_mode='HTML'
-            )
-
-            # =================================================================
-            # DETAILED CONTENT (if short enough for Telegram)
-            # =================================================================
-            if len(cleaned_results) <= 3 and all(len(r.get('cleaned_content', '')) < 2000 for r in cleaned_results):
-                content_details = self._build_content_details_message(cleaned_results)
-                bot.send_message(
+            with open(scraped_content_file, 'rb') as f:
+                bot.send_document(
                     self.admin_chat_id, 
-                    content_details, 
-                    parse_mode='HTML'
+                    f, 
+                    caption=f"📋 Scraped content: {query}"
                 )
 
-            logger.info("✅ Successfully sent transparent editor test results to Telegram")
+            # =================================================================
+            # CREATE AND SEND EDITOR ANALYSIS FILE
+            # =================================================================
+            editor_analysis_file = self._create_editor_analysis_file(
+                query, destination, editor_output.get('edited_results', {}).get('main_list', []), 
+                editor_output, pre_analysis, timing_data
+            )
+
+            with open(editor_analysis_file, 'rb') as f:
+                bot.send_document(
+                    self.admin_chat_id, 
+                    f, 
+                    caption=f"✏️ Editor analysis: {query}"
+                )
+
+            # Clean up temp files
+            try:
+                os.remove(scraped_content_file)
+                os.remove(editor_analysis_file)
+            except:
+                pass
+
+            logger.info("✅ Successfully sent transparent editor test files to Telegram")
 
         except Exception as e:
             logger.error(f"❌ Failed to send results to Telegram: {e}")
+
+    def _create_scraped_content_file(self, query: str, destination: str, cleaned_results: List[Dict], pre_analysis: Dict[str, Any]) -> str:
+        """Create comprehensive scraped content file"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = f"/tmp/scraped_content_{timestamp}.txt"
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write("=" * 80 + "\n")
+            f.write("SCRAPED CONTENT ANALYSIS - FULL INPUT TO EDITOR\n")
+            f.write("=" * 80 + "\n")
+            f.write(f"Query: {query}\n")
+            f.write(f"Destination: {destination}\n")
+            f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+            f.write(f"Sources: {len(cleaned_results)}\n")
+            f.write("=" * 80 + "\n\n")
+
+            # Summary
+            f.write("CONTENT SUMMARY BY SOURCE\n")
+            f.write("-" * 40 + "\n")
+            for i, result in enumerate(cleaned_results, 1):
+                content = result.get('cleaned_content', '')
+                url = result.get('url', '')
+                domain = url.split('/')[2] if '/' in url and len(url.split('/')) > 2 else 'unknown'
+
+                quality = "Rich" if len(content) > 2000 else "Medium" if len(content) > 500 else "Poor"
+                f.write(f"{i}. {domain}\n")
+                f.write(f"   Length: {len(content):,} characters\n")
+                f.write(f"   Quality: {quality}\n")
+                f.write(f"   URL: {url}\n\n")
+
+            # Full content for each source
+            f.write("FULL SCRAPED CONTENT (EXACT INPUT TO EDITOR)\n")
+            f.write("=" * 80 + "\n\n")
+
+            for i, result in enumerate(cleaned_results, 1):
+                content = result.get('cleaned_content', '')
+                url = result.get('url', '')
+                title = result.get('title', 'No Title')
+
+                f.write(f"SOURCE {i}\n")
+                f.write("-" * 60 + "\n")
+                f.write(f"URL: {url}\n")
+                f.write(f"Title: {title}\n")
+                f.write(f"Content Length: {len(content):,} characters\n")
+                f.write("-" * 60 + "\n")
+                f.write(content)
+                f.write("\n" + "=" * 80 + "\n\n")
+
+            # Analysis summary
+            f.write("PRE-EDITOR ANALYSIS\n")
+            f.write("-" * 40 + "\n")
+            f.write(f"Total Content: {pre_analysis['total_chars']:,} characters\n")
+            f.write(f"Restaurant Mentions: {pre_analysis['total_restaurant_mentions']}\n")
+            f.write(f"Destination Mentions: {pre_analysis['total_destination_mentions']}\n")
+            f.write(f"Average Quality Score: {pre_analysis['avg_quality']:.1f}/10\n")
+            f.write(f"Expected Restaurants: {pre_analysis['estimated_restaurants']}\n")
+
+        return filepath
+
+    def _create_editor_analysis_file(
+        self, query: str, destination: str, restaurants: List[Dict], 
+        editor_output: Dict[str, Any], pre_analysis: Dict[str, Any], timing_data: Dict[str, Any]
+    ) -> str:
+        """Create comprehensive editor decision analysis file"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = f"/tmp/editor_analysis_{timestamp}.txt"
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write("=" * 80 + "\n")
+            f.write("EDITOR DECISION ANALYSIS - COMPLETE OUTPUT\n")
+            f.write("=" * 80 + "\n")
+            f.write(f"Query: {query}\n")
+            f.write(f"Destination: {destination}\n")
+            f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+            f.write(f"Editor: Production EditorAgent (unchanged)\n")
+            f.write("=" * 80 + "\n\n")
+
+            # Results summary
+            actual = len(restaurants)
+            expected = pre_analysis['estimated_restaurants']
+
+            f.write("RESULTS SUMMARY\n")
+            f.write("-" * 40 + "\n")
+            f.write(f"Restaurants Found: {actual}\n")
+            f.write(f"Expected: {expected}\n")
+            f.write(f"Input Sources: {pre_analysis['total_sources']}\n")
+            f.write(f"Input Content: {pre_analysis['total_chars']:,} characters\n\n")
+
+            # Decision analysis
+            f.write("DECISION ANALYSIS\n")
+            f.write("-" * 40 + "\n")
+            if actual == 5:
+                f.write("✓ 5 RESTAURANTS = TYPICAL GOOD RESULT\n")
+                f.write("The editor found exactly what was extractable from the content.\n")
+                f.write("This is quality-driven selection, not a hardcoded limit.\n\n")
+            elif actual == 0:
+                f.write("✗ 0 RESTAURANTS = CONTENT ISSUE\n")
+                f.write("Sources don't contain extractable restaurant information.\n")
+                f.write("Need better search targeting or different sources.\n\n")
+            elif actual < 5:
+                f.write(f"! {actual} RESTAURANTS = LIMITED CONTENT\n")
+                f.write("Editor extracted all available options.\n")
+                f.write("Quality over quantity approach.\n\n")
+            else:
+                f.write(f"+ {actual} RESTAURANTS = RICH CONTENT\n")
+                f.write("Excellent source content quality.\n")
+                f.write("Comprehensive extraction success.\n\n")
+
+            # Full restaurant details
+            if restaurants:
+                f.write("EXTRACTED RESTAURANTS (FULL DETAILS)\n")
+                f.write("=" * 50 + "\n")
+                for i, restaurant in enumerate(restaurants, 1):
+                    f.write(f"\n{i}. {restaurant.get('name', 'Unknown')}\n")
+                    f.write("-" * 30 + "\n")
+                    for key, value in restaurant.items():
+                        if key != 'name':
+                            f.write(f"{key.replace('_', ' ').title()}: {value}\n")
+                    f.write("\n")
+            else:
+                f.write("NO RESTAURANTS EXTRACTED\n")
+                f.write("=" * 30 + "\n")
+                f.write("The editor could not extract any restaurant information from the provided content.\n\n")
+
+            # Performance metrics
+            f.write("PERFORMANCE METRICS\n")
+            f.write("-" * 40 + "\n")
+            f.write(f"Total Time: {timing_data['total_time']:.2f}s\n")
+            f.write(f"Editor Time: {timing_data['step6_time']:.2f}s\n")
+            f.write(f"Search Time: {timing_data['step2_time']:.2f}s\n")
+            f.write(f"Scraping Time: {timing_data['step3_time']:.2f}s\n")
+            f.write(f"Processing Rate: {actual / max(len(pre_analysis['source_analysis']), 1):.1f} restaurants/source\n\n")
+
+            # Raw editor output
+            f.write("RAW EDITOR OUTPUT\n")
+            f.write("=" * 40 + "\n")
+            f.write(json.dumps(editor_output, indent=2, ensure_ascii=False))
+            f.write("\n\n")
+
+            f.write("=" * 80 + "\n")
+            f.write("ANALYSIS COMPLETE\n")
+            f.write("=" * 80 + "\n")
+
+        return filepath
 
     def _build_scraped_content_message(self, query: str, destination: str, cleaned_results: List[Dict]) -> str:
         """Build scraped content analysis message"""
