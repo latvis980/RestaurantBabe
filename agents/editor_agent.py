@@ -1,4 +1,4 @@
-# agents/editor_agent.py - ENHANCED VERSION with intelligent selection and dual API keys
+# agents/editor_agent.py - ENHANCED VERSION with chunking and AI-driven selection
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tracers.context import tracing_v2_enabled
@@ -7,6 +7,8 @@ import logging
 from collections import defaultdict
 from utils.debug_utils import dump_chain_state, log_function_call
 import os
+import tiktoken
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -18,39 +20,18 @@ class EditorAgent:
         )
         self.config = config
 
-        # Initialize selection model for restaurant filtering
-        self.selection_model = ChatOpenAI(
-            model="gpt-4o-mini",  # Faster model for selection
-            temperature=0.3  # Slightly higher for diversity
-        )
+        # Initialize tokenizer for chunking
+        try:
+            self.tokenizer = tiktoken.encoding_for_model("gpt-4")
+            logger.info("✅ Tokenizer initialized for chunking")
+        except Exception as e:
+            logger.warning(f"⚠️ Tokenizer initialization failed: {e}")
+            self.tokenizer = None
 
-        # Selection prompt for choosing best restaurants BEFORE follow-up
-        self.selection_prompt = """
-        You are an expert restaurant curator selecting the BEST restaurants for a user's query.
-
-        USER QUERY: {{raw_query}}
-        DESTINATION: {{destination}}
-
-        AVAILABLE RESTAURANTS:
-        {{restaurants_list}}
-
-        YOUR TASK: Select up to {{max_selections}} restaurants that:
-        1. Best match the user's query
-        2. Offer variety and diversity
-        3. Are highly recommended/praised
-        4. If the query doesn't specify, include both traditional and innovative options
-        5. Prioritize restaurants mentioned by famous guides and media (Michelin, World's 50 Best, Le Monde, Vodue, Condé Nast Traveller, etc.)
-
-        SELECTION CRITERIA:
-        - Quality over quantity - only include excellent matches
-        - For broad queries, ensure diversity (cuisines, styles, price points)
-        - For specific queries, focus on best matches but still include variety
-        - Consider recommendation sources (prefer expert/guide recommendations)
-        - If the query doesn't specify, balance between established classics and exciting new places
-
-        Return ONLY a JSON array of selected restaurant names:
-        ["Restaurant Name 1", "Restaurant Name 2", ...]
-        """
+        # Chunking configuration
+        self.max_tokens_per_chunk = 15000  # Safe limit for Claude (leaves room for prompt)
+        self.max_chars_per_chunk = 45000   # Character-based fallback
+        self.chunk_overlap = 500           # Overlap between chunks
 
         # Database restaurant processing - diplomatic approach like a hotel concierge
         self.database_formatting_prompt = """
@@ -170,71 +151,107 @@ Extract restaurants using the diplomatic concierge approach. Include good option
         self.database_chain = self.database_prompt | self.model
         self.scraped_chain = self.scraped_prompt | self.model
 
-    def _select_best_restaurants(self, restaurants, raw_query, destination, max_selections=10):
-        """
-        Select the best restaurants BEFORE follow-up queries
+    def _needs_chunking(self, content):
+        """Determine if content needs chunking"""
+        # Character-based check (fast)
+        if len(content) <= self.max_chars_per_chunk:
+            return False
 
-        Args:
-            restaurants: List of restaurant dictionaries
-            raw_query: User's original query
-            destination: City/location
-            max_selections: Maximum number to select (default 10)
+        # Token-based check if tokenizer available
+        if self.tokenizer:
+            try:
+                tokens = self.tokenizer.encode(content)
+                return len(tokens) > self.max_tokens_per_chunk
+            except Exception as e:
+                logger.warning(f"Token counting failed: {e}")
 
-        Returns:
-            List of selected restaurants
-        """
-        try:
-            # Format restaurants for selection
-            restaurants_text = []
-            for i, restaurant in enumerate(restaurants):
-                name = restaurant.get('name', 'Unknown')
-                description = restaurant.get('description', '')
-                sources = restaurant.get('sources', [])
+        # Fallback to character count
+        return len(content) > self.max_chars_per_chunk
 
-                # Check if mentioned by famous guides
-                famous_guides = ['michelin', 'worlds 50 best', 'worlds50best', 'asia 50 best']
-                has_guide_mention = any(
-                    any(guide in str(source).lower() for guide in famous_guides)
-                    for source in sources
-                )
+    def _chunk_content(self, content):
+        """Break content into manageable chunks with overlap"""
+        if not self._needs_chunking(content):
+            return [content]
 
-                restaurant_info = f"{i+1}. {name}"
-                if description:
-                    restaurant_info += f" - {description[:100]}..."
-                if has_guide_mention:
-                    restaurant_info += " [GUIDE RECOMMENDED]"
+        logger.info(f"📚 Chunking large content ({len(content)} chars)")
 
-                restaurants_text.append(restaurant_info)
+        chunks = []
 
-            # Create selection prompt
-            prompt = ChatPromptTemplate.from_template(self.selection_prompt)
-            selection_chain = prompt | self.selection_model
+        if self.tokenizer:
+            # Token-based chunking (more accurate)
+            try:
+                tokens = self.tokenizer.encode(content)
+                total_tokens = len(tokens)
 
-            # Get selection
-            response = selection_chain.invoke({
-                "raw_query": raw_query,
-                "destination": destination,
-                "restaurants_list": "\n".join(restaurants_text),
-                "max_selections": max_selections
-            })
+                logger.info(f"🔢 Total tokens: {total_tokens}")
 
-            # Parse selected names
-            selected_names = json.loads(response.content)
+                chunk_count = math.ceil(total_tokens / self.max_tokens_per_chunk)
+                logger.info(f"📊 Creating {chunk_count} chunks")
 
-            # Filter restaurants to only selected ones
-            selected_restaurants = []
+                for i in range(chunk_count):
+                    start_token = i * self.max_tokens_per_chunk
+                    end_token = min((i + 1) * self.max_tokens_per_chunk + self.chunk_overlap, total_tokens)
+
+                    chunk_tokens = tokens[start_token:end_token]
+                    chunk_text = self.tokenizer.decode(chunk_tokens)
+                    chunks.append(chunk_text)
+
+                return chunks
+
+            except Exception as e:
+                logger.warning(f"Token-based chunking failed: {e}, falling back to character-based")
+
+        # Character-based chunking (fallback)
+        chunk_size = self.max_chars_per_chunk
+        overlap = self.chunk_overlap
+
+        for i in range(0, len(content), chunk_size - overlap):
+            chunk = content[i:i + chunk_size]
+            chunks.append(chunk)
+
+            if i + chunk_size >= len(content):
+                break
+
+        logger.info(f"✂️ Created {len(chunks)} character-based chunks")
+        return chunks
+
+    def _merge_chunked_results(self, chunk_results):
+        """Merge results from multiple chunks, removing duplicates"""
+        all_restaurants = []
+        seen_names = set()
+
+        for result in chunk_results:
+            if not result or not result.get('edited_results', {}).get('main_list'):
+                continue
+
+            restaurants = result['edited_results']['main_list']
+
             for restaurant in restaurants:
-                if restaurant.get('name') in selected_names:
-                    selected_restaurants.append(restaurant)
+                name = restaurant.get('name', '').lower().strip()
 
-            logger.info(f"🎯 Selected {len(selected_restaurants)} best restaurants from {len(restaurants)} total")
+                if name and name not in seen_names:
+                    seen_names.add(name)
+                    all_restaurants.append(restaurant)
+                elif name in seen_names:
+                    # Merge information if restaurant already exists
+                    existing_restaurant = next(
+                        (r for r in all_restaurants if r.get('name', '').lower().strip() == name), 
+                        None
+                    )
+                    if existing_restaurant:
+                        # Combine sources
+                        existing_sources = set(existing_restaurant.get('sources', []))
+                        new_sources = set(restaurant.get('sources', []))
+                        existing_restaurant['sources'] = list(existing_sources | new_sources)
 
-            return selected_restaurants
+                        # Use longer description
+                        existing_desc = existing_restaurant.get('description', '')
+                        new_desc = restaurant.get('description', '')
+                        if len(new_desc) > len(existing_desc):
+                            existing_restaurant['description'] = new_desc
 
-        except Exception as e:
-            logger.error(f"Error in restaurant selection: {e}")
-            # Fallback: return first max_selections restaurants
-            return restaurants[:max_selections]
+        logger.info(f"🔗 Merged chunks into {len(all_restaurants)} unique restaurants")
+        return all_restaurants
 
     def _generate_follow_up_queries(self, restaurants, destination):
         """
@@ -272,12 +289,13 @@ Extract restaurants using the diplomatic concierge approach. Include good option
     def edit(self, scraped_results=None, database_restaurants=None, raw_query="", destination="Unknown", 
              content_source=None, processing_mode=None, evaluation_context=None, **kwargs):
         """
-        Main editing method with intelligent restaurant selection
+        Main editing method with chunking support and AI-driven selection
 
-        Key improvements:
-        1. Selects best restaurants BEFORE follow-up queries
-        2. Ensures diversity in selection
-        3. Supports dual API keys for more follow-up queries
+        Flow:
+        1. Receive results (database, hybrid, or scraped)
+        2. Chunk large content if needed
+        3. Process with AI (which includes selection via prompt)
+        4. Generate follow-up searches
         """
         try:
             # Use raw_query consistently
@@ -327,32 +345,17 @@ Extract restaurants using the diplomatic concierge approach. Include good option
                 logger.warning(f"⚠️ Unknown processing mode: {mode}")
                 return self._fallback_response()
 
-            # ENHANCED: Select best restaurants before generating follow-up queries
+            # Generate follow-up queries for all restaurants found
             if result and result.get("edited_results", {}).get("main_list"):
                 all_restaurants = result["edited_results"]["main_list"]
 
-                # Determine selection count based on query breadth
-                is_broad_query = any(term in query.lower() for term in 
-                    ['best restaurants', 'where to eat', 'food scene', 'dining', 'recommendations'])
-
-                max_selections = 10 if is_broad_query else 8
-
-                # Select best restaurants
-                selected_restaurants = self._select_best_restaurants(
-                    all_restaurants, 
-                    query, 
-                    destination,
-                    max_selections
-                )
-
-                # Update result with selected restaurants
-                result["edited_results"]["main_list"] = selected_restaurants
-
-                # Generate follow-up queries for selected restaurants
+                # Generate follow-up queries for the restaurants
                 result["follow_up_queries"] = self._generate_follow_up_queries(
-                    selected_restaurants, 
+                    all_restaurants, 
                     destination
                 )
+
+                logger.info(f"✅ Final result: {len(all_restaurants)} restaurants, {len(result['follow_up_queries'])} follow-up queries")
 
             return result
 
@@ -362,7 +365,7 @@ Extract restaurants using the diplomatic concierge approach. Include good option
             return self._fallback_response()
 
     def _process_hybrid_content(self, database_restaurants, scraped_results, raw_query, destination):
-        """Process both database and scraped content - updated for better selection"""
+        """Process both database and scraped content - with chunking support"""
         logger.info(f"🔄 Processing hybrid content for {destination}")
         logger.info(f"📊 Database restaurants: {len(database_restaurants) if database_restaurants else 0}")
         logger.info(f"📊 Scraped results: {len(scraped_results) if scraped_results else 0}")
@@ -383,9 +386,9 @@ Extract restaurants using the diplomatic concierge approach. Include good option
                 all_restaurants.extend(db_restaurants)
                 logger.info(f"✅ Added {len(db_restaurants)} database restaurants")
 
-            # Then process scraped content (additional search results)
+            # Then process scraped content (additional search results) - WITH CHUNKING
             if scraped_results:
-                logger.info("🌐 Processing additional web search results")
+                logger.info("🌐 Processing additional web search results with chunking support")
                 scraped_result = self._process_scraped_content(scraped_results, raw_query, destination)
                 web_restaurants = scraped_result.get('edited_results', {}).get('main_list', [])
 
@@ -422,7 +425,7 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
             return {
                 "edited_results": {"main_list": unique_restaurants},
-                "follow_up_queries": [],  # Will be generated after selection
+                "follow_up_queries": [],  # Will be generated after processing
                 "processing_notes": {
                     "mode": "hybrid",
                     "database_count": len(database_restaurants) if database_restaurants else 0,
@@ -466,7 +469,7 @@ Extract restaurants using the diplomatic concierge approach. Include good option
             return self._fallback_response()
 
     def _process_scraped_content(self, scraped_results, raw_query, destination):
-        """Process scraped web content"""
+        """Process scraped web content with chunking support"""
         try:
             logger.info(f"🌐 Processing {len(scraped_results)} scraped articles for {destination}")
 
@@ -477,22 +480,78 @@ Extract restaurants using the diplomatic concierge approach. Include good option
                 logger.warning("No substantial scraped content to process")
                 return self._fallback_response()
 
-            # Get AI extraction
-            response = self.scraped_chain.invoke({
-                "raw_query": raw_query,
-                "destination": destination,
-                "scraped_content": scraped_content
-            })
+            # Check if content needs chunking
+            if self._needs_chunking(scraped_content):
+                logger.info("📚 Large scraped content detected - using chunking approach")
+                return self._process_scraped_content_with_chunks(scraped_content, raw_query, destination)
+            else:
+                logger.info("📄 Small scraped content - processing as single chunk")
+                # Get AI extraction
+                response = self.scraped_chain.invoke({
+                    "raw_query": raw_query,
+                    "destination": destination,
+                    "scraped_content": scraped_content
+                })
 
-            result = self._post_process_results(response, "scraped", destination)
+                result = self._post_process_results(response, "scraped", destination)
 
-            logger.info(f"✅ Successfully extracted {len(result['edited_results']['main_list'])} restaurants from scraped content")
+                logger.info(f"✅ Successfully extracted {len(result['edited_results']['main_list'])} restaurants from scraped content")
 
-            return result
+                return result
 
         except Exception as e:
             logger.error(f"❌ Error processing scraped content: {e}")
             dump_chain_state("scraped_processing_error", locals(), error=e)
+            return self._fallback_response()
+
+    def _process_scraped_content_with_chunks(self, scraped_content, raw_query, destination):
+        """Process large scraped content by breaking it into chunks"""
+        try:
+            # Break content into chunks
+            chunks = self._chunk_content(scraped_content)
+            logger.info(f"📚 Processing {len(chunks)} chunks")
+
+            # Process each chunk
+            chunk_results = []
+            for i, chunk in enumerate(chunks):
+                logger.info(f"🔍 Processing chunk {i+1}/{len(chunks)}")
+
+                try:
+                    response = self.scraped_chain.invoke({
+                        "raw_query": raw_query,
+                        "destination": destination,
+                        "scraped_content": chunk
+                    })
+
+                    result = self._post_process_results(response, f"scraped_chunk_{i+1}", destination)
+                    chunk_results.append(result)
+
+                except Exception as e:
+                    logger.warning(f"⚠️ Error processing chunk {i+1}: {e}")
+                    continue
+
+            if not chunk_results:
+                logger.warning("⚠️ No successful chunk processing results")
+                return self._fallback_response()
+
+            # Merge results from all chunks
+            merged_restaurants = self._merge_chunked_results(chunk_results)
+
+            logger.info(f"✅ Successfully processed {len(chunks)} chunks, extracted {len(merged_restaurants)} restaurants")
+
+            return {
+                "edited_results": {"main_list": merged_restaurants},
+                "follow_up_queries": [],  # Will be generated later
+                "processing_notes": {
+                    "mode": "scraped_chunked",
+                    "chunk_count": len(chunks),
+                    "successful_chunks": len(chunk_results),
+                    "final_count": len(merged_restaurants)
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error in chunked processing: {e}")
             return self._fallback_response()
 
     def _prepare_database_content(self, database_restaurants):
@@ -595,12 +654,12 @@ Extract restaurants using the diplomatic concierge approach. Include good option
     def _post_process_results(self, ai_output, source_type, destination):
         """
         Process AI output for both database and scraped results
-        FIXED: Handle AIMessage objects correctly
+        Handle AIMessage objects correctly
         """
         try:
             logger.info(f"🔍 Processing AI output from {source_type}")
 
-            # FIX: Handle both AIMessage objects and direct strings
+            # Handle both AIMessage objects and direct strings
             if hasattr(ai_output, 'content'):
                 # This is an AIMessage from LangChain
                 content = ai_output.content
@@ -613,7 +672,7 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
             content = content.strip()
 
-            # FIXED: Better handling of markdown code blocks
+            # Better handling of markdown code blocks
             # Remove markdown code blocks if present
             if "```json" in content:
                 # Extract content between ```json and ```
@@ -685,14 +744,11 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
             logger.info(f"✅ Cleaned and validated {len(cleaned_restaurants)} restaurants")
 
-            # Generate follow-up queries for address verification
-            follow_up_queries = self._generate_follow_up_queries(cleaned_restaurants, destination)
-
             return {
                 "edited_results": {
                     "main_list": cleaned_restaurants
                 },
-                "follow_up_queries": follow_up_queries
+                "follow_up_queries": []  # Will be generated later
             }
 
         except json.JSONDecodeError as e:
@@ -748,6 +804,6 @@ Extract restaurants using the diplomatic concierge approach. Include good option
             "editor_agent_enabled": True,
             "model_used": "gpt-4o",
             "validation": "diplomatic_concierge_approach",
-            "selection_enabled": True,
+            "chunking_enabled": True,
             "dual_api_keys_supported": True
         }
