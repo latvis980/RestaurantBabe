@@ -540,9 +540,11 @@ def handle_test_search(message):
 
     threading.Thread(target=run_search_test, daemon=True).start()
 
+# Add this to telegram_bot.py - Fixed version of the editor test handler
+
 @bot.message_handler(commands=['test_editor'])
 def handle_test_editor(message):
-    """Handle /test_editor command"""
+    """Handle /test_editor command - FIXED"""
     user_id = message.from_user.id
     admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
 
@@ -572,29 +574,34 @@ def handle_test_editor(message):
 
     bot.reply_to(
         message,
-        f"✏️ <b>Starting test...</b>\n\n"
+        f"✏️ <b>Starting editor pipeline test...</b>\n\n"
         f"📝 Query: <code>{restaurant_query}</code>\n\n"
-        "⏱ Please wait 2-3 minutes...",
+        "⏱ Please wait 2-3 minutes for complete analysis...",
         parse_mode='HTML'
     )
 
     def run_editor_test():
         try:
+            # FIXED: Import correct class name
             from transparent_editor_test import TransparentEditorTest
-            tester = TransparentEditorTest(config, get_orchestrator())
+
+            # FIXED: Use correct class name
+            editor_tester = TransparentEditorTest(config, get_orchestrator())
 
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-            loop.run_until_complete(
-                tester.test_editor_pipeline(restaurant_query, bot)
+            # FIXED: Use correct method name
+            results_path = loop.run_until_complete(
+                editor_tester.test_editor_pipeline(restaurant_query, bot)
             )
 
             loop.close()
+            logger.info(f"Editor test completed: {results_path}")
         except Exception as e:
-            logger.error(f"Editor test error: {e}")
+            logger.error(f"Error in editor test: {e}")
             try:
-                bot.send_message(admin_chat_id, f"❌ Test failed: {str(e)}")
+                bot.send_message(admin_chat_id, f"❌ Editor test failed: {str(e)}")
             except:
                 pass
 
