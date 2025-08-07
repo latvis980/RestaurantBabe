@@ -504,7 +504,8 @@ class FollowUpSearchAgent:
             logger.error(f"❌ Error auto-deleting closed restaurant {restaurant_name}: {e}")
             return False
 
-    def _search_google_maps(self, restaurant_name: str, city: str, restaurant_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _search_google_maps(self, restaurant_name: str, city: str, restaurant_data: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
+
         """
         Search Google Maps for restaurant info including address, rating, business status, and address component.
 

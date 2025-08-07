@@ -413,7 +413,26 @@ class LangChainOrchestrator:
 
             content_source = x.get("content_source", "unknown")
             raw_query = x.get("raw_query", x.get("query", ""))
-            destination = x.get("destination", "Unknown")
+            # FIXED: Robust destination extraction from multiple sources
+            destination = None
+
+            # Try multiple sources to find destination
+            if x.get("destination") and x.get("destination") != "Unknown":
+                destination = x.get("destination")
+                logger.info(f"📍 Using destination from main pipeline: {destination}")
+            elif x.get("query_analysis", {}).get("destination"):
+                destination = x.get("query_analysis", {}).get("destination")
+                logger.info(f"📍 Using destination from query_analysis: {destination}")
+            elif x.get("evaluation_result", {}).get("destination"):
+                destination = x.get("evaluation_result", {}).get("destination") 
+                logger.info(f"📍 Using destination from evaluation_result: {destination}")
+            elif x.get("database_search_result", {}).get("destination"):
+                destination = x.get("database_search_result", {}).get("destination")
+                logger.info(f"📍 Using destination from database_search_result: {destination}")
+            else:
+                destination = "Unknown"
+                logger.warning("⚠️ No destination found in edit step - this will cause follow-up search issues")
+                logger.warning(f"Available pipeline keys: {list(x.keys())}")
 
             # NEW: Get enhanced restaurant field names
             database_restaurants_final = x.get("database_restaurants_final", [])
