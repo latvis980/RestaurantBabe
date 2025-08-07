@@ -7,7 +7,8 @@ Uses Human Mimic for all scraping, no filtering or specialized handlers
 import asyncio
 import logging
 import time
-from typing import Dict, List, Any
+import re
+from typing import Dict, List, Any, Optional
 from urllib.parse import urlparse
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from utils.database import get_database
@@ -28,6 +29,21 @@ class SmartRestaurantScraper:
         self.browser = None
         self.contexts = []
 
+        # Progressive timeout strategy
+        self.default_timeout = 30000  # 30 seconds default
+        self.slow_timeout = 60000     # 60 seconds for slow sites
+        self.domain_timeouts = {
+            # Known slow domains
+            'guide.michelin.com': 60000,
+            'timeout.com': 45000,
+            'zagat.com': 45000,
+        }
+
+        # Human-like timing
+        self.load_wait_time = 3.0      # Human reading time after load
+        self.interaction_delay = 0.5    # Delay between actions
+        self.retry_delay = 2.0          # Delay between retries
+
         # Initialize Text Cleaner Agent
         from agents.text_cleaner_agent import TextCleanerAgent
         self._text_cleaner = TextCleanerAgent(config, model_override='deepseek')
@@ -39,209 +55,325 @@ class SmartRestaurantScraper:
             "failed_scrapes": 0,
             "total_cost_estimate": 0.0,
             "total_processing_time": 0.0,
-            "strategy_breakdown": {"human_mimic": 0}
+            "strategy_breakdown": {"human_mimic": 0},
+            "timeout_escalations": 0,
+            "domain_learnings": 0,
+            "avg_load_time": 0.0,
+            "total_load_time": 0.0,
+            "concurrent_peak": 0
         }
 
         logger.info("✅ SmartRestaurantScraper initialized with Human Mimic only")
 
     async def start(self):
-        """Initialize browser and contexts"""
+        """Initialize Playwright and browser contexts for production with ad blocking"""
         if self.browser:
-            return
+            return  # Already started
 
-        try:
-            self.playwright = await async_playwright().start()
+        logger.info("🎭 Starting Production Human Mimic Browser with Ad Blocking...")
 
-            # Launch browser with optimized settings for Railway + ad blocking
-            self.browser = await self.playwright.chromium.launch(
-                headless=True,
-                args=[
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-gpu',
-                    '--single-process',
-                    '--no-zygote',
-                    '--disable-extensions',
-                    '--disable-background-timer-throttling',
-                    '--disable-backgrounding-occluded-windows',
-                    '--disable-renderer-backgrounding',
-                    # Ad blocking related flags
-                    '--disable-default-apps',
-                    '--disable-plugins',
-                    '--disable-sync',
-                    '--no-default-browser-check',
-                    '--no-first-run',
-                    # Performance optimizations
-                    '--memory-pressure-off',
-                    '--max_old_space_size=4096'
-                ]
+        self.playwright = await async_playwright().start()
+
+        # Launch browser with production + ad blocking optimized settings
+        self.browser = await self.playwright.chromium.launch(
+            headless=True,  # Always headless in production
+            args=[
+                '--no-sandbox',
+                '--disable-dev-shm-usage',  # Important for Railway
+                '--disable-web-security',   # May help with some sites
+                '--disable-background-timer-throttling',
+                '--disable-renderer-backgrounding',
+                '--disable-background-networking',
+                '--disable-ipc-flooding-protection',
+                # Ad blocking related flags
+                '--disable-default-apps',
+                '--disable-extensions',
+                '--disable-plugins',
+                '--disable-sync',
+                '--no-default-browser-check',
+                '--no-first-run',
+                # Performance optimizations
+                '--memory-pressure-off',
+                '--max_old_space_size=4096'
+            ]
+        )
+
+        # Create optimized contexts with ad blocking
+        for i in range(self.max_concurrent):
+            context = await self.browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                extra_http_headers={
+                    'Accept-Language': 'en-US,en;q=0.9',
+                },
+                # Block unnecessary permissions that can slow things down
+                permissions=[],
+                geolocation=None,
+                ignore_https_errors=True
             )
 
-            # Create multiple contexts for concurrent scraping
-            self.contexts = []
-            for i in range(self.max_concurrent):
-                context = await self.browser.new_context(
-                    viewport={'width': 1920, 'height': 1080},
-                    user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    extra_http_headers={
-                        'Accept-Language': 'en-US,en;q=0.9',
-                    },
-                    # Block unnecessary permissions that can slow things down
-                    permissions=[],
-                    geolocation=None,
-                    ignore_https_errors=True
-                )
-                self.contexts.append(context)
+            self.contexts.append(context)
 
-            logger.info(f"🎭 Human mimic scraper started with {len(self.contexts)} concurrent contexts")
-
-        except Exception as e:
-            logger.error(f"Failed to start human mimic scraper: {e}")
-            raise
+        logger.info(f"✅ {len(self.contexts)} browser contexts ready with ad blocking")
 
     async def stop(self):
-        """Clean up browser and contexts"""
+        """Clean up all browser resources"""
         try:
-            if self.contexts:
-                for context in self.contexts:
+            # Close all contexts
+            for context in self.contexts:
+                if context:
                     await context.close()
-                self.contexts = []
+            self.contexts.clear()
 
+            # Close browser
             if self.browser:
                 await self.browser.close()
                 self.browser = None
 
-            if hasattr(self, 'playwright'):
+            # Stop Playwright
+            if self.playwright:
                 await self.playwright.stop()
+                self.playwright = None
 
             logger.info("🎭 Human mimic scraper stopped")
 
         except Exception as e:
             logger.error(f"Error stopping human mimic scraper: {e}")
 
+    def _get_timeout_for_domain(self, domain: str) -> int:
+        """Get appropriate timeout for domain with learning"""
+        # Check learned domain timeouts first
+        if domain in self.domain_timeouts:
+            return self.domain_timeouts[domain]
+
+        # Check database for learned timeouts
+        learned_timeout = self._get_learned_timeout_from_db(domain)
+        if learned_timeout:
+            self.domain_timeouts[domain] = learned_timeout
+            return learned_timeout
+
+        return self.default_timeout
+
+    def _get_learned_timeout_from_db(self, domain: str) -> Optional[int]:
+        """Get learned timeout for domain from database"""
+        try:
+            # Use the database method for domain intelligence
+            result = self.database.get_domain_intelligence(domain)
+            if result:
+                return result.get('timeout', self.default_timeout)
+        except Exception as e:
+            logger.debug(f"Could not get learned timeout for {domain}: {e}")
+
+        return None
+
+    async def _learn_slow_domain(self, domain: str, successful_timeout: int):
+        """Learn that a domain requires longer timeout"""
+        self.domain_timeouts[domain] = successful_timeout
+        self.stats["domain_learnings"] += 1
+
+        try:
+            # Update domain intelligence in database
+            intelligence_data = {
+                'timeout': successful_timeout,
+                'strategy': 'human_mimic_slow',
+                'learned_at': time.time(),
+                'success_count': 1,
+                'total_attempts': 1
+            }
+
+            self.database.save_domain_intelligence(domain, intelligence_data)
+            logger.info(f"📚 Learned that {domain} needs {successful_timeout/1000}s timeout")
+        except Exception as e:
+            logger.debug(f"Could not save domain learning for {domain}: {e}")
+
+    def _clean_scraped_text(self, text: str) -> str:
+        """
+        Clean the scraped text to match what human would see and copy
+        Optimized for restaurant content extraction
+        """
+        if not text:
+            return ""
+
+        # Remove excessive whitespace while preserving structure
+        cleaned = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)  # Max 2 consecutive newlines
+        cleaned = re.sub(r' {2,}', ' ', cleaned)  # Multiple spaces -> single space
+        cleaned = cleaned.strip()
+
+        # Remove common navigation/footer noise (restaurant site specific)
+        noise_patterns = [
+            r'Cookie Policy.*?(?=\n|$)',
+            r'Privacy Policy.*?(?=\n|$)', 
+            r'Terms.*?Service.*?(?=\n|$)',
+            r'Subscribe.*?newsletter.*?(?=\n|$)',
+            r'Follow us.*?(?=\n|$)',
+            r'Download.*?app.*?(?=\n|$)',
+            r'Sign up.*?alerts.*?(?=\n|$)',
+            r'Advertisement\n',
+            r'Skip to.*?content',
+            r'Accept.*?cookies.*?(?=\n|$)',
+        ]
+
+        for pattern in noise_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+
+        # Restaurant content optimization
+        # Preserve important structural elements
+        cleaned = re.sub(r'(\$\d+)', r' \1 ', cleaned)  # Space around prices
+        cleaned = re.sub(r'(\d+)\s*-\s*(\d+)', r'\1-\2', cleaned)  # Fix time ranges
+
+        return cleaned.strip()
+
     async def _scrape_url_with_semaphore(self, semaphore: asyncio.Semaphore, url: str, context_index: int) -> Dict[str, Any]:
-        """Scrape a single URL with semaphore control"""
+        """Scrape URL with concurrency control using specific context"""
         async with semaphore:
             return await self._scrape_single_url(url, context_index)
 
-    async def _scrape_single_url(self, url: str, context_index: int) -> Dict[str, Any]:
-        """Scrape a single URL with progressive timeout (no reload) and ad blocking"""
-        start_time = time.time()
+    async def _scrape_single_url(self, url: str, context_index: int = 0) -> Dict[str, Any]:
+        """
+        Scrape a single URL with NO page reload on timeout + ad blocking
+        """
         domain = urlparse(url).netloc
+        initial_timeout = self._get_timeout_for_domain(domain)
 
-        # Progressive timeout attempts (no reload between attempts)
-        timeout_attempts = [15000, 30000, 45000]  # 15s, 30s, 45s
+        start_time = time.time()
+        page = None
+        final_timeout = initial_timeout  # Initialize final_timeout
 
         try:
-            context = self.contexts[context_index]
+            logger.info(f"🎭 Context-{context_index} scraping: {url} (timeout: {initial_timeout/1000}s)")
+
+            # Get the appropriate context
+            context = self.contexts[context_index % len(self.contexts)]
             page = await context.new_page()
 
-            try:
-                # Configure ad blocking for faster loading
-                await self._configure_page_with_adblock(page)
+            # Configure page for optimal performance (includes ad blocking now)
+            await self._configure_page_with_adblock(page)
 
-                load_success = False
-                final_timeout = timeout_attempts[0]
+            # Smart timeout strategy - NO PAGE RELOAD
+            timeout_attempts = [
+                initial_timeout,                    # First try: learned/default timeout
+                max(initial_timeout * 1.5, 45000), # Second try: 50% longer or 45s minimum
+                60000                               # Final try: 60s maximum
+            ]
 
-                # Progressive timeout strategy - NO PAGE RELOAD
-                for attempt, timeout in enumerate(timeout_attempts):
-                    try:
-                        logger.debug(f"🎭 Attempt {attempt + 1}: Loading {url} (timeout: {timeout/1000}s)")
+            load_success = False
+            final_timeout = initial_timeout
 
-                        if attempt == 0:
-                            # First attempt: load page
-                            await page.goto(url, wait_until='domcontentloaded', timeout=timeout)
-                        else:
-                            # Subsequent attempts: just wait longer (no reload)
-                            await page.wait_for_load_state('domcontentloaded', timeout=timeout)
+            for attempt, timeout in enumerate(timeout_attempts):
+                try:
+                    logger.info(f"🔄 Attempt {attempt + 1}/{len(timeout_attempts)}: {timeout/1000}s timeout")
 
-                        load_success = True
-                        final_timeout = timeout
-                        break
+                    # Try to load page with current timeout
+                    await page.goto(url, wait_until='networkidle', timeout=timeout)
 
-                    except Exception as timeout_error:
-                        if attempt < len(timeout_attempts) - 1:
-                            logger.debug(f"⏱️ Timeout attempt {attempt + 1} failed, trying longer timeout...")
-                            continue
-                        else:
-                            raise timeout_error
+                    # If we get here, page loaded successfully
+                    load_success = True
+                    final_timeout = timeout
 
-                if not load_success:
-                    raise Exception("All timeout attempts failed")
+                    # Learn if this was a timeout escalation
+                    if timeout > initial_timeout:
+                        await self._learn_slow_domain(domain, timeout)
+                        self.stats["timeout_escalations"] += 1
+                        logger.info(f"📚 Learned {domain} needs {timeout/1000}s")
 
-                # Wait for any dynamic content to load
-                await page.wait_for_timeout(2000)
+                    break  # Success - exit timeout attempts
 
-                # Human mimic: Select all content like a human would (Cmd+A)
-                await page.keyboard.press('Control+a')  # Use Ctrl+A on Linux/Windows
-                await page.wait_for_timeout(500)  # Brief pause like human
+                except Exception as e:
+                    if "timeout" in str(e).lower() and attempt < len(timeout_attempts) - 1:
+                        # Timeout occurred, but we have more attempts
+                        logger.info(f"⏱️ Timeout at {timeout/1000}s, trying {timeout_attempts[attempt + 1]/1000}s...")
+                        continue  # Try next timeout WITHOUT reloading page
+                    else:
+                        # Either not a timeout, or we've exhausted all attempts
+                        if attempt >= len(timeout_attempts) - 1:
+                            logger.error(f"❌ All timeout attempts failed for {url}")
+                        raise
 
-                # Get the selected text content
-                content = await page.evaluate("""
-                    () => {
-                        const selection = window.getSelection();
+            if not load_success:
+                raise Exception("Page failed to load after all timeout attempts")
+
+            # Human-like behavior: wait and read the page
+            await asyncio.sleep(self.load_wait_time)
+
+            # The "dumb but modern" magic: Select All + Extract
+            await asyncio.sleep(self.interaction_delay)
+            await page.keyboard.press('Meta+a')  # Cmd+A (works on most systems)
+            await asyncio.sleep(self.interaction_delay)
+
+            # Get selected text (human clipboard equivalent)
+            selected_text = await page.evaluate("""
+                () => {
+                    const selection = window.getSelection();
+                    if (selection.rangeCount > 0) {
                         return selection.toString();
                     }
-                """)
-
-                # Fallback to body text if selection is empty
-                if not content or len(content.strip()) < 100:
-                    content = await page.evaluate("""
-                        () => {
-                            // Remove script and style elements
-                            const scripts = document.querySelectorAll('script, style, nav, header, footer');
-                            scripts.forEach(el => el.remove());
-
-                            // Get clean body text
-                            return document.body ? document.body.innerText : '';
-                        }
-                    """)
-
-                load_time = round(time.time() - start_time, 2)
-                char_count = len(content) if content else 0
-
-                self.stats["total_processing_time"] += load_time
-
-                logger.debug(f"✅ Human mimic scraped {url}: {char_count} chars in {load_time}s")
-
-                return {
-                    'content': content,
-                    'success': True,
-                    'load_time': load_time,
-                    'char_count': char_count,
-                    'final_timeout': final_timeout
+                    // Fallback: get all visible text
+                    return document.body.innerText || document.body.textContent || '';
                 }
+            """)
 
-            finally:
-                await page.close()
+            # Clean the scraped content
+            cleaned_content = self._clean_scraped_text(selected_text)
+            load_time = time.time() - start_time
 
-        except Exception as e:
-            load_time = round(time.time() - start_time, 2)
-            self.stats["total_processing_time"] += load_time
+            # Update stats
+            self.stats["total_scraped"] = self.stats.get("total_scraped", 0) + 1
+            self.stats["successful_scrapes"] += 1
+            self.stats["total_load_time"] = self.stats.get("total_load_time", 0) + load_time
+            self.stats["avg_load_time"] = self.stats["total_load_time"] / self.stats.get("total_scraped", 1)
 
-            logger.warning(f"❌ Human mimic failed for {url}: {e}")
+            logger.info(f"✅ Context-{context_index} scraped {len(cleaned_content)} chars in {load_time:.2f}s (final timeout: {final_timeout/1000}s)")
 
             return {
-                'content': "",
-                'success': False,
-                'load_time': load_time,
-                'char_count': 0,
-                'error': str(e)
+                "success": True,
+                "content": cleaned_content,
+                "url": url,
+                "load_time": load_time,
+                "char_count": len(cleaned_content),
+                "method": "human_mimic",
+                "context_used": context_index,
+                "timeout_used": final_timeout,
+                "error": None
             }
+
+        except Exception as e:
+            load_time = time.time() - start_time
+            error_msg = str(e)
+
+            self.stats["total_scraped"] = self.stats.get("total_scraped", 0) + 1
+            self.stats["failed_scrapes"] += 1
+
+            logger.error(f"❌ Context-{context_index} failed scraping {url}: {error_msg}")
+
+            return {
+                "success": False,
+                "content": "",
+                "url": url,
+                "load_time": load_time,
+                "char_count": 0,
+                "method": "human_mimic",
+                "context_used": context_index,
+                "timeout_used": final_timeout,
+                "error": error_msg
+            }
+
+        finally:
+            if page:
+                await page.close()
 
     async def _configure_page_with_adblock(self, page: Page):
         """
         Configure page with ad blocking for dramatically faster loading
-        Can improve load times by 20-40%
+        This can improve load times by 20-40% according to research
         """
-        # Block resource types that slow down loading
+
+        # 1. Block resource types that slow down loading
         await page.route("**/*", lambda route: (
             route.abort() if route.request.resource_type in [
                 'image',      # Images (biggest bandwidth hog)
                 'media',      # Videos/audio  
                 'font',       # Web fonts
-                'stylesheet', # CSS (may break layout but speeds loading)
+                'stylesheet', # CSS (optional - may break layout but speeds up loading)
                 'beacon',     # Analytics beacons
                 'csp_report', # Security reports
                 'object',     # Flash/embed objects
@@ -249,7 +381,7 @@ class SmartRestaurantScraper:
             ] else route.continue_()
         ))
 
-        # Block ad/tracking domains
+        # 2. Block ad/tracking domains (lightweight but effective)
         ad_domains = [
             'doubleclick.net',
             'googleadservices.com', 
@@ -272,14 +404,14 @@ class SmartRestaurantScraper:
             else route.continue_()
         ))
 
-        # Set faster headers
+        # 3. Set faster user agent (optional)
         await page.set_extra_http_headers({
             'Accept-Language': 'en-US,en;q=0.9',
         })
 
     async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Main scraping method - Human Mimic for all URLs
+        Main entry point - Process search results with concurrent human mimicking
         """
         if not search_results:
             return []
@@ -287,17 +419,17 @@ class SmartRestaurantScraper:
         if not self.browser:
             await self.start()
 
-        # Filter out None URLs
         urls = [result.get('url') for result in search_results if result.get('url')]
         logger.info(f"🎭 Human mimic scraping {len(urls)} URLs with {self.max_concurrent} concurrent contexts")
 
         # Create semaphore for concurrency control
         semaphore = asyncio.Semaphore(self.max_concurrent)
 
-        # Scrape all URLs concurrently
+        # Scrape all URLs concurrently - filter None URLs properly
+        valid_urls = [(i, url) for i, url in enumerate(urls) if url is not None]
         scrape_tasks = [
             self._scrape_url_with_semaphore(semaphore, url, i % len(self.contexts))
-            for i, url in enumerate(urls) if url  # Ensure url is not None
+            for i, url in valid_urls
         ]
 
         scrape_results = await asyncio.gather(*scrape_tasks, return_exceptions=True)
@@ -316,7 +448,6 @@ class SmartRestaurantScraper:
                     'scraping_error': str(scrape_result),
                     'load_time': 0.0
                 })
-                self.stats["failed_scrapes"] += 1
             elif isinstance(scrape_result, dict):
                 enriched.update({
                     'scraped_content': scrape_result['content'],
@@ -326,11 +457,6 @@ class SmartRestaurantScraper:
                     'load_time': scrape_result['load_time'],
                     'char_count': scrape_result['char_count']
                 })
-
-                if scrape_result['success']:
-                    self.stats["successful_scrapes"] += 1
-                else:
-                    self.stats["failed_scrapes"] += 1
             else:
                 # Handle unexpected result type
                 logger.error(f"Unexpected scrape result type: {type(scrape_result)}")
@@ -341,6 +467,11 @@ class SmartRestaurantScraper:
                     'scraping_error': "Unexpected result type",
                     'load_time': 0.0
                 })
+
+            # Update stats
+            if enriched.get('scraping_success'):
+                self.stats["successful_scrapes"] += 1
+            else:
                 self.stats["failed_scrapes"] += 1
 
             self.stats["total_processed"] += 1
@@ -351,8 +482,8 @@ class SmartRestaurantScraper:
         # Apply text cleaning to successful scrapes
         await self._apply_text_cleaning(enriched_results)
 
-        logger.info(f"✅ Smart scraper complete: {len(enriched_results)} results processed")
-        self._log_stats()
+        successful = sum(1 for r in scrape_results if isinstance(r, dict) and r.get('success'))
+        logger.info(f"✅ Human mimic batch complete: {successful}/{len(urls)} successful")
 
         return enriched_results
 
@@ -381,15 +512,21 @@ class SmartRestaurantScraper:
                 result['ready_for_editor'] = False
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get current processing statistics"""
+        """Get comprehensive scraping statistics"""
         return {
             **self.stats,
-            "success_rate": (self.stats["successful_scrapes"] / max(self.stats["total_processed"], 1)) * 100
+            "domain_timeouts_learned": len(self.domain_timeouts),
+            "success_rate": (self.stats["successful_scrapes"] / max(self.stats["total_processed"], 1)) * 100,
+            "concurrent_contexts": len(self.contexts),
+            "avg_timeout_used": sum(self.domain_timeouts.values()) / max(len(self.domain_timeouts), 1) / 1000  # in seconds
         }
 
     def get_domain_intelligence(self) -> Dict[str, Any]:
-        """REMOVED - No longer needed since we eliminated filtering"""
-        return {}
+        """Get domain intelligence (simplified version)"""
+        return {
+            "domain_timeouts": self.domain_timeouts,
+            "total_domains_learned": len(self.domain_timeouts)
+        }
 
     def _log_stats(self):
         """Log processing statistics"""
@@ -401,6 +538,7 @@ class SmartRestaurantScraper:
 
     async def __aenter__(self):
         """Async context manager entry"""
+        await self.start()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
