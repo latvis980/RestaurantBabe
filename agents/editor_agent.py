@@ -1,4 +1,4 @@
-# agents/editor_agent.py - WORKING VERSION with diplomatic raw query validation
+# agents/editor_agent.py - ENHANCED VERSION with intelligent selection and dual API keys
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tracers.context import tracing_v2_enabled
@@ -6,16 +6,51 @@ import json
 import logging
 from collections import defaultdict
 from utils.debug_utils import dump_chain_state, log_function_call
+import os
 
 logger = logging.getLogger(__name__)
 
 class EditorAgent:
     def __init__(self, config):
         self.model = ChatOpenAI(
-            model="gpt-4o",  # Use GPT-4o as specified
-            temperature=0.2  # Lower temperature for more consistent formatting
+            model="gpt-4o",
+            temperature=0.2
         )
         self.config = config
+
+        # Initialize selection model for restaurant filtering
+        self.selection_model = ChatOpenAI(
+            model="gpt-4o-mini",  # Faster model for selection
+            temperature=0.3  # Slightly higher for diversity
+        )
+
+        # Selection prompt for choosing best restaurants BEFORE follow-up
+        self.selection_prompt = """
+        You are an expert restaurant curator selecting the BEST restaurants for a user's query.
+
+        USER QUERY: {{raw_query}}
+        DESTINATION: {{destination}}
+
+        AVAILABLE RESTAURANTS:
+        {{restaurants_list}}
+
+        YOUR TASK: Select up to {{max_selections}} restaurants that:
+        1. Best match the user's query
+        2. Offer variety and diversity
+        3. Are highly recommended/praised
+        4. If the query doesn't specify, include both traditional and innovative options
+        5. Prioritize restaurants mentioned by famous guides and media (Michelin, World's 50 Best, Le Monde, Vodue, Condé Nast Traveller, etc.)
+
+        SELECTION CRITERIA:
+        - Quality over quantity - only include excellent matches
+        - For broad queries, ensure diversity (cuisines, styles, price points)
+        - For specific queries, focus on best matches but still include variety
+        - Consider recommendation sources (prefer expert/guide recommendations)
+        - If the query doesn't specify, balance between established classics and exciting new places
+
+        Return ONLY a JSON array of selected restaurant names:
+        ["Restaurant Name 1", "Restaurant Name 2", ...]
+        """
 
         # Database restaurant processing - diplomatic approach like a hotel concierge
         self.database_formatting_prompt = """
@@ -90,7 +125,7 @@ class EditorAgent:
             {{
               "name": "Restaurant Name", 
               "address": "Full Address Here",
-              "description": "Diplomatic 15-30 word description explaining why this restaurant suits the user, even if not a perfect match",
+              "description": "Diplomatic 20-30 word description explaining why this restaurant suits the user, even if not a perfect match",
               "sources": ["domain1.com", "domain2.com", "domain3.com", etc.]
             }}
           ]
@@ -104,7 +139,7 @@ class EditorAgent:
         - ALL addresses must be formatted as clickable Google Maps links
         """
 
-        # Create prompt templates - FIX: Use single curly braces for template variables
+        # Create prompt templates
         self.database_prompt = ChatPromptTemplate.from_messages([
             ("system", self.database_formatting_prompt),
             ("human", """
@@ -135,30 +170,118 @@ Extract restaurants using the diplomatic concierge approach. Include good option
         self.database_chain = self.database_prompt | self.model
         self.scraped_chain = self.scraped_prompt | self.model
 
-    # Update your EditorAgent.edit() method in agents/editor_agent.py
+    def _select_best_restaurants(self, restaurants, raw_query, destination, max_selections=10):
+        """
+        Select the best restaurants BEFORE follow-up queries
+
+        Args:
+            restaurants: List of restaurant dictionaries
+            raw_query: User's original query
+            destination: City/location
+            max_selections: Maximum number to select (default 10)
+
+        Returns:
+            List of selected restaurants
+        """
+        try:
+            # Format restaurants for selection
+            restaurants_text = []
+            for i, restaurant in enumerate(restaurants):
+                name = restaurant.get('name', 'Unknown')
+                description = restaurant.get('description', '')
+                sources = restaurant.get('sources', [])
+
+                # Check if mentioned by famous guides
+                famous_guides = ['michelin', 'worlds 50 best', 'worlds50best', 'asia 50 best']
+                has_guide_mention = any(
+                    any(guide in str(source).lower() for guide in famous_guides)
+                    for source in sources
+                )
+
+                restaurant_info = f"{i+1}. {name}"
+                if description:
+                    restaurant_info += f" - {description[:100]}..."
+                if has_guide_mention:
+                    restaurant_info += " [GUIDE RECOMMENDED]"
+
+                restaurants_text.append(restaurant_info)
+
+            # Create selection prompt
+            prompt = ChatPromptTemplate.from_template(self.selection_prompt)
+            selection_chain = prompt | self.selection_model
+
+            # Get selection
+            response = selection_chain.invoke({
+                "raw_query": raw_query,
+                "destination": destination,
+                "restaurants_list": "\n".join(restaurants_text),
+                "max_selections": max_selections
+            })
+
+            # Parse selected names
+            selected_names = json.loads(response.content)
+
+            # Filter restaurants to only selected ones
+            selected_restaurants = []
+            for restaurant in restaurants:
+                if restaurant.get('name') in selected_names:
+                    selected_restaurants.append(restaurant)
+
+            logger.info(f"🎯 Selected {len(selected_restaurants)} best restaurants from {len(restaurants)} total")
+
+            return selected_restaurants
+
+        except Exception as e:
+            logger.error(f"Error in restaurant selection: {e}")
+            # Fallback: return first max_selections restaurants
+            return restaurants[:max_selections]
+
+    def _generate_follow_up_queries(self, restaurants, destination):
+        """
+        Generate follow-up queries for restaurants that need address verification
+        Now supports using both API keys to double the capacity
+        """
+        queries = []
+
+        # Check if we have a second Google Maps API key
+        has_second_key = bool(os.environ.get("GOOGLE_MAPS_API_KEY2"))
+
+        # Determine max queries based on available API keys
+        if has_second_key:
+            max_queries = 10  # Double capacity with 2 keys
+            logger.info("🔑 Using dual Google Maps API keys - capacity doubled to 10 queries")
+        else:
+            max_queries = 5  # Single key capacity
+            logger.info("🔑 Using single Google Maps API key - capacity limited to 5 queries")
+
+        for restaurant in restaurants:
+            address = restaurant.get("address", "")
+            # Generate query for all restaurants to ensure proper address verification
+            queries.append({
+                "restaurant_name": restaurant['name'],
+                "query": f"{restaurant['name']} {destination} restaurant address location",
+                "needs_verification": "verification" in address.lower() or "requires" in address.lower() or not address
+            })
+
+        # Prioritize restaurants that explicitly need verification
+        queries.sort(key=lambda x: not x['needs_verification'])
+
+        return queries[:max_queries]
 
     @log_function_call
     def edit(self, scraped_results=None, database_restaurants=None, raw_query="", destination="Unknown", 
              content_source=None, processing_mode=None, evaluation_context=None, **kwargs):
         """
-        Main editing method with standardized parameter names
+        Main editing method with intelligent restaurant selection
 
-        Parameters:
-            scraped_results: List of scraped articles from web search
-            database_restaurants: List of database restaurant objects  
-            raw_query: The user's original query (primary parameter)
-            destination: The city/location being searched
-            content_source: "database", "web_search", or "hybrid"
-            processing_mode: "database_only", "web_only", or "hybrid"
-            evaluation_context: Context from ContentEvaluationAgent
-            **kwargs: Additional context for future compatibility
-
-        Returns:
-            Dict with edited_results and follow_up_queries
+        Key improvements:
+        1. Selects best restaurants BEFORE follow-up queries
+        2. Ensures diversity in selection
+        3. Supports dual API keys for more follow-up queries
         """
         try:
             # Use raw_query consistently
-            query = raw_query or kwargs.get('original_query', '') or ""  # Fallback for backward compatibility
+            query = raw_query or kwargs.get('original_query', '') or ""
 
             # Determine processing mode
             if processing_mode:
@@ -188,57 +311,59 @@ Extract restaurants using the diplomatic concierge approach. Include good option
                     source = "web_search"
                 else:
                     source = "unknown"
-                logger.info(f"📋 Auto-detected content source: {source}")
 
-            logger.info(f"✏️ Editor processing {mode} content for: {destination}")
-            logger.info(f"📝 Content source: {source}")
+            logger.info(f"📝 Editor processing - Mode: {mode}, Source: {source}")
             logger.info(f"🎯 Query: {query}")
+            logger.info(f"📍 Destination: {destination}")
 
-            # Route based on processing mode
+            # Route to appropriate processing method
             if mode == "hybrid":
-                return self._process_hybrid_content(
-                    database_restaurants, scraped_results, query, destination, evaluation_context
-                )
-            elif mode == "database_only" or (database_restaurants and not scraped_results):
-                return self._process_database_restaurants(
-                    database_restaurants, query, destination
-                )
-            elif mode == "web_only" or (scraped_results and not database_restaurants):
-                return self._process_scraped_content(
-                    scraped_results, query, destination
-                )
+                result = self._process_hybrid_content(database_restaurants, scraped_results, query, destination)
+            elif mode == "database_only":
+                result = self._process_database_restaurants(database_restaurants, query, destination)
+            elif mode == "web_only":
+                result = self._process_scraped_content(scraped_results, query, destination)
             else:
-                logger.warning(f"⚠️ No valid content to process")
-                return self._handle_empty_content(query, destination)
+                logger.warning(f"⚠️ Unknown processing mode: {mode}")
+                return self._fallback_response()
+
+            # ENHANCED: Select best restaurants before generating follow-up queries
+            if result and result.get("edited_results", {}).get("main_list"):
+                all_restaurants = result["edited_results"]["main_list"]
+
+                # Determine selection count based on query breadth
+                is_broad_query = any(term in query.lower() for term in 
+                    ['best restaurants', 'where to eat', 'food scene', 'dining', 'recommendations'])
+
+                max_selections = 10 if is_broad_query else 8
+
+                # Select best restaurants
+                selected_restaurants = self._select_best_restaurants(
+                    all_restaurants, 
+                    query, 
+                    destination,
+                    max_selections
+                )
+
+                # Update result with selected restaurants
+                result["edited_results"]["main_list"] = selected_restaurants
+
+                # Generate follow-up queries for selected restaurants
+                result["follow_up_queries"] = self._generate_follow_up_queries(
+                    selected_restaurants, 
+                    destination
+                )
+
+            return result
 
         except Exception as e:
-            logger.error(f"❌ Error in editor: {e}")
-            dump_chain_state("editor_error", {
-                "error": str(e),
-                "query": query,
-                "destination": destination,
-                "has_database_restaurants": bool(database_restaurants),
-                "has_scraped_results": bool(scraped_results)
-            })
+            logger.error(f"❌ Error in editor agent: {e}")
+            dump_chain_state("editor_error", locals(), error=e)
             return self._fallback_response()
 
-    def _handle_empty_content(self, query, destination):
-        """Handle cases where no content is available"""
-        logger.warning("⚠️ Editor: No content to process")
-        return {
-            "edited_results": {"main_list": []},
-            "follow_up_queries": [],
-            "processing_notes": {
-                "reason": "no_content",
-                "query": query,
-                "destination": destination
-            }
-        }
-
-    # Add this if you don't have hybrid processing yet
-    def _process_hybrid_content(self, database_restaurants, scraped_results, raw_query, destination, evaluation_context):
-        """Process hybrid content (both database and scraped)"""
-        logger.info("🔗 Processing hybrid content")
+    def _process_hybrid_content(self, database_restaurants, scraped_results, raw_query, destination):
+        """Process both database and scraped content - updated for better selection"""
+        logger.info(f"🔄 Processing hybrid content for {destination}")
         logger.info(f"📊 Database restaurants: {len(database_restaurants) if database_restaurants else 0}")
         logger.info(f"📊 Scraped results: {len(scraped_results) if scraped_results else 0}")
 
@@ -295,12 +420,9 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
             logger.info(f"🎯 Final hybrid result: {len(unique_restaurants)} unique restaurants")
 
-            # Generate follow-up queries for address verification
-            follow_up_queries = self._generate_follow_up_queries(unique_restaurants, destination)
-
             return {
                 "edited_results": {"main_list": unique_restaurants},
-                "follow_up_queries": follow_up_queries,
+                "follow_up_queries": [],  # Will be generated after selection
                 "processing_notes": {
                     "mode": "hybrid",
                     "database_count": len(database_restaurants) if database_restaurants else 0,
@@ -332,7 +454,6 @@ Extract restaurants using the diplomatic concierge approach. Include good option
                 "database_restaurants": database_content
             })
 
-            # FIX: Pass the entire response object, let _post_process_results handle it  
             result = self._post_process_results(response, "database", destination)
 
             logger.info(f"✅ Successfully formatted {len(result['edited_results']['main_list'])} database restaurants")
@@ -340,241 +461,196 @@ Extract restaurants using the diplomatic concierge approach. Include good option
             return result
 
         except Exception as e:
-            logger.error(f"Error processing database restaurants: {e}")
-            logger.error(f"Error type: {type(e)}")
+            logger.error(f"❌ Error processing database restaurants: {e}")
+            dump_chain_state("database_processing_error", locals(), error=e)
             return self._fallback_response()
 
     def _process_scraped_content(self, scraped_results, raw_query, destination):
-        """Process traditional scraped content"""
+        """Process scraped web content"""
         try:
             logger.info(f"🌐 Processing {len(scraped_results)} scraped articles for {destination}")
 
-            # Prepare content for AI processing
+            # Prepare scraped content
             scraped_content = self._prepare_scraped_content(scraped_results)
 
             if not scraped_content.strip():
-                logger.warning("No substantial scraped content found")
+                logger.warning("No substantial scraped content to process")
                 return self._fallback_response()
 
-            # Get AI processing with diplomatic approach
+            # Get AI extraction
             response = self.scraped_chain.invoke({
                 "raw_query": raw_query,
                 "destination": destination,
                 "scraped_content": scraped_content
             })
 
-            # FIX: Pass the entire response object, let _post_process_results handle it
             result = self._post_process_results(response, "scraped", destination)
 
-            logger.info(f"✅ Successfully processed {len(result['edited_results']['main_list'])} scraped restaurants")
+            logger.info(f"✅ Successfully extracted {len(result['edited_results']['main_list'])} restaurants from scraped content")
 
             return result
 
         except Exception as e:
-            logger.error(f"Error processing scraped content: {e}")
-            logger.error(f"Error type: {type(e)}")
+            logger.error(f"❌ Error processing scraped content: {e}")
+            dump_chain_state("scraped_processing_error", locals(), error=e)
             return self._fallback_response()
 
-    def _prepare_scraped_content(self, search_results):
-        """
-        UPDATED: Convert search results into a clean format for AI processing
-        Now handles both raw and pre-cleaned content
-        """
-        formatted_content = []
-
-        for i, result in enumerate(search_results, 1):
-            # Extract domain from URL for source attribution
-            url = result.get('url', '')
-            domain = self._extract_domain(url)
-
-            # Use cleaned content if available, otherwise raw content
-            if result.get('cleaned_content'):
-                content = result.get('cleaned_content')
-                content_type = "CLEANED"
-            else:
-                content = result.get('scraped_content', result.get('content', ''))
-                content_type = "RAW"
-
-            title = result.get('title', 'Untitled')
-
-            if content and len(content.strip()) > 50:  # Only include substantial content
-                formatted_content.append(f"""
-    ARTICLE {i} ({content_type}):
-    URL: {url}
-    Domain: {domain}  
-    Title: {title}
-    Content: {content[:5000]}...  
-    ---""")
-
-        return "\n".join(formatted_content)
-
     def _prepare_database_content(self, database_restaurants):
-        """Convert database restaurant objects into format for AI processing"""
-        formatted_restaurants = []
+        """Prepare database restaurant data for AI processing"""
+        content_parts = []
 
-        for i, restaurant in enumerate(database_restaurants, 1):
-            # Extract key information from database format
-            name = restaurant.get("name", "Unknown Restaurant")
-            address = restaurant.get("address") or "Address verification needed"
-            cuisine_tags = restaurant.get("cuisine_tags", [])
-            raw_description = restaurant.get("raw_description", "")
-            sources = restaurant.get("sources", [])
-            mention_count = restaurant.get("mention_count", 1)
+        for restaurant in database_restaurants:
+            # Get all available information
+            name = restaurant.get('name', 'Unknown Restaurant')
+            city = restaurant.get('city', '')
+            country = restaurant.get('country', '')
+            address = restaurant.get('address', '')
+            cuisine_tags = restaurant.get('cuisine_tags', [])
+            description = restaurant.get('description', '')
 
-            # Clean sources to domain names
-            clean_sources = [self._extract_domain(url) for url in sources]
-            clean_sources = [s for s in clean_sources if s != "unknown"]
+            # Get source information
+            sources = []
+            article_sources = restaurant.get('article_sources', [])
 
-            formatted_restaurant = f"""
-RESTAURANT {i}:
-Name: {name}
-Address: {address}
-Cuisine Tags: {', '.join(cuisine_tags[:5]) if cuisine_tags else 'None'}
-Mention Count: {mention_count}
-Sources: {', '.join(clean_sources[:3]) if clean_sources else 'None'}
-Raw Description: {raw_description if raw_description else 'No description available'}
----"""
-            formatted_restaurants.append(formatted_restaurant)
+            if article_sources:
+                for source in article_sources:
+                    if isinstance(source, dict):
+                        url = source.get('url', '')
+                        if url:
+                            # Extract domain
+                            domain = url.split('/')[2] if '/' in url else url
+                            sources.append(domain)
+                    elif isinstance(source, str):
+                        sources.append(source)
 
-        return "\n".join(formatted_restaurants)
+            # Build restaurant entry
+            entry = f"Restaurant: {name}"
 
-    def _prepare_scraped_content(self, search_results):
-        """Convert search results into a clean format for AI processing"""
-        formatted_content = []
+            if city or country:
+                location_parts = [part for part in [city, country] if part]
+                entry += f" ({', '.join(location_parts)})"
 
-        for i, result in enumerate(search_results, 1):
-            # Extract domain from URL for source attribution
-            url = result.get('url', '')
-            domain = self._extract_domain(url)
+            if address:
+                entry += f"\nAddress: {address}"
 
-            # Get content
-            content = result.get('scraped_content', result.get('content', ''))
-            title = result.get('title', 'Untitled')
+            if cuisine_tags:
+                entry += f"\nCuisine: {', '.join(cuisine_tags)}"
 
-            if content and len(content.strip()) > 50:  # Only include substantial content
-                formatted_content.append(f"""
-ARTICLE {i}:
-URL: {url}
-Domain: {domain}  
-Title: {title}
-Content: {content[:5000]}...  
----""")
+            if description:
+                entry += f"\nDescription: {description}"
 
-        return "\n".join(formatted_content)
+            if sources:
+                # Limit to 3 unique sources
+                unique_sources = list(dict.fromkeys(sources))[:3]
+                entry += f"\nSources: {', '.join(unique_sources)}"
 
-    def _post_process_results(self, ai_output, source_type, destination):
-        """
-        Process AI output for both database and scraped results
-        FIXED: Handle AIMessage objects correctly
-        """
+            content_parts.append(entry)
+
+        return "\n\n".join(content_parts)
+
+    def _prepare_scraped_content(self, scraped_results):
+        """Prepare scraped content for AI processing"""
+        content_parts = []
+
+        for article in scraped_results:
+            # Extract article information
+            url = article.get('url', '')
+            title = article.get('title', '')
+            content = article.get('content', '')
+            sections = article.get('sections', [])
+
+            # Skip if no meaningful content
+            if not content and not sections:
+                continue
+
+            # Get domain for source tracking
+            domain = url.split('/')[2] if '/' in url and url.startswith('http') else url
+
+            # Build article entry
+            entry = f"SOURCE: {domain}"
+            if title:
+                entry += f"\nTITLE: {title}"
+
+            # Add content or sections
+            if sections:
+                # Use sectioned content if available
+                for section in sections:
+                    if isinstance(section, dict):
+                        section_title = section.get('title', '')
+                        section_content = section.get('content', '')
+                        if section_title:
+                            entry += f"\n\n[{section_title}]"
+                        if section_content:
+                            entry += f"\n{section_content}"
+                    elif isinstance(section, str):
+                        entry += f"\n{section}"
+            elif content:
+                # Use raw content if no sections
+                entry += f"\n\nCONTENT:\n{content}"
+
+            content_parts.append(entry)
+
+        return "\n\n" + "="*50 + "\n\n".join(content_parts)
+
+    def _post_process_results(self, response, source_type, destination):
+        """Post-process AI response to ensure valid format"""
         try:
-            logger.info(f"🔍 Processing AI output from {source_type}")
-
-            # FIX: Handle both AIMessage objects and direct strings
-            if hasattr(ai_output, 'content'):
-                # This is an AIMessage from LangChain
-                content = ai_output.content
-            elif isinstance(ai_output, str):
-                # This is already a string
-                content = ai_output
+            # Handle both BaseMessage and dict responses
+            if hasattr(response, 'content'):
+                content = response.content
             else:
-                # Try to convert to string
-                content = str(ai_output)
+                content = str(response)
 
-            content = content.strip()
+            # Parse JSON response
+            parsed = json.loads(content)
+            restaurants = parsed.get('restaurants', [])
 
-            # Handle different response formats
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                parts = content.split("```")
-                if len(parts) >= 3:
-                    content = parts[1].strip()
-
-            # Check if it's actually JSON
-            if not content.startswith('{') and not content.startswith('['):
-                logger.error(f"AI output doesn't look like JSON: {content[:200]}...")
-                return self._fallback_response()
-
-            # Parse the JSON
-            parsed_data = json.loads(content)
-
-            # Handle both direct restaurant list and nested structure
-            if isinstance(parsed_data, list):
-                # Direct list of restaurants
-                restaurants = parsed_data
-            elif isinstance(parsed_data, dict):
-                # Nested structure
-                restaurants = parsed_data.get("restaurants", [])
-            else:
-                logger.error(f"Unexpected AI output format: {type(parsed_data)}")
-                return self._fallback_response()
-
-            logger.info(f"📋 Parsed {len(restaurants)} restaurants from AI response")
-
-            # Simple validation and cleaning
-            cleaned_restaurants = []
-            seen_names = set()
-
+            # Ensure all restaurants have required fields
+            processed_restaurants = []
             for restaurant in restaurants:
-                # Handle both dict and non-dict restaurant objects
-                if not isinstance(restaurant, dict):
-                    logger.warning(f"Skipping non-dict restaurant: {restaurant}")
+                if not restaurant.get('name'):
                     continue
 
-                name = restaurant.get("name", "").strip()
-                if not name or name.lower() in seen_names:
-                    logger.debug(f"Skipping duplicate or empty restaurant: {name}")
-                    continue
+                # Clean and validate sources
+                sources = restaurant.get('sources', [])
+                if sources:
+                    # Remove any excluded domains
+                    excluded_domains = ['tripadvisor.com', 'yelp.com', 'opentable.com', 'google.com']
+                    cleaned_sources = [
+                        source for source in sources
+                        if not any(excluded in source.lower() for excluded in excluded_domains)
+                    ]
+                    restaurant['sources'] = cleaned_sources[:3]  # Limit to 3 sources
 
-                seen_names.add(name.lower())
+                processed_restaurants.append(restaurant)
 
-                # Keep the simple structure from your original implementation
-                cleaned_restaurant = {
-                    "name": name,
-                    "address": restaurant.get("address", "Requires verification"),
-                    "description": restaurant.get("description", "").strip(),
-                    "sources": restaurant.get("sources", [])
-                }
+            logger.info(f"✅ Post-processed {len(processed_restaurants)} restaurants from {source_type}")
 
-                # Validate description
-                description_length = len(cleaned_restaurant["description"])
-                if description_length < 10:
-                    logger.warning(f"Short description for {name}: {cleaned_restaurant['description']}")
-                elif description_length > 200:
-                    logger.warning(f"Long description for {name}: {description_length} chars")
-
-                cleaned_restaurants.append(cleaned_restaurant)
-
-            logger.info(f"✅ Cleaned and validated {len(cleaned_restaurants)} restaurants")
-
-            # Generate follow-up queries for address verification
-            follow_up_queries = self._generate_follow_up_queries(cleaned_restaurants, destination)
-
+            # Return in expected format but without follow_up_queries yet
             return {
-                "edited_results": {
-                    "main_list": cleaned_restaurants
-                },
-                "follow_up_queries": follow_up_queries
+                "edited_results": {"main_list": processed_restaurants},
+                "follow_up_queries": []  # Will be generated after selection
             }
 
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse AI output as JSON: {e}")
-            logger.error(f"Raw AI output: {content[:500] if 'content' in locals() else 'Unable to extract content'}...")
+            logger.error(f"❌ Failed to parse AI response: {e}")
+            logger.error(f"Response content: {content[:500]}...")
             return self._fallback_response()
         except Exception as e:
-            logger.error(f"Error in post-processing: {e}")
-            logger.error(f"AI output type: {type(ai_output)}")
-            logger.error(f"AI output: {str(ai_output)[:200]}...")
+            logger.error(f"❌ Error in post-processing: {e}")
             return self._fallback_response()
 
     def _extract_domain(self, url):
-        """Extract domain from URL for source attribution"""
+        """Extract clean domain from URL"""
         try:
-            from urllib.parse import urlparse
-            parsed = urlparse(url)
-            domain = parsed.netloc
+            # Remove protocol
+            if '://' in url:
+                url = url.split('://', 1)[1]
 
+            # Get domain part
+            domain = url.split('/', 1)[0]
+
+            # Remove www
             if domain.startswith('www.'):
                 domain = domain[4:]
 
@@ -582,16 +658,6 @@ Content: {content[:5000]}...
 
         except Exception:
             return "unknown"
-
-    def _generate_follow_up_queries(self, restaurants, destination):
-        """Generate follow-up queries for restaurants that need address verification"""
-        queries = []
-        for restaurant in restaurants:
-            address = restaurant.get("address", "")
-            if "verification" in address.lower() or "requires" in address.lower():
-                queries.append(f"{restaurant['name']} {destination} address location contact")
-
-        return queries[:5]  # Limit to 5 follow-up queries
 
     def _fallback_response(self):
         """Return fallback response when AI processing fails"""
@@ -616,5 +682,7 @@ Content: {content[:5000]}...
         return {
             "editor_agent_enabled": True,
             "model_used": "gpt-4o",
-            "validation": "diplomatic_concierge_approach"
+            "validation": "diplomatic_concierge_approach",
+            "selection_enabled": True,
+            "dual_api_keys_supported": True
         }

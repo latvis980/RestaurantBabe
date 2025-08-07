@@ -1,4 +1,4 @@
-# agents/follow_up_search_agent.py - COMPLETE FIXED VERSION with address component
+# agents/follow_up_search_agent.py - COMPLETE FIXED VERSION with address component and intelligent venue type detection
 
 import logging
 import googlemaps
@@ -19,6 +19,7 @@ class FollowUpSearchAgent:
     4. Filtering out closed restaurants (temporarily or permanently) with auto-deletion
     5. Saving coordinates and corrected country data back to database
     6. FIXED: Proper address_component storage for street-only display
+    7. NEW: Intelligent venue type detection from cuisine tags and descriptions
     """
 
     def __init__(self, config):
@@ -31,6 +32,22 @@ class FollowUpSearchAgent:
         api_key = getattr(config, 'GOOGLE_MAPS_API_KEY', None)
         if not api_key:
             raise ValueError("GOOGLE_MAPS_API_KEY is required in config")
+
+        api_key_2 = getattr(config, 'GOOGLE_MAPS_API_KEY2', None)
+        if api_key_2:
+            self.gmaps_secondary = googlemaps.Client(key=api_key_2)
+            self.has_dual_keys = True
+            logger.info("✅ Secondary Google Maps client initialized - dual key mode enabled")
+        else:
+            self.gmaps_secondary = None
+            self.has_dual_keys = False
+            logger.info("ℹ️ No secondary API key found - single key mode")
+
+        # Track API usage for intelligent rotation
+        self.api_usage = {
+            'primary': 0,
+            'secondary': 0
+        }
 
         self.gmaps = googlemaps.Client(key=api_key)
 
@@ -47,6 +64,61 @@ class FollowUpSearchAgent:
             "address_component"  # For country extraction AND street-only display
         ]
 
+    def _determine_venue_type(self, restaurant: Dict[str, Any]) -> str:
+        """
+        Intelligently determine venue type from restaurant data
+
+        Analyzes cuisine_tags, description, and name to determine
+        the most appropriate venue type for search query
+        """
+        # Get cuisine tags and description
+        cuisine_tags = restaurant.get('cuisine_tags', [])
+        description = restaurant.get('description', '').lower()
+        name = restaurant.get('name', '').lower()
+
+        # Convert cuisine tags to lowercase for matching
+        tags_lower = [tag.lower() for tag in cuisine_tags]
+
+        # Check for specific venue types in order of specificity
+        venue_type_indicators = {
+            'wine bar': ['wine-bar', 'wine bar', 'natural wine', 'wine focused'],
+            'cocktail bar': ['cocktail', 'mixology', 'speakeasy', 'cocktail-bar'],
+            'coffee shop': ['coffee', 'cafe', 'espresso', 'coffee-shop'],
+            'bakery': ['bakery', 'patisserie', 'bread', 'pastry'],
+            'bistro': ['bistro', 'brasserie'],
+            'steakhouse': ['steakhouse', 'steak', 'grill'],
+            'sushi bar': ['sushi', 'omakase', 'japanese'],
+            'pizzeria': ['pizza', 'pizzeria'],
+            'tapas bar': ['tapas', 'spanish bar'],
+            'pub': ['pub', 'gastropub', 'public house'],
+            'bar': ['bar', 'tavern', 'lounge'],
+            'cafe': ['cafe', 'brunch', 'breakfast']
+        }
+
+        # Check each venue type
+        for venue_type, indicators in venue_type_indicators.items():
+            # Check in cuisine tags
+            if any(indicator in tags_lower for indicator in indicators):
+                logger.debug(f"Detected venue type '{venue_type}' from cuisine tags")
+                return venue_type
+
+            # Check in description
+            if any(indicator in description for indicator in indicators):
+                logger.debug(f"Detected venue type '{venue_type}' from description")
+                return venue_type
+
+            # Check in name
+            if any(indicator in name for indicator in indicators):
+                logger.debug(f"Detected venue type '{venue_type}' from name")
+                return venue_type
+
+        # Default fallback based on common patterns
+        if any(tag in tags_lower for tag in ['street-food', 'food-truck', 'market']):
+            return 'food'
+
+        # Final default
+        return 'restaurant'
+
     @log_function_call
     def enhance(self, edited_results, follow_up_queries=None, destination="Unknown"):
         """
@@ -58,13 +130,27 @@ class FollowUpSearchAgent:
             destination=destination
         )
 
+    def _get_gmaps_client(self) -> tuple:
+        """
+        Get the appropriate Google Maps client based on usage
+        Returns tuple of (client, key_name)
+        """
+        if not self.has_dual_keys:
+            return self.gmaps, "primary"
+
+        # Rotate between keys to balance usage
+        if self.api_usage['primary'] <= self.api_usage['secondary']:
+            return self.gmaps, "primary"
+        else:
+            return self.gmaps_secondary, "secondary"
+    
     @log_function_call
     def perform_follow_up_searches(
         self,
-        edited_results: Dict[str, List[Dict[str, Any]]],
-        follow_up_queries: List[Dict[str, Any]] = None,  # Not used but kept for compatibility
-        destination: str = "Unknown"
-    ) -> Dict[str, List[Dict[str, Any]]]:
+            edited_results: Dict[str, List[Dict[str, Any]]],
+            follow_up_queries: Optional[List[Dict[str, Any]]] = None,  # Changed to Optional
+            destination: str = "Unknown"
+        ) -> Dict[str, Any]:
         """
         Verifies addresses for ALL restaurants and filters based on:
         1. Google ratings (below minimum threshold)
@@ -126,6 +212,7 @@ class FollowUpSearchAgent:
             "min_rating": self.min_acceptable_rating
         })
 
+
         return final_result
 
     def _verify_and_filter_restaurant(self, restaurant: Dict[str, Any], destination: str) -> Optional[Dict[str, Any]]:
@@ -137,9 +224,15 @@ class FollowUpSearchAgent:
         4. Filters by rating threshold
         5. STORES address_component for proper street-only formatting
         6. Saves coordinates and country data back to database
+        7. NEW: Uses intelligent venue type detection for better search accuracy
         """
         # Make a copy to avoid modifying the original
         updated_restaurant = restaurant.copy()
+
+        # Initialize extracted_country to None
+        extracted_country = None  # ADD THIS LINE
+        coordinates_saved = False
+        country_extracted = False
 
         restaurant_name = restaurant.get("name", "")
         if not restaurant_name:
@@ -148,8 +241,8 @@ class FollowUpSearchAgent:
 
         logger.info(f"Verifying: {restaurant_name} in {destination}")
 
-        # Search Google Maps for restaurant info - FOR ALL RESTAURANTS
-        maps_info = self._search_google_maps(restaurant_name, destination)
+        # Search Google Maps for restaurant info with intelligent venue type
+        maps_info = self._search_google_maps(restaurant_name, destination, restaurant)
 
         coordinates_saved = False
         country_extracted = False
@@ -356,14 +449,14 @@ class FollowUpSearchAgent:
             logger.error(f"Error extracting country from address '{formatted_address}': {e}")
             return None
 
-    def _delete_closed_restaurant_from_database(self, restaurant_name: str, city: str, business_status: str):
+    def _delete_closed_restaurant_from_database(self, restaurant_name: str, city: str, business_status: Optional[str] = None):
         """
         Delete a closed restaurant from the database
 
         Args:
             restaurant_name: Name of the restaurant to delete
             city: City where the restaurant is located  
-            business_status: The closure status (CLOSED_PERMANENTLY or CLOSED_TEMPORARILY)
+            business_status: The closure status (CLOSED_PERMANENTLY or CLOSED_TEMPORARILY) or None
         """
         try:
             # Get the database interface
@@ -379,7 +472,7 @@ class FollowUpSearchAgent:
 
             if existing_restaurants.data:
                 restaurant_id = existing_restaurants.data[0]['id']
-                restaurant_info = existing_restaurants.data[0]
+                # Remove unused variable: restaurant_info = existing_restaurants.data[0]
 
                 # Delete the restaurant
                 delete_result = db.supabase.table('restaurants')\
@@ -388,14 +481,14 @@ class FollowUpSearchAgent:
                     .execute()
 
                 if delete_result.data:
-                    logger.info(f"🗑️ AUTO-DELETED closed restaurant: {restaurant_name} in {city} (Status: {business_status})")
+                    logger.info(f"🗑️ AUTO-DELETED closed restaurant: {restaurant_name} in {city} (Status: {business_status or 'Unknown'})")
 
                     # Log the deletion for audit purposes
                     dump_chain_state("restaurant_auto_deleted", {
                         "restaurant_id": restaurant_id,
                         "restaurant_name": restaurant_name,
                         "city": city,
-                        "business_status": business_status,
+                        "business_status": business_status or "Unknown",
                         "deleted_at": datetime.now().isoformat()
                     })
 
@@ -411,18 +504,28 @@ class FollowUpSearchAgent:
             logger.error(f"❌ Error auto-deleting closed restaurant {restaurant_name}: {e}")
             return False
 
-    def _search_google_maps(self, restaurant_name: str, city: str) -> Optional[Dict[str, Any]]:
+    def _search_google_maps(self, restaurant_name: str, city: str, restaurant_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Search Google Maps for restaurant info including address, rating, business status, and address component.
+
+        NEW: Now uses intelligent venue type detection from restaurant data and API key rotation
         """
         try:
-            # Create search query: restaurant name + city
-            search_query = f"{restaurant_name} restaurant {city}"
+            # Get the appropriate client
+            gmaps_client, key_name = self._get_gmaps_client()
 
-            logger.debug(f"Google Maps search query: {search_query}")
+            # Determine venue type intelligently
+            venue_type = self._determine_venue_type(restaurant_data)
 
-            # Perform text search
-            search_response = self.gmaps.places(query=search_query)
+            # Create search query with appropriate venue type
+            search_query = f"{restaurant_name} {venue_type} {city}"
+            logger.debug(f"Google Maps search query ({key_name} key): {search_query} [detected type: {venue_type}]")
+
+            # Perform text search using the selected client
+            search_response = gmaps_client.places(query=search_query)
+
+            # Update usage counter
+            self.api_usage[key_name] += 1
 
             results = search_response.get("results", [])
             if not results:
@@ -438,7 +541,7 @@ class FollowUpSearchAgent:
                 return None
 
             # Get detailed place information including rating, business status, and address component
-            place_details = self.gmaps.place(
+            place_details = gmaps_client.place(
                 place_id=place_id,
                 fields=self.place_fields
             )
@@ -471,7 +574,7 @@ class FollowUpSearchAgent:
             return None
 
     @staticmethod
-    def _canonical_cid_url(url: str) -> str:    
+    def _canonical_cid_url(url: Optional[str]) -> str:    
         """
         Ensures we always return https://maps.google.com/?cid=<cid>
         Handles long URLs with ?cid=…, and short goo.gl/maps redirects.
@@ -496,7 +599,7 @@ class FollowUpSearchAgent:
         # give up – let formatter fall back to place-id URL later
         return ""
 
-    def _update_database_with_geodata(self, restaurant_name: str, city: str, maps_info: Dict[str, Any], extracted_country: str = None) -> bool:
+    def _update_database_with_geodata(self, restaurant_name: str, city: str, maps_info: Dict[str, Any], extracted_country: Optional[str] = None) -> bool:
         """
         Save address, coordinates, and country back to the Supabase database
 
@@ -504,7 +607,7 @@ class FollowUpSearchAgent:
             restaurant_name: Name of the restaurant
             city: City name
             maps_info: Google Maps information
-            extracted_country: Country extracted from formatted address
+            extracted_country: Country extracted from formatted address (optional)
         """
         try:
             # Use the database interface
