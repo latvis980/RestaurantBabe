@@ -78,39 +78,27 @@ class TransparentEditorTest:
             logger.info("🕷️ Step 3: Intelligent Scraping")
             step3_start = time.time()
 
-            scraping_results = []
-            for result in search_results:
-                try:
-                    scraped = await self.scraper.scrape(result.get('url', ''))
-                    if scraped and scraped.get('content'):
-                        scraping_results.append({
-                            'url': result.get('url', ''),
-                            'title': result.get('title', ''),
-                            'content': scraped['content']
-                        })
-                except Exception as e:
-                    logger.warning(f"Scraping failed for {result.get('url')}: {e}")
+            # FIXED: Use scrape_search_results() method
+            scraping_results = await self.scraper.scrape_search_results(search_results)
 
             step3_time = time.time() - step3_start
 
             # =================================================================
-            # STEP 4: TEXT CLEANING
+            # STEP 4: TEXT CLEANING - FIXED method name
             # =================================================================
             logger.info("🧹 Step 4: Text Cleaning")
             step4_start = time.time()
 
+            # SmartRestaurantScraper already applies text cleaning internally
+            # Just extract the cleaned content
             cleaned_results = []
             for result in scraping_results:
-                try:
-                    cleaned = self.text_cleaner.clean(result['content'])
-                    if cleaned:
-                        cleaned_results.append({
-                            'url': result['url'],
-                            'title': result['title'],
-                            'cleaned_content': cleaned
-                        })
-                except Exception as e:
-                    logger.warning(f"Text cleaning failed: {e}")
+                if result.get('scraping_success') and result.get('scraped_content'):
+                    cleaned_results.append({
+                        'url': result['url'],
+                        'title': result.get('title', ''),
+                        'cleaned_content': result['scraped_content']  # Already cleaned by scraper
+                    })
 
             step4_time = time.time() - step4_start
 
