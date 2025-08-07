@@ -75,7 +75,7 @@ class TransparentEditorTest:
             logger.info("🌐 Step 2: Web Search")
             step2_start = time.time()
 
-            search_results = await self.search_agent.search_restaurants(search_queries, destination)
+            search_results = await self.search_agent.search(search_queries, destination)
 
             step2_time = time.time() - step2_start
 

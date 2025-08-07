@@ -201,8 +201,6 @@ class LangChainOrchestrator:
             # Let the ContentEvaluationAgent handle error logic
             return self.dbcontent_evaluation_agent._handle_evaluation_error(x, e)
 
-    # Fix for agents/langchain_orchestrator.py _search_step method
-
     def _search_step(self, x):
         """
         FIXED: Handle search queries properly and ensure destination flows correctly
@@ -217,6 +215,11 @@ class LangChainOrchestrator:
             if x.get("skip_web_search", False):
                 logger.info("⏭️ Skipping web search - database provided sufficient results")
                 return {**x, "search_results": []}
+
+            # NEW: Check if content evaluation agent already provided search results
+            if x.get("search_results") and len(x.get("search_results", [])) > 0:
+                logger.info("⏭️ Skipping web search - content evaluation agent already provided results")
+                return x  # Return unchanged - results already present
 
             # FIXED: Get destination from multiple possible sources
             destination = None
