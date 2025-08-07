@@ -538,6 +538,81 @@ def handle_test_wscrape(message):
 
     threading.Thread(target=run_web_scrape_test, daemon=True).start()
 
+# Add this to your telegram_bot.py file after the existing test commands
+
+@bot.message_handler(commands=['test_editor'])
+def handle_test_editor(message):
+    """Handle /test_editor command - EDITOR PIPELINE TEST"""
+    user_id = message.from_user.id
+    admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
+
+    # Check if user is admin
+    if not admin_chat_id or str(user_id) != str(admin_chat_id):
+        bot.reply_to(message, "❌ This command is only available to administrators.")
+        return
+
+    # Parse command
+    command_text = message.text.strip()
+
+    if len(command_text.split(None, 1)) < 2:
+        help_text = (
+            "✏️ <b>Editor Pipeline Test</b>\n\n"
+            "<b>Usage:</b>\n"
+            "<code>/test_editor [restaurant query]</code>\n\n"
+            "<b>Examples:</b>\n"
+            "<code>/test_editor greek tavernas in Athens</code>\n"
+            "<code>/test_editor best brunch in Lisbon</code>\n"
+            "<code>/test_editor romantic restaurants Paris</code>\n\n"
+            "This runs the complete editor pipeline:\n"
+            "• Web search → scraping → text cleaning\n"
+            "• Editor processing with transparency\n"
+            "• Generates 2 files: scraped content + edited results\n"
+            "• Shows WHY you get 5 vs more restaurants\n\n"
+            "🎯 <b>Perfect for debugging editor decisions!</b>"
+        )
+        bot.reply_to(message, help_text, parse_mode='HTML')
+        return
+
+    # Extract query
+    restaurant_query = command_text.split(None, 1)[1].strip()
+
+    if not restaurant_query:
+        bot.reply_to(message, "❌ Please provide a restaurant query to test.")
+        return
+
+    # Send confirmation
+    bot.reply_to(
+        message,
+        f"✏️ <b>Starting editor pipeline test...</b>\n\n"
+        f"📝 Query: <code>{restaurant_query}</code>\n\n"
+        "⏱ Please wait 2-3 minutes for complete analysis...",
+        parse_mode='HTML'
+    )
+
+    # Run test in background
+    def run_editor_test():
+        try:
+            from editor_test import EditorTest
+            editor_tester = EditorTest(config, get_orchestrator())
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            results_path = loop.run_until_complete(
+                editor_tester.test_complete_editor_pipeline(restaurant_query, bot)
+            )
+
+            loop.close()
+            logger.info(f"Editor test completed: {results_path}")
+        except Exception as e:
+            logger.error(f"Error in editor test: {e}")
+            try:
+                bot.send_message(admin_chat_id, f"❌ Editor test failed: {str(e)}")
+            except:
+                pass
+
+    threading.Thread(target=run_editor_test, daemon=True).start()
+
 def perform_restaurant_search(search_query, chat_id, user_id):
     """Perform restaurant search using orchestrator with cancellation support"""
     cancel_event = None
