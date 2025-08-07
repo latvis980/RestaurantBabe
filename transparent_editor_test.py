@@ -63,7 +63,7 @@ class TransparentEditorTest:
             logger.info("🔍 Step 1: Query Analysis")
             step1_start = time.time()
 
-            query_result = self.query_analyzer.analyze_query(restaurant_query)
+            query_result = self.query_analyzer.analyze(restaurant_query)
             destination = query_result.get('destination', 'Unknown')
             search_queries = query_result.get('english_queries', []) + query_result.get('local_queries', [])
 
