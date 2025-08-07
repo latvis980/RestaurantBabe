@@ -315,6 +315,90 @@ def handle_location_message(message):
 
 # PRESERVED TEST COMMANDS - These are critical for debugging!
 
+# Integration function for telegram_bot.py
+def add_editor_test_command(bot, config, orchestrator):
+    """
+    Add the /test_editor command to telegram_bot.py
+
+    Add this to your telegram_bot.py file:
+
+    @bot.message_handler(commands=['test_editor'])
+    def handle_test_editor(message):
+        \"\"\"Handle /test_editor command\"\"\"
+        user_id = message.from_user.id
+        admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
+
+        # Check if user is admin
+        if not admin_chat_id or str(user_id) != str(admin_chat_id):
+            bot.reply_to(message, "❌ This command is only available to administrators.")
+            return
+
+        # Parse command
+        command_text = message.text.strip()
+
+        if len(command_text.split(None, 1)) < 2:
+            help_text = (
+                "✏️ <b>Editor Pipeline Test</b>\\n\\n"
+                "<b>Usage:</b>\\n"
+                "<code>/test_editor [restaurant query]</code>\\n\\n"
+                "<b>Examples:</b>\\n"
+                "<code>/test_editor greek tavernas in Athens</code>\\n"
+                "<code>/test_editor best brunch in Lisbon</code>\\n"
+                "<code>/test_editor romantic restaurants Paris</code>\\n\\n"
+                "This runs the complete editor pipeline:\\n"
+                "• Web search → scraping → text cleaning\\n"
+                "• Editor processing with transparency\\n"
+                "• Generates 2 files: scraped content + edited results\\n"
+                "• Shows WHY you get 5 vs more restaurants\\n\\n"
+                "🎯 <b>Perfect for debugging editor decisions!</b>"
+            )
+            bot.reply_to(message, help_text, parse_mode='HTML')
+            return
+
+        # Extract query
+        restaurant_query = command_text.split(None, 1)[1].strip()
+
+        if not restaurant_query:
+            bot.reply_to(message, "❌ Please provide a restaurant query to test.")
+            return
+
+        # Send confirmation
+        bot.reply_to(
+            message,
+            f"✏️ <b>Starting editor pipeline test...</b>\\n\\n"
+            f"📝 Query: <code>{restaurant_query}</code>\\n\\n"
+            "⏱ Please wait 2-3 minutes for complete analysis...",
+            parse_mode='HTML'
+        )
+
+        # Run test in background
+        def run_editor_test():
+            try:
+                from editor_test import EditorTest
+                editor_tester = EditorTest(config, get_orchestrator())
+
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+                results_path = loop.run_until_complete(
+                    editor_tester.test_complete_editor_pipeline(restaurant_query, bot)
+                )
+
+                loop.close()
+                logger.info(f"Editor test completed: {results_path}")
+            except Exception as e:
+                logger.error(f"Error in editor test: {e}")
+                try:
+                    bot.send_message(admin_chat_id, f"❌ Editor test failed: {str(e)}")
+                except:
+                    pass
+
+        threading.Thread(target=run_editor_test, daemon=True).start()
+    """
+
+    # Note: The actual command handler should be added to telegram_bot.py
+    logger.info("Note: editor test command should be added directly to telegram_bot.py")
+
 @bot.message_handler(commands=['test_scrape'])
 def handle_test_scrape(message):
     """Handle /test_scrape command - PRESERVED FOR DEBUGGING"""
@@ -460,85 +544,6 @@ def handle_test_search(message):
                 pass
 
     threading.Thread(target=run_search_test, daemon=True).start()
-
-@bot.message_handler(commands=['test_wscrape'])
-def handle_test_wscrape(message):
-    """Handle /test_wscrape command - Web scraping only test (bypasses database)"""
-    user_id = message.from_user.id
-    admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
-
-    # Check if user is admin
-    if not admin_chat_id or str(user_id) != str(admin_chat_id):
-        bot.reply_to(message, "❌ This command is only available to administrators.")
-        return
-
-    # Parse command
-    command_text = message.text.strip()
-
-    if len(command_text.split(None, 1)) < 2:
-        help_text = (
-            "🌐 <b>Web Scraping Test (Database Bypassed)</b>\n\n"
-            "<b>Usage:</b>\n"
-            "<code>/test_wscrape [restaurant query]</code>\n\n"
-            "<b>Examples:</b>\n"
-            "<code>/test_wscrape best brunch in Lisbon</code>\n"
-            "<code>/test_wscrape romantic restaurants Paris</code>\n"
-            "<code>/test_wscrape family pizza Rome</code>\n\n"
-            "This test <b>BYPASSES the database entirely</b> and shows:\n"
-            "• Query analysis and search term generation\n"
-            "• Web search results and filtering\n"
-            "• Complete scraping process with full content\n"
-            "• Scraping method performance analysis\n"
-            "• Content ready for editor agent\n\n"
-            "🎯 <b>Perfect for debugging web scraping issues!</b>\n\n"
-            "📄 Results include detailed analysis with full scraped content."
-        )
-        bot.reply_to(message, help_text, parse_mode='HTML')
-        return
-
-    # Extract query
-    restaurant_query = command_text.split(None, 1)[1].strip()
-
-    if not restaurant_query:
-        bot.reply_to(message, "❌ Please provide a restaurant query to test.")
-        return
-
-    # Send confirmation
-    bot.reply_to(
-        message,
-        f"🌐 <b>Starting web scraping test...</b>\n\n"
-        f"📝 Query: <code>{restaurant_query}</code>\n"
-        f"🗃️ Database: <b>BYPASSED</b> (forced web search)\n\n"
-        "⏱ Please wait 2-3 minutes for complete web analysis...",
-        parse_mode='HTML'
-    )
-
-    # Run test in background
-    def run_web_scrape_test():
-        try:
-            from web_scrape_test import WebScrapeTest
-            # Use singleton orchestrator
-            web_scrape_tester = WebScrapeTest(config, get_orchestrator())
-
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            results_path = loop.run_until_complete(
-                web_scrape_tester.test_web_scraping_only(restaurant_query, bot)
-            )
-
-            loop.close()
-            logger.info(f"Web scraping test completed: {results_path}")
-        except Exception as e:
-            logger.error(f"Error in web scraping test: {e}")
-            try:
-                bot.send_message(admin_chat_id, f"❌ Web scraping test failed: {str(e)}")
-            except:
-                pass
-
-    threading.Thread(target=run_web_scrape_test, daemon=True).start()
-
-# Add this to your telegram_bot.py file after the existing test commands
 
 @bot.message_handler(commands=['test_editor'])
 def handle_test_editor(message):

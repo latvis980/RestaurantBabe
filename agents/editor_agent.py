@@ -23,7 +23,7 @@ from utils.debug_utils import log_function_call, dump_chain_state
 
 logger = logging.getLogger(__name__)
 
-class EnhancedEditorAgent:
+class EditorAgent:
     """
     Editor Agent with Maximum Decision Transparency
 
@@ -122,7 +122,7 @@ Provide detailed reasoning for all decisions in the processing_analysis section.
         self.enhanced_chain = self.enhanced_prompt | self.model
 
     @log_function_call
-    def edit_with_transparency(
+    def edit(
         self, scraped_results=None, database_restaurants=None, 
         raw_query="", destination="Unknown", **kwargs
     ) -> Dict[str, Any]:
