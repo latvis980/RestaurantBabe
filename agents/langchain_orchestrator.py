@@ -50,7 +50,8 @@ class LangChainOrchestrator:
         self.database_search_agent = DatabaseSearchAgent(config)
         self.dbcontent_evaluation_agent = ContentEvaluationAgent(config)
         self.search_agent = BraveSearchAgent(config)
-        self.scraper = SmartRestaurantScraper(config)  # DIRECT USAGE
+        self.scraper = SmartRestaurantScraper(config) 
+        self.text_cleaner = self.scraper._text_cleaner # Expose text cleaner for testing
         self.editor_agent = EditorAgent(config)
         self.follow_up_search_agent = FollowUpSearchAgent(config)
         self.dbcontent_evaluation_agent.set_brave_search_agent(self.search_agent)
