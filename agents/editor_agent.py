@@ -327,13 +327,13 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
             # Get AI formatting with diplomatic approach
             response = self.database_chain.invoke({
-                "raw_query": raw_query,  # Changed from original_query
+                "raw_query": raw_query,
                 "destination": destination,
                 "database_restaurants": database_content
             })
 
-            # Process AI output
-            result = self._post_process_results(response.content, "database", destination)
+            # FIX: Pass the entire response object, let _post_process_results handle it  
+            result = self._post_process_results(response, "database", destination)
 
             logger.info(f"✅ Successfully formatted {len(result['edited_results']['main_list'])} database restaurants")
 
@@ -341,69 +341,38 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
         except Exception as e:
             logger.error(f"Error processing database restaurants: {e}")
+            logger.error(f"Error type: {type(e)}")
             return self._fallback_response()
 
-    def _process_scraped_content(self, scraped_results, query, destination):
-        """
-        UPDATED: Process scraped content with Text Cleaner integration
-        """
-        logger.info(f"🌐 Processing scraped content for: {destination}")
+    def _process_scraped_content(self, scraped_results, raw_query, destination):
+        """Process traditional scraped content"""
+        try:
+            logger.info(f"🌐 Processing {len(scraped_results)} scraped articles for {destination}")
 
-        # Check if content has been pre-cleaned by Text Cleaner Agent
-        has_cleaned_content = any(result.get('cleaned_content') for result in scraped_results)
-
-        if has_cleaned_content:
-            logger.info("🧹 Using pre-cleaned content from Text Cleaner Agent")
-            # Use the compiled cleaned content
-            cleaned_content = next(
-                (result.get('cleaned_content') for result in scraped_results 
-                 if result.get('cleaned_content')), 
-                ""
-            )
-
-            # Process the cleaned content directly
-            scraped_content = cleaned_content
-        else:
-            logger.info("📄 Processing raw scraped content")
-            # Use existing method for raw content
+            # Prepare content for AI processing
             scraped_content = self._prepare_scraped_content(scraped_results)
 
-        # Create the prompt for editor processing
-        editor_prompt = f"""
-    Original user request: {query}
-    Destination: {destination}
+            if not scraped_content.strip():
+                logger.warning("No substantial scraped content found")
+                return self._fallback_response()
 
-    {"CLEANED CONTENT (from Text Cleaner Agent):" if has_cleaned_content else "RAW SCRAPED CONTENT:"}
-    {scraped_content[:8000]}  
-
-    Extract and format restaurants using the diplomatic concierge approach. 
-    {"This content has been pre-cleaned to remove navigation and site noise." if has_cleaned_content else "This is raw scraped content - filter out navigation text and focus on restaurant information."}
-    """
-
-        try:
-            # Process with AI
-            ai_response = self.scraped_chain.invoke({
-                "raw_query": query,
+            # Get AI processing with diplomatic approach
+            response = self.scraped_chain.invoke({
+                "raw_query": raw_query,
                 "destination": destination,
                 "scraped_content": scraped_content
             })
 
-            # Post-process the results
-            processed_results = self._post_process_results(ai_response, "scraped", destination)
+            # FIX: Pass the entire response object, let _post_process_results handle it
+            result = self._post_process_results(response, "scraped", destination)
 
-            # Add metadata about content cleaning
-            processing_notes = processed_results.get("processing_notes", {})
-            processing_notes.update({
-                "content_cleaned": has_cleaned_content,
-                "content_source": "text_cleaner" if has_cleaned_content else "raw_scraper",
-                "content_length": len(scraped_content)
-            })
-            processed_results["processing_notes"] = processing_notes
+            logger.info(f"✅ Successfully processed {len(result['edited_results']['main_list'])} scraped restaurants")
 
-            return processed_results
+            return result
 
         except Exception as e:
-            logger.error(f"❌ Error processing scraped content: {e}")
+            logger.error(f"Error processing scraped content: {e}")
+            logger.error(f"Error type: {type(e)}")
             return self._fallback_response()
 
     def _prepare_scraped_content(self, search_results):
@@ -496,33 +465,51 @@ Content: {content[:5000]}...
     def _post_process_results(self, ai_output, source_type, destination):
         """
         Process AI output for both database and scraped results
-        Uses the original simple JSON structure
+        FIXED: Handle AIMessage objects correctly
         """
         try:
             logger.info(f"🔍 Processing AI output from {source_type}")
 
-            # Parse JSON response
-            if isinstance(ai_output, str):
-                content = ai_output.strip()
-
-                # Handle different response formats
-                if "```json" in content:
-                    content = content.split("```json")[1].split("```")[0].strip()
-                elif "```" in content:
-                    parts = content.split("```")
-                    if len(parts) >= 3:
-                        content = parts[1].strip()
-
-                # Check if it's actually JSON
-                if not content.startswith('{') and not content.startswith('['):
-                    logger.error(f"AI output doesn't look like JSON: {content[:200]}...")
-                    return self._fallback_response()
-
-                parsed_data = json.loads(content)
+            # FIX: Handle both AIMessage objects and direct strings
+            if hasattr(ai_output, 'content'):
+                # This is an AIMessage from LangChain
+                content = ai_output.content
+            elif isinstance(ai_output, str):
+                # This is already a string
+                content = ai_output
             else:
-                parsed_data = ai_output
+                # Try to convert to string
+                content = str(ai_output)
 
-            restaurants = parsed_data.get("restaurants", [])
+            content = content.strip()
+
+            # Handle different response formats
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                parts = content.split("```")
+                if len(parts) >= 3:
+                    content = parts[1].strip()
+
+            # Check if it's actually JSON
+            if not content.startswith('{') and not content.startswith('['):
+                logger.error(f"AI output doesn't look like JSON: {content[:200]}...")
+                return self._fallback_response()
+
+            # Parse the JSON
+            parsed_data = json.loads(content)
+
+            # Handle both direct restaurant list and nested structure
+            if isinstance(parsed_data, list):
+                # Direct list of restaurants
+                restaurants = parsed_data
+            elif isinstance(parsed_data, dict):
+                # Nested structure
+                restaurants = parsed_data.get("restaurants", [])
+            else:
+                logger.error(f"Unexpected AI output format: {type(parsed_data)}")
+                return self._fallback_response()
+
             logger.info(f"📋 Parsed {len(restaurants)} restaurants from AI response")
 
             # Simple validation and cleaning
@@ -530,6 +517,11 @@ Content: {content[:5000]}...
             seen_names = set()
 
             for restaurant in restaurants:
+                # Handle both dict and non-dict restaurant objects
+                if not isinstance(restaurant, dict):
+                    logger.warning(f"Skipping non-dict restaurant: {restaurant}")
+                    continue
+
                 name = restaurant.get("name", "").strip()
                 if not name or name.lower() in seen_names:
                     logger.debug(f"Skipping duplicate or empty restaurant: {name}")
@@ -568,10 +560,12 @@ Content: {content[:5000]}...
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse AI output as JSON: {e}")
-            logger.error(f"Raw AI output: {ai_output[:500]}...")
+            logger.error(f"Raw AI output: {content[:500] if 'content' in locals() else 'Unable to extract content'}...")
             return self._fallback_response()
         except Exception as e:
             logger.error(f"Error in post-processing: {e}")
+            logger.error(f"AI output type: {type(ai_output)}")
+            logger.error(f"AI output: {str(ai_output)[:200]}...")
             return self._fallback_response()
 
     def _extract_domain(self, url):

@@ -170,6 +170,25 @@ def get_optimal_concurrent_contexts():
     return min(max(max_contexts, 1), HUMAN_MIMIC_MAX_CONCURRENT)
 
 # ============================================================================
+# AD BLOCKING CONFIGURATION  
+# ============================================================================
+
+# Enable aggressive ad blocking for faster scraping
+HUMAN_MIMIC_BLOCK_ADS = os.environ.get("HUMAN_MIMIC_BLOCK_ADS", "true").lower() == "true"
+HUMAN_MIMIC_BLOCK_IMAGES = os.environ.get("HUMAN_MIMIC_BLOCK_IMAGES", "true").lower() == "true"  
+HUMAN_MIMIC_BLOCK_CSS = os.environ.get("HUMAN_MIMIC_BLOCK_CSS", "false").lower() == "true"  # May break layout
+
+# Custom ad domains to block (extend as needed)
+HUMAN_MIMIC_BLOCKED_DOMAINS = [
+    'doubleclick.net',
+    'googleadservices.com', 
+    'googlesyndication.com',
+    'facebook.com/tr',
+    'analytics.google.com',
+    'googletagmanager.com'
+]
+
+# ============================================================================
 # SEARCH CONFIGURATION
 # ============================================================================
 

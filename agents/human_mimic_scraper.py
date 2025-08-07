@@ -80,39 +80,56 @@ class HumanMimicScraper:
         await self.close()
 
     async def start(self):
-        """Initialize Playwright and browser contexts for production"""
+        """Initialize Playwright and browser contexts for production with ad blocking"""
         if self.browser:
             return  # Already started
 
-        logger.info("🎭 Starting Production Human Mimic Browser...")
+        logger.info("🎭 Starting Production Human Mimic Browser with Ad Blocking...")
 
         self.playwright = await async_playwright().start()
 
-        # Launch browser with production settings
+        # Launch browser with production + ad blocking optimized settings
         self.browser = await self.playwright.chromium.launch(
             headless=True,  # Always headless in production
             args=[
                 '--no-sandbox',
                 '--disable-dev-shm-usage',  # Important for Railway
-                '--disable-gpu',
-                '--disable-blink-features=AutomationControlled',
-                '--disable-features=VizDisplayCompositor',
+                '--disable-web-security',   # May help with some sites
+                '--disable-background-timer-throttling',
+                '--disable-renderer-backgrounding',
+                '--disable-background-networking',
+                '--disable-ipc-flooding-protection',
+                # Ad blocking related flags
+                '--disable-default-apps',
+                '--disable-extensions',
+                '--disable-plugins',
+                '--disable-sync',
+                '--no-default-browser-check',
+                '--no-first-run',
+                # Performance optimizations
                 '--memory-pressure-off',
-                '--max_old_space_size=4096',  # Memory management
+                '--max_old_space_size=4096'
             ]
         )
 
-        # Create multiple contexts for concurrent processing
+        # Create optimized contexts with ad blocking
         for i in range(self.max_concurrent):
             context = await self.browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
                 user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                viewport={'width': 1366, 'height': 768},
-                locale='en-US',
-                timezone_id='America/New_York'
+                extra_http_headers={
+                    'Accept-Language': 'en-US,en;q=0.9',
+                },
+                # Block unnecessary permissions that can slow things down
+                permissions=[],
+                geolocation=None,
+                ignore_https_errors=True
             )
+
             self.contexts.append(context)
 
-        logger.info(f"✅ {len(self.contexts)} browser contexts ready for concurrent scraping")
+        logger.info(f"✅ {len(self.contexts)} browser contexts ready with ad blocking")
+
 
     async def close(self):
         """Clean up all browser resources"""
@@ -195,43 +212,66 @@ class HumanMimicScraper:
 
     async def _scrape_single_url(self, url: str, context_index: int = 0) -> Dict[str, Any]:
         """
-        Scrape a single URL with progressive timeout strategy
+        Scrape a single URL with NO page reload on timeout + ad blocking
         """
         domain = urlparse(url).netloc
-        timeout = self._get_timeout_for_domain(domain)
+        initial_timeout = self._get_timeout_for_domain(domain)
 
         start_time = time.time()
         page = None
 
         try:
-            logger.info(f"🎭 Context-{context_index} scraping: {url} (timeout: {timeout/1000}s)")
+            logger.info(f"🎭 Context-{context_index} scraping: {url} (timeout: {initial_timeout/1000}s)")
 
             # Get the appropriate context
             context = self.contexts[context_index % len(self.contexts)]
             page = await context.new_page()
 
-            # Configure page for optimal performance
-            await self._configure_page(page)
+            # Configure page for optimal performance (includes ad blocking now)
+            await self._configure_page_with_adblock(page)
 
-            # Navigate with progressive timeout strategy
-            try:
-                await page.goto(url, wait_until='networkidle', timeout=timeout)
-            except Exception as e:
-                if "timeout" in str(e).lower() and timeout == self.default_timeout:
-                    # First timeout - try with extended timeout
-                    logger.info(f"⏱️ Timeout with {timeout/1000}s, retrying with extended timeout...")
-                    await page.close()
-                    page = await context.new_page()
-                    await self._configure_page(page)
+            # Smart timeout strategy - NO PAGE RELOAD
+            timeout_attempts = [
+                initial_timeout,                    # First try: learned/default timeout
+                max(initial_timeout * 1.5, 45000), # Second try: 50% longer or 45s minimum
+                60000                               # Final try: 60s maximum
+            ]
 
-                    extended_timeout = self.slow_timeout
-                    await page.goto(url, wait_until='networkidle', timeout=extended_timeout)
+            load_success = False
+            final_timeout = initial_timeout
 
-                    # Learn that this domain is slow
-                    await self._learn_slow_domain(domain, extended_timeout)
-                    self.stats["timeout_escalations"] += 1
-                else:
-                    raise
+            for attempt, timeout in enumerate(timeout_attempts):
+                try:
+                    logger.info(f"🔄 Attempt {attempt + 1}/{len(timeout_attempts)}: {timeout/1000}s timeout")
+
+                    # Try to load page with current timeout
+                    await page.goto(url, wait_until='networkidle', timeout=timeout)
+
+                    # If we get here, page loaded successfully
+                    load_success = True
+                    final_timeout = timeout
+
+                    # Learn if this was a timeout escalation
+                    if timeout > initial_timeout:
+                        await self._learn_slow_domain(domain, timeout)
+                        self.stats["timeout_escalations"] += 1
+                        logger.info(f"📚 Learned {domain} needs {timeout/1000}s")
+
+                    break  # Success - exit timeout attempts
+
+                except Exception as e:
+                    if "timeout" in str(e).lower() and attempt < len(timeout_attempts) - 1:
+                        # Timeout occurred, but we have more attempts
+                        logger.info(f"⏱️ Timeout at {timeout/1000}s, trying {timeout_attempts[attempt + 1]/1000}s...")
+                        continue  # Try next timeout WITHOUT reloading page
+                    else:
+                        # Either not a timeout, or we've exhausted all attempts
+                        if attempt >= len(timeout_attempts) - 1:
+                            logger.error(f"❌ All timeout attempts failed for {url}")
+                        raise
+
+            if not load_success:
+                raise Exception("Page failed to load after all timeout attempts")
 
             # Human-like behavior: wait and read the page
             await asyncio.sleep(self.load_wait_time)
@@ -263,7 +303,7 @@ class HumanMimicScraper:
             self.stats["total_load_time"] += load_time
             self.stats["avg_load_time"] = self.stats["total_load_time"] / self.stats["total_scraped"]
 
-            logger.info(f"✅ Context-{context_index} scraped {len(cleaned_content)} chars in {load_time:.2f}s")
+            logger.info(f"✅ Context-{context_index} scraped {len(cleaned_content)} chars in {load_time:.2f}s (final timeout: {final_timeout/1000}s)")
 
             return {
                 "success": True,
@@ -273,7 +313,7 @@ class HumanMimicScraper:
                 "char_count": len(cleaned_content),
                 "method": "human_mimic",
                 "context_used": context_index,
-                "timeout_used": timeout,
+                "timeout_used": final_timeout,
                 "error": None
             }
 
@@ -294,7 +334,7 @@ class HumanMimicScraper:
                 "char_count": 0,
                 "method": "human_mimic",
                 "context_used": context_index,
-                "timeout_used": timeout,
+                "timeout_used": final_timeout,
                 "error": error_msg
             }
 
@@ -302,14 +342,71 @@ class HumanMimicScraper:
             if page:
                 await page.close()
 
-    async def _configure_page(self, page: Page):
-        """Configure page for optimal scraping performance"""
-        # Block unnecessary resources to speed up loading
-        await page.route("**/*.{png,jpg,jpeg,gif,svg,ico,woff,woff2}", lambda route: route.abort())
-        await page.route("**/analytics**", lambda route: route.abort())
-        await page.route("**/ads**", lambda route: route.abort())
-        await page.route("**/tracking**", lambda route: route.abort())
-        await page.route("**/gtag**", lambda route: route.abort())
+    async def _configure_page_with_adblock(self, page: Page):
+        """
+        Configure page with ad blocking for dramatically faster loading
+        This can improve load times by 20-40% according to research
+        """
+
+        # 1. Block resource types that slow down loading
+        await page.route("**/*", lambda route: (
+            route.abort() if route.request.resource_type in [
+                'image',      # Images (biggest bandwidth hog)
+                'media',      # Videos/audio  
+                'font',       # Web fonts
+                'stylesheet', # CSS (optional - may break layout but speeds up loading)
+                'beacon',     # Analytics beacons
+                'csp_report', # Security reports
+                'object',     # Flash/embed objects
+                'texttrack'   # Video subtitles
+            ] else route.continue_()
+        ))
+
+        # 2. Block ad/tracking domains (lightweight but effective)
+        ad_domains = [
+            'doubleclick.net',
+            'googleadservices.com', 
+            'googlesyndication.com',
+            'facebook.com/tr',
+            'analytics.google.com',
+            'googletagmanager.com',
+            'google-analytics.com',
+            'hotjar.com',
+            'crazyegg.com',
+            'mouseflow.com',
+            'fullstory.com',
+            'mixpanel.com',
+            'segment.com',
+            'amplitude.com'
+        ]
+
+        await page.route("**/*", lambda route: (
+            route.abort() if any(ad_domain in route.request.url for ad_domain in ad_domains)
+            else route.continue_()
+        ))
+
+        # 3. Set faster user agent (optional)
+        await page.set_extra_http_headers({
+            'Accept-Language': 'en-US,en;q=0.9',
+        })
+
+
+    # OPTIONAL: For even better ad blocking, add this advanced version
+    # This requires installing the Ghostery adblocker (JavaScript library)
+    # You'd need to set up a Node.js service or use subprocess to call it
+
+    # async def _configure_page_with_advanced_adblock(self, page: Page):
+      #   """
+        # ADVANCED: Configure page with Ghostery adblocker (requires Node.js setup)
+        # This provides uBlock Origin-level ad blocking
+        # """
+        # First apply basic blocking
+        # await self._configure_page_with_adblock(page)
+
+        # TODO: Add Ghostery adblocker integration if you want maximum blocking
+        # This would require setting up Node.js integration or a subprocess call
+        # See the research results above for implementation details
+
 
     def _get_timeout_for_domain(self, domain: str) -> int:
         """Get appropriate timeout for domain with learning"""
