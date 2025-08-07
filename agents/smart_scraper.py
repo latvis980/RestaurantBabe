@@ -65,6 +65,10 @@ class SmartRestaurantScraper:
         self._human_mimic_scraper = None
         self._content_sectioner = None
 
+        # Initialize Text Cleaner Agent - FIXED: Remove duplicate line
+        from agents.text_cleaner_agent import TextCleanerAgent
+        self._text_cleaner = TextCleanerAgent(config, model_override='deepseek')  # Start with DeepSeek
+
         # Updated stats tracking with Human Mimic
         self.stats = {
             "total_processed": 0,
@@ -78,44 +82,42 @@ class SmartRestaurantScraper:
         # Updated AI prompt to include Human Mimic strategy
         self.analysis_prompt = ChatPromptTemplate.from_messages([
             ("system", """
-        You are an expert web crawling strategist. Recommend the optimal scraping strategy based on technical complexity.
+    You are an expert web crawling strategist. Recommend the optimal scraping strategy based on technical complexity.
 
-        Available strategies:
+    Available strategies:
+    🟢 SIMPLE_HTTP (0.1 credits):
+    - Static HTML pages with content in initial server response
+    - Minimal JavaScript required
+    - News sites, blogs, simple restaurant pages
 
-        🟢 SIMPLE_HTTP (0.1 credits):
-        - Static HTML pages with content in initial server response
-        - Minimal JavaScript required
-        - News sites, blogs, simple restaurant pages
+    🟡 ENHANCED_HTTP (0.5 credits):  
+    - Moderate client-side scripting
+    - Content mostly in HTML but needs cleaning
+    - CMS platforms with some dynamic elements
 
-        🟡 ENHANCED_HTTP (0.5 credits):  
-        - Moderate client-side scripting
-        - Content mostly in HTML but needs cleaning
-        - CMS platforms with some dynamic elements
+    🎭 HUMAN_MIMIC (2.0 credits):
+    - Dynamic content that requires JavaScript execution
+    - Content loads after page render (common for restaurant sites)
+    - Modern sites without anti-bot protection
+    - SPAs with moderate complexity
+    - Perfect for: Timeout, Eater, Michelin, most restaurant guides
 
-        🎭 HUMAN_MIMIC (2.0 credits):
-        - Dynamic content that requires JavaScript execution
-        - Content loads after page render (common for restaurant sites)
-        - Modern sites without anti-bot protection
-        - SPAs with moderate complexity
-        - Perfect for: Timeout, Eater, Michelin, most restaurant guides
-
-        Output in JSON format:
-        {{
-            "strategy": "SIMPLE_HTTP|ENHANCED_HTTP|HUMAN_MIMIC",
-            "confidence": 0.0-1.0,
-            "reasoning": "Technical explanation"
-        }}
+    Output in JSON format:
+    {{
+        "strategy": "SIMPLE_HTTP|ENHANCED_HTTP|HUMAN_MIMIC",
+        "confidence": 0.0-1.0,
+        "reasoning": "Technical explanation"
+    }}
             """),
             ("human", """
-        Analyze this URL and recommend scraping strategy:
+    Analyze this URL and recommend scraping strategy:
+    URL: {{url}}
+    Domain: {{domain}}
+    Title: {{title}}
+    Content preview: {{content_preview}}
+    JavaScript indicators: {{js_indicators}}
 
-        URL: {{url}}
-        Domain: {{domain}}
-        Title: {{title}}
-        Content preview: {{content_preview}}
-        JavaScript indicators: {{js_indicators}}
-
-        Focus on technical complexity and anti-bot measures, not content topic.
+    Focus on technical complexity and anti-bot measures, not content topic.
             """)
         ])
 
@@ -198,23 +200,51 @@ class SmartRestaurantScraper:
 
     async def _scrape_human_mimic(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        NEW: Scrape using Human Mimic strategy
+        UPDATED: Scrape using Human Mimic strategy with Text Cleaner integration
         """
         logger.info(f"🎭 Human Mimic scraping {len(results)} URLs")
 
         try:
+            # Step 1: Get raw scraped content
             scraped_results = await self.human_mimic_scraper.scrape_search_results(results)
 
-            # Process through content sectioner for restaurant extraction
+            # Step 2: NEW - Clean the content with Text Cleaner Agent
+            if hasattr(self, '_text_cleaner') and self._text_cleaner:
+                logger.info("🧹 Applying Text Cleaner to Human Mimic results")
+
+                # Filter successful scrapes for cleaning
+                successful_scrapes = [r for r in scraped_results if r.get('scraping_success')]
+
+                if successful_scrapes:
+                    # Clean the content
+                    cleaned_content = self._text_cleaner.clean_scraped_results(successful_scrapes)
+
+                    # Add cleaned content to results
+                    for result in scraped_results:
+                        if result.get('scraping_success'):
+                            result['cleaned_content'] = cleaned_content
+                            result['content_cleaning_applied'] = True
+                        else:
+                            result['cleaned_content'] = ""
+                            result['content_cleaning_applied'] = False
+
+            # Step 3: Process through content sectioner for restaurant extraction
             final_results = []
             for result in scraped_results:
                 if result.get('scraping_success') and result.get('scraped_content'):
-                    # Extract restaurants from scraped content
+                    # Use cleaned content if available, otherwise original
+                    content_to_process = result.get('cleaned_content') or result.get('scraped_content')
+
+                    # Extract restaurants from content
                     try:
-                        sectioned_content = await self.content_sectioner.section_content(
-                            result['scraped_content']
-                        )
-                        result['restaurants_found'] = sectioned_content.get('restaurants', [])
+                        if hasattr(self, '_content_sectioner') and self._content_sectioner:
+                            sectioned_content = await self._content_sectioner.section_content(content_to_process)
+                            result['restaurants_found'] = sectioned_content.get('restaurants', [])
+                        else:
+                            # Fallback: mark for editor processing
+                            result['restaurants_found'] = []
+                            result['needs_editor_processing'] = True
+
                     except Exception as e:
                         logger.warning(f"Content sectioning failed for {result.get('url')}: {e}")
                         result['restaurants_found'] = []
@@ -227,6 +257,7 @@ class SmartRestaurantScraper:
             logger.error(f"Human Mimic scraping batch failed: {e}")
             # Return results with error status
             return [{**r, 'scraping_success': False, 'scraping_error': str(e)} for r in results]
+
 
     async def _classify_all_urls(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """

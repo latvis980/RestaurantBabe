@@ -343,35 +343,101 @@ Extract restaurants using the diplomatic concierge approach. Include good option
             logger.error(f"Error processing database restaurants: {e}")
             return self._fallback_response()
 
-    def _process_scraped_content(self, scraped_results, raw_query, destination):
-        """Process traditional scraped content"""
-        try:
-            logger.info(f"🌐 Processing {len(scraped_results)} scraped articles for {destination}")
+    def _process_scraped_content(self, scraped_results, query, destination):
+        """
+        UPDATED: Process scraped content with Text Cleaner integration
+        """
+        logger.info(f"🌐 Processing scraped content for: {destination}")
 
-            # Prepare content for AI processing
+        # Check if content has been pre-cleaned by Text Cleaner Agent
+        has_cleaned_content = any(result.get('cleaned_content') for result in scraped_results)
+
+        if has_cleaned_content:
+            logger.info("🧹 Using pre-cleaned content from Text Cleaner Agent")
+            # Use the compiled cleaned content
+            cleaned_content = next(
+                (result.get('cleaned_content') for result in scraped_results 
+                 if result.get('cleaned_content')), 
+                ""
+            )
+
+            # Process the cleaned content directly
+            scraped_content = cleaned_content
+        else:
+            logger.info("📄 Processing raw scraped content")
+            # Use existing method for raw content
             scraped_content = self._prepare_scraped_content(scraped_results)
 
-            if not scraped_content.strip():
-                logger.warning("No substantial scraped content found")
-                return self._fallback_response()
+        # Create the prompt for editor processing
+        editor_prompt = f"""
+    Original user request: {query}
+    Destination: {destination}
 
-            # Get AI processing with diplomatic approach
-            response = self.scraped_chain.invoke({
-                "raw_query": raw_query,  # Changed from original_query
+    {"CLEANED CONTENT (from Text Cleaner Agent):" if has_cleaned_content else "RAW SCRAPED CONTENT:"}
+    {scraped_content[:8000]}  
+
+    Extract and format restaurants using the diplomatic concierge approach. 
+    {"This content has been pre-cleaned to remove navigation and site noise." if has_cleaned_content else "This is raw scraped content - filter out navigation text and focus on restaurant information."}
+    """
+
+        try:
+            # Process with AI
+            ai_response = self.scraped_chain.invoke({
+                "raw_query": query,
                 "destination": destination,
                 "scraped_content": scraped_content
             })
 
-            # Process AI output
-            result = self._post_process_results(response.content, "scraped", destination)
+            # Post-process the results
+            processed_results = self._post_process_results(ai_response, "scraped", destination)
 
-            logger.info(f"✅ Successfully processed {len(result['edited_results']['main_list'])} scraped restaurants")
+            # Add metadata about content cleaning
+            processing_notes = processed_results.get("processing_notes", {})
+            processing_notes.update({
+                "content_cleaned": has_cleaned_content,
+                "content_source": "text_cleaner" if has_cleaned_content else "raw_scraper",
+                "content_length": len(scraped_content)
+            })
+            processed_results["processing_notes"] = processing_notes
 
-            return result
+            return processed_results
 
         except Exception as e:
-            logger.error(f"Error processing scraped content: {e}")
+            logger.error(f"❌ Error processing scraped content: {e}")
             return self._fallback_response()
+
+    def _prepare_scraped_content(self, search_results):
+        """
+        UPDATED: Convert search results into a clean format for AI processing
+        Now handles both raw and pre-cleaned content
+        """
+        formatted_content = []
+
+        for i, result in enumerate(search_results, 1):
+            # Extract domain from URL for source attribution
+            url = result.get('url', '')
+            domain = self._extract_domain(url)
+
+            # Use cleaned content if available, otherwise raw content
+            if result.get('cleaned_content'):
+                content = result.get('cleaned_content')
+                content_type = "CLEANED"
+            else:
+                content = result.get('scraped_content', result.get('content', ''))
+                content_type = "RAW"
+
+            title = result.get('title', 'Untitled')
+
+            if content and len(content.strip()) > 50:  # Only include substantial content
+                formatted_content.append(f"""
+    ARTICLE {i} ({content_type}):
+    URL: {url}
+    Domain: {domain}  
+    Title: {title}
+    Content: {content[:5000]}...  
+    ---""")
+
+        return "\n".join(formatted_content)
 
     def _prepare_database_content(self, database_restaurants):
         """Convert database restaurant objects into format for AI processing"""

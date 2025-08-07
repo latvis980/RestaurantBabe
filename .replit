@@ -3,7 +3,7 @@ modules = ["python-3.11"]
 
 [nix]
 channel = "stable-24_05"
-packages = ["bash", "ffmpeg-full", "libxcrypt", "xcodebuild", "zlib"]
+packages = ["bash", "ffmpeg-full", "gitFull", "libxcrypt", "playwright-driver", "xcodebuild", "zlib"]
 
 [unitTest]
 language = "python3"
