@@ -36,7 +36,6 @@ class SmartRestaurantScraper:
             # Known slow domains
             'guide.michelin.com': 60000,
             'timeout.com': 45000,
-            'zagat.com': 45000,
         }
 
         # Human-like timing
@@ -56,8 +55,6 @@ class SmartRestaurantScraper:
             "total_cost_estimate": 0.0,
             "total_processing_time": 0.0,
             "strategy_breakdown": {"human_mimic": 0},
-            "timeout_escalations": 0,
-            "domain_learnings": 0,
             "avg_load_time": 0.0,
             "total_load_time": 0.0,
             "concurrent_peak": 0
@@ -140,52 +137,6 @@ class SmartRestaurantScraper:
         except Exception as e:
             logger.error(f"Error stopping human mimic scraper: {e}")
 
-    def _get_timeout_for_domain(self, domain: str) -> int:
-        """Get appropriate timeout for domain with learning"""
-        # Check learned domain timeouts first
-        if domain in self.domain_timeouts:
-            return self.domain_timeouts[domain]
-
-        # Check database for learned timeouts
-        learned_timeout = self._get_learned_timeout_from_db(domain)
-        if learned_timeout:
-            self.domain_timeouts[domain] = learned_timeout
-            return learned_timeout
-
-        return self.default_timeout
-
-    def _get_learned_timeout_from_db(self, domain: str) -> Optional[int]:
-        """Get learned timeout for domain from database"""
-        try:
-            # Use the database method for domain intelligence
-            result = self.database.get_domain_intelligence(domain)
-            if result:
-                return result.get('timeout', self.default_timeout)
-        except Exception as e:
-            logger.debug(f"Could not get learned timeout for {domain}: {e}")
-
-        return None
-
-    async def _learn_slow_domain(self, domain: str, successful_timeout: int):
-        """Learn that a domain requires longer timeout"""
-        self.domain_timeouts[domain] = successful_timeout
-        self.stats["domain_learnings"] += 1
-
-        try:
-            # Update domain intelligence in database
-            intelligence_data = {
-                'timeout': successful_timeout,
-                'strategy': 'human_mimic_slow',
-                'learned_at': time.time(),
-                'success_count': 1,
-                'total_attempts': 1
-            }
-
-            self.database.save_domain_intelligence(domain, intelligence_data)
-            logger.info(f"📚 Learned that {domain} needs {successful_timeout/1000}s timeout")
-        except Exception as e:
-            logger.debug(f"Could not save domain learning for {domain}: {e}")
-
     def _clean_scraped_text(self, text: str) -> str:
         """
         Clean the scraped text to match what human would see and copy
@@ -233,7 +184,7 @@ class SmartRestaurantScraper:
         Scrape a single URL with NO page reload on timeout + ad blocking
         """
         domain = urlparse(url).netloc
-        initial_timeout = self._get_timeout_for_domain(domain)
+        initial_timeout = self.default_timeout
 
         start_time = time.time()
         page = None
@@ -269,12 +220,6 @@ class SmartRestaurantScraper:
                     # If we get here, page loaded successfully
                     load_success = True
                     final_timeout = timeout
-
-                    # Learn if this was a timeout escalation
-                    if timeout > initial_timeout:
-                        await self._learn_slow_domain(domain, timeout)
-                        self.stats["timeout_escalations"] += 1
-                        logger.info(f"📚 Learned {domain} needs {timeout/1000}s")
 
                     break  # Success - exit timeout attempts
 
@@ -515,17 +460,8 @@ class SmartRestaurantScraper:
         """Get comprehensive scraping statistics"""
         return {
             **self.stats,
-            "domain_timeouts_learned": len(self.domain_timeouts),
             "success_rate": (self.stats["successful_scrapes"] / max(self.stats["total_processed"], 1)) * 100,
-            "concurrent_contexts": len(self.contexts),
-            "avg_timeout_used": sum(self.domain_timeouts.values()) / max(len(self.domain_timeouts), 1) / 1000  # in seconds
-        }
-
-    def get_domain_intelligence(self) -> Dict[str, Any]:
-        """Get domain intelligence (simplified version)"""
-        return {
-            "domain_timeouts": self.domain_timeouts,
-            "total_domains_learned": len(self.domain_timeouts)
+            "concurrent_contexts": len(self.contexts)
         }
 
     def _log_stats(self):
