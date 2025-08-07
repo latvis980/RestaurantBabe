@@ -67,8 +67,8 @@ class TransparentEditorTest:
             logger.info("🔍 Step 2: Web Search")
             step2_start = time.time()
 
-            # FIXED: BraveSearchAgent needs destination parameter
-            search_results = await self.search_agent.search(search_queries, destination)
+            # FIXED: BraveSearchAgent needs destination parameter (sync method)
+            search_results = self.search_agent.search(search_queries, destination)
 
             step2_time = time.time() - step2_start
 
