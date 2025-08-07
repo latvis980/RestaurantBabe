@@ -9,6 +9,9 @@ import json
 import asyncio
 import logging
 import concurrent.futures
+import threading
+import requests
+from datetime import datetime
 
 from utils.database import get_restaurants_by_city
 from utils.debug_utils import dump_chain_state, log_function_call
@@ -610,118 +613,172 @@ class LangChainOrchestrator:
                 "telegram_formatted_text": "Sorry, there was an error formatting the restaurant recommendations."
             }
 
-    def _save_scraped_content_for_processing(self, x, scraped_results):
-        """Save scraped content and send to Supabase manager (working version)"""
+    # Updated _save_scraped_content_for_processing method for agents/langchain_orchestrator.py
+
+    def _save_scraped_content_for_processing(self, pipeline_data, scraped_results):
+        """
+        Enhanced method that saves scraped content locally AND uploads to Supabase Storage.
+        Uploads happen AFTER the query is complete to not waste time during search.
+        """
         try:
-            logger.info("💾 ENTERING SIMPLE SAVE SCRAPED CONTENT")
-            logger.info(f"💾 Enriched results count: {len(scraped_results)}")
+            logger.info("💾 ENHANCED: Saving scraped content for background processing...")
 
-            from datetime import datetime
-            import threading
-            import requests
+            # Extract metadata
+            destination_info = pipeline_data.get("destination", "Unknown")
+            city = destination_info.split(",")[0].strip() if isinstance(destination_info, str) else "Unknown"
+            country = destination_info.split(",")[1].strip() if isinstance(destination_info, str) and "," in destination_info else ""
 
-            # Extract metadata from pipeline context
-            query = x.get("query", "")
-            destination = x.get("destination", "Unknown")
+            query = pipeline_data.get("raw_query", pipeline_data.get("query", ""))
+            sources = [result.get('url', '') for result in scraped_results if result.get('url')]
 
-            # Parse destination into city/country
-            city = destination
-            country = "Unknown"
-            if "," in destination:
-                parts = [p.strip() for p in destination.split(",")]
-                city = parts[0]
-                if len(parts) > 1:
-                    country = parts[1]
+            # Compile all scraped content
+            all_scraped_content = f"Query: {query}\nDestination: {city}, {country}\n\n"
+            all_scraped_content += "=" * 80 + "\n\n"
 
-            # Combine all scraped content for saving
-            all_scraped_content = ""
-            sources = []
-
-            for result in scraped_results:
-                try:
-                    content = result.get("scraped_content", result.get("content", ""))
-                    url = result.get("url", "")
-
-                    if content and len(content.strip()) > 100:
-                        all_scraped_content += f"\n\n--- FROM {url} ---\n\n{content}"
-                        sources.append(url)
-                        logger.info(f"✅ Got {len(content)} chars from {url}")
-                    else:
-                        logger.warning(f"⚠️ No substantial content from {url}")
-
-                except Exception as e:
-                    logger.error(f"❌ Error processing result: {e}")
-                    continue
+            for idx, result in enumerate(scraped_results, 1):
+                content = result.get('scraped_content', result.get('content', ''))
+                if content:
+                    all_scraped_content += f"SOURCE {idx}: {result.get('url', 'Unknown URL')}\n"
+                    all_scraped_content += f"TITLE: {result.get('title', 'No title')}\n"
+                    all_scraped_content += "-" * 40 + "\n"
+                    all_scraped_content += content + "\n\n"
+                    all_scraped_content += "=" * 80 + "\n\n"
 
             if not all_scraped_content.strip():
-                logger.warning("⚠️ No content to save")
+                logger.warning("⚠️ No scraped content to save")
                 return
 
             # Save to local file first (for backup/debugging)
-            try:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"scraped_{city.replace(' ', '_')}_{timestamp}.txt"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"scraped_{city.replace(' ', '_')}_{timestamp}.txt"
 
-                os.makedirs("scraped_content", exist_ok=True)
-                file_path = os.path.join("scraped_content", filename)
+            os.makedirs("scraped_content", exist_ok=True)
+            file_path = os.path.join("scraped_content", filename)
 
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(all_scraped_content)
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(all_scraped_content)
 
-                logger.info(f"💾 Saved scraped content to: {file_path}")
+            logger.info(f"💾 Saved scraped content locally to: {file_path}")
 
-            except Exception as e:
-                logger.error(f"❌ Error saving local file: {e}")
+            # Prepare metadata for all upload operations
+            metadata = {
+                'city': city,
+                'country': country,
+                'sources': sources,
+                'query': query,
+                'scraped_at': datetime.now().isoformat(),
+                'source_count': len(scraped_results),
+                'content_length': len(all_scraped_content)
+            }
 
-            
-            # Send to Supabase Manager service (async, don't wait for response)
-            def send_to_supabase_manager():
+            # Function to handle all background uploads
+            def perform_background_uploads():
                 try:
-                    supabase_manager_url = getattr(self.config, 'SUPABASE_MANAGER_URL', '')
+                    # 1. Upload to Supabase Storage (NEW)
+                    try:
+                        from utils.supabase_storage import get_storage_manager
+                        storage_manager = get_storage_manager()
 
-                    if not supabase_manager_url:
-                        logger.warning("⚠️ SUPABASE_MANAGER_URL not configured - skipping background update")
-                        return
+                        if storage_manager:
+                            success, storage_path = storage_manager.upload_scraped_content(
+                                content=all_scraped_content,
+                                metadata=metadata,
+                                file_type="txt"
+                            )
 
-                    logger.info(f"📤 Sending content to Supabase Manager: {supabase_manager_url}")
+                            if success:
+                                logger.info(f"☁️ Successfully uploaded to Supabase Storage: {storage_path}")
+                            else:
+                                logger.warning("⚠️ Failed to upload to Supabase Storage")
+                        else:
+                            logger.warning("⚠️ Supabase Storage Manager not initialized")
 
-                    # Prepare payload (same format as working version)
-                    payload = {
-                        'content': all_scraped_content,
-                        'metadata': {
-                            'city': city,
-                            'country': country,
-                            'sources': sources,
-                            'query': query,
-                            'scraped_at': datetime.now().isoformat()
-                        }
-                    }
+                    except Exception as e:
+                        logger.error(f"❌ Error uploading to Supabase Storage: {e}")
 
-                    # Send to the correct endpoint
-                    response = requests.post(
-                        f"{supabase_manager_url}/process_scraped_content",
-                        json=payload,
-                        timeout=180
-                    )
+                    # 2. Send to Supabase Manager service (existing functionality)
+                    try:
+                        supabase_manager_url = getattr(self.config, 'SUPABASE_MANAGER_URL', '')
 
-                    if response.status_code == 200:
-                        logger.info("✅ Successfully sent content to Supabase Manager")
-                    else:
-                        logger.warning(f"⚠️ Supabase Manager returned status {response.status_code}")
-                        logger.warning(f"Response: {response.text}")
+                        if supabase_manager_url:
+                            logger.info(f"📤 Sending content to Supabase Manager: {supabase_manager_url}")
+
+                            payload = {
+                                'content': all_scraped_content,
+                                'metadata': metadata
+                            }
+
+                            response = requests.post(
+                                f"{supabase_manager_url}/process_scraped_content",
+                                json=payload,
+                                timeout=180
+                            )
+
+                            if response.status_code == 200:
+                                logger.info("✅ Successfully sent content to Supabase Manager")
+                            else:
+                                logger.warning(f"⚠️ Supabase Manager returned status {response.status_code}")
+                        else:
+                            logger.info("ℹ️ SUPABASE_MANAGER_URL not configured")
+
+                    except Exception as e:
+                        logger.error(f"❌ Error sending to Supabase Manager: {e}")
+
+                    # 3. Also save individual files if content is large (>100KB per file)
+                    if len(all_scraped_content) > 100000:  # 100KB threshold
+                        try:
+                            logger.info("📑 Content is large, saving individual article files...")
+
+                            for idx, result in enumerate(scraped_results, 1):
+                                content = result.get('scraped_content', result.get('content', ''))
+                                if content and len(content) > 1000:  # Only save substantial content
+                                    article_metadata = {
+                                        **metadata,
+                                        'article_index': idx,
+                                        'article_url': result.get('url', ''),
+                                        'article_title': result.get('title', '')
+                                    }
+
+                                    # Save individual article
+                                    article_filename = f"{timestamp}_{city.replace(' ', '_')}_article_{idx}.txt"
+                                    article_path = os.path.join("scraped_content", "articles", article_filename)
+
+                                    os.makedirs(os.path.dirname(article_path), exist_ok=True)
+                                    with open(article_path, 'w', encoding='utf-8') as f:
+                                        f.write(f"URL: {result.get('url', 'Unknown')}\n")
+                                        f.write(f"Title: {result.get('title', 'No title')}\n")
+                                        f.write(f"Query: {query}\n")
+                                        f.write("-" * 40 + "\n")
+                                        f.write(content)
+
+                                    # Upload individual article to Supabase Storage
+                                    if storage_manager:
+                                        success, storage_path = storage_manager.upload_file(
+                                            file_path=article_path,
+                                            metadata=article_metadata
+                                        )
+                                        if success:
+                                            logger.info(f"☁️ Uploaded article {idx} to: {storage_path}")
+
+                        except Exception as e:
+                            logger.error(f"❌ Error saving individual articles: {e}")
+
+                    logger.info("✅ Background upload tasks completed")
 
                 except Exception as e:
-                    logger.error(f"❌ Error sending to Supabase Manager: {e}")
+                    logger.error(f"❌ Error in background upload thread: {e}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
 
-            # Run in background thread so it doesn't block user response
-            thread = threading.Thread(target=send_to_supabase_manager, daemon=True)
+            # Run uploads in background thread so it doesn't block user response
+            thread = threading.Thread(target=perform_background_uploads, daemon=True)
             thread.start()
-            logger.info("📤 Started background thread to send content to Supabase Manager")
+            logger.info("🚀 Started background thread for content uploads")
 
         except Exception as e:
-            logger.error(f"❌ Error in simple save scraped content: {e}")
+            logger.error(f"❌ Error in enhanced save scraped content: {e}")
             import traceback
-            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
 
 
     def _log_enhanced_usage(self):

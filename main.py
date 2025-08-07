@@ -1,4 +1,4 @@
-# main.py - Updated to use orchestrator singleton
+# main.py - Updated to include Supabase Storage initialization
 import os
 import logging
 import time
@@ -11,6 +11,7 @@ from pydantic import config as pydantic_config
 from utils.orchestrator_manager import initialize_orchestrator
 from langchain_core.tracers.langchain import wait_for_all_tracers
 from utils.database import initialize_db 
+from utils.supabase_storage import initialize_storage_manager  # NEW IMPORT
 
 # Configure logging
 logging.basicConfig(
@@ -30,6 +31,21 @@ else:
 
 # Initialize database
 initialize_db(config)
+
+# NEW: Initialize Supabase Storage Manager
+try:
+    if hasattr(config, 'SUPABASE_URL') and hasattr(config, 'SUPABASE_KEY'):
+        storage_manager = initialize_storage_manager(
+            supabase_url=config.SUPABASE_URL,
+            supabase_key=config.SUPABASE_KEY
+        )
+        logger.info("✅ Supabase Storage Manager initialized successfully")
+    else:
+        logger.warning("⚠️ Missing Supabase credentials for Storage Manager")
+except Exception as e:
+    logger.error(f"❌ Failed to initialize Supabase Storage Manager: {e}")
+    # Don't fail the entire app if storage manager fails
+    pass
 
 def setup_orchestrator():
     """
