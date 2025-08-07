@@ -328,11 +328,6 @@ def add_editor_test_command(bot, config, orchestrator):
         user_id = message.from_user.id
         admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
 
-        # Check if user is admin
-        if not admin_chat_id or str(user_id) != str(admin_chat_id):
-            bot.reply_to(message, "❌ This command is only available to administrators.")
-            return
-
         # Parse command
         command_text = message.text.strip()
 
@@ -406,9 +401,9 @@ def handle_test_scrape(message):
     admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
 
     # Check if user is admin
-    if not admin_chat_id or str(user_id) != str(admin_chat_id):
-        bot.reply_to(message, "❌ This command is only available to administrators.")
-        return
+    #if not admin_chat_id or str(user_id) != str(admin_chat_id):
+        #bot.reply_to(message, "❌ This command is only available to administrators.")
+        #return
 
     # Parse command
     command_text = message.text.strip()
@@ -480,9 +475,9 @@ def handle_test_search(message):
     admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
 
     # Check if user is admin
-    if not admin_chat_id or str(user_id) != str(admin_chat_id):
-        bot.reply_to(message, "❌ This command is only available to administrators.")
-        return
+    #if not admin_chat_id or str(user_id) != str(admin_chat_id):
+        #bot.reply_to(message, "❌ This command is only available to administrators.")
+        #return
 
     # Parse command
     command_text = message.text.strip()
@@ -551,9 +546,9 @@ def handle_test_editor(message):
     user_id = message.from_user.id
     admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
 
-    if not admin_chat_id or str(user_id) != str(admin_chat_id):
-        bot.reply_to(message, "❌ This command is only available to administrators.")
-        return
+    #if not admin_chat_id or str(user_id) != str(admin_chat_id):
+        #bot.reply_to(message, "❌ This command is only available to administrators.")
+        #return
 
     command_text = message.text.strip()
 
