@@ -35,14 +35,14 @@ class SupabaseStorageManager:
             bucket_exists = any(b['name'] == self.bucket_name for b in buckets)
 
             if not bucket_exists:
-                # Create bucket if it doesn't exist
-                # Note: Supabase expects the options in a specific format
+                # FIX: Create bucket with correct Supabase Python client format
+                # The create_bucket method expects: bucket_id, options=None
                 response = self.client.storage.create_bucket(
-                    self.bucket_name,
-                    {
-                        'public': False,  # Keep scraped content private
-                        'fileSizeLimit': 10485760,  # 10MB limit (note: camelCase)
-                        'allowedMimeTypes': ['text/plain', 'application/json', 'text/csv']
+                    bucket_id=self.bucket_name,  # Use bucket_id parameter name
+                    options={
+                        "public": False,  # Keep scraped content private
+                        "file_size_limit": 10485760,  # Use snake_case instead of camelCase
+                        "allowed_mime_types": ["text/plain", "application/json", "text/csv"]
                     }
                 )
                 logger.info(f"✅ Created bucket: {self.bucket_name}")
@@ -53,25 +53,16 @@ class SupabaseStorageManager:
         except Exception as e:
             logger.error(f"❌ Failed to ensure bucket exists: {e}")
             logger.error(f"Error type: {type(e).__name__}")
-            # Don't fail initialization, just log the error
-            logger.warning("⚠️ Continuing without bucket creation - you may need to create it manually")
+            # Since bucket exists manually, let's just check if we can access it
+            try:
+                # Try to list files in the bucket to verify access
+                test_files = self.client.storage.from_(self.bucket_name).list()
+                logger.info(f"✅ Successfully accessed existing bucket: {self.bucket_name}")
+            except Exception as access_error:
+                logger.error(f"❌ Cannot access bucket {self.bucket_name}: {access_error}")
 
-    def create_bucket_manually(self):
-        """Manually create the bucket - useful if automatic creation fails"""
-        try:
-            response = self.client.storage.create_bucket(
-                self.bucket_name,
-                {
-                    'public': False,
-                    'fileSizeLimit': 10485760,  # 10MB
-                    'allowedMimeTypes': ['text/plain', 'application/json', 'text/csv']
-                }
-            )
-            logger.info(f"✅ Manually created bucket: {self.bucket_name}")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Failed to manually create bucket: {e}")
-            return False
+            # Don't fail initialization, just log the error
+            logger.warning("⚠️ Continuing without bucket creation - bucket should exist manually")
 
     def upload_scraped_content(
         self, 
