@@ -317,7 +317,7 @@ class SmartRestaurantScraper:
                     'load_time': 0.0
                 })
                 self.stats["failed_scrapes"] += 1
-            else:
+            elif isinstance(scrape_result, dict):
                 enriched.update({
                     'scraped_content': scrape_result['content'],
                     'scraping_success': scrape_result['success'],
@@ -331,6 +331,17 @@ class SmartRestaurantScraper:
                     self.stats["successful_scrapes"] += 1
                 else:
                     self.stats["failed_scrapes"] += 1
+            else:
+                # Handle unexpected result type
+                logger.error(f"Unexpected scrape result type: {type(scrape_result)}")
+                enriched.update({
+                    'scraped_content': "",
+                    'scraping_success': False,
+                    'scraping_method': 'human_mimic',
+                    'scraping_error': "Unexpected result type",
+                    'load_time': 0.0
+                })
+                self.stats["failed_scrapes"] += 1
 
             self.stats["total_processed"] += 1
             self.stats["strategy_breakdown"]["human_mimic"] += 1
@@ -356,10 +367,10 @@ class SmartRestaurantScraper:
 
         for result in successful_results:
             try:
-                # Clean content 
+                # Clean content using the correct method name
                 content_to_clean = result.get('scraped_content', '')
                 if content_to_clean:
-                    cleaned_content = await self._text_cleaner.process_text(content_to_clean)
+                    cleaned_content = self._text_cleaner.clean_scraped_results([result])
                     result['cleaned_content'] = cleaned_content
 
                     # Mark as ready for editor processing
