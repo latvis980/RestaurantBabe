@@ -76,7 +76,8 @@ class SmartRestaurantScraper:
             "ai_analysis_calls": 0,
             "domain_cache_hits": 0,
             "new_domains_learned": 0,
-            "total_cost_estimate": 0.0
+            "total_cost_estimate": 0.0,
+            "human_mimic_replacements": 0
         }
 
         # Updated AI prompt to include Human Mimic strategy
