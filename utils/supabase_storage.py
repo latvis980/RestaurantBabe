@@ -36,19 +36,42 @@ class SupabaseStorageManager:
 
             if not bucket_exists:
                 # Create bucket if it doesn't exist
-                self.client.storage.create_bucket(
+                # Note: Supabase expects the options in a specific format
+                response = self.client.storage.create_bucket(
                     self.bucket_name,
-                    options={
+                    {
                         'public': False,  # Keep scraped content private
-                        'file_size_limit': 10485760  # 10MB limit
+                        'fileSizeLimit': 10485760,  # 10MB limit (note: camelCase)
+                        'allowedMimeTypes': ['text/plain', 'application/json', 'text/csv']
                     }
                 )
                 logger.info(f"✅ Created bucket: {self.bucket_name}")
+                logger.info(f"Create bucket response: {response}")
             else:
                 logger.info(f"✅ Bucket exists: {self.bucket_name}")
 
         except Exception as e:
-            logger.warning(f"⚠️ Could not ensure bucket exists: {e}")
+            logger.error(f"❌ Failed to ensure bucket exists: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            # Don't fail initialization, just log the error
+            logger.warning("⚠️ Continuing without bucket creation - you may need to create it manually")
+
+    def create_bucket_manually(self):
+        """Manually create the bucket - useful if automatic creation fails"""
+        try:
+            response = self.client.storage.create_bucket(
+                self.bucket_name,
+                {
+                    'public': False,
+                    'fileSizeLimit': 10485760,  # 10MB
+                    'allowedMimeTypes': ['text/plain', 'application/json', 'text/csv']
+                }
+            )
+            logger.info(f"✅ Manually created bucket: {self.bucket_name}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to manually create bucket: {e}")
+            return False
 
     def upload_scraped_content(
         self, 
