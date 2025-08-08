@@ -179,9 +179,6 @@ class SmartRestaurantScraper:
         async with semaphore:
             return await self._scrape_single_url(url, context_index)
 
-    # agents/smart_scraper.py - Simple RTF Fix
-    # ONLY change the _scrape_single_url method
-
     async def _scrape_single_url(self, url: str, context_index: int = 0) -> Dict[str, Any]:
         """
         Scrape a single URL - Simple human mimic: select all, copy, save as RTF
@@ -242,8 +239,7 @@ class SmartRestaurantScraper:
             await page.keyboard.press('Meta+a')  # Cmd+A (works on most systems)
             await asyncio.sleep(self.interaction_delay)
 
-            // SIMPLIFIED: Just get the selected text as RTF from the browser
-            // SIMPLIFIED RTF - Keep only essential formatting for AI readability
+            # SIMPLIFIED RTF - Keep only essential formatting for AI readability
             rtf_content = await page.evaluate("""
                 () => {
                     const selection = window.getSelection();
@@ -256,20 +252,20 @@ class SmartRestaurantScraper:
 
                         // Create minimal RTF with just paragraph breaks preserved
                         // This keeps structure without complex formatting
-                        text = text.replace(/\n\s*\n/g, '\\par\\par ');  // Double line breaks
-                        text = text.replace(/\n/g, '\\line ');            // Single line breaks
+                        text = text.replace(/\\n\\s*\\n/g, '\\\\par\\\\par ');  // Double line breaks
+                        text = text.replace(/\\n/g, '\\\\line ');            // Single line breaks
 
                         // Escape RTF special characters
-                        text = text.replace(/\\\\/g, '\\\\\\\\');
+                        text = text.replace(/\\\\\\\\/g, '\\\\\\\\\\\\\\\\');
                         text = text.replace(/{/g, '\\\\{');
                         text = text.replace(/}/g, '\\\\}');
 
-                        return '{\\\\rtf1\\\\ansi\\\\f0\\\\fs24 ' + text + '}';
+                        return '{\\\\\\\\rtf1\\\\\\\\ansi\\\\\\\\f0\\\\\\\\fs24 ' + text + '}';
                     }
 
                     // Fallback
                     const text = document.body.innerText || document.body.textContent || '';
-                    return '{\\\\rtf1\\\\ansi\\\\f0\\\\fs24 ' + text.replace(/\\\\/g, '\\\\\\\\').replace(/{/g, '\\\\{').replace(/}/g, '\\\\}') + '}';
+                    return '{\\\\\\\\rtf1\\\\\\\\ansi\\\\\\\\f0\\\\\\\\fs24 ' + text.replace(/\\\\\\\\/g, '\\\\\\\\\\\\\\\\').replace(/{/g, '\\\\{').replace(/}/g, '\\\\}') + '}';
                 }
             """)
 
