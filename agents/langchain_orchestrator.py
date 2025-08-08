@@ -168,11 +168,19 @@ class LangChainOrchestrator:
             database_result = self.database_search_agent.search_and_evaluate(query_data_with_raw)
 
             # Preserve raw_query through the pipeline
-            return {
+            result = {
                 **x, 
                 **database_result,
                 "raw_query": x.get("raw_query", x.get("query", ""))
             }
+
+            # PRESERVE destination from query analysis if database_result doesn't have it
+            if not result.get("destination") or result.get("destination") == "Unknown":
+                if x.get("destination") and x.get("destination") != "Unknown":
+                    result["destination"] = x["destination"]
+                    logger.info(f"🔧 Preserved destination from query analysis: {x['destination']}")
+
+            return result
 
         except Exception as e:
             logger.error(f"❌ Error routing to database search agent: {e}")
@@ -190,6 +198,7 @@ class LangChainOrchestrator:
                     "details": {"error": str(e)}
                 }
             }
+            
 
     def _evaluate_content_routing(self, x):
         try:
