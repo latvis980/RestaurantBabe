@@ -1,5 +1,6 @@
 # agents/langchain_orchestrator.py
 # UPDATED VERSION - Now uses SmartRestaurantScraper directly (no legacy wrapper)
+# FIRECRAWL CLEANUP - Removed all Firecrawl remnants
 
 import os
 from langchain_core.runnables import RunnableSequence, RunnableLambda
@@ -36,7 +37,7 @@ class LangChainOrchestrator:
     3. Applies DeepSeek content sectioning
     4. Provides detailed cost and performance statistics
     """
-    
+
     def __init__(self, config):
         # Import agents with correct names - NO MORE LEGACY WRAPPERS
         from agents.query_analyzer import QueryAnalyzer
@@ -85,7 +86,7 @@ class LangChainOrchestrator:
 
         # Build the pipeline steps
         self._build_pipeline()
-    
+
     def _build_pipeline(self):
         """Build pipeline with ContentEvaluationAgent integration"""
 
@@ -206,7 +207,7 @@ class LangChainOrchestrator:
                     "details": {"error": str(e)}
                 }
             }
-            
+
 
     def _evaluate_content_routing(self, x):
         try:
@@ -817,10 +818,11 @@ class LangChainOrchestrator:
 
         Args:
             user_query: The user's restaurant request
-            
+
         Returns:
             Dict with telegram_formatted_text and other results
         """
+        start_time = time.time()  # FIXED: Add start_time for error handling
 
         # Generate trace ID for debugging
         trace_id = f"query_{int(time.time())}"
@@ -844,21 +846,12 @@ class LangChainOrchestrator:
                 logger.info("✅ PIPELINE COMPLETE")
                 logger.info(f"📊 Content source: {content_source}")
 
-                # Final usage summary (only if we used scraping)
-                if content_source == "web_search":
-                    self._log_firecrawl_usage()
+                # CLEANED: Enhanced usage summary (no Firecrawl remnants)
+                if content_source in ["web_search", "hybrid"]:
+                    self._log_enhanced_usage()
 
                 # Save process record (simplified - just log it)
                 logger.info(f"📊 Process completed: {user_query} → {result.get('destination', 'Unknown')} → {content_source}")
-
-                # Could save to database here if needed:
-                # process_record = {
-                #     "query": user_query,
-                #     "destination": result.get("destination", "Unknown"),
-                #     "content_source": content_source,
-                #     "trace_id": trace_id,
-                #     "timestamp": time.time()
-                # }
 
                 # Extract results with correct key names
                 telegram_text = result.get("telegram_formatted_text", 
@@ -870,8 +863,10 @@ class LangChainOrchestrator:
                 logger.info(f"📊 Final result: {len(main_list)} restaurants for {result.get('destination', 'Unknown')}")
                 logger.info(f"📊 Source: {content_source}")
 
-                # Return with correct key names that telegram_bot.py expects
-                # Return with enhanced smart scraper statistics
+                processing_time = time.time() - start_time
+                self._update_enhanced_stats(result, processing_time)
+
+                # CLEANED: Return with smart scraper statistics (no Firecrawl remnants)
                 return {
                     "telegram_formatted_text": telegram_text,
                     "enhanced_results": enhanced_results,
@@ -882,27 +877,32 @@ class LangChainOrchestrator:
                     # ENHANCED: Add smart scraper statistics
                     "smart_scraper_stats": self.scraper.get_stats(),
                     "cost_savings": self.scraper.get_stats().get('cost_saved_vs_all_firecrawl', 0),
-                    "firecrawl_stats": self.scraper.get_stats()  # Legacy compatibility
+                    "scraper_stats": self.scraper.get_stats()  # CLEANED: Updated field name
                 }
 
             except Exception as e:
                 logger.error(f"❌ Error in chain execution: {e}")
                 dump_chain_state("process_query_error", {"query": user_query}, error=e)
 
-                # Log usage even on error
+                # CLEANED: Enhanced usage logging (no Firecrawl calls)
                 try:
-                    self._log_firecrawl_usage()
+                    self._log_enhanced_usage()
                 except:
                     pass
 
-                processing_time = time.time() - start_time  # You'll need to add start_time = time.time() at the beginning
-                self._update_enhanced_stats(result, processing_time)
+                processing_time = time.time() - start_time
+                # Create minimal result for stats tracking
+                error_result = {
+                    "content_source": "error",
+                    "enhanced_results": {"main_list": []}
+                }
+                self._update_enhanced_stats(error_result, processing_time)
 
                 return {
                     "main_list": [],
                     "telegram_formatted_text": "Sorry, there was an error processing your request.",
-                    "raw_query": user_query,  # Include raw query even on error
-                    "firecrawl_stats": self.scraper.get_stats()
+                    "raw_query": user_query,
+                    "scraper_stats": self.scraper.get_stats()  # CLEANED: Updated field name
                 }
 
     def get_enhanced_stats(self) -> dict:
@@ -924,7 +924,7 @@ class LangChainOrchestrator:
             "strategy_breakdown": scraper_stats.get("strategy_breakdown", {})
         }
 
-    # Legacy compatibility
-    def get_firecrawl_stats(self) -> dict:
-        """Legacy compatibility - returns smart scraper stats"""
+    # CLEANED: Legacy compatibility updated to avoid confusion
+    def get_scraper_stats(self) -> dict:
+        """Get smart scraper stats (renamed from get_firecrawl_stats for clarity)"""
         return self.scraper.get_stats()
