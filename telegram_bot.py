@@ -1174,9 +1174,13 @@ def perform_location_search(query, location_data, chat_id, user_id):
             }
 
             # Use TelegramFormatter to format location results
-            formatted_message = location_orchestrator.telegram_formatter.format_location_results(
-                restaurants=restaurants,
-                metadata=search_metadata
+            # Convert to the format expected by format_recommendations
+            recommendations_data = {
+                "main_list": restaurants
+            }
+
+            formatted_message = location_orchestrator.telegram_formatter.format_recommendations(
+                recommendations_data
             )
 
             # Send formatted results
