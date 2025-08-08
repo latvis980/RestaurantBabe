@@ -14,6 +14,7 @@ from enum import Enum
 # Required APIs
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY")
+BRAVE_MEDIA_API_KEY = os.environ.get("BRAVE_MEDIA_API_KEY")  # Separate key for media searches
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
@@ -132,13 +133,12 @@ ACTIVE_AGENTS = [
     'dbcontent_evaluation_agent',
     'search_agent',
     'smart_scraper',
-    'human_mimic_scraper',
-    'text_cleaner_agent',  # NEW
+    'text_cleaner_agent',
     'editor_agent',
     'follow_up_search_agent',
     'location_analyzer',       # Add location agents
     'location_search_agent',
-    'source_mapping_agent'
+    'media_serach_agent'
 ]
 
 # Components that use each model

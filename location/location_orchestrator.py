@@ -19,7 +19,7 @@ import json
 from utils.location_utils import LocationUtils, LocationPoint
 from utils.telegram_location_handler import LocationData
 from location.location_search_agent import LocationSearchAgent, VenueResult
-from location.source_mapping_agent import SourceMappingAgent
+from agents.media_search_agent import MediaSearchAgent
 from formatters.telegram_formatter import TelegramFormatter
 
 # Import AI components for restaurant filtering
@@ -38,7 +38,8 @@ class LocationOrchestrator:
 
         # Initialize existing components
         self.location_search_agent = LocationSearchAgent(config)
-        self.source_mapping_agent = SourceMappingAgent(config)
+        # Initialize media search agent (replaces source mapping)
+        self.media_search_agent = MediaSearchAgent(config)
         self.telegram_formatter = TelegramFormatter()
 
         # Initialize AI for restaurant filtering
@@ -459,62 +460,110 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
         venues: List[VenueResult], 
         cancel_check_fn=None
     ) -> List[Dict[str, Any]]:
-        """Verify venues using source mapping (ASYNC)"""
+        """Verify venues using media search agent (ASYNC) - UPDATED FOR MEDIA SEARCH"""
         try:
-            verified_venues = []
-
+            # Convert VenueResult objects to format expected by media search
+            venue_data = []
             for venue in venues[:self.max_venues_to_verify]:
-                if cancel_check_fn and cancel_check_fn():
-                    break
+                # Extract city from venue address
+                city = self._extract_city_from_address(venue.address)
 
-                try:
-                    # Source verification (ASYNC)
-                    verification_result = await self.source_mapping_agent.map_venue_sources(venue)
+                venue_data.append({
+                    'name': venue.name,
+                    'city': city,
+                    'type': self._determine_venue_type_from_types(venue.types)
+                })
 
-                    # Convert VenueResult to dict and add verification
-                    venue_dict = {
-                        'name': venue.name,
-                        'address': venue.address,
-                        'latitude': venue.latitude,
-                        'longitude': venue.longitude,
-                        'rating': venue.rating,
-                        'user_ratings_total': venue.user_ratings_total,
-                        'price_level': venue.price_level,
-                        'types': venue.types,
-                        'google_maps_url': venue.google_maps_url,
-                        'verification': verification_result,
-                        'verified': verification_result.get('verified', False),
-                        'source': 'google_maps'
-                    }
+            logger.info(f"🔍 Starting media search for {len(venue_data)} venues")
 
-                    verified_venues.append(venue_dict)
+            # Batch media search
+            media_results = await self.media_search_agent.batch_search_venues(venue_data)
 
-                except Exception as e:
-                    logger.error(f"❌ Error verifying venue {venue.name}: {e}")
+            if cancel_check_fn and cancel_check_fn():
+                return []
 
-                    # Add unverified venue
-                    venue_dict = {
-                        'name': venue.name,
-                        'address': venue.address,
-                        'latitude': venue.latitude,
-                        'longitude': venue.longitude,
-                        'rating': venue.rating,
-                        'user_ratings_total': venue.user_ratings_total,
-                        'price_level': venue.price_level,
-                        'types': venue.types,
-                        'google_maps_url': venue.google_maps_url,
-                        'verified': False,
-                        'source': 'google_maps'
-                    }
-                    verified_venues.append(venue_dict)
+            # Merge media results with venue data
+            verified_venues = []
+            for i, venue in enumerate(venues[:self.max_venues_to_verify]):
+                media_result = media_results[i] if i < len(media_results) else None
+
+                # Convert VenueResult to dict and add media verification
+                venue_dict = {
+                    'name': venue.name,
+                    'address': venue.address,
+                    'latitude': venue.latitude,
+                    'longitude': venue.longitude,
+                    'rating': venue.rating,
+                    'user_ratings_total': venue.user_ratings_total,
+                    'price_level': venue.price_level,
+                    'types': venue.types,
+                    'google_maps_url': venue.google_maps_url,
+                    'source': 'google_maps'
+                }
+
+                # Add media coverage data
+                if media_result and media_result.get('has_coverage'):
+                    venue_dict['media_coverage'] = media_result.get('media_coverage', {})
+                    venue_dict['verified'] = True
+                    venue_dict['coverage_confidence'] = media_result.get('media_coverage', {}).get('confidence', 0.0)
+                    venue_dict['reputable_sources'] = media_result.get('media_coverage', {}).get('reputable_sources', [])
+                else:
+                    venue_dict['media_coverage'] = {'has_media_coverage': False}
+                    venue_dict['verified'] = False
+                    venue_dict['coverage_confidence'] = 0.0
+                    venue_dict['reputable_sources'] = []
+
+                verified_venues.append(venue_dict)
+
+            # Log summary
+            coverage_summary = self.media_search_agent.get_coverage_summary(media_results)
+            logger.info(f"📊 Media coverage summary: {coverage_summary['venues_with_coverage']}/{coverage_summary['total_venues_searched']} venues have professional coverage")
 
             return verified_venues
 
         except Exception as e:
-            logger.error(f"❌ Error in venue verification: {e}")
+            logger.error(f"❌ Error in media verification: {e}")
             return []
 
     # ============ UTILITY METHODS ============
+
+    def _extract_city_from_address(self, address: str) -> str:
+        """Extract city from venue address"""
+        try:
+            # Simple approach: get the last part before country/postal code
+            # Address format is usually: "Street, Neighborhood, City, Country"
+            parts = address.split(',')
+            if len(parts) >= 2:
+                # Take second-to-last part as likely city
+                city = parts[-2].strip()
+                # Remove numbers/postal codes
+                import re
+                city = re.sub(r'\d+', '', city).strip()
+                return city if city else "Unknown"
+            return "Unknown"
+        except:
+            return "Unknown"
+
+    def _determine_venue_type_from_types(self, types: List[str]) -> str:
+        """Convert Google Places types to venue type"""
+        if not types:
+            return "restaurant"
+
+        type_mapping = {
+            'bar': 'bar',
+            'night_club': 'bar', 
+            'cafe': 'cafe',
+            'bakery': 'bakery',
+            'meal_takeaway': 'restaurant',
+            'meal_delivery': 'restaurant',
+            'restaurant': 'restaurant'
+        }
+
+        for gtype in types:
+            if gtype in type_mapping:
+                return type_mapping[gtype]
+
+        return "restaurant"
 
     def _extract_search_terms_sync(self, query: str) -> str:
         """Extract search terms from query (SYNC)"""
