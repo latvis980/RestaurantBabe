@@ -29,11 +29,6 @@ class LangChainOrchestrator:
     - Comprehensive monitoring and cost tracking
     - Drop-in compatibility with existing system
 
-    The smart scraper automatically:
-    1. Classifies URLs by complexity (RSS/Simple/Enhanced/Firecrawl)
-    2. Routes to optimal scraping strategy
-    3. Applies DeepSeek content sectioning
-    4. Provides detailed cost and performance statistics
     """
 
     def __init__(self, config):
@@ -53,7 +48,7 @@ class LangChainOrchestrator:
         self.dbcontent_evaluation_agent = ContentEvaluationAgent(config)
         self.search_agent = BraveSearchAgent(config)
         self.scraper = SmartRestaurantScraper(config) 
-        self._text_cleaner = TextCleanerAgent(config, model_override='deepseek')
+        self._text_cleaner = TextCleanerAgent(config)
         self.editor_agent = EditorAgent(config)
         self.follow_up_search_agent = FollowUpSearchAgent(config)
         self.dbcontent_evaluation_agent.set_brave_search_agent(self.search_agent)
