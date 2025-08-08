@@ -5,7 +5,6 @@ import os
 from langchain_core.runnables import RunnableSequence, RunnableLambda
 from langchain_core.tracers.context import tracing_v2_enabled
 import time
-import json
 import asyncio
 import logging
 import concurrent.futures
@@ -668,8 +667,19 @@ class LangChainOrchestrator:
             if hasattr(self, '_text_cleaner') and self._text_cleaner:
                 logger.info("🧹 Using text cleaner to convert RTF to TXT file...")
 
+                # FIXED: Run async text cleaner in event loop
+                def run_text_cleaner():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        return loop.run_until_complete(
+                            self._text_cleaner.clean_scraped_results(scraped_results, query)
+                        )
+                    finally:
+                        loop.close()
+
                 # The cleaner processes all results and returns path to TXT file
-                txt_file_path = await self._text_cleaner.clean_scraped_results(scraped_results, query)
+                txt_file_path = run_text_cleaner()
 
                 if not txt_file_path or not os.path.exists(txt_file_path):
                     logger.error("❌ Text cleaner failed to create TXT file")
