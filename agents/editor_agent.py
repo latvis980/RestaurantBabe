@@ -608,48 +608,99 @@ Extract restaurants using the diplomatic concierge approach. Include good option
         return "\n\n".join(content_parts)
 
     def _prepare_scraped_content(self, scraped_results):
-        """Prepare scraped content for AI processing"""
-        content_parts = []
+        """
+        FIXED: Prepare cleaned scraped content for processing
 
-        for article in scraped_results:
-            # Extract article information
-            url = article.get('url', '')
-            title = article.get('title', '')
-            content = article.get('content', '')
-            sections = article.get('sections', [])
+        Now prioritizes cleaned_content from text cleaner over raw scraped_content
+        """
+        try:
+            logger.info(f"📝 Preparing scraped content from {len(scraped_results)} results")
 
-            # Skip if no meaningful content
-            if not content and not sections:
-                continue
+            content_pieces = []
+            cleaned_count = 0
+            raw_fallback_count = 0
 
-            # Get domain for source tracking
-            domain = url.split('/')[2] if '/' in url and url.startswith('http') else url
+            for i, result in enumerate(scraped_results, 1):
+                url = result.get('url', f'Unknown URL {i}')
+                title = result.get('title', 'No title')
 
-            # Build article entry
-            entry = f"SOURCE: {domain}"
-            if title:
-                entry += f"\nTITLE: {title}"
+                # FIXED: Priority order for content selection
+                # 1st priority: cleaned_content from text cleaner
+                content = result.get('cleaned_content', '')
+                content_source = "CLEANED"
 
-            # Add content or sections
-            if sections:
-                # Use sectioned content if available
-                for section in sections:
-                    if isinstance(section, dict):
-                        section_title = section.get('title', '')
-                        section_content = section.get('content', '')
-                        if section_title:
-                            entry += f"\n\n[{section_title}]"
-                        if section_content:
-                            entry += f"\n{section_content}"
-                    elif isinstance(section, str):
-                        entry += f"\n{section}"
-            elif content:
-                # Use raw content if no sections
-                entry += f"\n\nCONTENT:\n{content}"
+                # 2nd priority: raw scraped_content (fallback)
+                if not content:
+                    content = result.get('scraped_content', '')
+                    content_source = "RAW"
+                    raw_fallback_count += 1
+                    logger.warning(f"⚠️ No cleaned content for {url} - using raw content as fallback")
+                else:
+                    cleaned_count += 1
 
-            content_parts.append(entry)
+                # 3rd priority: legacy content field (rare fallback)
+                if not content:
+                    content = result.get('content', '')
+                    content_source = "LEGACY"
+                    logger.warning(f"⚠️ Using legacy content field for {url}")
 
-        return "\n\n" + "="*50 + "\n\n".join(content_parts)
+                # Skip if no content at all
+                if not content or len(content.strip()) < 50:
+                    logger.warning(f"⚠️ Skipping {url} - insufficient content")
+                    continue
+
+                # Format content piece with source information
+                content_piece = f"""
+    SOURCE {i}: {url}
+    TITLE: {title}
+    CONTENT_TYPE: {content_source}
+    DOMAIN: {self._extract_domain(url)}
+    ───────────────────────────────────────
+    {content.strip()}
+    ═══════════════════════════════════════
+    """
+                content_pieces.append(content_piece)
+
+            # Log content statistics
+            total_processed = len(content_pieces)
+            logger.info(f"📊 Content preparation stats:")
+            logger.info(f"   ✅ Total articles processed: {total_processed}")
+            logger.info(f"   🧹 Cleaned content used: {cleaned_count}")
+            logger.info(f"   ⚠️ Raw content fallbacks: {raw_fallback_count}")
+
+            if cleaned_count == 0 and raw_fallback_count > 0:
+                logger.warning("⚠️ WARNING: No cleaned content available - all content is raw/unprocessed")
+            elif cleaned_count > 0:
+                logger.info(f"✅ Successfully using cleaned content for {cleaned_count}/{total_processed} articles")
+
+            # Combine all content pieces
+            combined_content = "\n".join(content_pieces)
+
+            if not combined_content.strip():
+                logger.warning("⚠️ No substantial content prepared from scraped results")
+                return ""
+
+            # Add header with processing information
+            header = f"""RESTAURANT CONTENT FOR PROCESSING
+    Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    Total Sources: {total_processed}
+    Cleaned Sources: {cleaned_count}
+    Raw Fallback Sources: {raw_fallback_count}
+
+    Instructions: Extract restaurant information from the following content.
+    Focus on restaurant names, locations, cuisines, descriptions, and key details.
+
+    {'═' * 80}
+    """
+
+            final_content = header + combined_content
+
+            logger.info(f"✅ Prepared {len(final_content)} characters of content for editor processing")
+            return final_content
+
+        except Exception as e:
+            logger.error(f"❌ Error preparing scraped content: {e}")
+            return ""
 
     def _post_process_results(self, ai_output, source_type, destination):
         """

@@ -641,15 +641,17 @@ class LangChainOrchestrator:
                 "telegram_formatted_text": "Sorry, there was an error formatting the restaurant recommendations."
             }
 
-    # Updated _save_scraped_content_for_processing method for agents/langchain_orchestrator.py
+    # PART 1: Replace in agents/langchain_orchestrator.py
+    # Find the _save_scraped_content_for_processing method and replace the content compilation section
 
     def _save_scraped_content_for_processing(self, pipeline_data, scraped_results):
         """
-        Enhanced method that saves scraped content locally AND uploads to Supabase Storage.
-        Uploads happen AFTER the query is complete to not waste time during search.
+        Enhanced method that saves CLEANED CONTENT (not raw scraped content) to Supabase Storage.
+
+        FIXED: Now uses cleaned_content from text cleaner instead of raw scraped_content
         """
         try:
-            logger.info("💾 ENHANCED: Saving scraped content for background processing...")
+            logger.info("💾 ENHANCED: Saving CLEANED scraped content for background processing...")
 
             # Extract metadata
             destination_info = pipeline_data.get("destination", "Unknown")
@@ -659,34 +661,61 @@ class LangChainOrchestrator:
             query = pipeline_data.get("raw_query", pipeline_data.get("query", ""))
             sources = [result.get('url', '') for result in scraped_results if result.get('url')]
 
-            # Compile all scraped content
-            all_scraped_content = f"Query: {query}\nDestination: {city}, {country}\n\n"
-            all_scraped_content += "=" * 80 + "\n\n"
+            # FIXED: Compile CLEANED content instead of raw scraped content
+            all_cleaned_content = f"Query: {query}\nDestination: {city}, {country}\n\n"
+            all_cleaned_content += "=" * 80 + "\n\n"
 
+            cleaned_sources = 0
+            raw_fallback_sources = 0
+
+            # FIXED: Use cleaned_content when available, fallback to scraped_content
             for idx, result in enumerate(scraped_results, 1):
-                content = result.get('scraped_content', result.get('content', ''))
-                if content:
-                    all_scraped_content += f"SOURCE {idx}: {result.get('url', 'Unknown URL')}\n"
-                    all_scraped_content += f"TITLE: {result.get('title', 'No title')}\n"
-                    all_scraped_content += "-" * 40 + "\n"
-                    all_scraped_content += content + "\n\n"
-                    all_scraped_content += "=" * 80 + "\n\n"
+                # PRIORITY: Use cleaned content from text cleaner
+                content = result.get('cleaned_content', '')
+                content_type = "CLEANED"
 
-            if not all_scraped_content.strip():
-                logger.warning("⚠️ No scraped content to save")
+                # FALLBACK: If no cleaned content, use raw content (shouldn't happen in normal flow)
+                if not content:
+                    content = result.get('scraped_content', result.get('content', ''))
+                    content_type = "RAW"
+                    raw_fallback_sources += 1
+                    logger.warning(f"⚠️ No cleaned content for {result.get('url', 'unknown')} - using raw content as fallback")
+                else:
+                    cleaned_sources += 1
+
+                if content:
+                    all_cleaned_content += f"SOURCE {idx}: {result.get('url', 'Unknown URL')}\n"
+                    all_cleaned_content += f"TITLE: {result.get('title', 'No title')}\n"
+                    all_cleaned_content += f"CONTENT_TYPE: {content_type}\n"
+                    all_cleaned_content += "-" * 40 + "\n"
+                    all_cleaned_content += content + "\n\n"
+                    all_cleaned_content += "=" * 80 + "\n\n"
+
+            # Log content statistics
+            logger.info(f"📊 Content compilation stats:")
+            logger.info(f"   🧹 Cleaned content sources: {cleaned_sources}")
+            logger.info(f"   ⚠️ Raw content fallbacks: {raw_fallback_sources}")
+
+            if cleaned_sources == 0 and raw_fallback_sources > 0:
+                logger.warning("⚠️ WARNING: No cleaned content available for Supabase - all content is raw/unprocessed")
+            elif cleaned_sources > 0:
+                logger.info(f"✅ Successfully saving cleaned content for {cleaned_sources}/{len(scraped_results)} sources")
+
+            if not all_cleaned_content.strip():
+                logger.warning("⚠️ No cleaned content to save")
                 return
 
             # Save to local file first (for backup/debugging)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"scraped_{city.replace(' ', '_')}_{timestamp}.txt"
+            filename = f"cleaned_{city.replace(' ', '_')}_{timestamp}.txt"  # FIXED: Changed from "scraped_" to "cleaned_"
 
             os.makedirs("scraped_content", exist_ok=True)
             file_path = os.path.join("scraped_content", filename)
 
             with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(all_scraped_content)
+                f.write(all_cleaned_content)
 
-            logger.info(f"💾 Saved scraped content locally to: {file_path}")
+            logger.info(f"💾 Saved CLEANED content locally to: {file_path}")
 
             # Prepare metadata for all upload operations
             metadata = {
@@ -696,79 +725,51 @@ class LangChainOrchestrator:
                 'query': query,
                 'scraped_at': datetime.now().isoformat(),
                 'source_count': len(scraped_results),
-                'content_length': len(all_scraped_content)
+                'content_length': len(all_cleaned_content),
+                'content_type': 'cleaned'  # ADDED: Mark this as cleaned content
             }
 
-            # Function to handle all background uploads
+            # Function to handle all background uploads  
             def perform_background_uploads():
                 try:
-                    # 1. Upload to Supabase Storage (NEW)
-                    try:
-                        from utils.supabase_storage import get_storage_manager
-                        storage_manager = get_storage_manager()
+                    # Upload the CLEANED content to Supabase Storage
+                    if hasattr(self, 'storage_manager') and self.storage_manager:
+                        logger.info("☁️ Uploading cleaned content to Supabase Storage...")
+                        success, storage_path = self.storage_manager.upload_scraped_content(
+                            all_cleaned_content, 
+                            metadata, 
+                            file_type="txt"
+                        )
 
-                        if storage_manager:
-                            success, storage_path = storage_manager.upload_scraped_content(
-                                content=all_scraped_content,
-                                metadata=metadata,
-                                file_type="txt"
-                            )
-
-                            if success:
-                                logger.info(f"☁️ Successfully uploaded to Supabase Storage: {storage_path}")
-                            else:
-                                logger.warning("⚠️ Failed to upload to Supabase Storage")
+                        if success:
+                            logger.info(f"✅ Cleaned content uploaded to: {storage_path}")
                         else:
-                            logger.warning("⚠️ Supabase Storage Manager not initialized")
+                            logger.warning("⚠️ Failed to upload cleaned content to Supabase Storage")
 
-                    except Exception as e:
-                        logger.error(f"❌ Error uploading to Supabase Storage: {e}")
-
-                    # 2. Send to Supabase Manager service (existing functionality)
-                    try:
-                        supabase_manager_url = getattr(self.config, 'SUPABASE_MANAGER_URL', '')
-
-                        if supabase_manager_url:
-                            logger.info(f"📤 Sending content to Supabase Manager: {supabase_manager_url}")
-
-                            payload = {
-                                'content': all_scraped_content,
-                                'metadata': metadata
-                            }
-
-                            response = requests.post(
-                                f"{supabase_manager_url}/process_scraped_content",
-                                json=payload,
-                                timeout=180
-                            )
-
-                            if response.status_code == 200:
-                                logger.info("✅ Successfully sent content to Supabase Manager")
-                            else:
-                                logger.warning(f"⚠️ Supabase Manager returned status {response.status_code}")
-                        else:
-                            logger.info("ℹ️ SUPABASE_MANAGER_URL not configured")
-
-                    except Exception as e:
-                        logger.error(f"❌ Error sending to Supabase Manager: {e}")
-
-                    # 3. Also save individual files if content is large (>100KB per file)
-                    if len(all_scraped_content) > 100000:  # 100KB threshold
+                    # Also save individual files if content is large (>100KB per file)
+                    if len(all_cleaned_content) > 100000:  # 100KB threshold
                         try:
-                            logger.info("📑 Content is large, saving individual article files...")
+                            logger.info("📑 Content is large, saving individual cleaned article files...")
 
                             for idx, result in enumerate(scraped_results, 1):
-                                content = result.get('scraped_content', result.get('content', ''))
+                                # FIXED: Use cleaned content for individual files too
+                                content = result.get('cleaned_content', '')
+
+                                if not content:
+                                    content = result.get('scraped_content', result.get('content', ''))
+                                    logger.warning(f"⚠️ No cleaned content for article {idx} - using raw as fallback")
+
                                 if content and len(content) > 1000:  # Only save substantial content
                                     article_metadata = {
                                         **metadata,
                                         'article_index': idx,
                                         'article_url': result.get('url', ''),
-                                        'article_title': result.get('title', '')
+                                        'article_title': result.get('title', ''),
+                                        'is_cleaned': bool(result.get('cleaned_content'))  # ADDED: Track if cleaned
                                     }
 
-                                    # Save individual article
-                                    article_filename = f"{timestamp}_{city.replace(' ', '_')}_article_{idx}.txt"
+                                    # Save individual article with cleaned content
+                                    article_filename = f"{timestamp}_{city.replace(' ', '_')}_cleaned_article_{idx}.txt"  # FIXED: Added "cleaned_"
                                     article_path = os.path.join("scraped_content", "articles", article_filename)
 
                                     os.makedirs(os.path.dirname(article_path), exist_ok=True)
@@ -776,38 +777,37 @@ class LangChainOrchestrator:
                                         f.write(f"URL: {result.get('url', 'Unknown')}\n")
                                         f.write(f"Title: {result.get('title', 'No title')}\n")
                                         f.write(f"Query: {query}\n")
+                                        f.write(f"Content Type: {'CLEANED' if result.get('cleaned_content') else 'RAW'}\n")  # ADDED
                                         f.write("-" * 40 + "\n")
                                         f.write(content)
 
-                                    # Upload individual article to Supabase Storage
-                                    if storage_manager:
-                                        success, storage_path = storage_manager.upload_file(
-                                            file_path=article_path,
-                                            metadata=article_metadata
+                                    # Upload individual cleaned article to Supabase Storage
+                                    if hasattr(self, 'storage_manager') and self.storage_manager:
+                                        success, storage_path = self.storage_manager.upload_scraped_content(
+                                            content, 
+                                            article_metadata, 
+                                            file_type="txt"
                                         )
+
                                         if success:
-                                            logger.info(f"☁️ Uploaded article {idx} to: {storage_path}")
+                                            logger.info(f"✅ Cleaned article {idx} uploaded to: {storage_path}")
 
                         except Exception as e:
-                            logger.error(f"❌ Error saving individual articles: {e}")
-
-                    logger.info("✅ Background upload tasks completed")
+                            logger.error(f"❌ Error saving individual cleaned articles: {e}")
 
                 except Exception as e:
-                    logger.error(f"❌ Error in background upload thread: {e}")
-                    import traceback
-                    logger.error(f"Traceback: {traceback.format_exc()}")
+                    logger.error(f"❌ Background upload error: {e}")
 
-            # Run uploads in background thread so it doesn't block user response
-            thread = threading.Thread(target=perform_background_uploads, daemon=True)
-            thread.start()
-            logger.info("🚀 Started background thread for content uploads")
+            # Run background uploads in a separate thread
+            import threading
+            upload_thread = threading.Thread(target=perform_background_uploads)
+            upload_thread.daemon = True
+            upload_thread.start()
+
+            logger.info("✅ Cleaned content saved locally and background upload initiated")
 
         except Exception as e:
-            logger.error(f"❌ Error in enhanced save scraped content: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-
+            logger.error(f"❌ Error saving cleaned scraped content: {e}")
 
     def _log_enhanced_usage(self):
         """Enhanced usage logging with smart scraper insights"""
