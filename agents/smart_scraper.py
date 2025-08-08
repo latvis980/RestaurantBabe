@@ -242,7 +242,8 @@ class SmartRestaurantScraper:
             await page.keyboard.press('Meta+a')  # Cmd+A (works on most systems)
             await asyncio.sleep(self.interaction_delay)
 
-            # Get the formatted content as RTF from clipboard simulation
+            // SIMPLIFIED: Just get the selected text as RTF from the browser
+            // SIMPLIFIED RTF - Keep only essential formatting for AI readability
             rtf_content = await page.evaluate("""
                 () => {
                     const selection = window.getSelection();
@@ -251,32 +252,22 @@ class SmartRestaurantScraper:
                         const div = document.createElement('div');
                         div.appendChild(range.cloneContents());
 
-                        // Create simple RTF with basic formatting preserved
-                        let rtfContent = '{\\\\rtf1\\\\ansi\\\\f0\\\\fs24 ';
+                        let text = div.innerText || div.textContent || '';
 
-                        // Convert HTML to simple RTF
-                        let htmlContent = div.innerHTML;
+                        // Create minimal RTF with just paragraph breaks preserved
+                        // This keeps structure without complex formatting
+                        text = text.replace(/\n\s*\n/g, '\\par\\par ');  // Double line breaks
+                        text = text.replace(/\n/g, '\\line ');            // Single line breaks
 
-                        // Basic conversions to preserve some formatting
-                        htmlContent = htmlContent.replace(/<strong[^>]*>(.*?)<\\/strong>/gi, '{\\\\b $1\\\\b0}');
-                        htmlContent = htmlContent.replace(/<b[^>]*>(.*?)<\\/b>/gi, '{\\\\b $1\\\\b0}');
-                        htmlContent = htmlContent.replace(/<em[^>]*>(.*?)<\\/em>/gi, '{\\\\i $1\\\\i0}');
-                        htmlContent = htmlContent.replace(/<i[^>]*>(.*?)<\\/i>/gi, '{\\\\i $1\\\\i0}');
-                        htmlContent = htmlContent.replace(/<h[1-6][^>]*>(.*?)<\\/h[1-6]>/gi, '{\\\\b $1\\\\b0}\\\\par ');
-                        htmlContent = htmlContent.replace(/<p[^>]*>(.*?)<\\/p>/gi, '$1\\\\par ');
-                        htmlContent = htmlContent.replace(/<br[^>]*\/?>/gi, '\\\\line ');
-                        htmlContent = htmlContent.replace(/<[^>]+>/g, ' ');
+                        // Escape RTF special characters
+                        text = text.replace(/\\\\/g, '\\\\\\\\');
+                        text = text.replace(/{/g, '\\\\{');
+                        text = text.replace(/}/g, '\\\\}');
 
-                        // Clean up and escape RTF special chars
-                        htmlContent = htmlContent.replace(/\\\\/g, '\\\\\\\\');
-                        htmlContent = htmlContent.replace(/{/g, '\\\\{');
-                        htmlContent = htmlContent.replace(/}/g, '\\\\}');
-
-                        rtfContent += htmlContent + '}';
-                        return rtfContent;
+                        return '{\\\\rtf1\\\\ansi\\\\f0\\\\fs24 ' + text + '}';
                     }
 
-                    // Fallback: plain text as minimal RTF
+                    // Fallback
                     const text = document.body.innerText || document.body.textContent || '';
                     return '{\\\\rtf1\\\\ansi\\\\f0\\\\fs24 ' + text.replace(/\\\\/g, '\\\\\\\\').replace(/{/g, '\\\\{').replace(/}/g, '\\\\}') + '}';
                 }

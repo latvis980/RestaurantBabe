@@ -25,8 +25,6 @@ class LangChainOrchestrator:
     Enhanced LangChain orchestrator with Smart Restaurant Scraper integration.
 
     Key improvements:
-    - 90% cost reduction through intelligent URL routing
-    - 10x faster content processing with DeepSeek sectioning  
     - Better restaurant extraction through optimized content
     - Comprehensive monitoring and cost tracking
     - Drop-in compatibility with existing system
