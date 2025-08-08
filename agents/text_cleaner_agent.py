@@ -144,48 +144,50 @@ class TextCleanerAgent:
     def _create_cleaning_prompt(self) -> str:
         """
         Create AI prompt for cleaning restaurant content with source attribution
+        FIXED: Now properly handles double curly braces for LangChain compatibility
         """
         return """You are a content cleaning specialist for restaurant recommendation systems. 
-    Your job is to extract clean, useful restaurant information from scraped web content.
+Your job is to extract clean, useful restaurant information from scraped web content.
 
-    The content comes from a single source. The source URL is shown at the top of the content.
+The content comes from a single source. The source URL is shown at the top of the content.
 
-    TASK: Extract restaurant names and descriptions from the provided content.
+TASK: Extract restaurant names and descriptions from the provided content.
 
-    RULES:
-    1. Focus ONLY on restaurants, cafes, bars, bistros, and similar dining establishments
-    2. Extract restaurant name and a comprehensive description with all key details (cuisine, atmosphere, chef, concept, signature dishes etc.)
-    3. Ignore: navigation menus, ads, cookie notices, social media links, unrelated articles
-    4. Preserve: restaurant names, addresses, descriptions as-is, only translated to English if in a foreign language
-    5. IMPORTANT: Add the source URL (from the top of the content) to each restaurant entry
-    6. Format: "Restaurant Name (source_url): Description, address if available"
-    7. If there are no description, only restaurant names, but the source is very reputable (i.e. Michelin), just include names and url, and set description to "recommended by..." and the name of the source.
+RULES:
+1. Focus ONLY on restaurants, cafes, bars, bistros, and similar dining establishments
+2. Extract restaurant name and a comprehensive description with all key details (cuisine, atmosphere, chef, concept, signature dishes etc.)
+3. Ignore: navigation menus, ads, cookie notices, social media links, unrelated articles
+4. Preserve: restaurant names, addresses, descriptions as-is, only translated to English if in a foreign language
+5. IMPORTANT: Add the source URL (from the top of the content) to each restaurant entry
+6. Format: "Restaurant Name (source_url): Description, address if available"
+7. If there are no description, only restaurant names, but the source is very reputable (i.e. Michelin), just include names and url, and set description to "recommended by..." and the name of the source.
 
-    CONTENT TYPE: Restaurant guide/listing page
-    DESIRED OUTPUT: Clean list of restaurants with descriptions, addresses, and source URLs
+CONTENT TYPE: Restaurant guide/listing page
+DESIRED OUTPUT: Clean list of restaurants with descriptions, addresses, and source URLs
 
-    Content to clean:
-    {{content}}
+Content to clean:
+{content}
 
-    OUTPUT FORMAT:
-    Restaurant Name 1
-    source_url
-    Description in English
-    address if available
-    
-    Restaurant Name 2
-    source_url
-    Description in English
-    address if available
-    
-    ...
+OUTPUT FORMAT:
+Restaurant Name 1
+source_url
+Description in English
+address if available
 
-    If no clear restaurants are found, respond with: "No restaurants found in this content."
-    """
+Restaurant Name 2
+source_url
+Description in English
+address if available
+
+...
+
+If no clear restaurants are found, respond with: "No restaurants found in this content."
+"""
 
     async def clean_single_source(self, content: str, url: str, content_format: str = 'text') -> str:
         """
         Clean content from a single source and return clean text
+        FIXED: Now properly substitutes content into prompt template
         """
         start_time = datetime.now()
 
@@ -203,13 +205,18 @@ class TextCleanerAgent:
                 logger.warning(f"⚠️ Content too short to clean: {url}")
                 return ""
 
-            # Create AI prompt
-            cleaning_prompt = self._create_cleaning_prompt()
+            # Create AI prompt with proper substitution
+            cleaning_prompt_template = self._create_cleaning_prompt()
+
+            # FIXED: Properly substitute content into the template
+            # Add URL context to help AI understand the source
+            content_with_url = f"SOURCE URL: {url}\n\n{text_content}"
+            final_prompt = cleaning_prompt_template.format(content=content_with_url)
 
             # Use AI to clean content
             from langchain.schema import HumanMessage
 
-            messages = [HumanMessage(content=cleaning_prompt.format(content=text_content))]
+            messages = [HumanMessage(content=final_prompt)]
             response = await self.model.ainvoke(messages)
             cleaned_content = response.content.strip()
 
@@ -218,8 +225,21 @@ class TextCleanerAgent:
                 logger.info(f"🚫 No restaurants found in {urlparse(url).netloc}")
                 return ""
 
-            # Count extracted restaurants
-            restaurant_lines = [line for line in cleaned_content.split('\n') if line.strip() and ':' in line]
+            # Count extracted restaurants - look for multiple indicators
+            restaurant_lines = []
+            lines = cleaned_content.split('\n')
+
+            for line in lines:
+                line = line.strip()
+                # Look for restaurant names (lines that don't look like URLs or descriptions)
+                if line and not line.startswith('http') and not line.startswith('SOURCE'):
+                    # Check if this looks like a restaurant name line
+                    if (len(line) < 100 and  # Not too long to be a description
+                        not line.startswith('Description') and 
+                        not line.startswith('Address') and
+                        not line.startswith('source_url')):
+                        restaurant_lines.append(line)
+
             restaurant_count = len(restaurant_lines)
 
             if restaurant_count > 0:
@@ -231,6 +251,8 @@ class TextCleanerAgent:
                 cleaned_content = source_header + cleaned_content + "\n"
             else:
                 logger.warning(f"⚠️ AI cleaning produced no valid restaurants for {url}")
+                # Log the first part of the AI response for debugging
+                logger.debug(f"AI response preview: {cleaned_content[:200]}...")
                 return ""
 
             return cleaned_content
