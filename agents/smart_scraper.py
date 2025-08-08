@@ -420,6 +420,7 @@ class SmartRestaurantScraper:
             elif isinstance(scrape_result, dict):
                 enriched.update({
                     'scraped_content': scrape_result['content'],
+                    'content': scrape_result['content'],
                     'scraping_success': scrape_result['success'],
                     'scraping_method': 'human_mimic',
                     'scraping_error': scrape_result.get('error'),
