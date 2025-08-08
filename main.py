@@ -1,4 +1,4 @@
-# main.py - Updated to include Supabase Storage initialization
+# main.py - Updated with automatic file cleanup
 import os
 import logging
 import time
@@ -11,7 +11,7 @@ from pydantic import config as pydantic_config
 from utils.orchestrator_manager import initialize_orchestrator
 from langchain_core.tracers.langchain import wait_for_all_tracers
 from utils.database import initialize_db 
-from utils.supabase_storage import initialize_storage_manager  # NEW IMPORT
+from utils.supabase_storage import initialize_storage_manager
 
 # Configure logging
 logging.basicConfig(
@@ -32,7 +32,7 @@ else:
 # Initialize database
 initialize_db(config)
 
-# NEW: Initialize Supabase Storage Manager
+# Initialize Supabase Storage Manager
 try:
     if hasattr(config, 'SUPABASE_URL') and hasattr(config, 'SUPABASE_KEY'):
         storage_manager = initialize_storage_manager(
@@ -45,6 +45,17 @@ try:
 except Exception as e:
     logger.error(f"❌ Failed to initialize Supabase Storage Manager: {e}")
     # Don't fail the entire app if storage manager fails
+    pass
+
+# NEW: Initialize automatic file cleanup
+try:
+    from utils.file_cleanup import start_automatic_cleanup
+    cleanup_manager = start_automatic_cleanup(config)
+    logger.info("✅ Automatic file cleanup initialized")
+    logger.info("🧹 Temp files will be cleaned every 6 hours, full cleanup every 24 hours")
+except Exception as e:
+    logger.error(f"❌ Failed to initialize file cleanup: {e}")
+    # Don't fail the entire app if cleanup fails
     pass
 
 def setup_orchestrator():

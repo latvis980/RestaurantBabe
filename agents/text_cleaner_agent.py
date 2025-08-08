@@ -156,22 +156,21 @@ TASK: Extract restaurant names and descriptions from the provided content.
 
 RULES:
 1. Focus ONLY on restaurants, cafes, bars, bistros, and similar dining establishments
-2. Extract restaurant name and a brief description (1-3 sentences max per restaurant)
+2. Extract restaurant name and a comprehensive description mentioned all key details (cuisine, atmosphere, chef, concept, signature dishes etc.)
 3. Ignore: navigation menus, ads, cookie notices, social media links, unrelated articles
-4. Preserve: restaurant names, addresses, cuisine types, key features, prices if mentioned
-5. Format: "Restaurant Name: Description" (one per line)
-6. Skip: listings without clear restaurant names or with generic descriptions
-7. Bold text (**text**) often indicates restaurant names or important details
+4. Preserve: restaurant names, addresses, descriptions as-is, only translated to English if in a foreign language
+5. Format: "Restaurant Name: Description, address if available" 
 
 CONTENT TYPE: Restaurant guide/listing page
-DESIRED OUTPUT: Clean list of restaurants with descriptions
+DESIRED OUTPUT: Clean list of restaurants with descriptions and addresses (if available)
 
 Content to clean:
 {{content}}
 
 OUTPUT FORMAT:
-Restaurant Name 1: Brief description with key details
-Restaurant Name 2: Brief description with key details
+Source: URL
+Restaurant Name 1: Description in English, address if available
+Restaurant Name 2: Description in English, address if available
 ...
 
 If no clear restaurants are found, respond with: "No restaurants found in this content."
@@ -346,3 +345,34 @@ If no clear restaurants are found, respond with: "No restaurants found in this c
             "input_format": "RTF",
             "output_format": "TEXT"
         }
+
+    def cleanup_old_files(self, max_age_hours: int = 48):
+        """
+        Clean up old TXT files created by this text cleaner
+        Called by the file cleanup manager
+        """
+        try:
+            from datetime import datetime, timedelta
+
+            cleanup_count = 0
+            cutoff_time = datetime.now() - timedelta(hours=max_age_hours)
+
+            # Clean up files in scraped_content directory
+            scraped_content_dir = Path("scraped_content")
+            if scraped_content_dir.exists():
+                # Look for files created by this cleaner
+                for txt_file in scraped_content_dir.glob("cleaned_*.txt"):
+                    try:
+                        file_mtime = datetime.fromtimestamp(txt_file.stat().st_mtime)
+                        if file_mtime < cutoff_time:
+                            txt_file.unlink()
+                            cleanup_count += 1
+                            logger.debug(f"🗑️ Cleaned old TXT file: {txt_file.name}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Could not remove {txt_file}: {e}")
+
+            if cleanup_count > 0:
+                logger.info(f"🧹 Text cleaner cleaned {cleanup_count} old TXT files")
+
+        except Exception as e:
+            logger.error(f"❌ Error in text cleaner cleanup: {e}")
