@@ -1,10 +1,12 @@
-# utils/supabase_manager_client.py - NEW: Client for sending content via buckets
+# utils/supabase_manager_client.py - UPDATED: Simplified bucket integration
 """
 Client for integrating with the Supabase Manager via bucket storage.
 
+UPDATED: Works with simplified bucket structure (unprocessed/ and processed/ folders)
+
 This handles:
 1. Uploading content to Supabase Storage bucket
-2. Creating signed download URLs
+2. Creating signed download URLs  
 3. Sending bucket URLs to Supabase Manager for processing
 4. Managing file lifecycle in bucket
 """
@@ -18,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class SupabaseManagerClient:
     """
-    Client for integrating main app with Supabase Manager via bucket storage
+    Client for integrating main app with Supabase Manager via simplified bucket storage
     """
 
     def __init__(self, manager_url: str):
@@ -43,7 +45,7 @@ class SupabaseManagerClient:
         file_type: str = "txt"
     ) -> Dict[str, Any]:
         """
-        Process scraped content via bucket storage
+        Process scraped content via simplified bucket storage
 
         Args:
             content: Scraped text content
@@ -56,7 +58,7 @@ class SupabaseManagerClient:
         try:
             logger.info(f"📤 Processing content via bucket: {metadata.get('city', 'Unknown')}")
 
-            # Step 1: Upload content to bucket
+            # Step 1: Upload content to bucket (goes to unprocessed/ folder)
             success, bucket_file_path = self.storage_manager.upload_scraped_content(
                 content=content,
                 metadata=metadata,
@@ -83,7 +85,7 @@ class SupabaseManagerClient:
             enhanced_metadata = {
                 **metadata,
                 "bucket_file_path": bucket_file_path,
-                "upload_timestamp": bucket_file_path.split('_')[1] if '_' in bucket_file_path else None
+                "upload_timestamp": self._extract_timestamp_from_path(bucket_file_path)
             }
 
             payload = {
@@ -101,32 +103,18 @@ class SupabaseManagerClient:
                 result = response.json()
                 logger.info(f"✅ Manager processing completed: {result.get('restaurants_processed', 0)} restaurants")
 
-                # Step 4: Move file to completed folder in bucket
-                self._mark_file_as_processed(bucket_file_path, success=True)
-
+                # Note: File will be moved to processed/ folder by the Supabase Manager
                 return result
             else:
-                logger.error(f"❌ Manager processing failed: {response.status_code} - {response.text}")
-
-                # Mark file as failed
-                self._mark_file_as_processed(bucket_file_path, success=False)
-
+                logger.error(f"❌ Manager processing failed: {response.status_code}")
                 return {
-                    "success": False, 
-                    "error": f"Manager service error: {response.status_code}",
+                    "success": False,
+                    "error": f"Manager returned status {response.status_code}",
                     "details": response.text
                 }
 
         except Exception as e:
             logger.error(f"❌ Error in bucket processing: {e}")
-
-            # Try to mark file as failed if we have the path
-            if 'bucket_file_path' in locals():
-                try:
-                    self._mark_file_as_processed(bucket_file_path, success=False)
-                except:
-                    pass
-
             return {"success": False, "error": str(e)}
 
     def process_content_direct(
@@ -135,7 +123,7 @@ class SupabaseManagerClient:
         metadata: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Process content directly (backward compatibility - no bucket)
+        Process content directly without bucket storage (legacy endpoint)
 
         Args:
             content: Scraped text content
@@ -153,7 +141,7 @@ class SupabaseManagerClient:
             }
 
             response = requests.post(
-                f"{self.manager_url}/process_scraped_content",
+                f"{self.manager_url}/process_content",
                 json=payload,
                 timeout=300  # 5 minute timeout
             )
@@ -163,58 +151,16 @@ class SupabaseManagerClient:
                 logger.info(f"✅ Direct processing completed: {result.get('restaurants_processed', 0)} restaurants")
                 return result
             else:
-                logger.error(f"❌ Direct processing failed: {response.status_code} - {response.text}")
+                logger.error(f"❌ Direct processing failed: {response.status_code}")
                 return {
-                    "success": False, 
-                    "error": f"Manager service error: {response.status_code}",
+                    "success": False,
+                    "error": f"Manager returned status {response.status_code}",
                     "details": response.text
                 }
 
         except Exception as e:
             logger.error(f"❌ Error in direct processing: {e}")
             return {"success": False, "error": str(e)}
-
-    def _mark_file_as_processed(self, bucket_file_path: str, success: bool = True) -> bool:
-        """
-        Mark a bucket file as processed by moving it to completed/failed folder
-
-        Args:
-            bucket_file_path: Path to file in bucket
-            success: Whether processing was successful
-
-        Returns:
-            True if successfully moved, False otherwise
-        """
-        try:
-            # Determine target folder
-            target_folder = "completed" if success else "failed"
-            status = "completed" if success else "failed"
-
-            # Build new path
-            path_parts = bucket_file_path.split('/')
-            filename = path_parts[-1]
-
-            # Create new path with status folder
-            if len(path_parts) >= 3:
-                # Organized structure: YYYY/MM/city/status/filename
-                new_path = '/'.join(path_parts[:-1]) + f'/{target_folder}/{filename}'
-            else:
-                # Simple structure: status/filename
-                new_path = f'{target_folder}/{filename}'
-
-            # Move file in bucket
-            move_success = self.storage_manager.move_file(bucket_file_path, new_path)
-
-            if move_success:
-                logger.info(f"📦 Moved to {status}: {bucket_file_path} → {new_path}")
-            else:
-                logger.warning(f"⚠️ Failed to move file to {status}: {bucket_file_path}")
-
-            return move_success
-
-        except Exception as e:
-            logger.error(f"❌ Error marking file as processed: {e}")
-            return False
 
     def get_bucket_stats(self) -> Dict[str, Any]:
         """
@@ -229,127 +175,49 @@ class SupabaseManagerClient:
             logger.error(f"❌ Error getting bucket stats: {e}")
             return {"error": str(e)}
 
-    def cleanup_old_files(self, max_age_days: int = 7) -> Dict[str, Any]:
-        """
-        Clean up old processed files in bucket
-
-        Args:
-            max_age_days: Files older than this will be deleted
-
-        Returns:
-            Cleanup statistics
-        """
-        try:
-            # Get completed and failed files
-            all_files = self.storage_manager.list_files(limit=1000)
-
-            old_files = []
-            cutoff_time = datetime.now() - timedelta(days=max_age_days)
-
-            for file_info in all_files:
-                file_path = file_info.get('name', '')
-
-                # Only clean up files in completed/ or failed/ folders
-                if '/completed/' in file_path or '/failed/' in file_path:
-                    try:
-                        if 'updated_at' in file_info:
-                            file_time = datetime.fromisoformat(file_info['updated_at'].replace('Z', '+00:00'))
-                            if file_time < cutoff_time.astimezone():
-                                old_files.append(file_path)
-                    except Exception:
-                        continue
-
-            # Delete old files
-            if old_files:
-                delete_result = self.storage_manager.delete_files(old_files)
-                logger.info(f"🗑️ Cleaned up {delete_result.get('deleted_count', 0)} old files")
-                return delete_result
-            else:
-                logger.info("📭 No old files to clean up")
-                return {"deleted_count": 0, "message": "No old files found"}
-
-        except Exception as e:
-            logger.error(f"❌ Error during cleanup: {e}")
-            return {"error": str(e)}
-
-    def health_check(self) -> Dict[str, Any]:
+    def check_manager_health(self) -> Dict[str, Any]:
         """
         Check if the Supabase Manager service is healthy
 
         Returns:
-            Health status
+            Health check result
         """
         try:
             response = requests.get(f"{self.manager_url}/", timeout=10)
 
             if response.status_code == 200:
-                return {"healthy": True, "manager_response": response.json()}
+                result = response.json()
+                logger.info("✅ Manager service is healthy")
+                return {"healthy": True, "status": result}
             else:
-                return {"healthy": False, "error": f"Status {response.status_code}"}
+                logger.warning(f"⚠️ Manager health check failed: {response.status_code}")
+                return {"healthy": False, "status_code": response.status_code}
 
         except Exception as e:
+            logger.error(f"❌ Error checking manager health: {e}")
             return {"healthy": False, "error": str(e)}
 
+    def _extract_timestamp_from_path(self, file_path: str) -> Optional[str]:
+        """
+        Extract timestamp from simplified file path
 
-# Convenience functions for easy integration
+        Args:
+            file_path: Path like "unprocessed/scraped_20250808_143022_lisbon_abc123.txt"
 
-def send_content_to_manager(
-    content: str,
-    metadata: Dict[str, Any],
-    manager_url: str,
-    use_bucket: bool = True
-) -> Dict[str, Any]:
-    """
-    Convenience function to send content to Supabase Manager
+        Returns:
+            Timestamp string or None
+        """
+        try:
+            filename = file_path.split('/')[-1]  # Get just filename
 
-    Args:
-        content: Scraped content
-        metadata: Content metadata
-        manager_url: URL of Supabase Manager service
-        use_bucket: Whether to use bucket storage (recommended) or direct send
+            if filename.startswith('scraped_') and filename.count('_') >= 3:
+                parts = filename.split('_')
+                if len(parts) >= 3:
+                    # scraped_20250808_143022_city_hash.txt
+                    date_part = parts[1]  # 20250808
+                    time_part = parts[2]  # 143022
+                    return f"{date_part}_{time_part}"
+        except Exception:
+            pass
 
-    Returns:
-        Processing result
-    """
-    client = SupabaseManagerClient(manager_url)
-
-    if use_bucket:
-        return client.process_content_via_bucket(content, metadata)
-    else:
-        return client.process_content_direct(content, metadata)
-
-
-# Integration with existing scraping code
-def integrate_with_scraper(scraper_function, manager_url: str):
-    """
-    Decorator to automatically send scraped content to Supabase Manager
-
-    Usage:
-        @integrate_with_scraper("https://your-manager-url.railway.app")
-        def scrape_restaurants(city, country):
-            # Your scraping logic here
-            return {"content": scraped_text, "metadata": {...}}
-    """
-    def decorator(func):
-        def wrapper(*args, **kwargs):
-            # Run the original scraper
-            result = func(*args, **kwargs)
-
-            if isinstance(result, dict) and 'content' in result:
-                # Send to manager
-                processing_result = send_content_to_manager(
-                    content=result['content'],
-                    metadata=result.get('metadata', {}),
-                    manager_url=manager_url,
-                    use_bucket=True
-                )
-
-                # Return combined result
-                return {
-                    **result,
-                    "processing_result": processing_result
-                }
-
-            return result
-        return wrapper
-    return decorator
+        return None

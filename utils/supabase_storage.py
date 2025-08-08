@@ -1,10 +1,9 @@
-# utils/supabase_storage.py - CORRECTED: Remove bucket creation attempt
+# utils/supabase_storage.py - UPDATED: Simplified storage structure
 """
 Enhanced Supabase Storage functionality for uploading scraped content files.
-This handles uploading scraped content to Supabase Storage bucket and includes
-new methods for the Supabase Manager integration.
+This handles uploading scraped content to Supabase Storage bucket.
 
-CORRECTED: Removed bucket creation that was causing RLS policy violations
+UPDATED: Simplified bucket structure - unprocessed/ and processed/ folders only
 """
 
 import os
@@ -17,24 +16,21 @@ from supabase import create_client, Client
 logger = logging.getLogger(__name__)
 
 class SupabaseStorageManager:
-    """Enhanced Supabase Storage Manager with additional methods for bucket file handling"""
+    """Enhanced Supabase Storage Manager with simplified bucket structure"""
 
     def __init__(self, supabase_url: str, supabase_key: str):
         """Initialize Supabase client for storage operations"""
         try:
             self.client: Client = create_client(supabase_url, supabase_key)
             self.bucket_name = "scraped-content"  # Default bucket name
-            self._check_bucket_access()  # CHANGED: Just check access, don't try to create
+            self._check_bucket_access()
             logger.info("✅ Enhanced Supabase Storage Manager initialized")
         except Exception as e:
             logger.error(f"❌ Failed to initialize Supabase Storage: {e}")
             raise
 
     def _check_bucket_access(self):
-        """
-        CORRECTED: Just check if we can access the bucket (don't try to create it)
-        The bucket should already exist
-        """
+        """Check if we can access the bucket"""
         try:
             # Try to list files in the bucket to verify access
             test_files = self.client.storage.from_(self.bucket_name).list()
@@ -43,7 +39,6 @@ class SupabaseStorageManager:
         except Exception as access_error:
             logger.error(f"❌ Cannot access bucket {self.bucket_name}: {access_error}")
             logger.error("🔧 Check your storage policies in Supabase Dashboard")
-            # Still raise error so initialization fails if bucket not accessible
             raise
 
     def upload_scraped_content(
@@ -53,7 +48,7 @@ class SupabaseStorageManager:
         file_type: str = "txt"
     ) -> Tuple[bool, Optional[str]]:
         """
-        Upload scraped content to Supabase Storage
+        Upload scraped content to Supabase Storage with simplified structure
 
         Args:
             content: The scraped text content
@@ -64,14 +59,13 @@ class SupabaseStorageManager:
             Tuple of (success: bool, file_path: Optional[str])
         """
         try:
-            # Generate unique filename
+            # Generate unique filename with city and timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             content_hash = hashlib.md5(content.encode()).hexdigest()[:8]
             city = metadata.get('city', 'unknown').replace(' ', '_').lower()
 
-            # Organize by year/month/city for easy management
-            year_month = datetime.now().strftime("%Y/%m")
-            file_path = f"{year_month}/{city}/scraped_{timestamp}_{content_hash}.{file_type}"
+            # SIMPLIFIED: Direct to unprocessed folder
+            file_path = f"unprocessed/scraped_{timestamp}_{city}_{content_hash}.{file_type}"
 
             # Prepare content for upload
             if file_type == "json":
@@ -118,40 +112,65 @@ class SupabaseStorageManager:
 
             if response and len(response) > 0 and 'signedURL' in response[0]:
                 download_url = response[0]['signedURL']
-                logger.info(f"🔗 Created signed URL for: {file_path}")
+                logger.debug(f"🔗 Created download URL for: {file_path}")
                 return download_url
             else:
-                logger.error(f"❌ Failed to create signed URL: {response}")
+                logger.error(f"❌ Failed to create download URL for: {file_path}")
                 return None
 
         except Exception as e:
-            logger.error(f"❌ Failed to create signed URL for {file_path}: {e}")
+            logger.error(f"❌ Error creating download URL: {e}")
             return None
 
     def download_file_content(self, file_path: str) -> Optional[str]:
         """
-        Download content directly from bucket
+        Download and return the content of a file from bucket
 
         Args:
             file_path: Path to file in bucket
 
         Returns:
-            File content as string or None if failed
+            File content as string, or None if failed
         """
         try:
             response = self.client.storage.from_(self.bucket_name).download(file_path)
 
             if response:
                 content = response.decode('utf-8')
-                logger.info(f"⬇️ Downloaded content from: {file_path} ({len(content)} chars)")
+                logger.debug(f"📥 Downloaded content from: {file_path}")
                 return content
             else:
-                logger.error(f"❌ No content received for: {file_path}")
+                logger.error(f"❌ Failed to download content from: {file_path}")
                 return None
 
         except Exception as e:
-            logger.error(f"❌ Failed to download {file_path}: {e}")
+            logger.error(f"❌ Error downloading file content: {e}")
             return None
+
+    def move_file(self, old_path: str, new_path: str) -> bool:
+        """
+        Move a file within the bucket
+
+        Args:
+            old_path: Current file path
+            new_path: New file path
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            response = self.client.storage.from_(self.bucket_name).move(old_path, new_path)
+
+            if response:
+                logger.info(f"📦 Moved file: {old_path} → {new_path}")
+                return True
+            else:
+                logger.error(f"❌ Failed to move file: {old_path} → {new_path}")
+                return False
+
+        except Exception as e:
+            logger.error(f"❌ Error moving file: {e}")
+            return False
 
     def delete_file(self, file_path: str) -> bool:
         """
@@ -165,135 +184,100 @@ class SupabaseStorageManager:
         """
         try:
             response = self.client.storage.from_(self.bucket_name).remove([file_path])
-            logger.info(f"🗑️ Deleted file: {file_path}")
-            return True
+
+            if response:
+                logger.info(f"🗑️ Deleted file: {file_path}")
+                return True
+            else:
+                logger.error(f"❌ Failed to delete file: {file_path}")
+                return False
 
         except Exception as e:
-            logger.error(f"❌ Failed to delete {file_path}: {e}")
+            logger.error(f"❌ Error deleting file: {e}")
             return False
 
-    def move_file(self, old_path: str, new_path: str) -> bool:
+    def list_files(self, folder_path: str = "", limit: int = 1000) -> List[Dict[str, Any]]:
         """
-        Move/rename a file within the bucket
+        List files in a specific folder
 
         Args:
-            old_path: Current file path
-            new_path: New file path
-
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            response = self.client.storage.from_(self.bucket_name).move(old_path, new_path)
-            logger.info(f"📁 Moved file: {old_path} → {new_path}")
-            return True
-
-        except Exception as e:
-            logger.error(f"❌ Failed to move {old_path} to {new_path}: {e}")
-            return False
-
-    def list_files(self, prefix: str = "", limit: int = 100) -> List[Dict[str, Any]]:
-        """
-        List files in the storage bucket
-
-        Args:
-            prefix: Filter files by prefix (e.g., "2024/01/paris/")
+            folder_path: Folder to list (empty for root)
             limit: Maximum number of files to return
 
         Returns:
-            List of file objects
+            List of file information dictionaries
         """
         try:
             files = self.client.storage.from_(self.bucket_name).list(
-                path=prefix,
-                options={
-                    "limit": limit,
-                    "offset": 0,
-                    "sortBy": {
-                        "column": "updated_at",
-                        "order": "desc"
-                    }
-                }
+                path=folder_path,
+                options={"limit": limit}
             )
-            return files
+
+            # Filter out folders (items with no 'metadata' are folders)
+            file_list = [file for file in files if file.get('metadata') is not None]
+
+            logger.debug(f"📂 Listed {len(file_list)} files in: {folder_path or 'root'}")
+            return file_list
+
         except Exception as e:
-            logger.error(f"❌ Failed to list files: {e}")
+            logger.error(f"❌ Error listing files: {e}")
             return []
-
-    def get_file_info(self, file_path: str) -> Optional[Dict[str, Any]]:
-        """
-        Get information about a specific file
-
-        Args:
-            file_path: Path to file in bucket
-
-        Returns:
-            File info dictionary or None if not found
-        """
-        try:
-            # Get parent directory
-            path_parts = file_path.split('/')
-            if len(path_parts) > 1:
-                parent_path = '/'.join(path_parts[:-1])
-                filename = path_parts[-1]
-            else:
-                parent_path = ""
-                filename = file_path
-
-            # List files in parent directory
-            files = self.client.storage.from_(self.bucket_name).list(
-                path=parent_path,
-                options={"limit": 1000}
-            )
-
-            # Find the specific file
-            for file_info in files:
-                if file_info.get('name') == filename:
-                    return file_info
-
-            return None
-
-        except Exception as e:
-            logger.error(f"❌ Failed to get file info for {file_path}: {e}")
-            return None
 
     def get_bucket_stats(self) -> Dict[str, Any]:
         """
-        Get statistics about the bucket
+        Get simplified statistics about the bucket
 
         Returns:
             Dictionary with bucket statistics
         """
         try:
-            # Get all files (limited sample)
-            files = self.list_files(limit=1000)
+            # Get files from both main folders
+            unprocessed_files = self.list_files("unprocessed")
+            processed_files = self.list_files("processed")
 
             stats = {
-                "total_files": len(files),
+                "total_files": len(unprocessed_files) + len(processed_files),
                 "bucket_name": self.bucket_name,
+                "unprocessed_count": len(unprocessed_files),
+                "processed_count": len(processed_files),
                 "file_types": {},
-                "folders": {},
-                "total_size_estimate": 0
+                "cities": {},
+                "latest_unprocessed": [],
+                "timestamp": datetime.now().isoformat()
             }
 
-            for file_info in files:
-                name = file_info.get('name', '')
+            # Analyze all files
+            all_files = unprocessed_files + processed_files
+
+            for file_info in all_files:
+                file_path = file_info.get('name', '')
                 size = file_info.get('metadata', {}).get('size', 0)
 
                 # Count file types
-                if '.' in name:
-                    ext = name.split('.')[-1].lower()
+                if '.' in file_path:
+                    ext = file_path.split('.')[-1].lower()
                     stats["file_types"][ext] = stats["file_types"].get(ext, 0) + 1
 
-                # Count folders
-                if '/' in name:
-                    folder = name.split('/')[0]
-                    stats["folders"][folder] = stats["folders"].get(folder, 0) + 1
+                # Extract city from filename (scraped_timestamp_city_hash.ext)
+                filename = file_path.split('/')[-1]  # Get just filename
+                if filename.startswith('scraped_') and filename.count('_') >= 3:
+                    parts = filename.split('_')
+                    if len(parts) >= 4:
+                        city = parts[2].replace('_', ' ').title()  # timestamp_city_hash
+                        stats["cities"][city] = stats["cities"].get(city, 0) + 1
 
-                # Estimate total size
-                stats["total_size_estimate"] += size
+            # Get latest unprocessed files (sorted by name which includes timestamp)
+            unprocessed_files.sort(key=lambda f: f.get('name', ''), reverse=True)
+            stats["latest_unprocessed"] = [
+                {
+                    "name": f.get('name', ''),
+                    "size": f.get('metadata', {}).get('size', 0),
+                    "uploaded_at": f.get('metadata', {}).get('updated_at', '')
+                }
+                for f in unprocessed_files[:5]  # Latest 5
+            ]
 
-            logger.info(f"📊 Bucket stats: {stats}")
+            logger.info(f"📊 Bucket stats: {stats['unprocessed_count']} unprocessed, {stats['processed_count']} processed")
             return stats
 
         except Exception as e:
