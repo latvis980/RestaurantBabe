@@ -1041,6 +1041,7 @@ def handle_clarification_needed(message, location_analysis):
 def perform_location_search(query, location_data, chat_id, user_id):
     """
     Perform location-based restaurant search using the location orchestrator
+    UPDATED: Uses new MediaSearchAgent integration
     """
     processing_msg = None
 
@@ -1059,7 +1060,7 @@ def perform_location_search(query, location_data, chat_id, user_id):
                     chat_id,
                     video,
                     caption="🔍 <b>Searching for nearby restaurants...</b>\n\n"
-                            "<i>This may take a couple of minutes as I'll have to ask around to see what professional foodies have to say about these places'</i>\n\n"
+                            "<i>This may take a couple of minutes as I'll check what professional foodies have to say about these places</i>\n\n"
                             "💡 Type /cancel to stop the search",
                     parse_mode='HTML',
                     reply_markup=remove_location_button()
@@ -1070,7 +1071,7 @@ def perform_location_search(query, location_data, chat_id, user_id):
             processing_msg = bot.send_message(
                 chat_id,
                 "🔍 <b>Searching for nearby restaurants...</b>\n\n"
-                "<i>This might take a couple of minutes as I'll check with my critic friends what they think about those places</i>\n\n"
+                "<i>This might take a couple of minutes as I'll check with professional food critics about these places</i>\n\n"
                 "💡 Type /cancel to stop the search",
                 parse_mode='HTML',
                 reply_markup=remove_location_button()
@@ -1081,7 +1082,7 @@ def perform_location_search(query, location_data, chat_id, user_id):
             processing_msg = bot.send_message(
                 chat_id,
                 "🔍 <b>Searching for nearby restaurants...</b>\n\n"
-                 "<i>This might take a couple of minutes as I'll check with my critic friends what they think about those places</i>\n\n"
+                 "<i>This might take a couple of minutes as I'll check with professional food critics about these places</i>\n\n"
                 "💡 Type /cancel to stop the search",
                 parse_mode='HTML',
                 reply_markup=remove_location_button()
@@ -1133,73 +1134,96 @@ def perform_location_search(query, location_data, chat_id, user_id):
 
         # Check if search was successful
         if not result.get('success', False):
-            error_text = result.get('telegram_formatted_text', 'Sorry, no results found.')
-            bot.send_message(chat_id, error_text, parse_mode='HTML', reply_markup=remove_location_button())
-            add_to_conversation(user_id, error_text, is_user=False)
+            error_message = result.get('error', 'Sorry, no results found.')
+
+            if result.get('cancelled'):
+                # Don't send error for cancelled searches
+                return
+
+            bot.send_message(
+                chat_id,
+                f"😔 {error_message}\n\nTry a different search or let me know if you need help!",
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
+            )
+            logger.info(f"❌ Location search failed for user {user_id}: {error_message}")
             return
 
-        # Get the formatted response
-        response_text = result.get('telegram_formatted_text', '')
-        results_count = result.get('results_count', 0)
-        search_method = result.get('search_method', 'unknown')
-        processing_time = result.get('processing_time', 0)
-
-        # Final cancellation check before sending results
-        if is_cancelled():
-            logger.info(f"Location search cancelled before sending results for user {user_id}")
+        # Format results using telegram formatter
+        restaurants = result.get('results', [])
+        if not restaurants:
+            bot.send_message(
+                chat_id,
+                "😔 I couldn't find any restaurants matching your criteria nearby.\n\n"
+                "Try expanding your search or let me know what specific type of cuisine you're looking for!",
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
+            )
+            logger.info(f"📭 No restaurants found for user {user_id}")
             return
 
-        # Send the results
-        bot.send_message(
-            chat_id,
-            response_text,
-            parse_mode='HTML',
-            disable_web_page_preview=True,
-            reply_markup=remove_location_button()
-        )
+        # Format results for Telegram
+        try:
+            # Add metadata for formatting
+            search_metadata = {
+                'query': query,
+                'coordinates': result.get('search_coordinates'),
+                'total_count': result.get('total_count', len(restaurants)),
+                'source': result.get('source', 'location_search'),
+                'processing_time': result.get('processing_time', 0)
+            }
 
-        # Send a follow-up with search stats (optional)
-        stats_msg = (
-            f"✅ <b>Search completed!</b>\n"
-            f"📊 Found {results_count} results using {search_method}\n"
-            f"⏱ Processed in {processing_time:.1f} seconds"
-        )
+            # Use TelegramFormatter to format location results
+            formatted_message = location_orchestrator.telegram_formatter.format_location_results(
+                restaurants=restaurants,
+                metadata=search_metadata
+            )
 
-        bot.send_message(chat_id, stats_msg, parse_mode='HTML', reply_markup=remove_location_button())
+            # Send formatted results
+            bot.send_message(
+                chat_id,
+                formatted_message,
+                parse_mode='HTML',
+                reply_markup=remove_location_button(),
+                disable_web_page_preview=True
+            )
 
-        logger.info(f"✅ Successfully sent location search results to user {user_id}")
+            logger.info(f"✅ Location search completed for user {user_id}: {len(restaurants)} restaurants sent")
 
-        # Add to conversation history
-        add_to_conversation(user_id, f"Location search completed - {results_count} results found!", is_user=False)
+            # Add to conversation history
+            add_to_conversation(user_id, f"Found {len(restaurants)} nearby restaurants for: {query}", is_user=False)
+
+        except Exception as e:
+            logger.error(f"❌ Error formatting location results: {e}")
+            bot.send_message(
+                chat_id,
+                f"✅ Found {len(restaurants)} restaurants nearby!\n\n"
+                "However, I had trouble formatting the results. Please try your search again.",
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
+            )
 
     except Exception as e:
         logger.error(f"❌ Error in location search process: {e}")
 
-        # Delete processing message if it exists
+        # Clean up processing message
         try:
             if processing_msg:
                 bot.delete_message(chat_id, processing_msg.message_id)
         except:
             pass
 
-        # Only send error message if search wasn't cancelled
-        if not is_search_cancelled(user_id):
-            error_msg = (
-                "😔 <b>Sorry, I encountered an error while searching for nearby restaurants.</b>\n\n"
-                "This could be due to:\n"
-                "• Location services temporarily unavailable\n"
-                "• No restaurants found in your area\n"
-                "• Network connectivity issues\n\n"
-                "Please try again with a different location or search term!"
-            )
-            bot.send_message(chat_id, error_msg, parse_mode='HTML', reply_markup=remove_location_button())
+        # Send error message to user
+        bot.send_message(
+            chat_id,
+            "😔 Something went wrong with the location search. Please try again or describe a specific area you're interested in.",
+            parse_mode='HTML',
+            reply_markup=remove_location_button()
+        )
 
     finally:
-        # Always clean up the search tracking
+        # Always clean up
         cleanup_search(user_id)
-
-
-# In telegram_bot.py, replace the process_voice_message function with this updated version:
 
 def process_voice_message(message, user_id, chat_id, processing_msg_id):
     """Process voice message in background thread"""
