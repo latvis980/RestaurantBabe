@@ -143,38 +143,45 @@ class TextCleanerAgent:
 
     def _create_cleaning_prompt(self) -> str:
         """
-        Create AI prompt for cleaning restaurant content
-        Enhanced for RTF-converted text with formatting markers
+        Create AI prompt for cleaning restaurant content with source attribution
         """
         return """You are a content cleaning specialist for restaurant recommendation systems. 
-Your job is to extract clean, useful restaurant information from scraped web content.
+    Your job is to extract clean, useful restaurant information from scraped web content.
 
-The content was converted from RTF format, so you may see formatting markers like **bold** or *italic*. 
-These markers often indicate important information like restaurant names and key details.
+    The content comes from a single source. The source URL is shown at the top of the content.
 
-TASK: Extract restaurant names and descriptions from the provided content.
+    TASK: Extract restaurant names and descriptions from the provided content.
 
-RULES:
-1. Focus ONLY on restaurants, cafes, bars, bistros, and similar dining establishments
-2. Extract restaurant name and a comprehensive description mentioned all key details (cuisine, atmosphere, chef, concept, signature dishes etc.)
-3. Ignore: navigation menus, ads, cookie notices, social media links, unrelated articles
-4. Preserve: restaurant names, addresses, descriptions as-is, only translated to English if in a foreign language
-5. Format: "Restaurant Name: Description, address if available" 
+    RULES:
+    1. Focus ONLY on restaurants, cafes, bars, bistros, and similar dining establishments
+    2. Extract restaurant name and a comprehensive description with all key details (cuisine, atmosphere, chef, concept, signature dishes etc.)
+    3. Ignore: navigation menus, ads, cookie notices, social media links, unrelated articles
+    4. Preserve: restaurant names, addresses, descriptions as-is, only translated to English if in a foreign language
+    5. IMPORTANT: Add the source URL (from the top of the content) to each restaurant entry
+    6. Format: "Restaurant Name (source_url): Description, address if available"
+    7. If there are no description, only restaurant names, but the source is very reputable (i.e. Michelin), just include names and url, and set description to "recommended by..." and the name of the source.
 
-CONTENT TYPE: Restaurant guide/listing page
-DESIRED OUTPUT: Clean list of restaurants with descriptions and addresses (if available)
+    CONTENT TYPE: Restaurant guide/listing page
+    DESIRED OUTPUT: Clean list of restaurants with descriptions, addresses, and source URLs
 
-Content to clean:
-{{content}}
+    Content to clean:
+    {{content}}
 
-OUTPUT FORMAT:
-Source: URL
-Restaurant Name 1: Description in English, address if available
-Restaurant Name 2: Description in English, address if available
-...
+    OUTPUT FORMAT:
+    Restaurant Name 1
+    source_url
+    Description in English
+    address if available
+    
+    Restaurant Name 2
+    source_url
+    Description in English
+    address if available
+    
+    ...
 
-If no clear restaurants are found, respond with: "No restaurants found in this content."
-"""
+    If no clear restaurants are found, respond with: "No restaurants found in this content."
+    """
 
     async def clean_single_source(self, content: str, url: str, content_format: str = 'text') -> str:
         """
