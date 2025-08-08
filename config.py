@@ -36,6 +36,9 @@ OPENAI_TEMPERATURE = 0.2
 OPENAI_MAX_RETRIES = 1
 OPENAI_TIMEOUT = 45.0
 
+# MISSING CONFIG: Add search evaluation model
+SEARCH_EVALUATION_MODEL = "gpt-4o-mini"  # Cost-optimized model for search evaluation
+
 # DeepSeek settings
 DEEPSEEK_CHAT_MODEL = "deepseek-chat"
 DEEPSEEK_TEMPERATURE = 0.2
@@ -67,124 +70,14 @@ OPENAI_MAX_TOKENS_BY_COMPONENT = {
     'search_agent': 512,
     'search_evaluation': 512,
     'conversation': 1024,
-    'editor_agent': 4096,
-    'restaurant_extraction': 6144,
-    'content_cleaning': 2048,
-    'default': 2048
+    'editor': 2048,
+    'content_evaluation': 3072,
+    'restaurant_extraction': 4096,
+    'query_analysis': 1024,
+    'follow_up_search': 1024,
+    'source_mapping': 1024,  # Add this for source mapping agent
+    'location_analysis': 512   # Add this for location analysis
 }
-
-DEEPSEEK_MAX_TOKENS_BY_COMPONENT = {
-    'content_sectioning': 2048,
-    'strategy_analysis': 512,
-    'content_cleaning': 2048,
-    'default': 1024
-}
-
-# ============================================================================
-# SCRAPING STRATEGIES AND CONFIGURATION
-# ============================================================================
-
-class ScrapingStrategy(Enum):
-    SIMPLE_HTTP = "simple_http"
-    ENHANCED_HTTP = "enhanced_http"
-    HUMAN_MIMIC = "human_mimic"
-    SPECIALIZED = "specialized"
-
-# Strategy costs (for optimization)
-STRATEGY_COSTS = {
-    "specialized": 0.0,      # FREE - RSS/Sitemap
-    "simple_http": 0.1,      # Basic HTTP
-    "enhanced_http": 0.5,    # HTTP + readability
-    "human_mimic": 2.0,      # Browser automation
-}
-
-# Content limits for different strategies
-CONTENT_LIMITS = {
-    "simple_http": 6000,
-    "enhanced_http": 8000,
-    "human_mimic": 15000,
-    "content_sectioning": 8000,
-    "content_cleaning": 15000
-}
-
-# Concurrent request limits
-SCRAPER_CONCURRENCY = {
-    "specialized": 10,
-    "simple_http": 8,
-    "enhanced_http": 5,
-    "human_mimic": 2
-}
-
-# Strategy overrides for known domains
-STRATEGY_OVERRIDES = {
-    # Human Mimic works well for these
-    'timeout.com': 'human_mimic',
-    'eater.com': 'human_mimic',
-    'guide.michelin.com': 'human_mimic',
-    'zagat.com': 'human_mimic',
-    'thrillist.com': 'human_mimic',
-
-    # Simple HTTP for news sites
-    'cntraveller.com': 'simple_http',
-    'lisbonlux.com': 'simple_http',
-    'queroviajarmais.com': 'simple_http',
-
-    # Enhanced HTTP for CMS sites
-    'theinfatuation.com': 'enhanced_http',
-    'bestguide.pt': 'enhanced_http'
-}
-
-# ============================================================================
-# HUMAN MIMIC SCRAPER CONFIGURATION
-# ============================================================================
-
-# Human Mimic scraper settings
-HUMAN_MIMIC_ENABLED = os.environ.get("HUMAN_MIMIC_ENABLED", "true").lower() == "true"
-HUMAN_MIMIC_MAX_CONCURRENT = int(os.environ.get("HUMAN_MIMIC_MAX_CONCURRENT", "2"))
-HUMAN_MIMIC_DEFAULT_TIMEOUT = int(os.environ.get("HUMAN_MIMIC_DEFAULT_TIMEOUT", "30000"))
-HUMAN_MIMIC_SLOW_TIMEOUT = int(os.environ.get("HUMAN_MIMIC_SLOW_TIMEOUT", "60000"))
-
-# Human-like timing
-HUMAN_MIMIC_LOAD_WAIT = float(os.environ.get("HUMAN_MIMIC_LOAD_WAIT", "3.0"))
-HUMAN_MIMIC_INTERACTION_DELAY = float(os.environ.get("HUMAN_MIMIC_INTERACTION_DELAY", "0.5"))
-
-# Known slow domains
-HUMAN_MIMIC_SLOW_DOMAINS = [
-    'guide.michelin.com',
-    'timeout.com',
-    'zagat.com',
-    'opentable.com',
-    'resy.com'
-]
-
-# Railway deployment optimization
-RAILWAY_MEMORY_LIMIT_MB = int(os.environ.get("RAILWAY_MEMORY_LIMIT_MB", "512"))
-HUMAN_MIMIC_MEMORY_PER_CONTEXT_MB = 80
-
-def get_optimal_concurrent_contexts():
-    """Calculate optimal browser contexts based on available memory"""
-    available_memory = RAILWAY_MEMORY_LIMIT_MB - 200
-    max_contexts = available_memory // HUMAN_MIMIC_MEMORY_PER_CONTEXT_MB
-    return min(max(max_contexts, 1), HUMAN_MIMIC_MAX_CONCURRENT)
-
-# ============================================================================
-# AD BLOCKING CONFIGURATION  
-# ============================================================================
-
-# Enable aggressive ad blocking for faster scraping
-HUMAN_MIMIC_BLOCK_ADS = os.environ.get("HUMAN_MIMIC_BLOCK_ADS", "true").lower() == "true"
-HUMAN_MIMIC_BLOCK_IMAGES = os.environ.get("HUMAN_MIMIC_BLOCK_IMAGES", "true").lower() == "true"  
-HUMAN_MIMIC_BLOCK_CSS = os.environ.get("HUMAN_MIMIC_BLOCK_CSS", "false").lower() == "true"  # May break layout
-
-# Custom ad domains to block (extend as needed)
-HUMAN_MIMIC_BLOCKED_DOMAINS = [
-    'doubleclick.net',
-    'googleadservices.com', 
-    'googlesyndication.com',
-    'facebook.com/tr',
-    'analytics.google.com',
-    'googletagmanager.com'
-]
 
 # ============================================================================
 # SEARCH CONFIGURATION
@@ -224,6 +117,10 @@ LOCATION_SEARCH_RADIUS_KM = 2.0
 MAX_LOCATION_RESULTS = 8
 GEOCODING_ENABLED = True
 
+# Location-specific database settings
+DB_PROXIMITY_RADIUS_KM = 2.0  # Radius for database proximity search
+MIN_DB_MATCHES_REQUIRED = 3   # Minimum matches before triggering web search
+
 # ============================================================================
 # CURRENT AGENTS CONFIGURATION
 # ============================================================================
@@ -238,7 +135,10 @@ ACTIVE_AGENTS = [
     'human_mimic_scraper',
     'text_cleaner_agent',  # NEW
     'editor_agent',
-    'follow_up_search_agent'
+    'follow_up_search_agent',
+    'location_analyzer',       # Add location agents
+    'location_search_agent',
+    'source_mapping_agent'
 ]
 
 # Components that use each model
@@ -254,149 +154,73 @@ CLAUDE_COMPONENTS = ['complex_analysis']  # When needed
 WHISPER_MODEL = "whisper-1"
 MAX_VOICE_FILE_SIZE = 25 * 1024 * 1024  # 25MB
 
-# Bot response settings
-DEFAULT_LANGUAGE = "en"
-MAX_MESSAGE_LENGTH = 4096
-ENABLE_RICH_FORMATTING = True
-
-# Webhook settings
-TELEGRAM_WEBHOOK_URL = os.environ.get("TELEGRAM_WEBHOOK_URL")
-TELEGRAM_WEBHOOK_PATH = "/telegram-webhook"
-TELEGRAM_WEBHOOK_PORT = int(os.environ.get("PORT", 8080))
+# Admin settings
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")
 
 # ============================================================================
-# MONITORING AND PERFORMANCE
+# FLASK CONFIGURATION
 # ============================================================================
 
-# LangSmith tracing
-LANGSMITH_PROJECT = "restaurant-recommender"
-LANGSMITH_TRACING = os.environ.get("LANGSMITH_TRACING", "false").lower() == "true"
+# Flask settings for webhook/polling services
+FLASK_HOST = "0.0.0.0"
+FLASK_PORT = int(os.environ.get("PORT", 8000))
+FLASK_DEBUG = False
 
-# Performance settings
-DEBUG_MODE = os.environ.get("DEBUG_MODE", "false").lower() == "true"
-SEARCH_TIMEOUT = 60.0
-PROCESSING_TIMEOUT = 90.0
-MAX_RETRIES_PER_STEP = 2
+# Scheduler settings
+ENABLE_SCHEDULER = True
+BUCKET_POLL_INTERVAL_MINUTES = 10
+BUCKET_MAX_FILES_PER_POLL = 10
 
-# Rate limiting
-MAX_CONCURRENT_OPENAI_CALLS = 2
-MAX_CONCURRENT_DEEPSEEK_CALLS = 5
-OPENAI_RATE_LIMIT_DELAY = 0.5
-DEEPSEEK_RATE_LIMIT_DELAY = 0.2
+# Webhook security
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
 
 # ============================================================================
-# HELPER FUNCTIONS
+# GOOGLE MAPS CONFIGURATION 
 # ============================================================================
 
-def get_model_for_component(component_name: str) -> str:
-    """Get the appropriate model for a component"""
-    return MODEL_STRATEGY.get(component_name, 'openai')
+# Google Maps keys (prioritize GOOGLE_MAPS_KEY2 if available)
+GOOGLE_MAPS_KEY2 = os.environ.get("GOOGLE_MAPS_KEY2")
 
-def get_token_limit_for_component(component_name: str, model_type: str = None) -> int:
-    """Get token limit for a component based on its model"""
-    if model_type == 'deepseek' or get_model_for_component(component_name) == 'deepseek':
-        return DEEPSEEK_MAX_TOKENS_BY_COMPONENT.get(component_name, 1024)
-    else:
-        return OPENAI_MAX_TOKENS_BY_COMPONENT.get(component_name, 2048)
+# Google Places search configuration
+GOOGLE_PLACES_SEARCH_TYPES = [
+    "restaurant", "bar", "cafe", "meal_takeaway", 
+    "meal_delivery", "food", "bakery"
+]
 
-def get_content_limit_for_component(component_name: str) -> int:
-    """Get content character limit for a component"""
-    return CONTENT_LIMITS.get(component_name, 6000)
-
-def get_strategy_override(domain: str) -> str:
-    """Get strategy override for a domain"""
-    clean_domain = domain.lower().replace("www.", "")
-    return STRATEGY_OVERRIDES.get(clean_domain)
-
-def get_concurrency_limit(strategy: str) -> int:
-    """Get concurrency limit for a scraping strategy"""
-    return SCRAPER_CONCURRENCY.get(strategy, 5)
+# Location search timeout
+LOCATION_SEARCH_TIMEOUT = 30.0
 
 # ============================================================================
-# CONFIGURATION VALIDATION
+# SUPABASE BUCKET CONFIGURATION
 # ============================================================================
 
-def validate_configuration():
-    """Validate essential configuration"""
-    required_keys = [
-        'OPENAI_API_KEY',
-        'TELEGRAM_BOT_TOKEN', 
-        'BRAVE_API_KEY',
-        'SUPABASE_URL',
-        'SUPABASE_KEY'
+# Bucket settings
+BUCKET_NAME = "scraped-content"
+
+# ============================================================================
+# VALIDATION
+# ============================================================================
+
+def validate_config():
+    """Validate that required configuration is present"""
+    required_vars = [
+        "OPENAI_API_KEY",
+        "BRAVE_API_KEY", 
+        "TELEGRAM_BOT_TOKEN",
+        "SUPABASE_URL",
+        "SUPABASE_KEY"
     ]
 
-    missing_keys = [key for key in required_keys if not globals().get(key)]
+    missing = []
+    for var in required_vars:
+        if not globals().get(var):
+            missing.append(var)
 
-    if missing_keys:
-        raise ValueError(f"Missing required configuration: {', '.join(missing_keys)}")
+    if missing:
+        raise ValueError(f"Missing required environment variables: {missing}")
 
-    # Warn about optional but useful keys
-    optional_keys = {
-        'DEEPSEEK_API_KEY': 'Fast content processing',
-        'ANTHROPIC_API_KEY': 'Claude for complex reasoning', 
-        'GOOGLE_MAPS_API_KEY': 'Location services',
-        'LANGSMITH_API_KEY': 'Debugging and monitoring'
-    }
+    return True
 
-    for key, description in optional_keys.items():
-        if not globals().get(key):
-            print(f"⚠️ Optional: {key} not configured ({description})")
-
-def get_active_models():
-    """Get list of configured AI models"""
-    models = []
-    if OPENAI_API_KEY:
-        models.append('OpenAI GPT-4o-mini')
-    if DEEPSEEK_API_KEY:
-        models.append('DeepSeek Chat')
-    if ANTHROPIC_API_KEY:
-        models.append('Claude Sonnet')
-    return models
-
-# ============================================================================
-# COMPONENT CONFIGURATION CLASS
-# ============================================================================
-
-class Config:
-    """Configuration class for object-oriented access"""
-
-    def __init__(self):
-        # Copy all module variables
-        import sys
-        current_module = sys.modules[__name__]
-
-        for attr_name in dir(current_module):
-            if not attr_name.startswith('_') and attr_name.isupper():
-                setattr(self, attr_name, getattr(current_module, attr_name))
-
-    def get_model_for_component(self, component: str) -> str:
-        """Get model for component"""
-        return get_model_for_component(component)
-
-    def get_token_limit(self, component: str) -> int:
-        """Get token limit for component"""
-        return get_token_limit_for_component(component)
-
-    def get_content_limit(self, component: str) -> int:
-        """Get content limit for component"""
-        return get_content_limit_for_component(component)
-
-# ============================================================================
-# INITIALIZATION
-# ============================================================================
-
-# Validate configuration on import
-try:
-    validate_configuration()
-    active_models = get_active_models()
-    print("✅ Configuration validated")
-    print(f"🤖 Active AI models: {', '.join(active_models)}")
-    print(f"🎭 Human Mimic Scraper: {'✅ Enabled' if HUMAN_MIMIC_ENABLED else '❌ Disabled'}")
-    print(f"🧹 Text Cleaner: Uses {MODEL_STRATEGY.get('content_cleaning', 'openai')} model")
-except ValueError as e:
-    print(f"❌ Configuration error: {e}")
-    print("Check your environment variables (.env file or Railway secrets)")
-
-# Export default config instance
-default_config = Config()
+# Auto-validate on import
+if __name__ != "__main__":
+    validate_config()
