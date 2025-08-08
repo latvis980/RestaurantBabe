@@ -53,7 +53,7 @@ class LangChainOrchestrator:
         self.dbcontent_evaluation_agent = ContentEvaluationAgent(config)
         self.search_agent = BraveSearchAgent(config)
         self.scraper = SmartRestaurantScraper(config) 
-        self._text_cleaner = TextCleanerAgent(config, model_override='deepseek')
+        self._text_cleaner = TextCleanerAgent(config)
         self.editor_agent = EditorAgent(config)
         self.follow_up_search_agent = FollowUpSearchAgent(config)
         self.dbcontent_evaluation_agent.set_brave_search_agent(self.search_agent)
@@ -340,7 +340,7 @@ class LangChainOrchestrator:
 
     def _scrape_step(self, x):
         """
-        ENHANCED: Updated scrape step to handle hybrid mode properly
+        ENHANCED: Updated scrape step with text cleaning integration
         """
         try:
             content_source = x.get("content_source", "unknown")
@@ -396,6 +396,58 @@ class LangChainOrchestrator:
                     logger.info(f"   {emoji.get(strategy, '📌')} {strategy}: {count} URLs")
 
             logger.info(f"✅ Scraped {len(scraped_results)} articles")
+
+            # NEW: TEXT CLEANING INTEGRATION - Process RTF content here
+            if scraped_results:
+                logger.info("🧹 Starting text cleaning on scraped content...")
+
+                # Apply text cleaning to successful scrapes
+                successful_scrapes = [r for r in scraped_results if r.get('scraping_success')]
+
+                if successful_scrapes:
+                    def run_text_cleaning():
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            # Clean each scraped result
+                            for result in successful_scrapes:
+                                try:
+                                    content_to_clean = result.get('scraped_content', '')
+                                    url = result.get('url', '')
+
+                                    if content_to_clean:
+                                        # Determine content format
+                                        content_format = 'rtf' if result.get('scraping_method') == 'human_mimic_rtf' else 'text'
+
+                                        # Clean the content
+                                        cleaned_content = loop.run_until_complete(
+                                            self._text_cleaner.clean_single_source(
+                                                content_to_clean, url, content_format
+                                            )
+                                        )
+
+                                        # Add cleaned content to result
+                                        result['cleaned_content'] = cleaned_content
+                                        result['ready_for_editor'] = bool(cleaned_content.strip())
+
+                                        from urllib.parse import urlparse
+                                        logger.info(f"✅ Cleaned content for {urlparse(url).netloc}")
+
+                                except Exception as e:
+                                    logger.warning(f"❌ Text cleaning failed for {result.get('url')}: {e}")
+                                    result['ready_for_editor'] = False
+
+                            return successful_scrapes
+                        finally:
+                            loop.close()
+
+                    # Run text cleaning
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        pool.submit(run_text_cleaning).result()
+
+                    logger.info(f"🧹 Text cleaning complete for {len(successful_scrapes)} sources")
+                else:
+                    logger.warning("⚠️ No successful scrapes to clean")
 
             # Save scraped content for Supabase manager (existing logic)
             if scraped_results:

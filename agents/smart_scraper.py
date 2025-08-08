@@ -43,10 +43,7 @@ class SmartRestaurantScraper:
         self.interaction_delay = 0.5    # Delay between actions
         self.retry_delay = 2.0          # Delay between retries
 
-        # Initialize Text Cleaner Agent
-        from agents.text_cleaner_agent import TextCleanerAgent
-        self._text_cleaner = TextCleanerAgent(config, model_override='deepseek')
-
+    
         # Simplified stats tracking
         self.stats = {
             "total_processed": 0,
@@ -451,37 +448,11 @@ class SmartRestaurantScraper:
             self.stats["total_cost_estimate"] += 2.0  # 2.0 credits per URL
             enriched_results.append(enriched)
 
-        # Apply text cleaning to successful scrapes
-        await self._apply_text_cleaning(enriched_results)
-
         successful = sum(1 for r in scrape_results if isinstance(r, dict) and r.get('success'))
         logger.info(f"✅ Human mimic batch complete: {successful}/{len(urls)} successful")
 
         return enriched_results
 
-    async def _apply_text_cleaning(self, enriched_results: List[Dict[str, Any]]):
-        """Apply text cleaning only - no content sectioning needed"""
-        successful_results = [r for r in enriched_results if r.get('scraping_success') and r.get('scraped_content')]
-
-        if not successful_results:
-            return
-
-        logger.info(f"🧹 Applying text cleaning to {len(successful_results)} successful scrapes")
-
-        for result in successful_results:
-            try:
-                # Clean content using the correct method name
-                content_to_clean = result.get('scraped_content', '')
-                if content_to_clean:
-                    cleaned_content = self._text_cleaner.clean_scraped_results([result])
-                    result['cleaned_content'] = cleaned_content
-
-                    # Mark as ready for editor processing
-                    result['ready_for_editor'] = True
-
-            except Exception as e:
-                logger.warning(f"Text cleaning failed for {result.get('url')}: {e}")
-                result['ready_for_editor'] = False
 
     def get_stats(self) -> Dict[str, Any]:
         """Get comprehensive scraping statistics"""

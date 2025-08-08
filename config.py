@@ -50,9 +50,7 @@ CLAUDE_MAX_TOKENS = 8192
 # Model routing strategy
 MODEL_STRATEGY = {
     # Fast components - use DeepSeek
-    'content_sectioning': 'deepseek',
-    'content_cleaning': 'deepseek',
-    'strategy_analysis': 'deepseek',
+    'content_cleaning': 'openai',
 
     # Quality components - use OpenAI
     'search_evaluation': 'openai',
