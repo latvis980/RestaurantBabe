@@ -64,6 +64,14 @@ class LangChainOrchestrator:
 
         self.config = config
 
+        from utils.supabase_storage import get_storage_manager
+        self.storage_manager = get_storage_manager()
+
+        if self.storage_manager:
+            logger.info("✅ Orchestrator connected to storage manager")
+        else:
+            logger.warning("⚠️ Storage manager not available for orchestrator")
+
         self.stats = {
             "total_queries": 0,
             "successful_queries": 0,
