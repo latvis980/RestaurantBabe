@@ -30,14 +30,14 @@ class TelegramFormatter:
                 return self._no_results_message()
 
             # Build message parts
-            parts = ["<b>🍽️ Recommended Restaurants</b>\n\n"]
+            parts = ["<b>🍽️ Here's a selection for you:</b>\n\n"]
 
             for i, restaurant in enumerate(main_list, 1):
                 restaurant_text = self._format_restaurant(restaurant, i)
                 if restaurant_text:
                     parts.append(restaurant_text)
 
-            parts.append("\n<i>Recommendations compiled from reputable restaurant guides and critics.</i>")
+            parts.append("\n<i>Click the address to see the venue photos and menu on Google Maps</i>")
 
             # Join and apply length limit
             message = ''.join(parts)
@@ -231,7 +231,7 @@ Return only the cleaned address, nothing else."""
 
         if clean_sources:
             sources_text = ", ".join(clean_sources)
-            return f"<i>✅ Sources: {sources_text}</i>\n"
+            return f"<i>✅ Recommended by: {sources_text}</i>\n"
 
         return ""
 
