@@ -47,6 +47,7 @@ class LangChainOrchestrator:
         from agents.smart_scraper import SmartRestaurantScraper  # DIRECT IMPORT
         from agents.editor_agent import EditorAgent
         from agents.follow_up_search_agent import FollowUpSearchAgent
+        from agents.text_cleaner_agent import TextCleanerAgent
 
         # Initialize agents
         self.query_analyzer = QueryAnalyzer(config)
@@ -54,7 +55,7 @@ class LangChainOrchestrator:
         self.dbcontent_evaluation_agent = ContentEvaluationAgent(config)
         self.search_agent = BraveSearchAgent(config)
         self.scraper = SmartRestaurantScraper(config) 
-        self.text_cleaner = self.scraper._text_cleaner # Expose text cleaner for testing
+        self._text_cleaner = TextCleanerAgent(config, model_override='deepseek')
         self.editor_agent = EditorAgent(config)
         self.follow_up_search_agent = FollowUpSearchAgent(config)
         self.dbcontent_evaluation_agent.set_brave_search_agent(self.search_agent)
@@ -649,173 +650,109 @@ class LangChainOrchestrator:
                 "telegram_formatted_text": "Sorry, there was an error formatting the restaurant recommendations."
             }
 
-    # PART 1: Replace in agents/langchain_orchestrator.py
-    # Find the _save_scraped_content_for_processing method and replace the content compilation section
-
     def _save_scraped_content_for_processing(self, pipeline_data, scraped_results):
         """
-        Enhanced method that saves CLEANED CONTENT (not raw scraped content) to Supabase Storage.
-
-        FIXED: Now uses cleaned_content from text cleaner instead of raw scraped_content
+        UPDATED: Upload existing TXT file from text cleaner to Supabase
+        Text cleaner creates TXT file, we upload that file directly
         """
         try:
-            logger.info("💾 ENHANCED: Saving CLEANED scraped content for background processing...")
+            logger.info("💾 Processing RTF through text cleaner and uploading TXT file to Supabase...")
 
-            # Extract metadata
+            # Extract metadata (unchanged)
             destination_info = pipeline_data.get("destination", "Unknown")
             city = destination_info.split(",")[0].strip() if isinstance(destination_info, str) else "Unknown"
             country = destination_info.split(",")[1].strip() if isinstance(destination_info, str) and "," in destination_info else ""
-
             query = pipeline_data.get("raw_query", pipeline_data.get("query", ""))
-            sources = [result.get('url', '') for result in scraped_results if result.get('url')]
 
-            # FIXED: Compile CLEANED content instead of raw scraped content
-            all_cleaned_content = f"Query: {query}\nDestination: {city}, {country}\n\n"
-            all_cleaned_content += "=" * 80 + "\n\n"
+            # NEW: Use text cleaner to process RTF and create TXT file
+            if hasattr(self, '_text_cleaner') and self._text_cleaner:
+                logger.info("🧹 Using text cleaner to convert RTF to TXT file...")
 
-            cleaned_sources = 0
-            raw_fallback_sources = 0
+                # The cleaner processes all results and returns path to TXT file
+                txt_file_path = await self._text_cleaner.clean_scraped_results(scraped_results, query)
 
-            # FIXED: Use cleaned_content when available, fallback to scraped_content
-            for idx, result in enumerate(scraped_results, 1):
-                # PRIORITY: Use cleaned content from text cleaner
-                content = result.get('cleaned_content', '')
-                content_type = "CLEANED"
+                if not txt_file_path or not os.path.exists(txt_file_path):
+                    logger.error("❌ Text cleaner failed to create TXT file")
+                    return
 
-                # FALLBACK: If no cleaned content, use raw content (shouldn't happen in normal flow)
-                if not content:
-                    content = result.get('scraped_content', result.get('content', ''))
-                    content_type = "RAW"
-                    raw_fallback_sources += 1
-                    logger.warning(f"⚠️ No cleaned content for {result.get('url', 'unknown')} - using raw content as fallback")
-                else:
-                    cleaned_sources += 1
+                # Read the TXT file content
+                with open(txt_file_path, 'r', encoding='utf-8') as f:
+                    clean_content = f.read()
 
-                if content:
-                    all_cleaned_content += f"SOURCE {idx}: {result.get('url', 'Unknown URL')}\n"
-                    all_cleaned_content += f"TITLE: {result.get('title', 'No title')}\n"
-                    all_cleaned_content += f"CONTENT_TYPE: {content_type}\n"
-                    all_cleaned_content += "-" * 40 + "\n"
-                    all_cleaned_content += content + "\n\n"
-                    all_cleaned_content += "=" * 80 + "\n\n"
+                logger.info(f"📊 TXT file created: {os.path.basename(txt_file_path)} ({len(clean_content)} chars)")
 
-            # Log content statistics
-            logger.info(f"📊 Content compilation stats:")
-            logger.info(f"   🧹 Cleaned content sources: {cleaned_sources}")
-            logger.info(f"   ⚠️ Raw content fallbacks: {raw_fallback_sources}")
+                # Prepare metadata for Supabase upload
+                metadata = {
+                    'city': city,
+                    'country': country,
+                    'query': query,
+                    'scraped_at': datetime.now().isoformat(),
+                    'source_count': len(scraped_results),
+                    'content_length': len(clean_content),
+                    'content_type': 'cleaned_restaurants',
+                    'file_format': 'txt',  # TXT format
+                    'processing_method': 'rtf_to_text',
+                    'local_file': os.path.basename(txt_file_path)
+                }
 
-            if cleaned_sources == 0 and raw_fallback_sources > 0:
-                logger.warning("⚠️ WARNING: No cleaned content available for Supabase - all content is raw/unprocessed")
-            elif cleaned_sources > 0:
-                logger.info(f"✅ Successfully saving cleaned content for {cleaned_sources}/{len(scraped_results)} sources")
+                # Background upload TXT file to Supabase
+                def perform_background_uploads():
+                    try:
+                        if hasattr(self, 'storage_manager') and self.storage_manager:
+                            logger.info("☁️ Uploading clean restaurant TXT to Supabase Storage...")
 
-            if not all_cleaned_content.strip():
-                logger.warning("⚠️ No cleaned content to save")
-                return
+                            # Upload clean TXT content to Supabase
+                            success, storage_path = self.storage_manager.upload_scraped_content(
+                                clean_content,  # Clean text from file
+                                metadata, 
+                                file_type="txt"  # TXT files for Supabase
+                            )
 
-            # Save to local file first (for backup/debugging)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"cleaned_{city.replace(' ', '_')}_{timestamp}.txt"  # FIXED: Changed from "scraped_" to "cleaned_"
+                            if success:
+                                logger.info(f"✅ Clean restaurant TXT uploaded to: {storage_path}")
+                            else:
+                                logger.warning("⚠️ Failed to upload clean TXT to Supabase Storage")
 
-            os.makedirs("scraped_content", exist_ok=True)
-            file_path = os.path.join("scraped_content", filename)
-
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(all_cleaned_content)
-
-            logger.info(f"💾 Saved CLEANED content locally to: {file_path}")
-
-            # Prepare metadata for all upload operations
-            metadata = {
-                'city': city,
-                'country': country,
-                'sources': sources,
-                'query': query,
-                'scraped_at': datetime.now().isoformat(),
-                'source_count': len(scraped_results),
-                'content_length': len(all_cleaned_content),
-                'content_type': 'cleaned'  # ADDED: Mark this as cleaned content
-            }
-
-            # Function to handle all background uploads  
-            def perform_background_uploads():
-                try:
-                    # Upload the CLEANED content to Supabase Storage
-                    if hasattr(self, 'storage_manager') and self.storage_manager:
-                        logger.info("☁️ Uploading cleaned content to Supabase Storage...")
-                        success, storage_path = self.storage_manager.upload_scraped_content(
-                            all_cleaned_content, 
-                            metadata, 
-                            file_type="txt"
-                        )
-
-                        if success:
-                            logger.info(f"✅ Cleaned content uploaded to: {storage_path}")
                         else:
-                            logger.warning("⚠️ Failed to upload cleaned content to Supabase Storage")
+                            logger.warning("⚠️ No storage manager available - TXT file saved locally only")
 
-                    # Also save individual files if content is large (>100KB per file)
-                    if len(all_cleaned_content) > 100000:  # 100KB threshold
-                        try:
-                            logger.info("📑 Content is large, saving individual cleaned article files...")
+                    except Exception as upload_error:
+                        logger.error(f"❌ Error in TXT upload: {upload_error}")
 
-                            for idx, result in enumerate(scraped_results, 1):
-                                # FIXED: Use cleaned content for individual files too
-                                content = result.get('cleaned_content', '')
+                # Execute background upload
+                from threading import Thread
+                upload_thread = Thread(target=perform_background_uploads, daemon=True)
+                upload_thread.start()
 
-                                if not content:
-                                    content = result.get('scraped_content', result.get('content', ''))
-                                    logger.warning(f"⚠️ No cleaned content for article {idx} - using raw as fallback")
+                logger.info("🚀 TXT background upload initiated")
 
-                                if content and len(content) > 1000:  # Only save substantial content
-                                    article_metadata = {
-                                        **metadata,
-                                        'article_index': idx,
-                                        'article_url': result.get('url', ''),
-                                        'article_title': result.get('title', ''),
-                                        'is_cleaned': bool(result.get('cleaned_content'))  # ADDED: Track if cleaned
-                                    }
+            else:
+                # Fallback: Save raw content as TXT
+                logger.warning("⚠️ No text cleaner available - saving raw content as TXT fallback")
 
-                                    # Save individual article with cleaned content
-                                    article_filename = f"{timestamp}_{city.replace(' ', '_')}_cleaned_article_{idx}.txt"  # FIXED: Added "cleaned_"
-                                    article_path = os.path.join("scraped_content", "articles", article_filename)
+                # Compile raw content for fallback
+                all_content = f"Query: {query}\nDestination: {city}, {country}\n\n"
+                for idx, result in enumerate(scraped_results, 1):
+                    content = result.get('content', '') or result.get('scraped_content', '')
+                    if content:
+                        all_content += f"SOURCE {idx}: {result.get('url', 'Unknown URL')}\n"
+                        all_content += content + "\n\n"
 
-                                    os.makedirs(os.path.dirname(article_path), exist_ok=True)
-                                    with open(article_path, 'w', encoding='utf-8') as f:
-                                        f.write(f"URL: {result.get('url', 'Unknown')}\n")
-                                        f.write(f"Title: {result.get('title', 'No title')}\n")
-                                        f.write(f"Query: {query}\n")
-                                        f.write(f"Content Type: {'CLEANED' if result.get('cleaned_content') else 'RAW'}\n")  # ADDED
-                                        f.write("-" * 40 + "\n")
-                                        f.write(content)
+                # Save as TXT fallback
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"scraped_fallback_{city.replace(' ', '_')}_{timestamp}.txt"
 
-                                    # Upload individual cleaned article to Supabase Storage
-                                    if hasattr(self, 'storage_manager') and self.storage_manager:
-                                        success, storage_path = self.storage_manager.upload_scraped_content(
-                                            content, 
-                                            article_metadata, 
-                                            file_type="txt"
-                                        )
+                os.makedirs("scraped_content", exist_ok=True)
+                file_path = os.path.join("scraped_content", filename)
 
-                                        if success:
-                                            logger.info(f"✅ Cleaned article {idx} uploaded to: {storage_path}")
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(all_content)
 
-                        except Exception as e:
-                            logger.error(f"❌ Error saving individual cleaned articles: {e}")
-
-                except Exception as e:
-                    logger.error(f"❌ Background upload error: {e}")
-
-            # Run background uploads in a separate thread
-            import threading
-            upload_thread = threading.Thread(target=perform_background_uploads)
-            upload_thread.daemon = True
-            upload_thread.start()
-
-            logger.info("✅ Cleaned content saved locally and background upload initiated")
+                logger.info(f"💾 Fallback: Saved raw content to {file_path}")
 
         except Exception as e:
-            logger.error(f"❌ Error saving cleaned scraped content: {e}")
+            logger.error(f"❌ Error in RTF-to-TXT processing: {e}")
+            raise
 
     def _log_enhanced_usage(self):
         """Enhanced usage logging with smart scraper insights"""
@@ -838,10 +775,6 @@ class LangChainOrchestrator:
                     logger.info(f"  {emoji.get(strategy, '📌')} {strategy}: {count} URLs")
 
         logger.info("=" * 60)
-
-    def _log_firecrawl_usage(self):
-        """Legacy compatibility - calls enhanced logging"""
-        self._log_enhanced_usage()
 
     def _update_enhanced_stats(self, result: dict, processing_time: float):
         """Update statistics with enhanced smart scraper data"""
@@ -961,7 +894,6 @@ class LangChainOrchestrator:
                     "raw_query": user_query,  # Include raw query even on error
                     "firecrawl_stats": self.scraper.get_stats()
                 }
-
 
     def get_enhanced_stats(self) -> dict:
         """Get comprehensive orchestrator and smart scraper statistics"""

@@ -179,16 +179,19 @@ class SmartRestaurantScraper:
         async with semaphore:
             return await self._scrape_single_url(url, context_index)
 
+    # agents/smart_scraper.py - Simple RTF Fix
+    # ONLY change the _scrape_single_url method
+
     async def _scrape_single_url(self, url: str, context_index: int = 0) -> Dict[str, Any]:
         """
-        Scrape a single URL with NO page reload on timeout + ad blocking
+        Scrape a single URL - Simple human mimic: select all, copy, save as RTF
         """
         domain = urlparse(url).netloc
         initial_timeout = self.default_timeout
 
         start_time = time.time()
         page = None
-        final_timeout = initial_timeout  # Initialize final_timeout
+        final_timeout = initial_timeout
 
         try:
             logger.info(f"🎭 Context-{context_index} scraping: {url} (timeout: {initial_timeout/1000}s)")
@@ -200,38 +203,32 @@ class SmartRestaurantScraper:
             # Configure page for optimal performance (includes ad blocking now)
             await self._configure_page_with_adblock(page)
 
-            # Smart timeout strategy - NO PAGE RELOAD
-            timeout_attempts = [
-                initial_timeout,                    # First try: learned/default timeout
-                max(initial_timeout * 1.5, 45000), # Second try: 50% longer or 45s minimum
-                60000                               # Final try: 60s maximum
-            ]
+            # Smart timeout strategy
+            timeouts_to_try = [initial_timeout]
+            if domain in self.domain_timeouts:
+                timeouts_to_try = [self.domain_timeouts[domain]]
+            elif domain in ['guide.michelin.com', 'timeout.com', 'zagat.com']:
+                timeouts_to_try = [self.slow_timeout]
 
             load_success = False
-            final_timeout = initial_timeout
 
-            for attempt, timeout in enumerate(timeout_attempts):
+            for timeout_attempt, timeout_ms in enumerate(timeouts_to_try, 1):
                 try:
-                    logger.info(f"🔄 Attempt {attempt + 1}/{len(timeout_attempts)}: {timeout/1000}s timeout")
+                    final_timeout = timeout_ms
+                    page.set_default_timeout(timeout_ms)
+                    page.set_default_navigation_timeout(timeout_ms)
 
-                    # Try to load page with current timeout
-                    await page.goto(url, wait_until='networkidle', timeout=timeout)
+                    logger.info(f"🌐 Attempt {timeout_attempt}: Loading {domain} (timeout: {timeout_ms/1000}s)")
 
-                    # If we get here, page loaded successfully
+                    await page.goto(url, wait_until='domcontentloaded')
                     load_success = True
-                    final_timeout = timeout
+                    logger.info(f"✅ Page loaded successfully on attempt {timeout_attempt}")
+                    break
 
-                    break  # Success - exit timeout attempts
-
-                except Exception as e:
-                    if "timeout" in str(e).lower() and attempt < len(timeout_attempts) - 1:
-                        # Timeout occurred, but we have more attempts
-                        logger.info(f"⏱️ Timeout at {timeout/1000}s, trying {timeout_attempts[attempt + 1]/1000}s...")
-                        continue  # Try next timeout WITHOUT reloading page
-                    else:
-                        # Either not a timeout, or we've exhausted all attempts
-                        if attempt >= len(timeout_attempts) - 1:
-                            logger.error(f"❌ All timeout attempts failed for {url}")
+                except Exception as timeout_error:
+                    logger.warning(f"⚠️ Timeout attempt {timeout_attempt} failed for {url}: {timeout_error}")
+                    if timeout_attempt == len(timeouts_to_try):
+                        logger.error(f"❌ All timeout attempts failed for {url}")
                         raise
 
             if not load_success:
@@ -240,25 +237,64 @@ class SmartRestaurantScraper:
             # Human-like behavior: wait and read the page
             await asyncio.sleep(self.load_wait_time)
 
-            # The "dumb but modern" magic: Select All + Extract
+            # SIMPLE HUMAN MIMIC: Select All + Copy formatted content
             await asyncio.sleep(self.interaction_delay)
             await page.keyboard.press('Meta+a')  # Cmd+A (works on most systems)
             await asyncio.sleep(self.interaction_delay)
 
-            # Get selected text (human clipboard equivalent)
-            selected_text = await page.evaluate("""
+            # Get the formatted content as RTF from clipboard simulation
+            rtf_content = await page.evaluate("""
+                () => {
+                    const selection = window.getSelection();
+                    if (selection.rangeCount > 0) {
+                        const range = selection.getRangeAt(0);
+                        const div = document.createElement('div');
+                        div.appendChild(range.cloneContents());
+
+                        // Create simple RTF with basic formatting preserved
+                        let rtfContent = '{\\\\rtf1\\\\ansi\\\\f0\\\\fs24 ';
+
+                        // Convert HTML to simple RTF
+                        let htmlContent = div.innerHTML;
+
+                        // Basic conversions to preserve some formatting
+                        htmlContent = htmlContent.replace(/<strong[^>]*>(.*?)<\\/strong>/gi, '{\\\\b $1\\\\b0}');
+                        htmlContent = htmlContent.replace(/<b[^>]*>(.*?)<\\/b>/gi, '{\\\\b $1\\\\b0}');
+                        htmlContent = htmlContent.replace(/<em[^>]*>(.*?)<\\/em>/gi, '{\\\\i $1\\\\i0}');
+                        htmlContent = htmlContent.replace(/<i[^>]*>(.*?)<\\/i>/gi, '{\\\\i $1\\\\i0}');
+                        htmlContent = htmlContent.replace(/<h[1-6][^>]*>(.*?)<\\/h[1-6]>/gi, '{\\\\b $1\\\\b0}\\\\par ');
+                        htmlContent = htmlContent.replace(/<p[^>]*>(.*?)<\\/p>/gi, '$1\\\\par ');
+                        htmlContent = htmlContent.replace(/<br[^>]*\/?>/gi, '\\\\line ');
+                        htmlContent = htmlContent.replace(/<[^>]+>/g, ' ');
+
+                        // Clean up and escape RTF special chars
+                        htmlContent = htmlContent.replace(/\\\\/g, '\\\\\\\\');
+                        htmlContent = htmlContent.replace(/{/g, '\\\\{');
+                        htmlContent = htmlContent.replace(/}/g, '\\\\}');
+
+                        rtfContent += htmlContent + '}';
+                        return rtfContent;
+                    }
+
+                    // Fallback: plain text as minimal RTF
+                    const text = document.body.innerText || document.body.textContent || '';
+                    return '{\\\\rtf1\\\\ansi\\\\f0\\\\fs24 ' + text.replace(/\\\\/g, '\\\\\\\\').replace(/{/g, '\\\\{').replace(/}/g, '\\\\}') + '}';
+                }
+            """)
+
+            # Also get plain text as backup
+            plain_text = await page.evaluate("""
                 () => {
                     const selection = window.getSelection();
                     if (selection.rangeCount > 0) {
                         return selection.toString();
                     }
-                    // Fallback: get all visible text
                     return document.body.innerText || document.body.textContent || '';
                 }
             """)
 
-            # Clean the scraped content
-            cleaned_content = self._clean_scraped_text(selected_text)
+            # Clean the plain text backup
+            cleaned_text = self._clean_scraped_text(plain_text)
             load_time = time.time() - start_time
 
             # Update stats
@@ -267,44 +303,48 @@ class SmartRestaurantScraper:
             self.stats["total_load_time"] = self.stats.get("total_load_time", 0) + load_time
             self.stats["avg_load_time"] = self.stats["total_load_time"] / self.stats.get("total_scraped", 1)
 
-            logger.info(f"✅ Context-{context_index} scraped {len(cleaned_content)} chars in {load_time:.2f}s (final timeout: {final_timeout/1000}s)")
+            logger.info(f"✅ Successfully scraped {url} as RTF ({len(rtf_content)} chars, {load_time:.1f}s)")
 
             return {
-                "success": True,
-                "content": cleaned_content,
-                "url": url,
-                "load_time": load_time,
-                "char_count": len(cleaned_content),
-                "method": "human_mimic",
-                "context_used": context_index,
-                "timeout_used": final_timeout,
-                "error": None
+                'success': True,
+                'content': rtf_content,        # RTF formatted content  
+                'text_content': cleaned_text,  # Plain text backup
+                'url': url,
+                'domain': domain,
+                'load_time': load_time,
+                'char_count': len(rtf_content),
+                'timeout_used': final_timeout,
+                'scraping_method': 'human_mimic_rtf'
             }
 
         except Exception as e:
             load_time = time.time() - start_time
             error_msg = str(e)
 
-            self.stats["total_scraped"] = self.stats.get("total_scraped", 0) + 1
+            # Update stats
             self.stats["failed_scrapes"] += 1
 
-            logger.error(f"❌ Context-{context_index} failed scraping {url}: {error_msg}")
+            logger.error(f"❌ Failed to scrape {url}: {error_msg} (after {load_time:.1f}s)")
 
             return {
-                "success": False,
-                "content": "",
-                "url": url,
-                "load_time": load_time,
-                "char_count": 0,
-                "method": "human_mimic",
-                "context_used": context_index,
-                "timeout_used": final_timeout,
-                "error": error_msg
+                'success': False,
+                'content': '',
+                'text_content': '',
+                'url': url,
+                'domain': domain,
+                'load_time': load_time,
+                'char_count': 0,
+                'timeout_used': final_timeout,
+                'error': error_msg,
+                'scraping_method': 'human_mimic_rtf'
             }
 
         finally:
             if page:
-                await page.close()
+                try:
+                    await page.close()
+                except Exception as e:
+                    logger.warning(f"⚠️ Error closing page: {e}")
 
     async def _configure_page_with_adblock(self, page: Page):
         """
