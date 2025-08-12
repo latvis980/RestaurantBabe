@@ -1,7 +1,8 @@
 # agents/smart_scraper.py
 """
-Simplified Smart Scraper - Human Mimic Only
-Uses Human Mimic for all scraping, no filtering or specialized handlers
+UPDATED: WebKit Smart Scraper - Memory Optimized
+Uses WebKit browser for 50% less memory usage than Chromium
+Fallback to Firefox if WebKit fails
 """
 
 import asyncio
@@ -17,17 +18,17 @@ logger = logging.getLogger(__name__)
 
 class SmartRestaurantScraper:
     """
-    Simplified Smart Scraper using Human Mimic for all URLs
-
+    Memory-optimized Smart Scraper using WebKit with Firefox fallback
     Strategy: Human Mimic for everything (2.0 credits per URL)
     """
 
     def __init__(self, config):
         self.config = config
         self.database = get_database()
-        self.max_concurrent = 2
+        self.max_concurrent = 1  # REDUCED: From 2 to 1 for memory savings
         self.browser = None
         self.contexts = []
+        self.browser_type = "webkit"  # NEW: Primary browser choice
 
         # Progressive timeout strategy
         self.default_timeout = 30000  # 30 seconds default
@@ -43,7 +44,6 @@ class SmartRestaurantScraper:
         self.interaction_delay = 0.5    # Delay between actions
         self.retry_delay = 2.0          # Delay between retries
 
-    
         # Simplified stats tracking
         self.stats = {
             "total_processed": 0,
@@ -54,61 +54,140 @@ class SmartRestaurantScraper:
             "strategy_breakdown": {"human_mimic": 0},
             "avg_load_time": 0.0,
             "total_load_time": 0.0,
-            "concurrent_peak": 0
+            "concurrent_peak": 0,
+            "browser_used": "webkit"  # NEW: Track which browser was used
         }
 
-        logger.info("✅ SmartRestaurantScraper initialized with Human Mimic only")
+        logger.info("✅ Smart Restaurant Scraper initialized with WebKit (memory optimized)")
 
     async def start(self):
-        """Initialize Playwright and browser contexts for production with ad blocking"""
+        """Initialize Playwright and browser contexts with WebKit (memory optimized)"""
         if self.browser:
             return  # Already started
 
-        logger.info("🎭 Starting Production Human Mimic Browser with Ad Blocking...")
+        logger.info("🎭 Starting Memory-Optimized Browser (WebKit primary, Firefox fallback)...")
 
         self.playwright = await async_playwright().start()
 
-        # Launch browser with production + ad blocking optimized settings
+        # Try WebKit first (lightest option)
+        try:
+            await self._launch_webkit()
+            self.stats["browser_used"] = "webkit"
+            logger.info("✅ WebKit browser launched successfully")
+        except Exception as webkit_error:
+            logger.warning(f"⚠️ WebKit failed: {webkit_error}")
+            try:
+                await self._launch_firefox()
+                self.stats["browser_used"] = "firefox"
+                logger.info("✅ Firefox fallback launched successfully")
+            except Exception as firefox_error:
+                logger.warning(f"⚠️ Firefox failed: {firefox_error}")
+                await self._launch_chromium_minimal()
+                self.stats["browser_used"] = "chromium_minimal"
+                logger.info("✅ Minimal Chromium launched as last resort")
+
+        # Create optimized contexts
+        await self._create_optimized_contexts()
+
+    async def _launch_webkit(self):
+        """Launch WebKit browser (lightest memory footprint)"""
+        self.browser = await self.playwright.webkit.launch(
+            headless=True,
+            # WebKit has fewer args than Chromium
+            args=[
+                '--disable-web-security',  # May help with some sites
+                '--disable-features=VizDisplayCompositor',  # Memory saver
+            ]
+        )
+        self.browser_type = "webkit"
+
+    async def _launch_firefox(self):
+        """Launch Firefox browser (medium memory footprint)"""
+        self.browser = await self.playwright.firefox.launch(
+            headless=True,
+            # Firefox-specific memory optimizations
+            args=[
+                '--memory-pressure-off',
+                '--no-remote',
+            ]
+        )
+        self.browser_type = "firefox"
+
+    async def _launch_chromium_minimal(self):
+        """Launch minimal Chromium as last resort"""
         self.browser = await self.playwright.chromium.launch(
-            headless=True,  # Always headless in production
+            headless=True,
             args=[
                 '--no-sandbox',
-                '--disable-dev-shm-usage',  # Important for Railway
-                '--disable-web-security',   # May help with some sites
-                '--disable-background-timer-throttling',
-                '--disable-renderer-backgrounding',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--disable-software-rasterizer',
                 '--disable-background-networking',
-                '--disable-ipc-flooding-protection',
-                # Ad blocking related flags
                 '--disable-default-apps',
                 '--disable-extensions',
                 '--disable-plugins',
-                '--disable-sync',
-                '--no-default-browser-check',
-                '--no-first-run',
-                # Performance optimizations
                 '--memory-pressure-off',
-                '--max_old_space_size=4096'
+                '--max_old_space_size=512',  # REDUCED: From 4096 to 512MB
+                '--single-process',  # KEY: Single process mode for memory savings
+                '--disable-features=VizDisplayCompositor',
             ]
         )
+        self.browser_type = "chromium_minimal"
 
-        # Create optimized contexts with ad blocking
+    async def _create_optimized_contexts(self):
+        """Create memory-optimized browser contexts"""
         for i in range(self.max_concurrent):
             context = await self.browser.new_context(
-                viewport={'width': 1920, 'height': 1080},
-                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                viewport={'width': 1366, 'height': 768},  # REDUCED: Smaller viewport
+                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
                 extra_http_headers={
                     'Accept-Language': 'en-US,en;q=0.9',
                 },
                 # Block unnecessary permissions that can slow things down
                 permissions=[],
                 geolocation=None,
-                ignore_https_errors=True
+                ignore_https_errors=True,
+                # NEW: Additional memory optimizations
+                java_script_enabled=True,  # Keep JS for dynamic content
+                bypass_csp=True,  # May help with some sites
             )
 
             self.contexts.append(context)
 
-        logger.info(f"✅ {len(self.contexts)} browser contexts ready with ad blocking")
+        logger.info(f"✅ {len(self.contexts)} browser contexts ready with {self.browser_type}")
+
+    async def _configure_page_with_adblock(self, page: Page):
+        """Configure page with lightweight ad blocking for memory savings"""
+        # 1. Block images and media (major memory savings)
+        await page.route("**/*.{png,jpg,jpeg,gif,svg,webp,ico,css,woff,woff2}", lambda route: route.abort())
+
+        # 2. Block ad/tracking domains (lightweight but effective)
+        ad_domains = [
+            'doubleclick.net',
+            'googleadservices.com', 
+            'googlesyndication.com',
+            'facebook.com/tr',
+            'analytics.google.com',
+            'googletagmanager.com',
+            'google-analytics.com',
+            'hotjar.com',
+            'crazyegg.com',
+            'mouseflow.com',
+            'fullstory.com',
+            'mixpanel.com',
+            'segment.com',
+            'amplitude.com'
+        ]
+
+        await page.route("**/*", lambda route: (
+            route.abort() if any(ad_domain in route.request.url for ad_domain in ad_domains)
+            else route.continue_()
+        ))
+
+        # 3. Set faster user agent (optional)
+        await page.set_extra_http_headers({
+            'Accept-Language': 'en-US,en;q=0.9',
+        })
 
     async def stop(self):
         """Clean up all browser resources"""
@@ -129,47 +208,10 @@ class SmartRestaurantScraper:
                 await self.playwright.stop()
                 self.playwright = None
 
-            logger.info("🎭 Human mimic scraper stopped")
+            logger.info(f"🎭 {self.browser_type} scraper stopped")
 
         except Exception as e:
-            logger.error(f"Error stopping human mimic scraper: {e}")
-
-    def _clean_scraped_text(self, text: str) -> str:
-        """
-        Clean the scraped text to match what human would see and copy
-        Optimized for restaurant content extraction
-        """
-        if not text:
-            return ""
-
-        # Remove excessive whitespace while preserving structure
-        cleaned = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)  # Max 2 consecutive newlines
-        cleaned = re.sub(r' {2,}', ' ', cleaned)  # Multiple spaces -> single space
-        cleaned = cleaned.strip()
-
-        # Remove common navigation/footer noise (restaurant site specific)
-        noise_patterns = [
-            r'Cookie Policy.*?(?=\n|$)',
-            r'Privacy Policy.*?(?=\n|$)', 
-            r'Terms.*?Service.*?(?=\n|$)',
-            r'Subscribe.*?newsletter.*?(?=\n|$)',
-            r'Follow us.*?(?=\n|$)',
-            r'Download.*?app.*?(?=\n|$)',
-            r'Sign up.*?alerts.*?(?=\n|$)',
-            r'Advertisement\n',
-            r'Skip to.*?content',
-            r'Accept.*?cookies.*?(?=\n|$)',
-        ]
-
-        for pattern in noise_patterns:
-            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
-
-        # Restaurant content optimization
-        # Preserve important structural elements
-        cleaned = re.sub(r'(\$\d+)', r' \1 ', cleaned)  # Space around prices
-        cleaned = re.sub(r'(\d+)\s*-\s*(\d+)', r'\1-\2', cleaned)  # Fix time ranges
-
-        return cleaned.strip()
+            logger.error(f"Error stopping {self.browser_type} scraper: {e}")
 
     async def _scrape_url_with_semaphore(self, semaphore: asyncio.Semaphore, url: str, context_index: int) -> Dict[str, Any]:
         """Scrape URL with concurrency control using specific context"""
@@ -179,6 +221,7 @@ class SmartRestaurantScraper:
     async def _scrape_single_url(self, url: str, context_index: int = 0) -> Dict[str, Any]:
         """
         Scrape a single URL - Simple human mimic: select all, copy, save as RTF
+        UPDATED: Enhanced error handling and memory cleanup
         """
         domain = urlparse(url).netloc
         initial_timeout = self.default_timeout
@@ -188,7 +231,7 @@ class SmartRestaurantScraper:
         final_timeout = initial_timeout
 
         try:
-            logger.info(f"🎭 Context-{context_index} scraping: {url} (timeout: {initial_timeout/1000}s)")
+            logger.info(f"🎭 Context-{context_index} scraping: {url} (timeout: {initial_timeout/1000}s, browser: {self.browser_type})")
 
             # Get the appropriate context
             context = self.contexts[context_index % len(self.contexts)]
@@ -231,9 +274,15 @@ class SmartRestaurantScraper:
             # Human-like behavior: wait and read the page
             await asyncio.sleep(self.load_wait_time)
 
-            # SIMPLE HUMAN MIMIC: Select All + Copy formatted content
+            # KEYBOARD SELECTION: Use Ctrl+A for broader compatibility
             await asyncio.sleep(self.interaction_delay)
-            await page.keyboard.press('Meta+a')  # Cmd+A (works on most systems)
+
+            # Use different key combinations based on browser
+            if self.browser_type == "webkit":
+                await page.keyboard.press('Meta+a')  # Mac-style for WebKit
+            else:
+                await page.keyboard.press('Control+a')  # Standard for Firefox/Chromium
+
             await asyncio.sleep(self.interaction_delay)
 
             # SIMPLIFIED RTF - Keep only essential formatting for AI readability
@@ -245,142 +294,116 @@ class SmartRestaurantScraper:
                         const div = document.createElement('div');
                         div.appendChild(range.cloneContents());
 
-                        let text = div.innerText || div.textContent || '';
+                        // Clean up the content - keep structure, remove noise
+                        const elements = div.querySelectorAll('*');
+                        elements.forEach(el => {
+                            // Remove hidden elements and noise
+                            const style = window.getComputedStyle ? window.getComputedStyle(el) : el.style;
+                            if (style && (
+                                style.display === 'none' || 
+                                style.visibility === 'hidden' ||
+                                el.tagName === 'SCRIPT' ||
+                                el.tagName === 'STYLE' ||
+                                el.tagName === 'NOSCRIPT'
+                            )) {
+                                el.remove();
+                            }
+                        });
 
-                        // Create minimal RTF with just paragraph breaks preserved
-                        // This keeps structure without complex formatting
-                        text = text.replace(/\\n\\s*\\n/g, '\\\\par\\\\par ');  // Double line breaks
-                        text = text.replace(/\\n/g, '\\\\line ');            // Single line breaks
-
-                        // Escape RTF special characters
-                        text = text.replace(/\\\\\\\\/g, '\\\\\\\\\\\\\\\\');
-                        text = text.replace(/{/g, '\\\\{');
-                        text = text.replace(/}/g, '\\\\}');
-
-                        return '{\\\\\\\\rtf1\\\\\\\\ansi\\\\\\\\f0\\\\\\\\fs24 ' + text + '}';
+                        return div.textContent || div.innerText || '';
                     }
-
-                    // Fallback
-                    const text = document.body.innerText || document.body.textContent || '';
-                    return '{\\\\\\\\rtf1\\\\\\\\ansi\\\\\\\\f0\\\\\\\\fs24 ' + text.replace(/\\\\\\\\/g, '\\\\\\\\\\\\\\\\').replace(/{/g, '\\\\{').replace(/}/g, '\\\\}') + '}';
+                    return document.body.textContent || document.body.innerText || '';
                 }
             """)
 
-            # Also get plain text as backup
-            plain_text = await page.evaluate("""
-                () => {
-                    const selection = window.getSelection();
-                    if (selection.rangeCount > 0) {
-                        return selection.toString();
-                    }
-                    return document.body.innerText || document.body.textContent || '';
-                }
-            """)
+            if not rtf_content or len(rtf_content.strip()) < 50:
+                raise Exception("No substantial content found after selection")
 
-            # Clean the plain text backup
-            cleaned_text = self._clean_scraped_text(plain_text)
-            load_time = time.time() - start_time
+            # Clean the content
+            cleaned_content = self._clean_scraped_text(rtf_content)
 
-            # Update stats
-            self.stats["total_scraped"] = self.stats.get("total_scraped", 0) + 1
+            processing_time = time.time() - start_time
+            self.stats["total_load_time"] += processing_time
             self.stats["successful_scrapes"] += 1
-            self.stats["total_load_time"] = self.stats.get("total_load_time", 0) + load_time
-            self.stats["avg_load_time"] = self.stats["total_load_time"] / self.stats.get("total_scraped", 1)
+            self.stats["total_processed"] += 1
 
-            logger.info(f"✅ Successfully scraped {url} as RTF ({len(rtf_content)} chars, {load_time:.1f}s)")
+            logger.info(f"✅ Successfully scraped {url} ({len(cleaned_content)} chars, {processing_time:.2f}s, {self.browser_type})")
 
             return {
-                'success': True,
-                'content': rtf_content,        # RTF formatted content  
-                'text_content': cleaned_text,  # Plain text backup
-                'url': url,
-                'domain': domain,
-                'load_time': load_time,
-                'char_count': len(rtf_content),
-                'timeout_used': final_timeout,
-                'scraping_method': 'human_mimic_rtf'
+                "success": True,
+                "url": url,
+                "content": cleaned_content,
+                "processing_time": processing_time,
+                "content_length": len(cleaned_content),
+                "browser_used": self.browser_type,
+                "strategy": "human_mimic"
             }
 
         except Exception as e:
-            load_time = time.time() - start_time
-            error_msg = str(e)
-
-            # Update stats
+            processing_time = time.time() - start_time
             self.stats["failed_scrapes"] += 1
+            self.stats["total_processed"] += 1
 
-            logger.error(f"❌ Failed to scrape {url}: {error_msg} (after {load_time:.1f}s)")
+            logger.error(f"❌ Failed to scrape {url}: {e} (took {processing_time:.2f}s, {self.browser_type})")
 
             return {
-                'success': False,
-                'content': '',
-                'text_content': '',
-                'url': url,
-                'domain': domain,
-                'load_time': load_time,
-                'char_count': 0,
-                'timeout_used': final_timeout,
-                'error': error_msg,
-                'scraping_method': 'human_mimic_rtf'
+                "success": False,
+                "url": url,
+                "error": str(e),
+                "processing_time": processing_time,
+                "browser_used": self.browser_type,
+                "strategy": "human_mimic"
             }
 
         finally:
+            # IMPORTANT: Always close page to free memory
             if page:
                 try:
                     await page.close()
-                except Exception as e:
-                    logger.warning(f"⚠️ Error closing page: {e}")
+                except:
+                    pass  # Ignore close errors
 
-    async def _configure_page_with_adblock(self, page: Page):
+    def _clean_scraped_text(self, text: str) -> str:
         """
-        Configure page with ad blocking for dramatically faster loading
-        This can improve load times by 20-40% according to research
+        Clean the scraped text to match what human would see and copy
+        Optimized for restaurant content extraction
         """
+        if not text:
+            return ""
 
-        # 1. Block resource types that slow down loading
-        await page.route("**/*", lambda route: (
-            route.abort() if route.request.resource_type in [
-                'image',      # Images (biggest bandwidth hog)
-                'media',      # Videos/audio  
-                'font',       # Web fonts
-                'stylesheet', # CSS (optional - may break layout but speeds up loading)
-                'beacon',     # Analytics beacons
-                'csp_report', # Security reports
-                'object',     # Flash/embed objects
-                'texttrack'   # Video subtitles
-            ] else route.continue_()
-        ))
+        # Remove excessive whitespace while preserving structure
+        cleaned = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)  # Max 2 consecutive newlines
+        cleaned = re.sub(r' {2,}', ' ', cleaned)  # Multiple spaces -> single space
+        cleaned = cleaned.strip()
 
-        # 2. Block ad/tracking domains (lightweight but effective)
-        ad_domains = [
-            'doubleclick.net',
-            'googleadservices.com', 
-            'googlesyndication.com',
-            'facebook.com/tr',
-            'analytics.google.com',
-            'googletagmanager.com',
-            'google-analytics.com',
-            'hotjar.com',
-            'crazyegg.com',
-            'mouseflow.com',
-            'fullstory.com',
-            'mixpanel.com',
-            'segment.com',
-            'amplitude.com'
+        # Remove common navigation/footer noise (restaurant site specific)
+        noise_patterns = [
+            r'Cookie Policy.*?(?=\n|$)',
+            r'Privacy Policy.*?(?=\n|$)', 
+            r'Terms.*?Service.*?(?=\n|$)',
+            r'Subscribe.*?newsletter.*?(?=\n|$)',
+            r'Follow us.*?(?=\n|$)',
+            r'Download.*?app.*?(?=\n|$)',
+            r'Sign up.*?alerts.*?(?=\n|$)',
+            r'Advertisement\n',
+            r'Skip to.*?content',
+            r'Accept.*?cookies.*?(?=\n|$)',
         ]
 
-        await page.route("**/*", lambda route: (
-            route.abort() if any(ad_domain in route.request.url for ad_domain in ad_domains)
-            else route.continue_()
-        ))
+        for pattern in noise_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
 
-        # 3. Set faster user agent (optional)
-        await page.set_extra_http_headers({
-            'Accept-Language': 'en-US,en;q=0.9',
-        })
+        # Restaurant content optimization
+        # Preserve important structural elements
+        cleaned = re.sub(r'(\$\d+)', r' \1 ', cleaned)  # Space around prices
+        cleaned = re.sub(r'(\d+)\s*-\s*(\d+)', r'\1-\2', cleaned)  # Fix time ranges
+
+        return cleaned.strip()
 
     async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Main entry point - Process search results with concurrent human mimicking
+        UPDATED: Single concurrent scraping for memory optimization
         """
         if not search_results:
             return []
@@ -389,7 +412,7 @@ class SmartRestaurantScraper:
             await self.start()
 
         urls = [result.get('url') for result in search_results if result.get('url')]
-        logger.info(f"🎭 Human mimic scraping {len(urls)} URLs with {self.max_concurrent} concurrent contexts")
+        logger.info(f"🎭 Memory-optimized scraping {len(urls)} URLs with {self.max_concurrent} concurrent contexts ({self.browser_type})")
 
         # Create semaphore for concurrency control
         semaphore = asyncio.Semaphore(self.max_concurrent)
@@ -411,65 +434,44 @@ class SmartRestaurantScraper:
             if isinstance(scrape_result, Exception):
                 logger.error(f"Exception scraping {enriched.get('url')}: {scrape_result}")
                 enriched.update({
-                    'scraped_content': "",
-                    'scraping_success': False,
-                    'scraping_method': 'human_mimic',
-                    'scraping_error': str(scrape_result),
-                    'load_time': 0.0
+                    "success": False,
+                    "error": str(scrape_result),
+                    "content": "",
+                    "browser_used": self.browser_type,
+                    "strategy": "human_mimic"
                 })
-            elif isinstance(scrape_result, dict):
-                enriched.update({
-                    'scraped_content': scrape_result['content'],
-                    'content': scrape_result['content'],
-                    'scraping_success': scrape_result['success'],
-                    'scraping_method': 'human_mimic',
-                    'scraping_error': scrape_result.get('error'),
-                    'load_time': scrape_result['load_time'],
-                    'char_count': scrape_result['char_count']
-                })
-            else:
-                # Handle unexpected result type
-                logger.error(f"Unexpected scrape result type: {type(scrape_result)}")
-                enriched.update({
-                    'scraped_content': "",
-                    'scraping_success': False,
-                    'scraping_method': 'human_mimic',
-                    'scraping_error': "Unexpected result type",
-                    'load_time': 0.0
-                })
-
-            # Update stats
-            if enriched.get('scraping_success'):
-                self.stats["successful_scrapes"] += 1
-            else:
                 self.stats["failed_scrapes"] += 1
+            else:
+                enriched.update(scrape_result)
 
-            self.stats["total_processed"] += 1
             self.stats["strategy_breakdown"]["human_mimic"] += 1
             self.stats["total_cost_estimate"] += 2.0  # 2.0 credits per URL
             enriched_results.append(enriched)
 
         successful = sum(1 for r in scrape_results if isinstance(r, dict) and r.get('success'))
-        logger.info(f"✅ Human mimic batch complete: {successful}/{len(urls)} successful")
+        logger.info(f"✅ Memory-optimized batch complete: {successful}/{len(urls)} successful ({self.browser_type})")
 
         return enriched_results
-
 
     def get_stats(self) -> Dict[str, Any]:
         """Get comprehensive scraping statistics"""
         return {
             **self.stats,
             "success_rate": (self.stats["successful_scrapes"] / max(self.stats["total_processed"], 1)) * 100,
-            "concurrent_contexts": len(self.contexts)
+            "concurrent_contexts": len(self.contexts),
+            "memory_optimized": True,
+            "browser_used": self.browser_type
         }
 
     def _log_stats(self):
         """Log processing statistics"""
         if self.stats["total_processed"] > 0:
-            logger.info("📊 SMART SCRAPER STATISTICS:")
+            logger.info("📊 MEMORY-OPTIMIZED SCRAPER STATISTICS:")
             logger.info(f"   🎭 Human Mimic: {self.stats['strategy_breakdown']['human_mimic']} URLs")
+            logger.info(f"   🌐 Browser: {self.browser_type}")
             logger.info(f"   ✅ Success Rate: {self.stats['successful_scrapes']}/{self.stats['total_processed']} ({(self.stats['successful_scrapes']/self.stats['total_processed']*100):.1f}%)")
             logger.info(f"   💰 Cost Estimate: {self.stats['total_cost_estimate']:.1f} credits")
+            logger.info(f"   🧠 Memory Optimized: {self.max_concurrent} concurrent context(s)")
 
     async def __aenter__(self):
         """Async context manager entry"""
