@@ -122,7 +122,7 @@ DATABASE RESULTS: {len(restaurants)} restaurants found
 
 CRITERIA:
 1. Query Match: Do restaurants match what user wants? (cuisine, style, price range, etc.)
-2. Quantity: Enough variety? (4+ = usually sufficient)
+2. Quantity: Enough variety? (7+ = usually sufficient)
 3. Quality: Meaningful details and relevance?
 
 **STAGE 2: SELECT**: Choose the BEST matching restaurants from the list above.
@@ -132,7 +132,7 @@ CRITERIA:
 
 **STAGE 3: ROUTE** 
 FOLLOW THIS LOGIC:
-• Perfect matches + sufficient quantity (4+) → USE DATABASE
+• Perfect matches + sufficient quantity (7+) → USE DATABASE
 • Poor matches → TRIGGER WEB SEARCH (discard results)  
 • Good matches but need variety → TRIGGER WEB SEARCH (preserve matching results for hybrid)
 • Partial matches → TRIGGER WEB SEARCH (preserve matching results for hybrid)
@@ -288,7 +288,7 @@ Description: {description_preview}
         """
         ENHANCED: Handle database-only route with selected restaurants
 
-        Returns database_restaurants_final for editor (4+ sufficient restaurants)
+        Returns database_restaurants_final for editor (7+ sufficient restaurants)
         """
         logger.info(f"✅ Using database content - {len(selected_restaurants)} selected restaurants")
 
@@ -811,9 +811,9 @@ Description: {description_preview}
                 logger.info(f"🗑️ Low-quality selected restaurants: avg score {avg_score:.2f} - discard mode")
                 return False
 
-        # If we have 4+ selected restaurants but AI still says web search, it's probably variety issues
+        # If we have 7+ selected restaurants but AI still says web search, it's probably variety issues
         # Default to hybrid to preserve the good ones
-        if len(selected_restaurants) >= 4:
+        if len(selected_restaurants) >= 7:
             logger.info(f"🔄 Variety hybrid mode: preserving {len(selected_restaurants)} selected restaurants")
             return True
 
