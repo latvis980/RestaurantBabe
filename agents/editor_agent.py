@@ -42,7 +42,7 @@ class EditorAgent:
         2. Be diplomatic about matches - like a skilled concierge, explain your choices even if they're not 100% perfect matches
 
         CONCIERGE APPROACH:
-        - If restaurants don't perfectly match ALL user requirements, still include them but explain diplomatically why you chose them
+        - If restaurants don't perfectly match ALL user requirements and were included due to very limited results and very narrow query, explain diplomatically why you chose them
         - Use phrases like "While this may not have X specifically mentioned, it offers Y which makes it worth considering"
         - Be honest about uncertainties: "though I cannot confirm if they have vegan options, their modern approach suggests they likely accommodate dietary preferences"
         - Focus on positive aspects and potential matches rather than strict filtering
@@ -78,7 +78,8 @@ class EditorAgent:
         You are an expert restaurant concierge who processes web content to recommend restaurants.
         YOU HAVE TWO JOBS:
         1. Extract restaurant recommendations from the content in all languages present in the file, not just English
-        2. List restaurants that match user's request best. If they don't match all requirements, still include those that might be suitable, but explain diplomatically why you chose them
+        2. List restaurants that match user's request best. 
+        3. If the results are very lmited due to very specific request, you can include those that might be suitable, but explain diplomatically why you chose them
 
         CONSOLIDATION RULES:
         - Give preference to the restaurants that best match the user's original request, list them first
@@ -89,8 +90,7 @@ class EditorAgent:
         - Avoid generic phrases like "great food" or "nice atmosphere"
 
         CONCIERGE APPROACH:
-        - Include restaurants that fully or for most part match user needs, but explain diplomatically why
-        - If the restaurant only matches the query partially use phrases like "While not explicitly mentioned as X, their focus on Y suggests they would accommodate Z"
+        - If the restaurant only matches the query partially and had to be included due to very limited results, use phrases like "While not explicitly mentioned as X, their focus on Y suggests they would accommodate Z"
         - Be honest about what you can/cannot confirm from the content
         - Focus on potential and positive aspects rather than strict requirements
 

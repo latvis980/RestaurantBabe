@@ -21,6 +21,7 @@ from utils.telegram_location_handler import LocationData
 from location.location_search_agent import LocationSearchAgent, VenueResult
 from location.media_search_agent import MediaSearchAgent
 from formatters.telegram_formatter import TelegramFormatter
+from location.database_service import LocationDatabaseService
 
 # Import AI components for restaurant filtering
 from langchain_openai import ChatOpenAI
@@ -41,6 +42,7 @@ class LocationOrchestrator:
         # Initialize media search agent (replaces source mapping)
         self.media_search_agent = MediaSearchAgent(config)
         self.telegram_formatter = TelegramFormatter()
+        self.db_service = LocationDatabaseService(config)
 
         # Initialize AI for restaurant filtering
         self.ai_model = ChatOpenAI(
@@ -257,16 +259,13 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
         coordinates: Tuple[float, float], 
         cancel_check_fn=None
     ) -> List[Dict[str, Any]]:
-        """Get nearby restaurants from database (SYNC) - USING ACTUAL DATABASE METHODS"""
+        """Get nearby restaurants using LocationDatabaseService"""
         try:
-            from utils.database import get_database
-            db = get_database()
-
             lat, lng = coordinates
             logger.info(f"🗃️ Querying database for restaurants within {self.db_search_radius}km of {lat:.4f}, {lng:.4f}")
 
-            # FIXED: Use get_restaurants_by_coordinates which actually exists
-            nearby_restaurants = db.get_restaurants_by_coordinates(
+            # Use the dedicated location database service
+            nearby_restaurants = self.db_service.get_restaurants_by_coordinates(
                 center=(lat, lng),
                 radius_km=self.db_search_radius,
                 limit=50
@@ -278,8 +277,9 @@ IMPORTANT: Only include restaurants with score 5 or higher. Prioritize quality o
                 logger.info(f"📝 Sample restaurants found:")
                 for i, restaurant in enumerate(nearby_restaurants[:3]):
                     name = restaurant.get('name', 'Unknown')
+                    distance = restaurant.get('distance_km', 'Unknown')
                     cuisine = restaurant.get('cuisine_tags', 'No cuisine info')
-                    logger.info(f"  {i+1}. {name} - {cuisine}")
+                    logger.info(f"  {i+1}. {name} ({distance}km) - {cuisine}")
 
             return nearby_restaurants
 
