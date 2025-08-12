@@ -324,146 +324,86 @@ class Database:
             logger.error(f"Error getting restaurants by preference tags: {e}")
             return []
 
+    # Add this complete method to your Database class in utils/database.py
+    # Replace the incomplete get_restaurants_by_coordinates method with this:
+
     def get_restaurants_by_coordinates(self, center: Tuple[float, float], radius_km: float, limit: int = 20) -> List[Dict[str, Any]]:
+        """
+        Get restaurants within radius of coordinates using PostGIS or fallback method
 
+        Args:
+            center: Tuple of (latitude, longitude) for center point
+            radius_km: Search radius in kilometers
+            limit: Maximum number of restaurants to return
 
+        Returns:
+            List of restaurants with distances, sorted by distance
+        """
+        try:
+            center_lat, center_lng = center
+            logger.info(f"📍 Searching restaurants within {radius_km}km of ({center_lat}, {center_lng})")
 
-        
-
-        def delete_closed_restaurants(self, business_status: str = None) -> Dict[str, Any]:
-            """
-            Delete restaurants that are permanently or temporarily closed from the database
-
-            Args:
-                business_status: Specific status to delete ('CLOSED_PERMANENTLY', 'CLOSED_TEMPORARILY') 
-                                If None, deletes both types of closed restaurants
-
-            Returns:
-                Dictionary with deletion statistics
-            """
+            # Try PostGIS search first (if you have the RPC function)
             try:
-                logger.info("🗑️ Starting closed restaurant deletion process")
+                result = self.supabase.rpc('search_restaurants_by_coordinates', {
+                    'center_lat': center_lat,
+                    'center_lng': center_lng,
+                    'radius_km': radius_km,
+                    'result_limit': limit
+                }).execute()
 
-                # Step 1: Find restaurants to delete based on business status
-                if business_status:
-                    # Delete specific closure type
-                    query = self.supabase.table('restaurants')\
-                        .select('id, name, city, business_status')\
-                        .eq('business_status', business_status)
-                else:
-                    # Delete all closed restaurants (both temporarily and permanently)
-                    query = self.supabase.table('restaurants')\
-                        .select('id, name, city, business_status')\
-                        .in_('business_status', ['CLOSED_PERMANENTLY', 'CLOSED_TEMPORARILY'])
+                restaurants = result.data or []
+                logger.info(f"✅ PostGIS search found {len(restaurants)} restaurants")
+                return restaurants
 
-                result = query.execute()
-                restaurants_to_delete = result.data or []
+            except Exception as postgis_error:
+                logger.warning(f"PostGIS search failed: {postgis_error}")
+                logger.info("🔄 Falling back to manual distance calculation...")
 
-                if not restaurants_to_delete:
-                    logger.info("✅ No closed restaurants found to delete")
-                    return {
-                        'deleted_count': 0,
-                        'deleted_restaurants': [],
-                        'message': 'No closed restaurants found'
-                    }
-
-                # Step 2: Log what we're about to delete
-                logger.info(f"Found {len(restaurants_to_delete)} closed restaurants to delete:")
-                deleted_restaurants = []
-
-                for restaurant in restaurants_to_delete:
-                    restaurant_info = {
-                        'id': restaurant['id'],
-                        'name': restaurant['name'],
-                        'city': restaurant['city'],
-                        'business_status': restaurant.get('business_status', 'Unknown')
-                    }
-                    deleted_restaurants.append(restaurant_info)
-                    logger.info(f"  - {restaurant['name']} in {restaurant['city']} ({restaurant.get('business_status', 'Unknown')})")
-
-                # Step 3: Delete the restaurants
-                restaurant_ids = [r['id'] for r in restaurants_to_delete]
-
-                delete_result = self.supabase.table('restaurants')\
-                    .delete()\
-                    .in_('id', restaurant_ids)\
+                # Fallback: Get all restaurants with coordinates and filter manually
+                result = self.supabase.table('restaurants')\
+                    .select('id, name, address, city, country, latitude, longitude, place_id, cuisine_tags, mention_count')\
+                    .not_.is_('latitude', 'null')\
+                    .not_.is_('longitude', 'null')\
+                    .neq('latitude', 0)\
+                    .neq('longitude', 0)\
                     .execute()
 
-                deleted_count = len(delete_result.data) if delete_result.data else 0
+                all_restaurants = result.data or []
 
-                logger.info(f"✅ Successfully deleted {deleted_count} closed restaurants from database")
+                # Filter by distance using LocationUtils
+                from utils.location_utils import LocationUtils
+                restaurants_with_distance = []
 
-                return {
-                    'deleted_count': deleted_count,
-                    'deleted_restaurants': deleted_restaurants,
-                    'deletion_completed_at': datetime.now(timezone.utc).isoformat(),
-                    'message': f'Successfully deleted {deleted_count} closed restaurants'
-                }
+                for restaurant in all_restaurants:
+                    try:
+                        rest_lat = float(restaurant['latitude'])
+                        rest_lng = float(restaurant['longitude'])
 
-            except Exception as e:
-                logger.error(f"❌ Error deleting closed restaurants: {e}")
-                return {
-                    'deleted_count': 0,
-                    'deleted_restaurants': [],
-                    'error': str(e),
-                    'message': 'Failed to delete closed restaurants'
-                }
+                        # Calculate distance
+                        distance_km = LocationUtils.calculate_distance(
+                            (center_lat, center_lng), (rest_lat, rest_lng)
+                        )
 
-        def delete_restaurants_by_ids(self, restaurant_ids: List[int]) -> Dict[str, Any]:
-            """
-            Delete specific restaurants by their IDs
+                        # Only include if within radius
+                        if distance_km <= radius_km:
+                            restaurant['distance_km'] = round(distance_km, 2)
+                            restaurants_with_distance.append(restaurant)
 
-            Args:
-                restaurant_ids: List of restaurant IDs to delete
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"Invalid coordinates for restaurant {restaurant.get('name', 'Unknown')}: {e}")
+                        continue
 
-            Returns:
-                Dictionary with deletion statistics
-            """
-            try:
-                if not restaurant_ids:
-                    return {
-                        'deleted_count': 0,
-                        'message': 'No restaurant IDs provided'
-                    }
+                # Sort by distance and apply limit
+                restaurants_with_distance.sort(key=lambda x: x['distance_km'])
+                results = restaurants_with_distance[:limit]
 
-                logger.info(f"🗑️ Deleting {len(restaurant_ids)} restaurants by ID")
+                logger.info(f"✅ Fallback search found {len(results)} restaurants")
+                return results
 
-                # First get the restaurant details for logging
-                restaurants_query = self.supabase.table('restaurants')\
-                    .select('id, name, city')\
-                    .in_('id', restaurant_ids)\
-                    .execute()
-
-                restaurants_info = restaurants_query.data or []
-
-                # Log what we're deleting
-                for restaurant in restaurants_info:
-                    logger.info(f"  - Deleting: {restaurant['name']} in {restaurant['city']} (ID: {restaurant['id']})")
-
-                # Delete the restaurants
-                delete_result = self.supabase.table('restaurants')\
-                    .delete()\
-                    .in_('id', restaurant_ids)\
-                    .execute()
-
-                deleted_count = len(delete_result.data) if delete_result.data else 0
-
-                logger.info(f"✅ Successfully deleted {deleted_count} restaurants by ID")
-
-                return {
-                    'deleted_count': deleted_count,
-                    'deleted_restaurants': restaurants_info,
-                    'deletion_completed_at': datetime.now(timezone.utc).isoformat(),
-                    'message': f'Successfully deleted {deleted_count} restaurants'
-                }
-
-            except Exception as e:
-                logger.error(f"❌ Error deleting restaurants by ID: {e}")
-                return {
-                    'deleted_count': 0,
-                    'error': str(e),
-                    'message': 'Failed to delete restaurants by ID'
-                }
+        except Exception as e:
+            logger.error(f"❌ Error in coordinate search: {e}")
+            return []
         
    
     # ============ DOMAIN INTELLIGENCE METHODS ============

@@ -288,7 +288,7 @@ class LocationSearchAgent:
 
             # Calculate distance from search center
             center_lat, center_lng = center_point
-            distance_km = LocationUtils.calculate_distance(center_lat, center_lng, lat, lng)
+            distance_km = LocationUtils.calculate_distance((center_lat, center_lng), (lat, lng))
 
             # Skip if too far (should be filtered by API but double-check)
             if distance_km > (self.search_radius / 1000):

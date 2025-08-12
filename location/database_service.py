@@ -57,11 +57,9 @@ class LocationDatabaseService:
                     radius_km=radius_km,
                     limit=50
                 )
-            except AttributeError:
-                # Fallback: get all restaurants and filter by distance
-                logger.info("Using fallback distance filtering")
-                all_restaurants = db.get_all_restaurants_with_coordinates()
-                restaurants = self._filter_by_distance(all_restaurants, coordinates, radius_km)
+            except Exception as e:
+            logger.error(f"Error calling get_restaurants_by_coordinates: {e}")
+            restaurants = []
 
             logger.info(f"📊 Found {len(restaurants)} restaurants within {radius_km}km")
             return restaurants
@@ -88,7 +86,7 @@ class LocationDatabaseService:
                 lng = restaurant.get('longitude')
 
                 if lat and lng:
-                    distance = LocationUtils.calculate_distance(center_lat, center_lng, lat, lng)
+                    distance = LocationUtils.calculate_distance((center_lat, center_lng), (lat, lng))
                     if distance <= radius_km:
                         restaurant['distance_km'] = distance
                         filtered.append(restaurant)
@@ -104,7 +102,7 @@ class LocationDatabaseService:
     def get_restaurants_by_coordinates(
         self, 
         center: Tuple[float, float], 
-        radius_km: float = None, 
+        radius_km: Optional[float] = None,  # Add Optional here
         limit: int = 20
     ) -> List[Dict[str, Any]]:
         """
@@ -156,13 +154,16 @@ class LocationDatabaseService:
     def _fallback_coordinate_search(
         self, 
         center: Tuple[float, float], 
-        radius_km: float, 
+        radius_km: Optional[float], 
         limit: int = 20
     ) -> List[Dict[str, Any]]:
         """
         Fallback method using manual distance calculation
         """
         try:
+            if radius_km is None:
+                radius_km = self.default_radius_km
+
             center_lat, center_lng = center
             db = get_database()
 
@@ -177,7 +178,8 @@ class LocationDatabaseService:
 
             restaurants = result.data or []
 
-            # Calculate distances using Haversine formula
+            # Calculate distances using LocationUtils
+            from utils.location_utils import LocationUtils
             restaurants_with_distance = []
 
             for restaurant in restaurants:
@@ -185,9 +187,9 @@ class LocationDatabaseService:
                     rest_lat = float(restaurant['latitude'])
                     rest_lng = float(restaurant['longitude'])
 
-                    # Haversine formula to calculate distance
-                    distance_km = self._calculate_distance(
-                        center_lat, center_lng, rest_lat, rest_lng
+                    # Use LocationUtils to calculate distance
+                    distance_km = LocationUtils.calculate_distance(
+                        (center_lat, center_lng), (rest_lat, rest_lng)
                     )
 
                     # Only include if within radius
@@ -212,35 +214,10 @@ class LocationDatabaseService:
             logger.error(f"❌ Error in fallback coordinate search: {e}")
             return []
 
-    def _calculate_distance(
-        self, 
-        lat1: float, lng1: float, 
-        lat2: float, lng2: float
-    ) -> float:
-        """
-        Calculate distance between two points using Haversine formula
-
-        Returns:
-            Distance in kilometers
-        """
-        R = 6371  # Earth's radius in kilometers
-
-        dlat = math.radians(lat2 - lat1)
-        dlng = math.radians(lng2 - lng1)
-
-        a = (math.sin(dlat/2)**2 + 
-             math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * 
-             math.sin(dlng/2)**2)
-
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-        distance_km = R * c
-
-        return distance_km
-
     def search_restaurants_nearby(
         self, 
         center: Tuple[float, float], 
-        radius_km: float = None, 
+        radius_km: Optional[float] = None,  # Add Optional here
         limit: int = 20
     ) -> List[str]:
         """
@@ -273,7 +250,7 @@ class LocationDatabaseService:
     def get_database_summary_for_location(
         self, 
         center: Tuple[float, float], 
-        radius_km: float = None
+        radius_km: Optional[float] = None  # Add Optional here
     ) -> Dict[str, Any]:
         """
         Get summary statistics for restaurants near coordinates

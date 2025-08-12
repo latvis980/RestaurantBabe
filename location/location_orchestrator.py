@@ -246,9 +246,7 @@ class LocationOrchestrator:
 
                 if r_lat and r_lng:
                     try:
-                        distance_km = LocationUtils.calculate_distance(
-                            user_lat, user_lng, r_lat, r_lng
-                        )
+                        distance_km = LocationUtils.calculate_distance((lat, lng), (v_lat, v_lng))
                         restaurant_copy['distance_km'] = distance_km
                         restaurant_copy['distance_text'] = LocationUtils.format_distance(distance_km)
                     except Exception as e:
@@ -348,7 +346,7 @@ class LocationOrchestrator:
                     v_lng = venue.get('longitude')
 
                     if v_lat and v_lng:
-                        distance_km = LocationUtils.calculate_distance(lat, lng, v_lat, v_lng)
+                        distance_km = LocationUtils.calculate_distance((user_lat, user_lng), (r_lat, r_lng))
                         venue['distance_km'] = distance_km
                         venue['distance_text'] = LocationUtils.format_distance(distance_km)
                     else:
