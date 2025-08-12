@@ -58,8 +58,8 @@ class LocationDatabaseService:
                     limit=50
                 )
             except Exception as e:
-            logger.error(f"Error calling get_restaurants_by_coordinates: {e}")
-            restaurants = []
+                logger.error(f"Error calling get_restaurants_by_coordinates: {e}")
+                restaurants = []
 
             logger.info(f"📊 Found {len(restaurants)} restaurants within {radius_km}km")
             return restaurants
