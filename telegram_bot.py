@@ -1038,10 +1038,11 @@ def handle_clarification_needed(message, location_analysis):
     bot.reply_to(message, suggested_response, parse_mode='HTML', reply_markup=remove_location_button())
     add_to_conversation(user_id, suggested_response, is_user=False)
 
+
 def perform_location_search(query, location_data, chat_id, user_id):
     """
     Perform location-based restaurant search using the location orchestrator
-    UPDATED: Uses new MediaSearchAgent integration
+    UPDATED: Handles "asking around" responses properly
     """
     processing_msg = None
 
@@ -1067,74 +1068,45 @@ def perform_location_search(query, location_data, chat_id, user_id):
                 )
         except FileNotFoundError:
             # Fallback to text message if video file doesn't exist
-            logger.warning("Video file not found, sending text message instead")
             processing_msg = bot.send_message(
                 chat_id,
                 "🔍 <b>Searching for nearby restaurants...</b>\n\n"
-                "<i>This might take a couple of minutes as I'll check with professional food critics about these places</i>\n\n"
-                "💡 Type /cancel to stop the search",
-                parse_mode='HTML',
-                reply_markup=remove_location_button()
-            )
-        except Exception as e:
-            # Fallback to text message if video sending fails
-            logger.warning(f"Failed to send video: {e}, sending text message instead")
-            processing_msg = bot.send_message(
-                chat_id,
-                "🔍 <b>Searching for nearby restaurants...</b>\n\n"
-                 "<i>This might take a couple of minutes as I'll check with professional food critics about these places</i>\n\n"
+                "<i>This may take a couple of minutes as I'll check what professional foodies have to say about these places</i>\n\n"
                 "💡 Type /cancel to stop the search",
                 parse_mode='HTML',
                 reply_markup=remove_location_button()
             )
 
-        logger.info(f"🎯 Started location search for user {user_id}: {query}")
-
-        # Check for early cancellation
-        if is_cancelled():
-            logger.info(f"Location search cancelled before processing for user {user_id}")
-            return
-
-        # Initialize location orchestrator
+        # Import location orchestrator
         from location.location_orchestrator import LocationOrchestrator
         location_orchestrator = LocationOrchestrator(config)
 
-        # Run the location search pipeline
-        import asyncio
+        # Run location search
+        logger.info(f"Starting location search for user {user_id}")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        try:
-            result = loop.run_until_complete(
-                location_orchestrator.process_location_query(
-                    query=query,
-                    location_data=location_data,
-                    cancel_check_fn=is_cancelled
-                )
-            )
-        finally:
-            loop.close()
+        result = loop.run_until_complete(
+            location_orchestrator.process_location_query(query, location_data, is_cancelled)
+        )
 
-        # Check if cancelled during processing
-        if is_cancelled():
-            logger.info(f"Location search was cancelled during processing for user {user_id}")
-            try:
-                if processing_msg:
-                    bot.delete_message(chat_id, processing_msg.message_id)
-            except:
-                pass
-            return
+        loop.close()
 
         # Delete processing message
-        try:
-            if processing_msg:
+        if processing_msg:
+            try:
                 bot.delete_message(chat_id, processing_msg.message_id)
-        except:
-            pass
+            except:
+                pass
 
-        # Check if search was successful
+        # Check if search was cancelled
+        if is_cancelled():
+            logger.info(f"Location search cancelled for user {user_id}")
+            return
+
+        # Handle errors
         if not result.get('success', False):
-            error_message = result.get('error', 'Sorry, no results found.')
+            error_message = result.get('error', 'Unknown error occurred')
 
             if result.get('cancelled'):
                 # Don't send error for cancelled searches
@@ -1149,8 +1121,64 @@ def perform_location_search(query, location_data, chat_id, user_id):
             logger.info(f"❌ Location search failed for user {user_id}: {error_message}")
             return
 
-        # Format results using telegram formatter
-        restaurants = result.get('results', [])
+        # HANDLE DIFFERENT RESPONSE TYPES
+        source = result.get('source', '')
+
+        if source == "asking_around":
+            # ASKING AROUND RESPONSE - Send message and trigger background search
+            asking_message = result.get('message', 'Looking for more options...')
+
+            bot.send_message(
+                chat_id,
+                asking_message,
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
+            )
+
+            logger.info(f"📱 Sent 'asking around' message for user {user_id}")
+            add_to_conversation(user_id, asking_message, is_user=False)
+
+            # Check if background search should be triggered
+            if result.get('background_search_triggered', False):
+                search_params = result.get('search_params', {})
+
+                # Start background Google Maps search
+                threading.Thread(
+                    target=perform_background_google_maps_search,
+                    args=(
+                        search_params.get('coordinates'),
+                        search_params.get('query'), 
+                        search_params.get('location_desc'),
+                        search_params.get('start_time'),
+                        chat_id,
+                        user_id
+                    ),
+                    daemon=True
+                ).start()
+
+                logger.info(f"🔄 Started background Google Maps search for user {user_id}")
+
+            return
+
+        elif source == "database_notes":
+            # DATABASE RESULTS - Send personal notes message 
+            message = result.get('message', '')
+
+            if message:
+                bot.send_message(
+                    chat_id,
+                    message,
+                    parse_mode='HTML',
+                    reply_markup=remove_location_button()
+                )
+
+                logger.info(f"📝 Sent database notes for user {user_id}")
+                add_to_conversation(user_id, message, is_user=False)
+                return
+
+        # STANDARD RESTAURANT RESULTS (Google Maps or other sources)
+        restaurants = result.get('results', result.get('restaurants', []))
+
         if not restaurants:
             bot.send_message(
                 chat_id,
@@ -1162,26 +1190,27 @@ def perform_location_search(query, location_data, chat_id, user_id):
             logger.info(f"📭 No restaurants found for user {user_id}")
             return
 
-        # Format results for Telegram
+        # Format standard results for Telegram
         try:
             # Add metadata for formatting
             search_metadata = {
                 'query': query,
                 'coordinates': result.get('search_coordinates'),
                 'total_count': result.get('total_count', len(restaurants)),
-                'source': result.get('source', 'location_search'),
+                'source': source,
                 'processing_time': result.get('processing_time', 0)
             }
 
             # Use TelegramFormatter to format location results
+            from formatters.telegram_formatter import TelegramFormatter
+            formatter = TelegramFormatter()
+
             # Convert to the format expected by format_recommendations
             recommendations_data = {
                 "main_list": restaurants
             }
 
-            formatted_message = location_orchestrator.telegram_formatter.format_recommendations(
-                recommendations_data
-            )
+            formatted_message = formatter.format_recommendations(recommendations_data)
 
             # Send formatted results
             bot.send_message(
@@ -1208,26 +1237,127 @@ def perform_location_search(query, location_data, chat_id, user_id):
             )
 
     except Exception as e:
-        logger.error(f"❌ Error in location search process: {e}")
-
-        # Clean up processing message
+        logger.error(f"Error in location search process: {e}")
         try:
             if processing_msg:
                 bot.delete_message(chat_id, processing_msg.message_id)
         except:
             pass
 
-        # Send error message to user
-        bot.send_message(
-            chat_id,
-            "😔 Something went wrong with the location search. Please try again or describe a specific area you're interested in.",
-            parse_mode='HTML',
-            reply_markup=remove_location_button()
+        if not is_search_cancelled(user_id):
+            bot.send_message(
+                chat_id,
+                "😔 Sorry, I encountered an error while searching for restaurants. Please try again with a different query!",
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
+            )
+    finally:
+        cleanup_search(user_id)
+
+
+def perform_background_google_maps_search(coordinates, query, location_desc, start_time, chat_id, user_id):
+    """
+    Perform background Google Maps search after "asking around" message
+    """
+    try:
+        logger.info(f"🗺️ Starting background Google Maps search for user {user_id}")
+
+        # Function to check cancellation
+        def is_cancelled():
+            return is_search_cancelled(user_id)
+
+        # Import location orchestrator
+        from location.location_orchestrator import LocationOrchestrator
+        location_orchestrator = LocationOrchestrator(config)
+
+        # Run background search
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        result = loop.run_until_complete(
+            location_orchestrator._background_google_maps_search(
+                coordinates, query, location_desc, start_time, is_cancelled
+            )
         )
 
-    finally:
-        # Always clean up
-        cleanup_search(user_id)
+        loop.close()
+
+        # Check if search was cancelled
+        if is_cancelled():
+            logger.info(f"Background search cancelled for user {user_id}")
+            return
+
+        # Handle results
+        if result.get('success', False):
+            restaurants = result.get('results', [])
+
+            if restaurants:
+                # Format and send Google Maps results
+                try:
+                    from formatters.telegram_formatter import TelegramFormatter
+                    formatter = TelegramFormatter()
+
+                    recommendations_data = {"main_list": restaurants}
+                    formatted_message = formatter.format_recommendations(recommendations_data)
+
+                    # Send results with a header
+                    header = f"🗺️ <b>Found {len(restaurants)} more options from my search:</b>\n\n"
+
+                    bot.send_message(
+                        chat_id,
+                        header + formatted_message,
+                        parse_mode='HTML',
+                        reply_markup=remove_location_button(),
+                        disable_web_page_preview=True
+                    )
+
+                    logger.info(f"✅ Background search completed for user {user_id}: {len(restaurants)} restaurants sent")
+                    add_to_conversation(user_id, f"Found {len(restaurants)} additional restaurants via Google Maps", is_user=False)
+
+                except Exception as e:
+                    logger.error(f"❌ Error formatting background results: {e}")
+                    bot.send_message(
+                        chat_id,
+                        f"✅ Found {len(restaurants)} more restaurants!\n\nHowever, I had trouble formatting the results.",
+                        parse_mode='HTML',
+                        reply_markup=remove_location_button()
+                    )
+            else:
+                # No additional results found
+                bot.send_message(
+                    chat_id,
+                    "🤔 I couldn't find any additional restaurants that meet your criteria.\n\n"
+                    "Try a different search or let me know if you'd like suggestions for a broader search!",
+                    parse_mode='HTML',
+                    reply_markup=remove_location_button()
+                )
+                logger.info(f"📭 No background results for user {user_id}")
+        else:
+            # Background search failed
+            error_msg = result.get('error', 'Background search failed')
+            logger.error(f"❌ Background search failed for user {user_id}: {error_msg}")
+
+            # Optionally send a failure message (or stay silent)
+            bot.send_message(
+                chat_id,
+                "😔 I had trouble finding additional restaurants. The search I started is complete.\n\n"
+                "Try a different query if you'd like!",
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
+            )
+
+    except Exception as e:
+        logger.error(f"❌ Error in background Google Maps search for user {user_id}: {e}")
+        # Optionally send error message or stay silent
+        try:
+            bot.send_message(
+                chat_id,
+                "😔 I encountered an error while searching for additional restaurants.",
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
+            )
+        except:
+            pass
 
 def process_voice_message(message, user_id, chat_id, processing_msg_id):
     """Process voice message in background thread"""

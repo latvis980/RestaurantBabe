@@ -34,13 +34,13 @@ class LocationFilterEvaluator:
 
         # Filtering prompt (based on database_search_agent)
         self.filter_prompt = ChatPromptTemplate.from_template("""
-USER QUERY: "{{query}}"
-LOCATION: {{location_description}}
+USER QUERY: "{query}"
+LOCATION: {location_description}
 
 You are analyzing restaurants from our database to find matches for this location-based query.
 
 RESTAURANT LIST:
-{{restaurants_text}}
+{restaurants_text}
 
 TASK: Select restaurants that match the user's query intent.
 
@@ -66,9 +66,9 @@ Include restaurants that are good matches. For location searches, be inclusive -
 
         # Evaluation prompt (simplified from content_evaluation_agent)
         self.eval_prompt = ChatPromptTemplate.from_template("""
-USER QUERY: "{{query}}"
-LOCATION: {{location_description}}
-FOUND: {{count}} restaurants in database
+USER QUERY: "{query}"
+LOCATION: {location_description}
+FOUND: {count} restaurants in database
 
 EVALUATION TASK: 
 For location-based searches, we send ANY relevant results immediately as "restaurants from my notes".
@@ -218,7 +218,7 @@ For location searches, be generous - even 1-2 good matches should be sent.
                 return {
                     "database_sufficient": True,
                     "send_immediately": True,
-                    "reasoning": f"Found {count} relevant restaurants in my personal notes",
+                    "reasoning": f"Found {count} relevant restaurants from personal notes",
                     "quality_score": round(avg_quality, 2)
                 }
             else:
