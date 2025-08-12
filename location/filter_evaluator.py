@@ -218,7 +218,7 @@ For location searches, be generous - even 1-2 good matches should be sent.
                 return {
                     "database_sufficient": True,
                     "send_immediately": True,
-                    "reasoning": f"Found {count} relevant restaurants from personal notes",
+                    "reasoning": f"Found {count} relevant restaurants in my personal notes",
                     "quality_score": round(avg_quality, 2)
                 }
             else:
