@@ -23,6 +23,84 @@ class LocationDatabaseService:
         self.default_radius_km = getattr(config, 'DB_PROXIMITY_RADIUS_KM', 3.0)
         logger.info("✅ Location Database Service initialized")
 
+    def get_restaurants_by_proximity(
+        self, 
+        coordinates: Tuple[float, float], 
+        radius_km: float
+    ) -> List[Dict[str, Any]]:
+        """
+        Get restaurants within proximity of coordinates
+
+        Args:
+            coordinates: (latitude, longitude) tuple
+            radius_km: Search radius in kilometers
+
+        Returns:
+            List of restaurant dictionaries with distance info
+        """
+        try:
+            latitude, longitude = coordinates
+            logger.info(f"🗃️ Searching database for restaurants within {radius_km}km of {latitude:.4f}, {longitude:.4f}")
+
+            # Use your existing database interface
+            from utils.database import get_database
+            db = get_database()
+
+            # Query restaurants with coordinates within the radius
+            # This assumes you have a method to get restaurants by proximity
+            # Adjust the method name based on your actual database interface
+
+            try:
+                # Try the method if it exists
+                restaurants = db.get_restaurants_by_coordinates(
+                    center=(latitude, longitude),
+                    radius_km=radius_km,
+                    limit=50
+                )
+            except AttributeError:
+                # Fallback: get all restaurants and filter by distance
+                logger.info("Using fallback distance filtering")
+                all_restaurants = db.get_all_restaurants_with_coordinates()
+                restaurants = self._filter_by_distance(all_restaurants, coordinates, radius_km)
+
+            logger.info(f"📊 Found {len(restaurants)} restaurants within {radius_km}km")
+            return restaurants
+
+        except Exception as e:
+            logger.error(f"❌ Error getting restaurants by proximity: {e}")
+            return []
+
+    def _filter_by_distance(
+        self, 
+        restaurants: List[Dict[str, Any]], 
+        center: Tuple[float, float], 
+        radius_km: float
+    ) -> List[Dict[str, Any]]:
+        """Filter restaurants by distance from center point"""
+        try:
+            from utils.location_utils import LocationUtils
+
+            filtered = []
+            center_lat, center_lng = center
+
+            for restaurant in restaurants:
+                lat = restaurant.get('latitude')
+                lng = restaurant.get('longitude')
+
+                if lat and lng:
+                    distance = LocationUtils.calculate_distance(center_lat, center_lng, lat, lng)
+                    if distance <= radius_km:
+                        restaurant['distance_km'] = distance
+                        filtered.append(restaurant)
+
+            # Sort by distance
+            filtered.sort(key=lambda x: x.get('distance_km', float('inf')))
+            return filtered
+
+        except Exception as e:
+            logger.error(f"❌ Error filtering by distance: {e}")
+            return restaurants
+
     def get_restaurants_by_coordinates(
         self, 
         center: Tuple[float, float], 

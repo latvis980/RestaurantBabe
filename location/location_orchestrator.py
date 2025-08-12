@@ -23,6 +23,7 @@ from location.media_search_agent import MediaSearchAgent
 from location.database_service import LocationDatabaseService
 from location.filter_evaluator import LocationFilterEvaluator
 from formatters.telegram_formatter import TelegramFormatter
+from location.result_formatter import LocationResultFormatter
 
 # Import AI components for restaurant filtering
 from langchain_openai import ChatOpenAI
@@ -41,6 +42,7 @@ class LocationOrchestrator:
         # Initialize location-specific services
         self.db_service = LocationDatabaseService(config)
         self.filter_evaluator = LocationFilterEvaluator(config)
+        self.result_formatter = LocationResultFormatter(config)
 
         # Initialize existing components
         self.location_search_agent = LocationSearchAgent(config)
@@ -59,43 +61,7 @@ class LocationOrchestrator:
         self.min_db_matches = getattr(config, 'MIN_DB_MATCHES_REQUIRED', 3)
         self.max_venues_to_verify = getattr(config, 'MAX_LOCATION_RESULTS', 8)
 
-        # Setup filtering prompt for legacy methods
-        self._setup_filtering_prompt()
-
         logger.info("✅ Location Orchestrator initialized with database-first approach")
-
-    def _setup_filtering_prompt(self):
-        """Setup the filtering prompt for legacy compatibility"""
-        self.batch_analysis_prompt = ChatPromptTemplate.from_template("""
-USER QUERY: {{raw_query}}
-LOCATION: {{destination}}
-
-You are analyzing restaurants from our database to see which ones match the user's query.
-
-RESTAURANT LIST:
-{{restaurants_text}}
-
-TASK: Analyze this list and return the restaurant IDs that best match the user's query.
-
-MATCHING CRITERIA:
-- Cuisine type relevance (direct matches, related cuisines)
-- Atmosphere and dining style 
-- Special features mentioned (wine lists, vegan options, price range, etc.)
-- General vibe from descriptions
-
-OUTPUT: Return ONLY valid JSON with matching restaurant IDs:
-{{
-    "selected_restaurants": [
-        {{
-            "id": "ID",
-            "relevance_score": score,
-            "reasoning": "why this matches the search intent"
-        }}
-    ]
-}}
-
-Include restaurants that are good matches. Focus on quality over quantity.
-""")
 
     # ============ MAIN PROCESSING METHOD ============
 
@@ -106,11 +72,11 @@ Include restaurants that are good matches. Focus on quality over quantity.
         cancel_check_fn=None
     ) -> Dict[str, Any]:
         """
-        Process location query with database-first approach
+        Process location query with database-first approach and enhanced formatting
         """
         try:
             start_time = time.time()
-            logger.info(f"🎯 Starting location search: '{query}'")
+            logger.info(f"🎯 Starting enhanced location search: '{query}'")
 
             # STEP 1: Get coordinates
             coordinates = self._get_coordinates_sync(location_data, cancel_check_fn)
@@ -124,8 +90,8 @@ Include restaurants that are good matches. Focus on quality over quantity.
             location_desc = location_data.description or f"GPS location ({lat:.4f}, {lng:.4f})"
             logger.info(f"📍 Coordinates: {lat:.4f}, {lng:.4f}")
 
-            # STEP 2: Check database and filter (NEW APPROACH)
-            db_result = self._check_database_and_filter(
+            # STEP 2: Check database and filter with enhanced result processing
+            db_result = self._check_database_and_filter_enhanced(
                 coordinates, query, location_desc, cancel_check_fn
             )
 
@@ -137,369 +103,280 @@ Include restaurants that are good matches. Focus on quality over quantity.
                 # IMMEDIATE SENDING - Found relevant restaurants in database
                 filtered_restaurants = db_result.get("filtered_restaurants", [])
 
-                logger.info(f"✅ IMMEDIATE SEND: {len(filtered_restaurants)} restaurants from database")
+                logger.info(f"✅ IMMEDIATE SEND: {len(filtered_restaurants)} restaurants with enhanced formatting")
 
-                # Format personal notes message using LocationFilterEvaluator
-                message = self.filter_evaluator.format_personal_notes_message(
-                    restaurants=filtered_restaurants,
+                # Add distance information to each restaurant
+                restaurants_with_distance = self._add_distance_info(filtered_restaurants, coordinates)
+
+                # Format results using the new comprehensive formatter
+                formatted_results = self.result_formatter.format_location_results(
+                    restaurants=restaurants_with_distance,
                     query=query,
-                    location_description=location_desc
+                    location_description=location_desc,
+                    source="personal notes"
                 )
 
-                total_time = time.time() - start_time
+                processing_time = time.time() - start_time
+                logger.info(f"⚡ Location search completed in {processing_time:.2f}s")
 
                 return {
-                    "success": True,
-                    "source": "database_notes",
-                    "message": message,
-                    "restaurants": filtered_restaurants,
-                    "total_count": len(filtered_restaurants),
-                    "location": {"lat": lat, "lng": lng, "description": location_desc},
-                    "query": query,
-                    "processing_time": total_time,
-                    "additional_search_available": True,  # User can request more
-                    "reasoning": db_result.get("reasoning", "Found relevant restaurants in database")
+                    "results": formatted_results,
+                    "source": "database_immediate",
+                    "processing_time": processing_time,
+                    "restaurant_count": len(filtered_restaurants),
+                    "search_type": "location_database",
+                    "coordinates": coordinates,
+                    "location_description": location_desc
                 }
 
             else:
-                # NO DATABASE RESULTS - Send "asking around" message and proceed with Google Maps
-                logger.info("📭 No sufficient database results, sending 'asking around' message and searching Google Maps")
+                # FALLBACK to Google Maps search
+                logger.info(f"🔍 No sufficient database results, falling back to Google Maps search")
 
-                return await self._send_asking_around_and_search_maps(
-                    coordinates, query, location_desc, start_time, cancel_check_fn
-                )
-
-        except Exception as e:
-            logger.error(f"❌ Error in location search: {e}")
-            import traceback
-            logger.error(f"Full traceback: {traceback.format_exc()}")
-            return self._create_error_response(f"Search failed: {str(e)}")
-
-    # ============ DATABASE METHODS ============
-
-    def _check_database_and_filter(
-        self, 
-        coordinates: Tuple[float, float], 
-        query: str,
-        location_description: str,
-        cancel_check_fn=None
-    ) -> Dict[str, Any]:
-        """Check database, filter results, and decide if sufficient for immediate sending"""
-        try:
-            logger.info(f"🗃️ Checking database within {self.db_search_radius}km")
-
-            # Get nearby restaurants from database  
-            nearby_restaurants = self._get_nearby_restaurants_sync(coordinates, cancel_check_fn)
-
-            if cancel_check_fn and cancel_check_fn():
-                return self._create_cancelled_response()
-
-            logger.info(f"📊 Database returned {len(nearby_restaurants)} restaurants")
-
-            if not nearby_restaurants:
-                return {
-                    "database_sufficient": False,
-                    "filtered_restaurants": [],
-                    "send_immediately": False,
-                    "reasoning": "No restaurants found in database for this location"
-                }
-
-            # Use LocationFilterEvaluator for database-specific logic
-            result = self.filter_evaluator.filter_and_evaluate(
-                restaurants=nearby_restaurants,
-                query=query,
-                location_description=location_description
-            )
-
-            if cancel_check_fn and cancel_check_fn():
-                return self._create_cancelled_response()
-
-            logger.info(f"🎯 Database filter result: {result['selected_count']} selected, send_immediately: {result['send_immediately']}")
-
-            return result
-
-        except Exception as e:
-            logger.error(f"❌ Error in database check and filter: {e}")
-            return {
-                "database_sufficient": False,
-                "filtered_restaurants": [],
-                "send_immediately": False,
-                "reasoning": f"Error checking database: {str(e)}"
-            }
-
-    # ============ RESTAURANT FILTERING (UNIFIED) ============
-
-    def _get_nearby_restaurants_sync(
-        self, 
-        coordinates: Tuple[float, float], 
-        cancel_check_fn=None
-    ) -> List[Dict[str, Any]]:
-        """Get nearby restaurants from database"""
-        try:
-            # Use the new database service for coordinate-based search
-            nearby_restaurants = self.db_service.get_restaurants_by_coordinates(
-                center=coordinates,
-                radius_km=self.db_search_radius,
-                limit=50
-            )
-
-            logger.info(f"📊 Database query returned {len(nearby_restaurants)} restaurants")
-
-            if nearby_restaurants:
-                logger.info(f"📝 Sample restaurants found:")
-                for i, restaurant in enumerate(nearby_restaurants[:3]):
-                    name = restaurant.get('name', 'Unknown')
-                    distance = restaurant.get('distance_km', 'Unknown')
-                    cuisine = restaurant.get('cuisine_tags', 'No cuisine info')
-                    logger.info(f"  {i+1}. {name} ({distance}km) - {cuisine}")
-
-            return nearby_restaurants
-
-        except Exception as e:
-            logger.error(f"❌ Error getting nearby restaurants: {e}")
-            return []
-
-    def _filter_restaurants_sync(
-        self, 
-        restaurants: List[Dict[str, Any]], 
-        query: str, 
-        location_desc: str,
-        cancel_check_fn=None
-    ) -> List[Dict[str, Any]]:
-        """Filter restaurants using AI - STRICTER filtering for Google Maps results"""
-        try:
-            if not restaurants:
-                return []
-
-            # Create restaurant text for AI analysis
-            restaurants_text = ""
-            for i, restaurant in enumerate(restaurants):
-                name = restaurant.get('name', 'Unknown')
-                cuisine = restaurant.get('cuisine_tags', [])
-                cuisine_str = ', '.join(cuisine) if cuisine else 'No cuisine info'
-                description = restaurant.get('raw_description', 'No description')[:200]
-                distance = restaurant.get('distance_km', 'Unknown')
-                rating = restaurant.get('rating', 'No rating')
-
-                restaurants_text += f"{i+1}. ID: {restaurant.get('id', i)} | {name}"
-                if distance != 'Unknown':
-                    restaurants_text += f" ({distance}km)"
-                if rating != 'No rating':
-                    restaurants_text += f" - ⭐{rating}"
-                restaurants_text += f"\n   Cuisine: {cuisine_str}\n"
-                restaurants_text += f"   Description: {description}...\n\n"
-
-            # Enhanced prompt for Google Maps results (stricter quality filtering)
-            enhanced_prompt = ChatPromptTemplate.from_template("""
-USER QUERY: {{raw_query}}
-LOCATION: {{destination}}
-
-You are analyzing restaurants from Google Maps to find the BEST matches for this location-based query.
-
-RESTAURANT LIST:
-{{restaurants_text}}
-
-TASK: Select only HIGH-QUALITY restaurants that strongly match the user's query intent.
-
-STRICTER CRITERIA for Google Maps results:
-- Must have strong cuisine type relevance (not just loosely related)
-- Good ratings (prefer 4.0+ if available)
-- Quality descriptions that show it's a good establishment
-- Special features that match the query (natural wine, good coffee, etc.)
-
-Be MORE SELECTIVE than for database results. Only include restaurants you'd confidently recommend.
-
-OUTPUT: Return ONLY valid JSON with matching restaurant IDs:
-{{
-    "selected_restaurants": [
-        {{
-            "id": "ID",
-            "relevance_score": score,
-            "reasoning": "why this matches the search intent"
-        }}
-    ]
-}}
-
-Focus on quality over quantity. Only include clearly good matches.
-""")
-
-            # Use enhanced prompt for Google Maps results
-            response = self.ai_model.invoke(
-                enhanced_prompt.format(
-                    raw_query=query,
-                    destination=location_desc,
-                    restaurants_text=restaurants_text
-                )
-            )
-
-            # Parse AI response
-            content = response.content.strip()
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
-
-            try:
-                ai_result = json.loads(content)
-                selected_data = ai_result.get("selected_restaurants", [])
-            except json.JSONDecodeError:
-                logger.error(f"Failed to parse AI filtering response: {content}")
-                return []
-
-            # Map selected IDs back to full restaurant objects
-            restaurant_lookup = {str(r.get('id', i)): r for i, r in enumerate(restaurants)}
-            selected_restaurants = []
-
-            for selection in selected_data:
-                restaurant_id = str(selection.get('id', ''))
-                if restaurant_id in restaurant_lookup:
-                    restaurant = restaurant_lookup[restaurant_id].copy()
-                    restaurant['_relevance_score'] = selection.get('relevance_score', 0)
-                    restaurant['_match_reasoning'] = selection.get('reasoning', '')
-                    selected_restaurants.append(restaurant)
-
-            logger.info(f"🎯 Strict AI filtering selected {len(selected_restaurants)} from {len(restaurants)} Google Maps results")
-            return selected_restaurants
-
-        except Exception as e:
-            logger.error(f"❌ Error in AI filtering: {e}")
-            return []
-
-    def _get_full_restaurant_details_sync(
-        self, 
-        restaurants: List[Dict[str, Any]], 
-        cancel_check_fn=None
-    ) -> List[Dict[str, Any]]:
-        """Get full restaurant details from database (LEGACY METHOD)"""
-        try:
-            # The restaurants from get_restaurants_by_coordinates already have full details
-            logger.info(f"📋 Restaurant data already contains full details for {len(restaurants)} restaurants")
-            return restaurants
-
-        except Exception as e:
-            logger.error(f"❌ Error getting full restaurant details: {e}")
-            return []
-
-    # ============ GOOGLE MAPS SEARCH WITH "ASKING AROUND" MESSAGE ============
-
-    async def _send_asking_around_and_search_maps(
-        self,
-        coordinates: Tuple[float, float],
-        query: str,
-        location_desc: str,
-        start_time: float,
-        cancel_check_fn=None
-    ) -> Dict[str, Any]:
-        """Send 'asking around' message, then search Google Maps with quality filtering"""
-        try:
-            # Return "asking around" message immediately, then trigger background search
-            asking_around_message = (
-                f"🤔 I don't see many good matches in my notes for {location_desc}.\n\n"
-                f"💬 <b>Let me ask around for you...</b>\n\n"
-                f"⏱ This might take a minute while I search for the best {query} nearby."
-            )
-
-            logger.info("📱 Sending 'asking around' message, starting background Google Maps search")
-
-            # This will be sent immediately to user
-            return {
-                "success": True,
-                "source": "asking_around",
-                "message": asking_around_message,
-                "restaurants": [],
-                "total_count": 0,
-                "location": {"lat": coordinates[0], "lng": coordinates[1], "description": location_desc},
-                "query": query,
-                "processing_time": time.time() - start_time,
-                "background_search_triggered": True,  # Flag for telegram_bot to trigger background search
-                "search_params": {
-                    "coordinates": coordinates,
-                    "query": query,
-                    "location_desc": location_desc,
-                    "start_time": start_time
-                }
-            }
-
-        except Exception as e:
-            logger.error(f"❌ Error in asking around flow: {e}")
-            return self._create_error_response(f"Error starting search: {str(e)}")
-
-    async def _background_google_maps_search(
-        self,
-        coordinates: Tuple[float, float],
-        query: str,
-        location_desc: str,
-        start_time: float,
-        cancel_check_fn=None
-    ) -> Dict[str, Any]:
-        """Background Google Maps search with quality filtering for location searches"""
-        try:
-            logger.info("🗺️ Starting background Google Maps search...")
-
-            # Search Google Maps for venues
-            venues = await self._search_google_maps_async(coordinates, query, cancel_check_fn)
-
-            if cancel_check_fn and cancel_check_fn():
-                return self._create_cancelled_response()
-
-            if not venues:
-                return self._create_error_response("No venues found near your location")
-
-            logger.info(f"🗺️ Google Maps found {len(venues)} venues")
-
-            # AI-powered source verification
-            logger.info(f"🔍 Starting source verification for {len(venues)} venues")
-            verified_venues = await self._verify_venues_async(venues, cancel_check_fn)
-
-            if cancel_check_fn and cancel_check_fn():
-                return self._create_cancelled_response()
-
-            logger.info(f"✅ Source verification complete: {len(verified_venues)} venues verified")
-
-            # Quality filtering for Google Maps results (stricter than database)
-            if verified_venues:
-                filtered_venues = self._filter_restaurants_sync(
-                    verified_venues, query, location_desc, cancel_check_fn
+                venues = await self._search_google_maps_venues(
+                    coordinates, query, location_desc, cancel_check_fn
                 )
 
                 if cancel_check_fn and cancel_check_fn():
                     return self._create_cancelled_response()
 
-                logger.info(f"🎯 Google Maps quality filtering: {len(filtered_venues)} from {len(verified_venues)} venues")
-            else:
-                filtered_venues = []
+                # Verify venues using media search
+                verified_venues = self._verify_venues_sync(venues, cancel_check_fn)
 
-            # Format results
-            formatted_response = self._format_location_results_sync(
-                filtered_venues, coordinates, query, "google_maps_verified"
-            )
+                if cancel_check_fn and cancel_check_fn():
+                    return self._create_cancelled_response()
 
-            total_time = time.time() - start_time
-            formatted_response['processing_time'] = total_time
+                # Format Google Maps results
+                formatted_venues = self._format_google_maps_results(
+                    verified_venues, coordinates, query
+                )
 
-            logger.info(f"✅ Background location search completed in {total_time:.1f}s with {len(filtered_venues)} results")
-            return formatted_response
+                processing_time = time.time() - start_time
+                logger.info(f"⚡ Location search completed in {processing_time:.2f}s")
+
+                return {
+                    "results": formatted_venues,
+                    "source": "google_maps",
+                    "processing_time": processing_time,
+                    "restaurant_count": len(verified_venues),
+                    "search_type": "location_google_maps",
+                    "coordinates": coordinates,
+                    "location_description": location_desc
+                }
 
         except Exception as e:
-            logger.error(f"❌ Error in background Google Maps search: {e}")
-            return self._create_error_response(f"Background search failed: {str(e)}")
+            logger.error(f"❌ Error in enhanced location search: {e}")
+            return self._create_error_response(f"Search error: {str(e)}")
 
-    # ============ LEGACY GOOGLE MAPS FALLBACK (for compatibility) ============
+    # ============ DATABASE METHODS ============
 
-    async def _fallback_to_google_maps_search(
-        self,
-        coordinates: Tuple[float, float],
-        query: str,
+    # Fix for location/location_orchestrator.py
+    # Replace the _check_database_and_filter_enhanced method
+
+    def _check_database_and_filter_enhanced(
+        self, 
+        coordinates: Tuple[float, float], 
+        query: str, 
         location_desc: str,
-        start_time: float,
         cancel_check_fn=None
     ) -> Dict[str, Any]:
-        """Legacy fallback method - now calls background search"""
-        return await self._background_google_maps_search(
-            coordinates, query, location_desc, start_time, cancel_check_fn
-        )
+        """Enhanced database check and filtering with better result processing"""
+        try:
+            # Step 1: Get nearby restaurants from database
+            nearby_restaurants = self.db_service.get_restaurants_by_proximity(
+                coordinates, self.db_search_radius
+            )
 
-    # ============ COORDINATE METHODS ============
+            if cancel_check_fn and cancel_check_fn():
+                return {"send_immediately": False, "filtered_restaurants": []}
+
+            logger.info(f"🗃️ Found {len(nearby_restaurants)} restaurants within {self.db_search_radius}km")
+
+            if not nearby_restaurants:
+                return {"send_immediately": False, "filtered_restaurants": []}
+
+            # Step 2: Filter restaurants using AI - USE EXISTING METHOD
+            filter_result = self.filter_evaluator.filter_and_evaluate(
+                restaurants=nearby_restaurants,
+                query=query,
+                location_description=location_desc
+            )
+
+            if cancel_check_fn and cancel_check_fn():
+                return {"send_immediately": False, "filtered_restaurants": []}
+
+            filtered_restaurants = filter_result.get("filtered_restaurants", [])
+            evaluation = filter_result.get("evaluation", {})
+            send_immediately = filter_result.get("send_immediately", False)
+
+            logger.info(f"🧠 AI filtered to {len(filtered_restaurants)} relevant restaurants")
+
+            # Step 3: Enhanced decision logic - be more generous for location searches
+            if not send_immediately and len(filtered_restaurants) >= 1:
+                logger.info("🔧 Overriding AI decision - sending single good match for location search")
+                send_immediately = True
+
+            return {
+                "send_immediately": send_immediately,
+                "filtered_restaurants": filtered_restaurants,
+                "evaluation": evaluation,
+                "total_nearby": len(nearby_restaurants)
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error in enhanced database check: {e}")
+            return {"send_immediately": False, "filtered_restaurants": []}
+
+    def _add_distance_info(
+        self, 
+        restaurants: List[Dict[str, Any]], 
+        coordinates: Tuple[float, float]
+    ) -> List[Dict[str, Any]]:
+        """Add distance information to each restaurant"""
+        try:
+            user_lat, user_lng = coordinates
+            restaurants_with_distance = []
+
+            for restaurant in restaurants:
+                restaurant_copy = restaurant.copy()
+
+                # Calculate distance if restaurant has coordinates
+                r_lat = restaurant.get('latitude')
+                r_lng = restaurant.get('longitude')
+
+                if r_lat and r_lng:
+                    try:
+                        distance_km = LocationUtils.calculate_distance(
+                            user_lat, user_lng, r_lat, r_lng
+                        )
+                        restaurant_copy['distance_km'] = distance_km
+                        restaurant_copy['distance_text'] = LocationUtils.format_distance(distance_km)
+                    except Exception as e:
+                        logger.warning(f"Could not calculate distance for {restaurant.get('name', 'Unknown')}: {e}")
+                        restaurant_copy['distance_km'] = None
+                        restaurant_copy['distance_text'] = "Distance unknown"
+                else:
+                    restaurant_copy['distance_km'] = None
+                    restaurant_copy['distance_text'] = "Distance unknown"
+
+                restaurants_with_distance.append(restaurant_copy)
+
+            # Sort by distance (closest first)
+            restaurants_with_distance.sort(
+                key=lambda x: x.get('distance_km', float('inf'))
+            )
+
+            return restaurants_with_distance
+
+        except Exception as e:
+            logger.error(f"❌ Error adding distance info: {e}")
+            return restaurants
+
+    # ============ GOOGLE MAPS METHODS ============
+
+    async def _search_google_maps_venues(
+        self, 
+        coordinates: Tuple[float, float], 
+        query: str, 
+        location_desc: str,
+        cancel_check_fn=None
+    ) -> List[VenueResult]:
+        """Search Google Maps for venues"""
+        try:
+            lat, lng = coordinates
+
+            venues = await self.location_search_agent.search_venues(
+                latitude=lat,
+                longitude=lng,
+                query=query,
+                radius_km=self.db_search_radius,
+                max_results=self.max_venues_to_verify
+            )
+
+            logger.info(f"🗺️ Google Maps found {len(venues)} venues")
+            return venues
+
+        except Exception as e:
+            logger.error(f"❌ Error in Google Maps search: {e}")
+            return []
+
+    def _verify_venues_sync(self, venues: List[VenueResult], cancel_check_fn=None) -> List[Dict[str, Any]]:
+        """Verify venues using media search (synchronous version)"""
+        try:
+            # Convert VenueResult objects to format expected by media search
+            venue_data = []
+            for venue in venues[:self.max_venues_to_verify]:
+                city = self._extract_city_from_address(venue.address)
+
+                venue_data.append({
+                    'name': venue.name,
+                    'address': venue.address,
+                    'city': city,
+                    'latitude': venue.latitude,
+                    'longitude': venue.longitude,
+                    'rating': getattr(venue, 'rating', None),
+                    'place_id': getattr(venue, 'place_id', None)
+                })
+
+            # Simple verification for now
+            verified_results = []
+            for venue_info in venue_data:
+                if cancel_check_fn and cancel_check_fn():
+                    break
+                verified_results.append(venue_info)
+
+            return verified_results
+
+        except Exception as e:
+            logger.error(f"❌ Error in venue verification: {e}")
+            return []
+
+    def _format_google_maps_results(
+        self, 
+        venues: List[Dict[str, Any]], 
+        coordinates: Tuple[float, float],
+        query: str
+    ) -> Dict[str, Any]:
+        """Format Google Maps results"""
+        try:
+            lat, lng = coordinates
+
+            # Add distance to each venue
+            for venue in venues:
+                try:
+                    v_lat = venue.get('latitude')
+                    v_lng = venue.get('longitude')
+
+                    if v_lat and v_lng:
+                        distance_km = LocationUtils.calculate_distance(lat, lng, v_lat, v_lng)
+                        venue['distance_km'] = distance_km
+                        venue['distance_text'] = LocationUtils.format_distance(distance_km)
+                    else:
+                        venue['distance_km'] = None
+                        venue['distance_text'] = "Distance unknown"
+                except Exception as e:
+                    logger.warning(f"Could not calculate distance for venue: {e}")
+                    venue['distance_km'] = None
+                    venue['distance_text'] = "Distance unknown"
+
+            # Sort by distance
+            venues.sort(key=lambda x: x.get('distance_km', float('inf')))
+
+            return {
+                "main_list": venues,
+                "search_info": {
+                    "query": query,
+                    "source": "google_maps",
+                    "count": len(venues)
+                },
+                "source_type": "google_maps"
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error formatting Google Maps results: {e}")
+            return {"main_list": [], "search_info": {"query": query, "count": 0}}
+
+    # ============ UTILITY METHODS ============
 
     def _get_coordinates_sync(self, location_data: LocationData, cancel_check_fn=None) -> Optional[Tuple[float, float]]:
         """Get GPS coordinates from location data"""
@@ -533,79 +410,6 @@ Focus on quality over quantity. Only include clearly good matches.
             logger.error(f"❌ Error getting coordinates: {e}")
             return None
 
-    # ============ GOOGLE MAPS SEARCH METHODS ============
-
-    async def _search_google_maps_async(
-        self, 
-        coordinates: Tuple[float, float], 
-        query: str,
-        cancel_check_fn=None
-    ) -> List[VenueResult]:
-        """Search Google Maps for venues"""
-        try:
-            lat, lng = coordinates
-
-            # Extract search terms for Google Maps
-            search_terms = self._extract_search_terms_sync(query)
-
-            logger.info(f"🗺️ Searching Google Maps for '{search_terms}' near {lat:.4f}, {lng:.4f}")
-
-            # Call in executor since it's sync
-            venues = await asyncio.get_event_loop().run_in_executor(
-                None,
-                self.location_search_agent.search_nearby_venues,
-                lat, lng, search_terms
-            )
-
-            return venues or []
-
-        except Exception as e:
-            logger.error(f"❌ Error in Google Maps search: {e}")
-            return []
-
-    def _extract_search_terms_sync(self, query: str) -> str:
-        """Extract search terms for Google Maps"""
-        # Simple extraction - you can enhance this
-        return query
-
-    async def _verify_venues_async(
-        self, 
-        venues: List[VenueResult], 
-        cancel_check_fn=None
-    ) -> List[Dict[str, Any]]:
-        """Verify venues using media search agent"""
-        try:
-            # Convert VenueResult objects to format expected by media search
-            venue_data = []
-            for venue in venues[:self.max_venues_to_verify]:
-                # Extract city from venue address
-                city = self._extract_city_from_address(venue.address)
-
-                venue_data.append({
-                    'name': venue.name,
-                    'address': venue.address,
-                    'city': city,
-                    'latitude': venue.latitude,
-                    'longitude': venue.longitude,
-                    'rating': getattr(venue, 'rating', None),
-                    'place_id': getattr(venue, 'place_id', None)
-                })
-
-            # Verify using media search
-            verified_results = []
-            for venue_info in venue_data:
-                if cancel_check_fn and cancel_check_fn():
-                    break
-
-                # Simple verification - you can enhance this
-                verified_results.append(venue_info)
-
-            return verified_results
-
-        except Exception as e:
-            logger.error(f"❌ Error in venue verification: {e}")
-            return []
-
     def _extract_city_from_address(self, address: str) -> str:
         """Extract city from venue address"""
         try:
@@ -622,118 +426,22 @@ Focus on quality over quantity. Only include clearly good matches.
         except Exception:
             return "Unknown"
 
-    # ============ FORMATTING METHODS ============
-
-    def _format_location_results_sync(
-        self, 
-        restaurants: List[Dict[str, Any]], 
-        coordinates: Tuple[float, float],
-        query: str,
-        source: str
-    ) -> Dict[str, Any]:
-        """Format results for response"""
-        try:
-            lat, lng = coordinates
-
-            # Add distance to each restaurant
-            for restaurant in restaurants:
-                try:
-                    r_lat = restaurant.get('latitude')
-                    r_lng = restaurant.get('longitude')
-
-                    if r_lat and r_lng:
-                        distance = LocationUtils.calculate_distance(
-                            (lat, lng), 
-                            (float(r_lat), float(r_lng))
-                        )
-                        restaurant['distance_km'] = round(distance, 2)
-                    else:
-                        restaurant['distance_km'] = None
-                except Exception as e:
-                    logger.debug(f"Error calculating distance for {restaurant.get('name')}: {e}")
-                    restaurant['distance_km'] = None
-
-            # Sort by distance (closest first)
-            restaurants_with_distance = [r for r in restaurants if r.get('distance_km') is not None]
-            restaurants_without_distance = [r for r in restaurants if r.get('distance_km') is None]
-
-            sorted_restaurants = (
-                sorted(restaurants_with_distance, key=lambda x: x['distance_km']) +
-                restaurants_without_distance
-            )
-
-            return {
-                'success': True,
-                'results': sorted_restaurants,
-                'total_count': len(sorted_restaurants),
-                'search_coordinates': {'latitude': lat, 'longitude': lng},
-                'search_radius_km': self.db_search_radius,
-                'source': source,
-                'query': query
-            }
-
-        except Exception as e:
-            logger.error(f"❌ Error formatting location results: {e}")
-            return self._create_error_response(f"Error formatting results: {str(e)}")
-
-    # ============ UTILITY METHODS ============
-
     def _create_error_response(self, error_message: str) -> Dict[str, Any]:
         """Create error response"""
         return {
-            "success": False,
-            "error": error_message,
-            "restaurants": [],
-            "total_count": 0
+            "results": {"main_list": [], "search_info": {"error": error_message}},
+            "source": "error",
+            "processing_time": 0,
+            "restaurant_count": 0,
+            "error": error_message
         }
-
-    def _format_personal_notes_message(
-        self, 
-        restaurants: List[Dict[str, Any]],
-        query: str,
-        location_description: str = "your location"
-    ) -> str:
-        """Format the 'personal notes' message for immediate sending"""
-        try:
-            if not restaurants:
-                return "🤔 I don't have any restaurants from my notes for this location."
-
-            count = len(restaurants)
-
-            # Header message
-            header = f"📝 <b>Here are {count} restaurants from my notes near {location_description}:</b>\n\n"
-
-            # List restaurants
-            restaurant_list = ""
-            for i, restaurant in enumerate(restaurants[:8]):  # Limit to 8 for readability
-                name = restaurant.get('name', 'Unknown')
-                distance = restaurant.get('distance_km', '?')
-                cuisine = restaurant.get('cuisine_tags', [])
-                cuisine_str = ', '.join(cuisine[:2]) if cuisine else ''  # Max 2 cuisine tags
-
-                restaurant_list += f"🍽 <b>{name}</b> ({distance}km)"
-                if cuisine_str:
-                    restaurant_list += f" - <i>{cuisine_str}</i>"
-                restaurant_list += "\n"
-
-            # Footer message
-            footer = (
-                f"\n💡 <b>These are from my personal notes.</b> "
-                f"Let me know if you want me to make some calls and search for more good addresses!"
-            )
-
-            return header + restaurant_list + footer
-
-        except Exception as e:
-            logger.error(f"❌ Error formatting message: {e}")
-            return "📝 Found some restaurants from my notes, but had trouble formatting the list."
 
     def _create_cancelled_response(self) -> Dict[str, Any]:
         """Create cancelled response"""
         return {
-            "success": False,
-            "cancelled": True,
-            "restaurants": [],
-            "total_count": 0,
-            "message": "Search was cancelled"
+            "results": {"main_list": [], "search_info": {"cancelled": True}},
+            "source": "cancelled",
+            "processing_time": 0,
+            "restaurant_count": 0,
+            "cancelled": True
         }

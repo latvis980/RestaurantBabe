@@ -70,6 +70,54 @@ class LocationSearchAgent:
 
         logger.info(f"📍 Location search configured: {self.search_radius/1000}km radius, max {self.max_results} results")
 
+    async def search_venues(
+        self,
+        latitude: float,
+        longitude: float, 
+        query: str,
+        radius_km: float = 2.0,
+        max_results: int = 8
+    ) -> List[VenueResult]:
+        """
+        Async wrapper for search_nearby_venues - called by location orchestrator
+
+        Args:
+            latitude: GPS latitude
+            longitude: GPS longitude
+            query: Search query
+            radius_km: Search radius in kilometers
+            max_results: Maximum number of results to return
+
+        Returns:
+            List of VenueResult objects
+        """
+        try:
+            logger.info(f"🔍 Async search for '{query}' near {latitude:.4f}, {longitude:.4f}")
+
+            # Update instance settings for this search
+            original_radius = self.search_radius
+            original_max_results = self.max_results
+
+            self.search_radius = radius_km * 1000  # Convert to meters
+            self.max_results = max_results
+
+            # Determine venue type for better targeting
+            venue_type = self.determine_venue_type(query)
+
+            # Call the existing sync method
+            venues = self.search_nearby_venues(latitude, longitude, query, venue_type)
+
+            # Restore original settings
+            self.search_radius = original_radius
+            self.max_results = original_max_results
+
+            logger.info(f"✅ Async search completed: {len(venues)} venues found")
+            return venues
+
+        except Exception as e:
+            logger.error(f"❌ Error in async venue search: {e}")
+            return []
+    
     def search_nearby_venues(
         self, 
         latitude: float, 
@@ -78,7 +126,7 @@ class LocationSearchAgent:
         venue_type: Optional[str] = None
     ) -> List[VenueResult]:
         """
-        Search for venues near a location
+        Search for venues near a location (UPDATED - removed extra parameters)
 
         Args:
             latitude: GPS latitude
@@ -99,6 +147,10 @@ class LocationSearchAgent:
 
             center_point = (latitude, longitude)
             venues = []
+
+            # Auto-detect venue type if not provided
+            if not venue_type:
+                venue_type = self.determine_venue_type(query)
 
             # Method 1: Text search with location bias
             text_venues = self._text_search_nearby(center_point, query)
@@ -211,7 +263,8 @@ class LocationSearchAgent:
             lng = float(location['lng'])
 
             # Calculate distance from search center
-            distance_km = LocationUtils.calculate_distance(center_point, (lat, lng))
+            center_lat, center_lng = center_point
+            distance_km = LocationUtils.calculate_distance(center_lat, center_lng, lat, lng)
 
             # Skip if too far (should be filtered by API but double-check)
             if distance_km > (self.search_radius / 1000):
