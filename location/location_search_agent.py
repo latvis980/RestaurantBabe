@@ -45,30 +45,34 @@ class LocationSearchAgent:
     def __init__(self, config):
         self.config = config
 
-        # Initialize Google Maps client
+        # Initialize Google Maps client - UPDATED to match your new configuration
+        # Priority: GOOGLE_MAPS_KEY2 > GOOGLE_MAPS_API_KEY
         api_key = getattr(config, 'GOOGLE_MAPS_KEY2', None) or getattr(config, 'GOOGLE_MAPS_API_KEY', None)
+
         if not api_key:
             raise ValueError("Google Maps API key not found. Set GOOGLE_MAPS_KEY2 or GOOGLE_MAPS_API_KEY")
 
         try:
             self.gmaps = googlemaps.Client(key=api_key)
-            logger.info("✅ Google Maps client initialized for location search")
+            key_source = "GOOGLE_MAPS_KEY2" if getattr(config, 'GOOGLE_MAPS_KEY2', None) else "GOOGLE_MAPS_API_KEY"
+            logger.info(f"✅ Google Maps client initialized for location search using {key_source}")
         except Exception as e:
             logger.error(f"❌ Failed to initialize Google Maps client: {e}")
             raise
 
-        # Search parameters
+        # Search parameters - UPDATED to match your config structure
         self.search_radius = getattr(config, 'LOCATION_SEARCH_RADIUS_KM', 2.0) * 1000  # Convert to meters
         self.max_results = getattr(config, 'MAX_LOCATION_RESULTS', 8)
         self.search_timeout = getattr(config, 'LOCATION_SEARCH_TIMEOUT', 30.0)
 
-        # Venue types to search for
+        # Venue types from config - UPDATED to use your config structure
         self.venue_types = getattr(config, 'GOOGLE_PLACES_SEARCH_TYPES', [
             "restaurant", "bar", "cafe", "meal_takeaway", 
             "meal_delivery", "food", "bakery"
         ])
 
         logger.info(f"📍 Location search configured: {self.search_radius/1000}km radius, max {self.max_results} results")
+
 
     async def search_venues(
         self,
@@ -178,18 +182,18 @@ class LocationSearchAgent:
             return []
 
     def _text_search_nearby(self, center_point: Tuple[float, float], query: str) -> List[VenueResult]:
-        """Perform Google Places text search with location bias"""
+        """Perform Google Places text search with location bias - UPDATED for new API"""
         try:
             lat, lng = center_point
-            location_bias = f"circle:{self.search_radius}@{lat},{lng}"
 
-            logger.debug(f"Text search: '{query}' with location bias")
+            logger.debug(f"Text search: '{query}' near {lat}, {lng}")
 
-            response = self.gmaps.places(
-                query=query,
+            # UPDATED: Use places_nearby instead of deprecated places method
+            response = self.gmaps.places_nearby(
                 location=(lat, lng),
                 radius=self.search_radius,
-                type="restaurant|bar|cafe|food",
+                keyword=query,
+                type="restaurant",  # Primary type
                 language="en"
             )
 
@@ -199,6 +203,25 @@ class LocationSearchAgent:
                 if venue:
                     venues.append(venue)
 
+            # If no results with nearby search, try text search as fallback
+            if not venues:
+                try:
+                    # Use find_place for text search as fallback
+                    response = self.gmaps.find_place(
+                        input=query,
+                        input_type="textquery",
+                        location_bias=f"circle:{self.search_radius}@{lat},{lng}",
+                        fields=["place_id", "name", "geometry", "formatted_address", "rating", "user_ratings_total"]
+                    )
+
+                    for candidate in response.get('candidates', []):
+                        venue = self._parse_place_result(candidate, center_point)
+                        if venue:
+                            venues.append(venue)
+
+                except Exception as e:
+                    logger.debug(f"Fallback text search failed: {e}")
+
             logger.debug(f"Text search found {len(venues)} venues")
             return venues
 
@@ -207,7 +230,7 @@ class LocationSearchAgent:
             return []
 
     def _nearby_search_by_type(self, center_point: Tuple[float, float], venue_type: str) -> List[VenueResult]:
-        """Perform Google Places nearby search by venue type"""
+        """Perform Google Places nearby search by venue type - UPDATED for new API"""
         try:
             lat, lng = center_point
 
@@ -226,6 +249,7 @@ class LocationSearchAgent:
 
             logger.debug(f"Nearby search: type '{google_type}' near {lat}, {lng}")
 
+            # UPDATED: This method is still valid for the new API
             response = self.gmaps.places_nearby(
                 location=(lat, lng),
                 radius=self.search_radius,
