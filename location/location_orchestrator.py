@@ -99,7 +99,7 @@ class LocationOrchestrator:
 
             # STEP 2: AI-based analysis and filtering
             logger.info("🧠 Step 2: AI analysis and filtering")
-            filter_result = self.filter_evaluator.analyze_and_filter(
+            filter_result = self.filter_evaluator.filter_and_evaluate(
                 restaurants=nearby_restaurants,
                 query=query,
                 location_description=location_desc

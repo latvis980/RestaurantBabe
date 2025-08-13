@@ -206,7 +206,7 @@ For location searches, be generous - even 1-2 good matches should be sent.
         query: str,
         location_description: str
     ) -> Dict[str, Any]:
-        """Evaluate if results are sufficient for location search (simplified logic)"""
+        """Evaluate if results are sufficient for location search"""
         try:
             count = len(filtered_restaurants)
 
@@ -230,29 +230,29 @@ For location searches, be generous - even 1-2 good matches should be sent.
                 }
 
         except Exception as e:
-            logger.error(f"❌ Error in evaluation: {e}")
+            logger.error(f"❌ Error in location search evaluation: {e}")
             return {
                 "database_sufficient": False,
                 "send_immediately": False,
-                "reasoning": f"Evaluation error: {str(e)}",
+                "reasoning": f"Error during evaluation: {str(e)}",
                 "quality_score": 0.0
             }
 
-    def _create_empty_result(self, reason: str) -> Dict[str, Any]:
-        """Create empty result structure"""
+    def _create_empty_result(self, message: str) -> Dict[str, Any]:
+        """Create empty result with standard format"""
         return {
             "filtered_restaurants": [],
             "evaluation": {
                 "database_sufficient": False,
                 "send_immediately": False,
-                "reasoning": reason,
+                "reasoning": message,
                 "quality_score": 0.0
             },
             "database_sufficient": False,
             "send_immediately": False,
             "total_found": 0,
             "selected_count": 0,
-            "reasoning": reason
+            "reasoning": message
         }
 
     def format_personal_notes_message(
