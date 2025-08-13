@@ -372,7 +372,7 @@ class Database:
                 all_restaurants = result.data or []
 
                 # Filter by distance using LocationUtils
-                from utils.location_utils import LocationUtils
+                from location.location_utils import LocationUtils
                 restaurants_with_distance = []
 
                 for restaurant in all_restaurants:

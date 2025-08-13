@@ -121,11 +121,11 @@ class LocationDatabaseService:
             # Get all restaurants with coordinates from the database
             # This uses a broader query and then filters by distance
             result = db.supabase.table('restaurants')\
-                .select('*')\
-                .not_('latitude', 'is', 'null')\
-                .not_('longitude', 'is', 'null')\
-                .limit(200)\
-                .execute()
+            .select('*')\
+            .not_('latitude', 'is', None)\
+            .not_('longitude', 'is', None)\
+            .limit(200)\
+            .execute()
 
             all_restaurants = result.data or []
             logger.info(f"Retrieved {len(all_restaurants)} restaurants with coordinates for manual filtering")

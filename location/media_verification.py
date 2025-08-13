@@ -214,11 +214,18 @@ class MediaVerificationAgent:
             if not self.brave_search:
                 return []
 
-            # Use the existing BraveSearchAgent logic
-            # This should use the same quality filtering as search_agent.py
-            search_result = await self.brave_search.search_and_filter(query)
+            # Use the correct method from BraveSearchAgent
+            # search_parallel_batch expects a list of queries and destination
+            search_queries = [query]
+            destination = "media_search"  # Generic destination for media searches
 
-            return search_result.get('filtered_results', [])
+            filtered_results = self.brave_search.search_parallel_batch(
+                search_queries=search_queries,
+                destination=destination,
+                query_metadata={}  # Empty metadata for media searches
+            )
+
+            return filtered_results
 
         except Exception as e:
             logger.error(f"❌ Error in media search: {e}")
