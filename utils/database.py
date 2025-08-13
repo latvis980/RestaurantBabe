@@ -1,12 +1,8 @@
 # utils/database.py - SIMPLIFIED: Direct Supabase interface (no wrapper)
 import logging
-import hashlib
-import json
-import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional, Tuple
 from supabase import create_client, Client
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -323,13 +319,13 @@ class Database:
         except Exception as e:
             logger.error(f"Error getting restaurants by preference tags: {e}")
             return []
-
-    # Add this complete method to your Database class in utils/database.py
-    # Replace the incomplete get_restaurants_by_coordinates method with this:
-
+            
     def get_restaurants_by_coordinates(self, center: Tuple[float, float], radius_km: float, limit: int = 20) -> List[Dict[str, Any]]:
         """
         Get restaurants within radius of coordinates using PostGIS or fallback method
+
+        NOTE: This method should ONLY be called by location/database_search.py
+        All location-based logic should remain in the /location/ folder.
 
         Args:
             center: Tuple of (latitude, longitude) for center point
@@ -343,7 +339,7 @@ class Database:
             center_lat, center_lng = center
             logger.info(f"📍 Searching restaurants within {radius_km}km of ({center_lat}, {center_lng})")
 
-            # Try PostGIS search first (if you have the RPC function)
+            # Try PostGIS search first (now with the correct RPC function)
             try:
                 result = self.supabase.rpc('search_restaurants_by_coordinates', {
                     'center_lat': center_lat,
@@ -405,163 +401,6 @@ class Database:
             logger.error(f"❌ Error in coordinate search: {e}")
             return []
         
-   
-    # ============ DOMAIN INTELLIGENCE METHODS ============
-
-    def save_domain_intelligence(self, domain: str, intelligence_data: Dict[str, Any]) -> bool:
-        """Save domain intelligence data - SIMPLIFIED VERSION"""
-        try:
-            # For the simplified table, we use the update_domain_stats function instead
-            # This method is kept for compatibility but delegates to the SQL function
-
-            strategy = intelligence_data.get('strategy', 'enhanced_http')
-            success_count = intelligence_data.get('success_count', 0)
-            total_attempts = max(intelligence_data.get('total_attempts', 1), 1)
-
-            # Calculate if this represents a success based on the data
-            success_rate = success_count / total_attempts
-            is_success = success_rate > 0.5  # Treat as success if > 50% success rate
-
-            # Use the SQL function to update
-            self.supabase.rpc('update_domain_stats', {
-                'p_domain': domain,
-                'p_strategy': strategy,
-                'p_success': is_success
-            }).execute()
-
-            logger.debug(f"💾 Saved domain intelligence for {domain}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error saving domain intelligence for {domain}: {e}")
-            return False
-
-    def get_domain_intelligence(self, domain: str) -> Optional[Dict[str, Any]]:
-        """Get domain intelligence data - SIMPLIFIED VERSION"""
-        try:
-            result = self.supabase.table('domain_intelligence')\
-                .select('*')\
-                .eq('domain', domain)\
-                .execute()
-
-            if result.data:
-                # Convert to the format expected by the smart scraper
-                data = result.data[0]
-                return {
-                    'domain': data['domain'],
-                    'strategy': data['strategy'],
-                    'confidence': data['confidence'],
-                    'success_count': data['success_count'],
-                    'total_attempts': data['total_attempts'],
-                    'cost_per_scrape': data['cost_per_scrape'],
-                    'created_at': data['created_at'],
-                    'updated_at': data['updated_at']
-                }
-
-            return None
-
-        except Exception as e:
-            logger.error(f"Error getting domain intelligence for {domain}: {e}")
-            return None
-
-    def update_domain_success(self, domain: str, success: bool, restaurants_found: int = 0):
-        """Update domain success/failure counts - SIMPLIFIED VERSION"""
-        try:
-            # Get current data to determine strategy
-            current = self.get_domain_intelligence(domain)
-
-            if current:
-                strategy = current['strategy']
-            else:
-                # Default strategy for new domains
-                strategy = 'enhanced_http'
-
-            # Use the SQL function to update
-            self.supabase.rpc('update_domain_stats', {
-                'p_domain': domain,
-                'p_strategy': strategy,
-                'p_success': success
-            }).execute()
-
-            logger.debug(f"Updated domain intelligence for {domain}: success={success}")
-
-        except Exception as e:
-            logger.error(f"Error updating domain success for {domain}: {e}")
-
-    def get_trusted_domains(self, min_confidence: float = None) -> List[str]:
-        """Get list of trusted domains based on success rate - SIMPLIFIED VERSION"""
-        try:
-            min_conf = min_confidence or 0.7
-
-            result = self.supabase.table('domain_intelligence')\
-                .select('domain')\
-                .gte('confidence', min_conf)\
-                .gte('total_attempts', 2)\
-                .execute()
-
-            return [row['domain'] for row in result.data]
-
-        except Exception as e:
-            logger.error(f"Error getting trusted domains: {e}")
-            return []
-
-    def load_all_domain_intelligence(self) -> List[Dict[str, Any]]:
-        """Load all domain intelligence records - SIMPLIFIED VERSION"""
-        try:
-            result = self.supabase.table('domain_intelligence')\
-                .select('*')\
-                .order('confidence', desc=True)\
-                .execute()
-            return result.data
-        except Exception as e:
-            logger.error(f"Error loading domain intelligence: {e}")
-            return []
-
-    def get_domain_intelligence_stats(self) -> Dict[str, Any]:
-        """Get domain intelligence statistics"""
-        try:
-            # Get all domain data
-            all_domains = self.load_all_domain_intelligence()
-
-            if not all_domains:
-                return {
-                    'total_domains': 0,
-                    'strategy_breakdown': {},
-                    'average_confidence': 0,
-                    'high_confidence_domains': 0
-                }
-
-            # Calculate statistics
-            strategy_counts = {}
-            total_confidence = 0
-            high_confidence_count = 0
-
-            for domain in all_domains:
-                strategy = domain.get('strategy', 'unknown')
-                strategy_counts[strategy] = strategy_counts.get(strategy, 0) + 1
-
-                confidence = domain.get('confidence', 0)
-                total_confidence += confidence
-
-                if confidence >= 0.8:
-                    high_confidence_count += 1
-
-            return {
-                'total_domains': len(all_domains),
-                'strategy_breakdown': strategy_counts,
-                'average_confidence': round(total_confidence / len(all_domains), 2),
-                'high_confidence_domains': high_confidence_count,
-                'confidence_rate': round((high_confidence_count / len(all_domains)) * 100, 1)
-            }
-
-        except Exception as e:
-            logger.error(f"Error getting domain intelligence stats: {e}")
-            return {
-                'total_domains': 0,
-                'strategy_breakdown': {},
-                'average_confidence': 0,
-                'high_confidence_domains': 0
-            }
             
     # ============ STATISTICS AND MONITORING ============
 
@@ -697,26 +536,6 @@ def get_restaurants_by_city(city: str, limit: int = 50) -> List[Dict[str, Any]]:
 def search_restaurants_by_cuisine(city: str, cuisine_tags: List[str], limit: int = 20) -> List[Dict[str, Any]]:
     """Search restaurants by cuisine tags"""
     return get_database().search_restaurants_by_cuisine(city, cuisine_tags, limit)
-
-def save_domain_intelligence(domain: str, intelligence_data: Dict[str, Any]) -> bool:
-    """Save domain intelligence data"""
-    return get_database().save_domain_intelligence(domain, intelligence_data)
-
-def get_domain_intelligence(domain: str) -> Optional[Dict[str, Any]]:
-    """Get domain intelligence data"""
-    return get_database().get_domain_intelligence(domain)
-
-def update_domain_success(domain: str, success: bool, restaurants_found: int = 0):
-    """Update domain success metrics"""
-    get_database().update_domain_success(domain, success, restaurants_found)
-
-def get_trusted_domains(min_confidence: float = None) -> List[str]:
-    """Get list of trusted domains"""
-    return get_database().get_trusted_domains(min_confidence)
-
-def load_all_domain_intelligence() -> List[Dict[str, Any]]:
-    """Load all domain intelligence records"""
-    return get_database().load_all_domain_intelligence()
 
 def cache_search_results(query: str, results: Dict[str, Any]) -> bool:
     """Cache search results"""
