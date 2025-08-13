@@ -1,6 +1,6 @@
 # location/location_orchestrator.py
 """
-Location Search Orchestrator - UPDATED with proper user choice flow
+Location Search Orchestrator - FIXED VERSION
 
 Business Logic:
 1. User enters location (text or pin)
@@ -73,25 +73,24 @@ class LocationOrchestrator:
            b. if 0 results - start google maps search directly
         4. Return formatted results
         """
-        try:
-            start_time = time.time()
-            logger.info(f"🎯 Processing location query: '{query}'")
+        start_time = time.time()
 
-            # STEP 0: Get coordinates
+        try:
+            # Get coordinates from location data
             coordinates = self._get_coordinates(location_data, cancel_check_fn)
             if not coordinates:
                 return self._create_error_response("Could not determine location coordinates")
 
+            location_desc = location_data.description or f"{coordinates[0]:.4f}, {coordinates[1]:.4f}"
+
+            logger.info(f"🎯 Processing location query: '{query}' at {location_desc}")
+
             if cancel_check_fn and cancel_check_fn():
                 return self._create_cancelled_response()
 
-            lat, lng = coordinates
-            location_desc = location_data.description or f"GPS location ({lat:.4f}, {lng:.4f})"
-            logger.info(f"📍 Coordinates: {lat:.4f}, {lng:.4f}")
-
-            # STEP 1: Database proximity search
-            logger.info("🗃️ Step 1: Database proximity search")
-            nearby_restaurants = self.database_service.search_by_proximity(
+            # Step 1: Database search
+            logger.info("🗄️ Step 1: Database search")
+            db_results = self.database_service.search_by_proximity(
                 coordinates=coordinates,
                 radius_km=self.db_search_radius,
                 extract_descriptions=True
@@ -100,87 +99,71 @@ class LocationOrchestrator:
             if cancel_check_fn and cancel_check_fn():
                 return self._create_cancelled_response()
 
-            # STEP 2: AI-based analysis and filtering
-            logger.info("🧠 Step 2: AI analysis and filtering")
-            filter_result = self.filter_evaluator.filter_and_evaluate(
-                restaurants=nearby_restaurants,
-                query=query,
-                location_description=location_desc
-            )
+            # Step 3: Database results analysis
+            db_restaurant_count = len(db_results)
 
-            if cancel_check_fn and cancel_check_fn():
-                return self._create_cancelled_response()
+            if db_restaurant_count > 0:
+                logger.info(f"✅ Found {db_restaurant_count} database results - sending to user with choice")
 
-            # BUSINESS LOGIC IMPLEMENTATION:
-            filtered_restaurants = filter_result.get("filtered_restaurants", [])
+                # Add distance information
+                restaurants_with_distance = self._add_distance_info(
+                    db_results, coordinates
+                )
 
-            if len(filtered_restaurants) > 0:
-                # CASE 3a: More than 0 results - send to user with choice option
-                logger.info(f"✅ Found {len(filtered_restaurants)} database matches - sending with choice")
-
-                # Add distance info and format results
-                restaurants_with_distance = self._add_distance_info(filtered_restaurants, coordinates)
-
+                # Format database results
                 formatted_results = self.formatter.format_database_results(
                     restaurants=restaurants_with_distance,
                     query=query,
-                    location_description=location_desc,
-                    offer_more_search=True  # Always offer choice
+                    location_description=location_desc
                 )
 
                 processing_time = time.time() - start_time
+
                 return {
                     "success": True,
-                    "results": formatted_results,
-                    "source": "database_with_choice",  # Key indicator for telegram bot
+                    "results": formatted_results.get("restaurants", []),
+                    "source": "database_with_choice",
                     "processing_time": processing_time,
-                    "restaurant_count": len(filtered_restaurants),
+                    "restaurant_count": db_restaurant_count,
                     "coordinates": coordinates,
                     "location_description": location_desc,
-                    "needs_user_response": True  # Telegram bot will show choice buttons
+                    "offer_more_results": True  # Flag to offer Google Maps search
                 }
 
             else:
-                # CASE 3b: 0 results - start Google Maps search directly
-                logger.info("🔍 No database results found - launching Google Maps search")
-                return await self._google_maps_search_flow(
-                    coordinates, query, location_desc, start_time, cancel_check_fn
-                )
+                logger.info("📍 No database results - starting Google Maps search directly")
+                return await self._search_google_maps_flow(query, coordinates, location_desc, cancel_check_fn, start_time)
 
         except Exception as e:
             logger.error(f"❌ Error in location query processing: {e}")
-            return self._create_error_response(f"Search error: {str(e)}")
+            return self._create_error_response(f"Search failed: {str(e)}")
 
     # ============ GOOGLE MAPS SEARCH FLOW ============
 
-    async def _google_maps_search_flow(
+    async def _search_google_maps_flow(
         self, 
-        coordinates: Tuple[float, float], 
         query: str, 
+        coordinates: Tuple[float, float], 
         location_desc: str,
-        start_time: float,
-        cancel_check_fn=None
+        cancel_check_fn=None,
+        start_time=None
     ) -> Dict[str, Any]:
-        """
-        Google Maps search flow for when database has no results OR user wants more
-        """
-        try:
-            logger.info("🗺️ Step 3: Google Maps venue search")
+        """Google Maps search flow when database has no results"""
+        if start_time is None:
+            start_time = time.time()
 
-            # Search Google Maps for venues
-            venues = await self._search_google_maps_venues(
-                coordinates, query, cancel_check_fn
-            )
+        try:
+            # Step 3: Google Maps venue search
+            logger.info("🗺️ Step 3: Google Maps venue search")
+            venues = await self._search_google_maps_venues(coordinates, query, cancel_check_fn)
 
             if cancel_check_fn and cancel_check_fn():
                 return self._create_cancelled_response()
 
             if not venues:
-                return self._create_error_response("No restaurants found in this area")
+                return self._create_error_response("No restaurants found in Google Maps")
 
-            logger.info(f"🏪 Found {len(venues)} venues from Google Maps")
-
-            # Steps 4 & 5: Media verification and filtering (if enabled)
+            # Step 4 & 5: Media verification (optional)
             if hasattr(self.config, 'ENABLE_MEDIA_VERIFICATION') and self.config.ENABLE_MEDIA_VERIFICATION:
                 logger.info("📸 Steps 4 & 5: Media verification and filtering")
 
@@ -236,15 +219,19 @@ class LocationOrchestrator:
             if location_data.description:
                 logger.info(f"🌍 Geocoding location: {location_data.description}")
 
-                from location.location_utils import LocationUtils
-                location_utils = LocationUtils(self.config)
-                coordinates = location_utils.geocode_location_description(location_data.description)
+                # Check if Database class has geocoding capability
+                from utils.database import get_database
+                db = get_database()
 
-                if coordinates:
-                    logger.info(f"✅ Geocoded to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
-                    return coordinates
+                if hasattr(db, 'geocode_address'):
+                    coordinates = db.geocode_address(location_data.description)
+                    if coordinates:
+                        logger.info(f"✅ Geocoded to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+                        return coordinates
+                    else:
+                        logger.warning(f"❌ Failed to geocode: {location_data.description}")
                 else:
-                    logger.warning(f"❌ Failed to geocode: {location_data.description}")
+                    logger.warning("❌ Geocoding not available in database")
 
             return None
 
@@ -255,13 +242,12 @@ class LocationOrchestrator:
     def _add_distance_info(self, restaurants: List[Dict[str, Any]], coordinates: Tuple[float, float]) -> List[Dict[str, Any]]:
         """Add distance information to restaurants"""
         try:
-            from location.location_utils import LocationUtils
-
             for restaurant in restaurants:
                 if restaurant.get('latitude') and restaurant.get('longitude'):
+                    # FIXED: Use calculate_distance as static method with proper arguments
                     distance = LocationUtils.calculate_distance(
-                        coordinates[0], coordinates[1],
-                        restaurant['latitude'], restaurant['longitude']
+                        coordinates,  # First point as tuple
+                        (restaurant['latitude'], restaurant['longitude'])  # Second point as tuple
                     )
                     restaurant['distance_km'] = round(distance, 2)
                 else:
@@ -283,10 +269,11 @@ class LocationOrchestrator:
     ) -> List[VenueResult]:
         """Search Google Maps for venues"""
         try:
-            venues = self.google_maps_agent.search_nearby_venues(
+            # FIXED: Use correct method name 'search_venues' instead of 'search_nearby_venues'
+            venues = await self.google_maps_agent.search_venues(
                 coordinates=coordinates,
                 query=query,
-                radius_meters=self.db_search_radius * 1000  # Convert km to meters
+                radius_km=self.db_search_radius  # Use km directly as the method expects
             )
 
             # Filter and sort venues
@@ -323,14 +310,15 @@ class LocationOrchestrator:
                 if cancel_check_fn and cancel_check_fn():
                     break
 
-                # Media verification
-                verification_result = await self.media_verifier.verify_venue(
-                    venue=venue,
+                # FIXED: Use correct method name 'verify_venues' instead of 'verify_venue'
+                verification_result = await self.media_verifier.verify_venues(
+                    venues=[venue],  # Pass as list since method expects List[VenueResult]
                     query=query,
-                    coordinates=coordinates
+                    cancel_check_fn=cancel_check_fn
                 )
 
-                if verification_result.get('is_relevant', False):
+                if verification_result and len(verification_result) > 0:
+                    # If verification returns any results, consider the venue verified
                     verified_venues.append(venue)
 
                 # Respect rate limits
