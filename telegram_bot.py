@@ -16,7 +16,7 @@ from langchain_core.prompts import ChatPromptTemplate
 import config
 from utils.orchestrator_manager import get_orchestrator
 
-from utils.telegram_location_handler import TelegramLocationHandler, LocationData
+from location.telegram_location_handler import TelegramLocationHandler, LocationData
 from location.location_analyzer import LocationAnalyzer
 
 # Configure logging

@@ -1,6 +1,6 @@
-# utils/telegram_location_handler.py
+# location/telegram_location_handler.py
 """
-Telegram Location Handler
+Telegram Location Handler - MOVED to location folder
 
 Handles location-based messages from Telegram users:
 1. GPS coordinates (location pins)
