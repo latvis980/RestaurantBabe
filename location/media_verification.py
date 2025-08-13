@@ -118,55 +118,18 @@ class MediaVerificationAgent:
         cancel_check_fn=None
     ) -> List[Dict[str, Any]]:
         """
-        STEPS 4-5: Verify venues in media and extract descriptions
-
-        Args:
-            venues: List of VenueResult objects from Google Maps
-            query: Original search query for context
-            cancel_check_fn: Function to check if search should be cancelled
-
-        Returns:
-            List of verified venues with media sources and descriptions
+        TEMPORARY: Skip media verification and return venues as-is
+        TODO: Fix media verification integration
         """
         try:
-            logger.info(f"📰 STEPS 4-5: Media verification for {len(venues)} venues")
+            logger.info(f"⚠️ Media verification temporarily disabled - returning {len(venues)} venues as-is")
 
-            if not self.brave_search:
-                logger.warning("⚠️ Brave search not available, returning unverified venues")
-                return self._convert_venues_to_dict(venues)
-
-            verified_venues = []
-
-            for venue in venues:
-                if cancel_check_fn and cancel_check_fn():
-                    logger.info("🚫 Media verification cancelled")
-                    break
-
-                # STEP 4: Verify in media
-                media_verification = await self._verify_venue_in_media(venue, query)
-
-                if media_verification['is_verified']:
-                    # STEP 5: Get description from trusted sources
-                    description = await self._extract_venue_description(
-                        venue, media_verification['sources']
-                    )
-
-                    verified_venue = self._create_verified_venue(
-                        venue, media_verification, description
-                    )
-                    verified_venues.append(verified_venue)
-
-                    logger.info(f"✅ Verified: {venue.name} ({len(media_verification['sources'])} sources)")
-                else:
-                    logger.info(f"❌ Not verified: {venue.name} (no trusted media coverage)")
-
-            logger.info(f"📊 STEPS 4-5 COMPLETE: {len(verified_venues)}/{len(venues)} venues verified")
-            return verified_venues
+            # Convert VenueResult objects to dictionaries without verification
+            return self._convert_venues_to_dict(venues)
 
         except Exception as e:
-            logger.error(f"❌ Error in media verification: {e}")
-            # Fallback: return original venues as dictionaries
-            return self._convert_venues_to_dict(venues)
+            logger.error(f"❌ Error in venue conversion: {e}")
+            return []
 
     async def _verify_venue_in_media(
         self, 
@@ -214,18 +177,11 @@ class MediaVerificationAgent:
             if not self.brave_search:
                 return []
 
-            # Use the correct method from BraveSearchAgent
-            # search_parallel_batch expects a list of queries and destination
-            search_queries = [query]
-            destination = "media_search"  # Generic destination for media searches
+            # Use the existing BraveSearchAgent logic
+            # This should use the same quality filtering as search_agent.py
+            search_result = await self.brave_search.search_and_filter(query)
 
-            filtered_results = self.brave_search.search_parallel_batch(
-                search_queries=search_queries,
-                destination=destination,
-                query_metadata={}  # Empty metadata for media searches
-            )
-
-            return filtered_results
+            return search_result.get('filtered_results', [])
 
         except Exception as e:
             logger.error(f"❌ Error in media search: {e}")
