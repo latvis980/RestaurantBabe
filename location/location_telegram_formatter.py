@@ -1,10 +1,9 @@
-# location/location_telegram_formatter.py
 """
-Unified Location Results Formatter
+Unified Location Results Formatter - UPDATED for user choice flow
 
-This creates a consistent format for ALL location-based results:
-- Database results (Step 2a)
-- Google Maps results (Steps 3-5)
+Creates consistent format for ALL location-based results:
+- Database results (Step 2a) - with user choice option
+- Google Maps results (Steps 3-5) - final results
 - Consistent appearance regardless of source
 
 Standard format for all location results:
@@ -26,7 +25,7 @@ logger = logging.getLogger(__name__)
 class LocationTelegramFormatter:
     """
     Unified formatter for all location-based search results
-    Ensures consistent appearance regardless of source (database vs Google Maps)
+    UPDATED: Properly handles user choice flow
     """
 
     MAX_MESSAGE_LENGTH = 4096
@@ -52,67 +51,68 @@ class LocationTelegramFormatter:
             offer_more_search: Whether to offer additional Google Maps search
 
         Returns:
-            Formatted results dictionary
+            Formatted results dictionary for telegram bot
         """
         try:
-            logger.info(f"📋 Formatting {len(restaurants)} database results")
-
             if not restaurants:
-                return self._create_empty_response(query, "database")
+                return {
+                    "message": "No restaurants found in my notes for this area.",
+                    "restaurant_count": 0,
+                    "has_choice": False
+                }
 
-            # Build header message
-            header = f"<b>🗂️ Here are some restaurants from my notes:</b>\n\n"
+            # Build the results message
+            message_parts = []
 
-            # Format each restaurant using unified format
-            restaurant_entries = []
-            for i, restaurant in enumerate(restaurants, 1):
-                entry = self._format_single_restaurant(restaurant, i, source_type="database")
-                if entry:
-                    restaurant_entries.append(entry)
+            # Header with personal notes context
+            header = f"📝 <b>From my personal restaurant notes:</b>\n\n"
 
-            # Add user choice prompt if requested
-            footer = ""
-            if offer_more_search:
-                footer = (
-                    f"\n<b>💭 Do you want to try these restaurants first, or would you like me to search for more addresses?</b>\n\n"
-                    "<i>Reply with 'search more' if you'd like additional options from Google Maps</i>"
-                )
+            # Format each restaurant
+            for i, restaurant in enumerate(restaurants[:6], 1):  # Limit to 6 for choice flow
+                formatted_restaurant = self._format_single_restaurant(restaurant, i)
+                message_parts.append(formatted_restaurant)
 
             # Combine all parts
-            message_parts = [header] + restaurant_entries + [footer]
-            message = ''.join(message_parts)
+            full_message = header + "\n\n".join(message_parts)
 
-            # Apply length limit
-            if len(message) > self.MAX_MESSAGE_LENGTH:
-                message = message[:self.MAX_MESSAGE_LENGTH-3] + "…"
+            # Add choice explanation if offering more search
+            if offer_more_search:
+                choice_text = (
+                    "\n\n💡 <b>These are from my curated collection.</b> "
+                    "Would you like to see these options or search for more restaurants in the area?"
+                )
+                full_message += choice_text
+
+            # Ensure message isn't too long
+            if len(full_message) > self.MAX_MESSAGE_LENGTH:
+                full_message = self._truncate_message(full_message, message_parts, header)
 
             return {
-                "main_list": restaurants,
-                "formatted_message": message,
-                "source_type": "database",
-                "search_info": {
-                    "query": query,
-                    "location": location_description,
-                    "count": len(restaurants),
-                    "needs_user_choice": offer_more_search
-                }
+                "message": full_message,
+                "restaurant_count": len(restaurants),
+                "has_choice": offer_more_search,
+                "formatted_restaurants": message_parts
             }
 
         except Exception as e:
             logger.error(f"❌ Error formatting database results: {e}")
-            return self._create_empty_response(query, "database")
+            return {
+                "message": f"Found {len(restaurants)} restaurants but had trouble formatting them.",
+                "restaurant_count": len(restaurants),
+                "has_choice": offer_more_search
+            }
 
     def format_google_maps_results(
         self,
-        restaurants: List[Dict[str, Any]],
+        venues: List[Any],  # VenueResult objects
         query: str,
         location_description: str
     ) -> Dict[str, Any]:
         """
-        Format Google Maps results (Steps 3-5) 
+        Format Google Maps results (final results, no choice needed)
 
         Args:
-            restaurants: List of verified venue dictionaries
+            venues: List of VenueResult objects from Google Maps
             query: Original user query
             location_description: Description of the searched location
 
@@ -120,101 +120,153 @@ class LocationTelegramFormatter:
             Formatted results dictionary
         """
         try:
-            logger.info(f"📋 Formatting {len(restaurants)} Google Maps results")
+            if not venues:
+                return {
+                    "message": "No additional restaurants found through Google Maps search.",
+                    "venues": [],
+                    "restaurant_count": 0
+                }
 
-            if not restaurants:
-                return self._create_empty_response(query, "google_maps")
+            # Convert VenueResult objects to restaurant format for existing telegram formatter
+            formatted_venues = []
 
-            # Build header message
-            header = f"<b>🗺️ Found {len(restaurants)} restaurants from my search:</b>\n\n"
-
-            # Format each restaurant using unified format
-            restaurant_entries = []
-            for i, restaurant in enumerate(restaurants, 1):
-                entry = self._format_single_restaurant(restaurant, i, source_type="google_maps")
-                if entry:
-                    restaurant_entries.append(entry)
-
-            # Add footer note
-            footer = "\n<i>Click the address to see venue photos and menu on Google Maps</i>"
-
-            # Combine all parts
-            message_parts = [header] + restaurant_entries + [footer]
-            message = ''.join(message_parts)
-
-            # Apply length limit
-            if len(message) > self.MAX_MESSAGE_LENGTH:
-                message = message[:self.MAX_MESSAGE_LENGTH-3] + "…"
+            for venue in venues:
+                restaurant_dict = {
+                    "name": venue.name,
+                    "address": venue.address,
+                    "distance_km": venue.distance_km,
+                    "rating": venue.rating,
+                    "user_ratings_total": venue.user_ratings_total,
+                    "price_level": venue.price_level,
+                    "google_maps_url": venue.google_maps_url,
+                    "place_id": venue.place_id,
+                    "types": venue.types,
+                    # Add source information
+                    "source": "google_maps",
+                    "verification_status": "verified" if hasattr(venue, 'verified') else "unverified"
+                }
+                formatted_venues.append(restaurant_dict)
 
             return {
-                "main_list": restaurants,
-                "formatted_message": message,
-                "source_type": "google_maps",
-                "search_info": {
-                    "query": query,
-                    "location": location_description,
-                    "count": len(restaurants),
-                    "needs_user_choice": False
-                }
+                "venues": formatted_venues,
+                "restaurant_count": len(venues),
+                "message": f"Found {len(venues)} restaurants through Google Maps search"
             }
 
         except Exception as e:
             logger.error(f"❌ Error formatting Google Maps results: {e}")
-            return self._create_empty_response(query, "google_maps")
+            return {
+                "venues": [],
+                "restaurant_count": 0,
+                "message": "Found restaurants but had trouble formatting them."
+            }
 
-    def _format_single_restaurant(
-        self, 
-        restaurant: Dict[str, Any], 
-        index: int,
-        source_type: str = "database"
-    ) -> str:
-        """
-        Format a single restaurant using the UNIFIED STANDARD FORMAT:
-
-        Name
-        Address (canonical Place ID method)
-        Distance from user  
-        Description
-        Recommended by [sources]
-        """
+    def _format_single_restaurant(self, restaurant: Dict[str, Any], index: int) -> str:
+        """Format a single restaurant for display"""
         try:
-            name = restaurant.get('name', '').strip()
-            if not name:
-                return ""
+            # Restaurant name with index
+            name = restaurant.get('name', 'Unknown Restaurant')
+            formatted_name = f"<b>{index}. {escape(name)}</b>"
 
-            # STANDARD FORMAT COMPONENTS
+            # Distance
+            distance = restaurant.get('distance_km')
+            distance_text = f"📍 {distance:.1f}km away" if distance else "📍 Distance unknown"
 
-            # 1. NAME (clean and bold)
-            name_clean = self._clean_html(name)
-            name_line = f"<b>{index}. {name_clean}</b>\n"
+            # Address (if available)
+            address = restaurant.get('address', '').strip()
+            address_text = f"📍 {escape(address[:50])}{'...' if len(address) > 50 else ''}" if address else ""
 
-            # 2. ADDRESS (canonical Place ID method)
-            address_line = self._format_address_link(restaurant)
+            # Cuisine information
+            cuisine_tags = restaurant.get('cuisine_tags', [])
+            if cuisine_tags:
+                cuisine_text = f"🍽️ {', '.join(cuisine_tags[:3])}"  # Show up to 3 cuisine types
+            else:
+                cuisine_text = ""
 
-            # 3. DISTANCE FROM USER
-            distance_line = self._format_distance(restaurant)
+            # Description (truncated)
+            description = restaurant.get('raw_description', '') or restaurant.get('description', '')
+            if description:
+                # Clean and truncate description
+                clean_desc = re.sub(r'<[^>]+>', '', description)  # Remove HTML
+                clean_desc = ' '.join(clean_desc.split())  # Normalize whitespace
+                desc_text = f"💭 {escape(clean_desc[:100])}{'...' if len(clean_desc) > 100 else ''}"
+            else:
+                desc_text = ""
 
-            # 4. DESCRIPTION 
-            description_line = self._format_description(restaurant)
+            # Rating (if available)
+            rating = restaurant.get('rating')
+            rating_text = f"⭐ {rating:.1f}" if rating else ""
 
-            # 5. RECOMMENDED BY [SOURCES]
-            sources_line = self._format_sources(restaurant, source_type)
+            # Combine all parts
+            parts = [formatted_name]
 
-            # Combine all components
-            entry_parts = [
-                name_line,
-                address_line,
-                distance_line,
-                description_line,
-                sources_line,
-                "\n"  # Spacing between restaurants
-            ]
+            if distance_text:
+                parts.append(distance_text)
+            elif address_text:  # Use address if no distance
+                parts.append(address_text)
 
-            return ''.join(part for part in entry_parts if part)
+            if cuisine_text:
+                parts.append(cuisine_text)
+
+            if rating_text:
+                parts.append(rating_text)
+
+            if desc_text:
+                parts.append(desc_text)
+
+            return "\n".join(parts)
 
         except Exception as e:
-            logger.error(f"❌ Error formatting restaurant {restaurant.get('name', 'Unknown')}: {e}")
-            return ""
+            logger.error(f"❌ Error formatting restaurant {restaurant.get('name', 'unknown')}: {e}")
+            return f"<b>{index}. {escape(restaurant.get('name', 'Unknown Restaurant'))}</b>\n📍 Information unavailable"
+
+    def _truncate_message(self, full_message: str, message_parts: List[str], header: str) -> str:
+        """Truncate message if too long while preserving structure"""
+        try:
+            # Calculate space for header and footer
+            footer = "\n\n💡 <b>These are from my curated collection.</b> Would you like to see these options or search for more restaurants in the area?"
+            reserved_space = len(header) + len(footer) + 100  # Buffer
+
+            available_space = self.MAX_MESSAGE_LENGTH - reserved_space
+
+            # Include as many restaurants as possible
+            included_parts = []
+            current_length = 0
+
+            for part in message_parts:
+                part_length = len(part) + 2  # +2 for \n\n separator
+                if current_length + part_length <= available_space:
+                    included_parts.append(part)
+                    current_length += part_length
+                else:
+                    break
+
+            if not included_parts:
+                # Fallback: include at least one restaurant
+                included_parts = [message_parts[0][:available_space - 50] + "..."]
+
+            # Add truncation notice if needed
+            if len(included_parts) < len(message_parts):
+                truncation_notice = f"\n\n<i>... and {len(message_parts) - len(included_parts)} more restaurants</i>"
+                included_parts.append(truncation_notice)
+
+            return header + "\n\n".join(included_parts) + footer
+
+        except Exception as e:
+            logger.error(f"❌ Error truncating message: {e}")
+            return header + "Found restaurants but had trouble formatting them." + footer
+
+    def format_location_summary(self, location_data) -> str:
+        """Format location data for display"""
+        try:
+            if location_data.latitude and location_data.longitude:
+                return f"GPS: {location_data.latitude:.4f}, {location_data.longitude:.4f}"
+            elif location_data.description:
+                return location_data.description
+            else:
+                return "Unknown location"
+        except:
+            return "Location information unavailable"
 
     def _format_address_link(self, restaurant: Dict[str, Any]) -> str:
         """

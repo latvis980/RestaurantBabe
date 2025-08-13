@@ -1,4 +1,3 @@
-# telegram_bot.py - Updated with location button functionality
 import telebot
 from telebot import types  # Add this import for inline keyboards
 import logging
@@ -9,7 +8,6 @@ import asyncio
 from threading import Event
 from typing import Dict, List, Any, Optional, Tuple
 from utils.voice_handler import VoiceMessageHandler
-
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -26,10 +24,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize bot
+# Initialize bot with type safety
+if not config.TELEGRAM_BOT_TOKEN:
+    raise ValueError("TELEGRAM_BOT_TOKEN not found in config")
 bot = telebot.TeleBot(config.TELEGRAM_BOT_TOKEN)
 
-# Initialize AI conversation handler
+# Initialize AI conversation handler with type safety
+if not config.OPENAI_MODEL:
+    raise ValueError("OPENAI_MODEL not found in config")
 conversation_ai = ChatOpenAI(
     model=config.OPENAI_MODEL,
     temperature=0.3
@@ -48,7 +50,11 @@ location_analyzer = None  # Will be initialized in main()
 # Track users waiting for location input - UPDATED to include button tracking
 users_awaiting_location = {}  # user_id -> {"query": str, "timestamp": float, "has_button": bool}
 
+# NEW: Track pending location searches with user choice
+pending_location_choices = {}  # user_id -> {"query": str, "location_data": LocationData, "database_results": List, "timestamp": float}
+
 voice_handler = None  # Will be initialized in main()
+
 
 def create_cancel_event(user_id, chat_id):
     """Create a cancellation event for a user's search"""
@@ -90,9 +96,78 @@ def create_location_button():
     keyboard.add(location_button)
     return keyboard
 
+def create_choice_buttons():
+    """Create inline buttons for user choice after database results"""
+    keyboard = types.InlineKeyboardMarkup()
+    keyboard.row(
+        types.InlineKeyboardButton("✅ These look good", callback_data="accept_results"),
+        types.InlineKeyboardButton("🔍 Find more options", callback_data="search_more")
+    )
+    return keyboard
+
 def remove_location_button():
     """Remove the location button (return to normal keyboard)"""
     return types.ReplyKeyboardRemove()
+
+@bot.callback_query_handler(func=lambda call: call.data in ["accept_results", "search_more"])
+def handle_user_choice(call):
+    """Handle user choice after database results are shown"""
+    try:
+        user_id = call.from_user.id
+        chat_id = call.message.chat.id
+        choice = call.data
+
+        # Check if user has pending choice
+        if user_id not in pending_location_choices:
+            bot.answer_callback_query(call.id, "This search has expired. Please start a new search.")
+            return
+
+        pending_data = pending_location_choices[user_id]
+        query = pending_data["query"]
+        location_data = pending_data["location_data"]
+
+        # Answer the callback to remove loading state
+        bot.answer_callback_query(call.id)
+
+        # Edit the message to remove buttons
+        try:
+            bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
+        except:
+            pass
+
+        if choice == "accept_results":
+            # User accepts database results
+            bot.send_message(
+                chat_id,
+                "✅ <b>Great choice!</b> Hope you enjoy these recommendations!\n\n"
+                "💡 Feel free to ask for more recommendations anytime.",
+                parse_mode='HTML'
+            )
+            logger.info(f"User {user_id} accepted database results")
+
+        elif choice == "search_more":
+            # User wants more options - start Google Maps search
+            bot.send_message(
+                chat_id,
+                "🔍 <b>Searching for more options...</b>\n\n"
+                "⏱ I'll check Google Maps for additional restaurants nearby.",
+                parse_mode='HTML'
+            )
+
+            # Start Google Maps search
+            threading.Thread(
+                target=perform_google_maps_only_search,
+                args=(query, location_data, chat_id, user_id),
+                daemon=True
+            ).start()
+
+        # Clean up pending choice
+        del pending_location_choices[user_id]
+
+    except Exception as e:
+        logger.error(f"Error handling user choice: {e}")
+        bot.answer_callback_query(call.id, "Sorry, there was an error processing your choice.")
+
 
 # Welcome message (unchanged)
 WELCOME_MESSAGE = (
@@ -170,23 +245,14 @@ def format_conversation_history(user_id):
 # Bot command handlers
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    """Send welcome message"""
     user_id = message.from_user.id
 
-    # Clear conversation history for fresh start
-    if user_id in user_conversations:
-        del user_conversations[user_id]
-
-    # Cancel any active search for this user
-    if user_id in active_searches:
-        active_searches[user_id]["cancel_event"].set()
-        cleanup_search(user_id)
-
-    # Clear any waiting location state
-    if user_id in users_awaiting_location:
-        del users_awaiting_location[user_id]
+    # Initialize conversation for new users
+    if user_id not in user_conversations:
+        user_conversations[user_id] = []
 
     bot.reply_to(message, WELCOME_MESSAGE, parse_mode='HTML', reply_markup=remove_location_button())
+    add_to_conversation(user_id, WELCOME_MESSAGE, is_user=False)
 
 @bot.message_handler(commands=['cancel'])
 def handle_cancel(message):
@@ -222,8 +288,12 @@ def handle_cancel(message):
         reply_markup=remove_location_button()
     )
 
-    # Clean up
+    # Clean up immediately
     cleanup_search(user_id)
+
+    # Clean up any pending location choices or waiting states
+    if user_id in pending_location_choices:
+        del pending_location_choices[user_id]
     if user_id in users_awaiting_location:
         del users_awaiting_location[user_id]
 
@@ -311,301 +381,7 @@ def handle_location_message(message):
             "😔 Sorry, I had trouble processing your location. Could you try again or describe where you are?",
             parse_mode='HTML',
             reply_markup=remove_location_button()
-        )
-
-# PRESERVED TEST COMMANDS - These are critical for debugging!
-
-# Integration function for telegram_bot.py
-def add_editor_test_command(bot, config, orchestrator):
-    """
-    Add the /test_editor command to telegram_bot.py
-
-    Add this to your telegram_bot.py file:
-
-    @bot.message_handler(commands=['test_editor'])
-    def handle_test_editor(message):
-        \"\"\"Handle /test_editor command\"\"\"
-        user_id = message.from_user.id
-        admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
-
-        # Parse command
-        command_text = message.text.strip()
-
-        if len(command_text.split(None, 1)) < 2:
-            help_text = (
-                "✏️ <b>Editor Pipeline Test</b>\\n\\n"
-                "<b>Usage:</b>\\n"
-                "<code>/test_editor [restaurant query]</code>\\n\\n"
-                "<b>Examples:</b>\\n"
-                "<code>/test_editor greek tavernas in Athens</code>\\n"
-                "<code>/test_editor best brunch in Lisbon</code>\\n"
-                "<code>/test_editor romantic restaurants Paris</code>\\n\\n"
-                "This runs the complete editor pipeline:\\n"
-                "• Web search → scraping → text cleaning\\n"
-                "• Editor processing with transparency\\n"
-                "• Generates 2 files: scraped content + edited results\\n"
-                "• Shows WHY you get 5 vs more restaurants\\n\\n"
-                "🎯 <b>Perfect for debugging editor decisions!</b>"
-            )
-            bot.reply_to(message, help_text, parse_mode='HTML')
-            return
-
-        # Extract query
-        restaurant_query = command_text.split(None, 1)[1].strip()
-
-        if not restaurant_query:
-            bot.reply_to(message, "❌ Please provide a restaurant query to test.")
-            return
-
-        # Send confirmation
-        bot.reply_to(
-            message,
-            f"✏️ <b>Starting editor pipeline test...</b>\\n\\n"
-            f"📝 Query: <code>{restaurant_query}</code>\\n\\n"
-            "⏱ Please wait 2-3 minutes for complete analysis...",
-            parse_mode='HTML'
-        )
-
-        # Run test in background
-        def run_editor_test():
-            try:
-                from editor_test import EditorTest
-                editor_tester = EditorTest(config, get_orchestrator())
-
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-
-                results_path = loop.run_until_complete(
-                    editor_tester.test_complete_editor_pipeline(restaurant_query, bot)
-                )
-
-                loop.close()
-                logger.info(f"Editor test completed: {results_path}")
-            except Exception as e:
-                logger.error(f"Error in editor test: {e}")
-                try:
-                    bot.send_message(admin_chat_id, f"❌ Editor test failed: {str(e)}")
-                except:
-                    pass
-
-        threading.Thread(target=run_editor_test, daemon=True).start()
-    """
-
-    # Note: The actual command handler should be added to telegram_bot.py
-    logger.info("Note: editor test command should be added directly to telegram_bot.py")
-
-@bot.message_handler(commands=['test_scrape'])
-def handle_test_scrape(message):
-    """Handle /test_scrape command - PRESERVED FOR DEBUGGING"""
-    user_id = message.from_user.id
-    admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
-
-    # Check if user is admin
-    #if not admin_chat_id or str(user_id) != str(admin_chat_id):
-        #bot.reply_to(message, "❌ This command is only available to administrators.")
-        #return
-
-    # Parse command
-    command_text = message.text.strip()
-
-    if len(command_text.split(None, 1)) < 2:
-        help_text = (
-            "🧪 <b>Scraping Process Test</b>\n\n"
-            "<b>Usage:</b>\n"
-            "<code>/test_scrape [restaurant query]</code>\n\n"
-            "<b>Examples:</b>\n"
-            "<code>/test_scrape best brunch in Lisbon</code>\n"
-            "<code>/test_scrape romantic restaurants Paris</code>\n"
-            "<code>/test_scrape family pizza Rome</code>\n\n"
-            "This runs the complete scraping process and shows:\n"
-            "• Which search results are found\n"
-            "• What gets scraped successfully\n"
-            "• Exact content that goes to list_analyzer\n"
-            "• Scraping method statistics\n\n"
-            "📄 Results are saved to a detailed file."
-        )
-        bot.reply_to(message, help_text, parse_mode='HTML')
-        return
-
-    # Extract query
-    restaurant_query = command_text.split(None, 1)[1].strip()
-
-    if not restaurant_query:
-        bot.reply_to(message, "❌ Please provide a restaurant query to test.")
-        return
-
-    # Send confirmation
-    bot.reply_to(
-        message,
-        f"🧪 <b>Starting scraping test...</b>\n\n"
-        f"📝 Query: <code>{restaurant_query}</code>\n\n"
-        "⏱ Please wait 1-2 minutes...",
-        parse_mode='HTML'
-    )
-
-    # Run test in background
-    def run_scrape_test():
-        try:
-            from scrape_test import ScrapeTest
-            # Use singleton orchestrator
-            scrape_tester = ScrapeTest(config, get_orchestrator())
-
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            results_path = loop.run_until_complete(
-                scrape_tester.test_scraping_process(restaurant_query, bot)
-            )
-
-            loop.close()
-            logger.info(f"Scraping test completed: {results_path}")
-        except Exception as e:
-            logger.error(f"Error in scraping test: {e}")
-            try:
-                bot.send_message(admin_chat_id, f"❌ Scraping test failed: {str(e)}")
-            except:
-                pass
-
-    threading.Thread(target=run_scrape_test, daemon=True).start()
-
-@bot.message_handler(commands=['test_search'])
-def handle_test_search(message):
-    """Handle /test_search command - PRESERVED FOR DEBUGGING"""
-    user_id = message.from_user.id
-    admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
-
-    # Check if user is admin
-    #if not admin_chat_id or str(user_id) != str(admin_chat_id):
-        #bot.reply_to(message, "❌ This command is only available to administrators.")
-        #return
-
-    # Parse command
-    command_text = message.text.strip()
-
-    if len(command_text.split(None, 1)) < 2:
-        help_text = (
-            "🔍 <b>Search Filtering Test</b>\n\n"
-            "<b>Usage:</b>\n"
-            "<code>/test_search [restaurant query]</code>\n\n"
-            "<b>Examples:</b>\n"
-            "<code>/test_search best brunch in Lisbon</code>\n"
-            "<code>/test_search romantic restaurants Paris</code>\n"
-            "<code>/test_search family pizza Rome</code>\n\n"
-            "This shows:\n"
-            "• What search URLs are found\n"
-            "• Which URLs pass filtering\n"
-            "• AI evaluation scores\n"
-            "• Final URLs sent to scraper\n\n"
-            "📄 Results include detailed filtering analysis."
-        )
-        bot.reply_to(message, help_text, parse_mode='HTML')
-        return
-
-    restaurant_query = command_text.split(None, 1)[1].strip()
-    if not restaurant_query:
-        bot.reply_to(message, "❌ Please provide a restaurant query to test.")
-        return
-
-    # Send confirmation
-    bot.reply_to(
-        message,
-        f"🔍 <b>Starting search test...</b>\n\n"
-        f"📝 Query: <code>{restaurant_query}</code>\n\n"
-        "⏱ Please wait 1-2 minutes...",
-        parse_mode='HTML'
-    )
-
-    # Run test in background
-    def run_search_test():
-        try:
-            from search_test import SearchTest
-            # Use singleton orchestrator
-            search_tester = SearchTest(config, get_orchestrator())
-
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            results_path = loop.run_until_complete(
-                search_tester.test_search_process(restaurant_query, bot)
-            )
-
-            loop.close()
-            logger.info(f"Search test completed: {results_path}")
-        except Exception as e:
-            logger.error(f"Error in search test: {e}")
-            try:
-                bot.send_message(admin_chat_id, f"❌ Search test failed: {str(e)}")
-            except:
-                pass
-
-    threading.Thread(target=run_search_test, daemon=True).start()
-
-# Add this to telegram_bot.py - Fixed version of the editor test handler
-
-@bot.message_handler(commands=['test_editor'])
-def handle_test_editor(message):
-    """Handle /test_editor command - FIXED"""
-    user_id = message.from_user.id
-    admin_chat_id = getattr(config, 'ADMIN_CHAT_ID', None)
-
-    #if not admin_chat_id or str(user_id) != str(admin_chat_id):
-        #bot.reply_to(message, "❌ This command is only available to administrators.")
-        #return
-
-    command_text = message.text.strip()
-
-    if len(command_text.split(None, 1)) < 2:
-        help_text = (
-            "✏️ <b>Editor Pipeline Test</b>\n\n"
-            "<b>Usage:</b>\n"
-            "<code>/test_editor [restaurant query]</code>\n\n"
-            "<b>Examples:</b>\n"
-            "<code>/test_editor greek tavernas in Athens</code>\n\n"
-            "Shows WHY you get 5 vs more restaurants\n"
-            "🎯 <b>Perfect for debugging editor decisions!</b>"
-        )
-        bot.reply_to(message, help_text, parse_mode='HTML')
-        return
-
-    restaurant_query = command_text.split(None, 1)[1].strip()
-    if not restaurant_query:
-        bot.reply_to(message, "❌ Please provide a restaurant query.")
-        return
-
-    bot.reply_to(
-        message,
-        f"✏️ <b>Starting editor pipeline test...</b>\n\n"
-        f"📝 Query: <code>{restaurant_query}</code>\n\n"
-        "⏱ Please wait 2-3 minutes for complete analysis...",
-        parse_mode='HTML'
-    )
-
-    def run_editor_test():
-        try:
-            # FIXED: Import correct class name
-            from transparent_editor_test import TransparentEditorTest
-
-            # FIXED: Use correct class name
-            editor_tester = TransparentEditorTest(config, get_orchestrator())
-
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            # FIXED: Use correct method name
-            results_path = loop.run_until_complete(
-                editor_tester.test_editor_pipeline(restaurant_query, bot)
-            )
-
-            loop.close()
-            logger.info(f"Editor test completed: {results_path}")
-        except Exception as e:
-            logger.error(f"Error in editor test: {e}")
-            try:
-                bot.send_message(admin_chat_id, f"❌ Editor test failed: {str(e)}")
-            except:
-                pass
-
-    threading.Thread(target=run_editor_test, daemon=True).start()
+        )   
 
 def perform_restaurant_search(search_query, chat_id, user_id):
     """Perform restaurant search using orchestrator with cancellation support"""
@@ -785,6 +561,12 @@ def handle_message(message):
         recent_location = get_recent_location_from_conversation(user_id)
 
         # STEP 2: Analyze message for location intent
+        # ADD NULL CHECK for location_analyzer
+        if location_analyzer is None:
+            logger.warning("Location analyzer not initialized, using general search")
+            handle_general_search(message, {})
+            return
+
         location_analysis = location_analyzer.analyze_message(user_message)
         search_type = location_analyzer.determine_search_type(location_analysis)
 
@@ -881,7 +663,6 @@ def handle_voice_message(message):
             parse_mode='HTML',
             reply_markup=remove_location_button()
         )
-
 
 def get_recent_location_from_conversation(user_id):
     """Check if user shared location in recent conversation"""
@@ -1038,11 +819,9 @@ def handle_clarification_needed(message, location_analysis):
     bot.reply_to(message, suggested_response, parse_mode='HTML', reply_markup=remove_location_button())
     add_to_conversation(user_id, suggested_response, is_user=False)
 
-
 def perform_location_search(query, location_data, chat_id, user_id):
     """
-    Perform location-based restaurant search using the location orchestrator
-    UPDATED: Handles "asking around" responses properly
+    SIMPLIFIED: Perform location-based restaurant search with user choice logic
     """
     processing_msg = None
 
@@ -1109,7 +888,6 @@ def perform_location_search(query, location_data, chat_id, user_id):
             error_message = result.get('error', 'Unknown error occurred')
 
             if result.get('cancelled'):
-                # Don't send error for cancelled searches
                 return
 
             bot.send_message(
@@ -1118,101 +896,19 @@ def perform_location_search(query, location_data, chat_id, user_id):
                 parse_mode='HTML',
                 reply_markup=remove_location_button()
             )
-            logger.info(f"❌ Location search failed for user {user_id}: {error_message}")
             return
 
-        # HANDLE DIFFERENT RESPONSE TYPES
-        source = result.get('source', '')
+        # SIMPLIFIED RESULT HANDLING
+        source = result.get('source', 'unknown')
 
-        if source == "asking_around":
-            # ASKING AROUND RESPONSE - Send message and trigger background search
-            asking_message = result.get('message', 'Looking for more options...')
+        if source == "database_with_choice":
+            # Database results that need user choice
+            handle_database_results_with_choice(result, query, location_data, chat_id, user_id)
 
-            bot.send_message(
-                chat_id,
-                asking_message,
-                parse_mode='HTML',
-                reply_markup=remove_location_button()
-            )
+        else:
+            # Any other results - orchestrator should provide formatted message
+            formatted_message = result.get('formatted_message', 'Found restaurants!')
 
-            logger.info(f"📱 Sent 'asking around' message for user {user_id}")
-            add_to_conversation(user_id, asking_message, is_user=False)
-
-            # Check if background search should be triggered
-            if result.get('background_search_triggered', False):
-                search_params = result.get('search_params', {})
-
-                # Start background Google Maps search
-                threading.Thread(
-                    target=perform_background_google_maps_search,
-                    args=(
-                        search_params.get('coordinates'),
-                        search_params.get('query'), 
-                        search_params.get('location_desc'),
-                        search_params.get('start_time'),
-                        chat_id,
-                        user_id
-                    ),
-                    daemon=True
-                ).start()
-
-                logger.info(f"🔄 Started background Google Maps search for user {user_id}")
-
-            return
-
-        elif source == "database_notes":
-            # DATABASE RESULTS - Send personal notes message 
-            message = result.get('message', '')
-
-            if message:
-                bot.send_message(
-                    chat_id,
-                    message,
-                    parse_mode='HTML',
-                    reply_markup=remove_location_button()
-                )
-
-                logger.info(f"📝 Sent database notes for user {user_id}")
-                add_to_conversation(user_id, message, is_user=False)
-                return
-
-        # STANDARD RESTAURANT RESULTS (Google Maps or other sources)
-        restaurants = result.get('results', result.get('restaurants', []))
-
-        if not restaurants:
-            bot.send_message(
-                chat_id,
-                "😔 I couldn't find any restaurants matching your criteria nearby.\n\n"
-                "Try expanding your search or let me know what specific type of cuisine you're looking for!",
-                parse_mode='HTML',
-                reply_markup=remove_location_button()
-            )
-            logger.info(f"📭 No restaurants found for user {user_id}")
-            return
-
-        # Format standard results for Telegram
-        try:
-            # Add metadata for formatting
-            search_metadata = {
-                'query': query,
-                'coordinates': result.get('search_coordinates'),
-                'total_count': result.get('total_count', len(restaurants)),
-                'source': source,
-                'processing_time': result.get('processing_time', 0)
-            }
-
-            # Use TelegramFormatter to format location results
-            from formatters.telegram_formatter import TelegramFormatter
-            formatter = TelegramFormatter()
-
-            # Convert to the format expected by format_recommendations
-            recommendations_data = {
-                "main_list": restaurants
-            }
-
-            formatted_message = formatter.format_recommendations(recommendations_data)
-
-            # Send formatted results
             bot.send_message(
                 chat_id,
                 formatted_message,
@@ -1221,20 +917,8 @@ def perform_location_search(query, location_data, chat_id, user_id):
                 disable_web_page_preview=True
             )
 
-            logger.info(f"✅ Location search completed for user {user_id}: {len(restaurants)} restaurants sent")
-
-            # Add to conversation history
-            add_to_conversation(user_id, f"Found {len(restaurants)} nearby restaurants for: {query}", is_user=False)
-
-        except Exception as e:
-            logger.error(f"❌ Error formatting location results: {e}")
-            bot.send_message(
-                chat_id,
-                f"✅ Found {len(restaurants)} restaurants nearby!\n\n"
-                "However, I had trouble formatting the results. Please try your search again.",
-                parse_mode='HTML',
-                reply_markup=remove_location_button()
-            )
+            logger.info(f"✅ Location search completed for user {user_id}")
+            add_to_conversation(user_id, f"Found restaurants for: {query}", is_user=False)
 
     except Exception as e:
         logger.error(f"Error in location search process: {e}")
@@ -1254,13 +938,73 @@ def perform_location_search(query, location_data, chat_id, user_id):
     finally:
         cleanup_search(user_id)
 
-
-def perform_background_google_maps_search(coordinates, query, location_desc, start_time, chat_id, user_id):
+def handle_database_results_with_choice(result, query, location_data, chat_id, user_id):
     """
-    Perform background Google Maps search after "asking around" message
+    NEW: Handle database results and offer user choice
     """
     try:
-        logger.info(f"🗺️ Starting background Google Maps search for user {user_id}")
+        formatted_results = result.get('results', {})
+        message_text = formatted_results.get('message', 'Found some restaurants from my personal notes!')
+        restaurant_count = result.get('restaurant_count', 0)
+
+        # Store pending choice data
+        pending_location_choices[user_id] = {
+            "query": query,
+            "location_data": location_data,
+            "database_results": formatted_results,
+            "timestamp": time.time()
+        }
+
+        # Send results with choice buttons
+        header = f"📝 <b>From my personal notes:</b> Found {restaurant_count} restaurants\n\n"
+
+        bot.send_message(
+            chat_id,
+            header + message_text + "\n\n" + 
+            "👆 <b>What would you like to do?</b>",
+            parse_mode='HTML',
+            reply_markup=create_choice_buttons(),
+            disable_web_page_preview=True
+        )
+
+        logger.info(f"✅ Database results sent for user {user_id} with choice buttons")
+        add_to_conversation(user_id, f"Found {restaurant_count} restaurants from database", is_user=False)
+
+    except Exception as e:
+        logger.error(f"❌ Error handling database results with choice: {e}")
+
+    # Fallback: send results without choice buttons
+    try:
+        formatted_message = result.get('formatted_message', 'Found some restaurants from my personal notes!')
+
+        bot.send_message(
+            chat_id,
+            formatted_message,
+            parse_mode='HTML',
+            reply_markup=remove_location_button(),
+            disable_web_page_preview=True
+        )
+
+        logger.info(f"✅ Fallback results sent for user {user_id}")
+        add_to_conversation(user_id, "Found restaurants from database", is_user=False)
+
+    except Exception as fallback_error:
+        logger.error(f"❌ Error in fallback handling: {fallback_error}")
+        bot.send_message(
+            chat_id,
+            "😔 Found restaurants but had trouble displaying them. Please try your search again.",
+            parse_mode='HTML'
+        )
+        
+
+def perform_google_maps_only_search(query, location_data, chat_id, user_id):
+    """
+    NEW: Perform Google Maps search only (after user chooses "more options")
+    CLEAN VERSION - no geocoding logic, let location orchestrator handle it
+    """
+    try:
+        # Create cancel event for this search
+        cancel_event = create_cancel_event(user_id, chat_id)
 
         # Function to check cancellation
         def is_cancelled():
@@ -1270,98 +1014,81 @@ def perform_background_google_maps_search(coordinates, query, location_desc, sta
         from location.location_orchestrator import LocationOrchestrator
         location_orchestrator = LocationOrchestrator(config)
 
-        # Run background search
+        # Let the orchestrator handle coordinate resolution
+        logger.info(f"Starting Google Maps only search for user {user_id}")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
+        # Call the orchestrator's Google Maps search flow directly
         result = loop.run_until_complete(
-            location_orchestrator._background_google_maps_search(
-                coordinates, query, location_desc, start_time, is_cancelled
-            )
+            location_orchestrator.process_location_query(query, location_data, is_cancelled)
         )
 
         loop.close()
 
         # Check if search was cancelled
         if is_cancelled():
-            logger.info(f"Background search cancelled for user {user_id}")
+            logger.info(f"Google Maps search cancelled for user {user_id}")
             return
 
-        # Handle results
+        # Simple result handling - orchestrator should return formatted message
         if result.get('success', False):
-            restaurants = result.get('results', [])
+            formatted_message = result.get('formatted_message', f"Found {len(result.get('results', []))} restaurants!")
 
-            if restaurants:
-                # Format and send Google Maps results
-                try:
-                    from formatters.telegram_formatter import TelegramFormatter
-                    formatter = TelegramFormatter()
-
-                    recommendations_data = {"main_list": restaurants}
-                    formatted_message = formatter.format_recommendations(recommendations_data)
-
-                    # Send results with a header
-                    header = f"🗺️ <b>Found {len(restaurants)} more options from my search:</b>\n\n"
-
-                    bot.send_message(
-                        chat_id,
-                        header + formatted_message,
-                        parse_mode='HTML',
-                        reply_markup=remove_location_button(),
-                        disable_web_page_preview=True
-                    )
-
-                    logger.info(f"✅ Background search completed for user {user_id}: {len(restaurants)} restaurants sent")
-                    add_to_conversation(user_id, f"Found {len(restaurants)} additional restaurants via Google Maps", is_user=False)
-
-                except Exception as e:
-                    logger.error(f"❌ Error formatting background results: {e}")
-                    bot.send_message(
-                        chat_id,
-                        f"✅ Found {len(restaurants)} more restaurants!\n\nHowever, I had trouble formatting the results.",
-                        parse_mode='HTML',
-                        reply_markup=remove_location_button()
-                    )
-            else:
-                # No additional results found
-                bot.send_message(
-                    chat_id,
-                    "🤔 I couldn't find any additional restaurants that meet your criteria.\n\n"
-                    "Try a different search or let me know if you'd like suggestions for a broader search!",
-                    parse_mode='HTML',
-                    reply_markup=remove_location_button()
-                )
-                logger.info(f"📭 No background results for user {user_id}")
-        else:
-            # Background search failed
-            error_msg = result.get('error', 'Background search failed')
-            logger.error(f"❌ Background search failed for user {user_id}: {error_msg}")
-
-            # Optionally send a failure message (or stay silent)
             bot.send_message(
                 chat_id,
-                "😔 I had trouble finding additional restaurants. The search I started is complete.\n\n"
-                "Try a different query if you'd like!",
+                formatted_message,
                 parse_mode='HTML',
-                reply_markup=remove_location_button()
+                reply_markup=remove_location_button(),
+                disable_web_page_preview=True
+            )
+
+            logger.info(f"✅ Google Maps results sent for user {user_id}")
+            add_to_conversation(user_id, "Found additional restaurants via Google Maps", is_user=False)
+        else:
+            bot.send_message(
+                chat_id,
+                f"😔 {result.get('error', 'No additional restaurants found')}\n\n"
+                "The recommendations from my notes might be your best options in this area!",
+                parse_mode='HTML'
             )
 
     except Exception as e:
-        logger.error(f"❌ Error in background Google Maps search for user {user_id}: {e}")
-        # Optionally send error message or stay silent
-        try:
-            bot.send_message(
-                chat_id,
-                "😔 I encountered an error while searching for additional restaurants.",
-                parse_mode='HTML',
-                reply_markup=remove_location_button()
-            )
-        except:
-            pass
+        logger.error(f"Error in Google Maps only search: {e}")
+        bot.send_message(
+            chat_id,
+            "😔 Sorry, I encountered an error searching for additional options.",
+            parse_mode='HTML'
+        )
+    finally:
+        cleanup_search(user_id)
+
+
+def handle_location_results(result, chat_id, user_id):
+    """Handle ANY location results - already formatted by orchestrator"""
+    message = result.get('formatted_message', 'Results found!')
+
+    bot.send_message(
+        chat_id,
+        message,
+        parse_mode='HTML',
+        reply_markup=remove_location_button(),
+        disable_web_page_preview=True
+    )
 
 def process_voice_message(message, user_id, chat_id, processing_msg_id):
     """Process voice message in background thread"""
     try:
+        # Add this check
+        if voice_handler is None:
+            logger.error("Voice handler not initialized")
+            bot.send_message(
+                chat_id,
+                "😔 Voice processing is not available right now. Please send a text message.",
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
+            )
+            return
         # Step 1: Transcribe voice message
         transcribed_text = voice_handler.process_voice_message(bot, message.voice)
 
@@ -1424,6 +1151,12 @@ def process_transcribed_text(transcribed_text, user_id, chat_id):
         recent_location = get_recent_location_from_conversation(user_id)
 
         # STEP 2: Analyze message for location intent
+        # ADD NULL CHECK for location_analyzer
+        if location_analyzer is None:
+            logger.warning("Location analyzer not initialized, using general search")
+            handle_voice_general_search(transcribed_text, user_id, chat_id)
+            return
+
         location_analysis = location_analyzer.analyze_message(transcribed_text)
         search_type = location_analyzer.determine_search_type(location_analysis)
 
@@ -1445,6 +1178,15 @@ def process_transcribed_text(transcribed_text, user_id, chat_id):
         else:
             # Need clarification
             handle_voice_clarification(transcribed_text, location_analysis, user_id, chat_id)
+
+    except Exception as e:
+        logger.error(f"❌ Error processing transcribed text: {e}")
+        bot.send_message(
+            chat_id,
+            "😔 I had trouble understanding your voice request. Could you try again or be more specific about what restaurants you're looking for?",
+            parse_mode='HTML',
+            reply_markup=remove_location_button()
+        )
 
     except Exception as e:
         logger.error(f"❌ Error processing transcribed text: {e}")
