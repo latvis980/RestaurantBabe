@@ -941,26 +941,39 @@ def perform_location_search(query, location_data, chat_id, user_id):
 def handle_database_results_with_choice(result, query, location_data, chat_id, user_id):
     """
     NEW: Handle database results and offer user choice
+    FIXED: Handle the correct data structure from orchestrator
     """
     try:
-        formatted_results = result.get('results', {})
+        # The orchestrator returns results as a list, not a dict
+        restaurants = result.get('results', [])
+        restaurant_count = result.get('restaurant_count', len(restaurants))
+
+        # Use the location formatter to create the message
+        from location.location_orchestrator import LocationOrchestrator
+        location_orchestrator = LocationOrchestrator(config)
+
+        # Format the results properly
+        formatted_results = location_orchestrator.formatter.format_database_results(
+            restaurants=restaurants,
+            query=query,
+            location_description=location_data.description or "your location",
+            offer_more_search=True
+        )
+
         message_text = formatted_results.get('message', 'Found some restaurants from my personal notes!')
-        restaurant_count = result.get('restaurant_count', 0)
 
         # Store pending choice data
         pending_location_choices[user_id] = {
             "query": query,
             "location_data": location_data,
-            "database_results": formatted_results,
+            "database_results": restaurants,
             "timestamp": time.time()
         }
 
         # Send results with choice buttons
-        header = f"📝 <b>From my personal notes:</b> Found {restaurant_count} restaurants\n\n"
-
         bot.send_message(
             chat_id,
-            header + message_text + "\n\n" + 
+            message_text + "\n\n" + 
             "👆 <b>What would you like to do?</b>",
             parse_mode='HTML',
             reply_markup=create_choice_buttons(),
@@ -973,30 +986,35 @@ def handle_database_results_with_choice(result, query, location_data, chat_id, u
     except Exception as e:
         logger.error(f"❌ Error handling database results with choice: {e}")
 
-    # Fallback: send results without choice buttons
-    try:
-        formatted_message = result.get('formatted_message', 'Found some restaurants from my personal notes!')
+        # Fallback: send results without choice buttons
+        try:
+            restaurants = result.get('results', [])
+            if restaurants:
+                # Simple fallback formatting
+                restaurant_names = [r.get('name', 'Unknown') for r in restaurants[:5]]
+                fallback_message = f"📝 Found {len(restaurants)} restaurants:\n\n" + "\n".join([f"{i+1}. {name}" for i, name in enumerate(restaurant_names)])
+            else:
+                fallback_message = "Found restaurants from my personal notes!"
 
-        bot.send_message(
-            chat_id,
-            formatted_message,
-            parse_mode='HTML',
-            reply_markup=remove_location_button(),
-            disable_web_page_preview=True
-        )
+            bot.send_message(
+                chat_id,
+                fallback_message,
+                parse_mode='HTML',
+                reply_markup=remove_location_button(),
+                disable_web_page_preview=True
+            )
 
-        logger.info(f"✅ Fallback results sent for user {user_id}")
-        add_to_conversation(user_id, "Found restaurants from database", is_user=False)
+            logger.info(f"✅ Fallback results sent for user {user_id}")
+            add_to_conversation(user_id, "Found restaurants from database", is_user=False)
 
-    except Exception as fallback_error:
-        logger.error(f"❌ Error in fallback handling: {fallback_error}")
-        bot.send_message(
-            chat_id,
-            "😔 Found restaurants but had trouble displaying them. Please try your search again.",
-            parse_mode='HTML'
-        )
+        except Exception as fallback_error:
+            logger.error(f"❌ Error in fallback handling: {fallback_error}")
+            bot.send_message(
+                chat_id,
+                "😔 Found restaurants but had trouble displaying them. Please try your search again.",
+                parse_mode='HTML'
+            )
         
-
 def perform_google_maps_only_search(query, location_data, chat_id, user_id):
     """
     NEW: Perform Google Maps search only (after user chooses "more options")
