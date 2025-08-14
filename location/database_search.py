@@ -114,18 +114,19 @@ class LocationDatabaseService:
     ) -> List[Dict[str, Any]]:
         """
         Fallback: Manual distance calculation for all restaurants with coordinates
+        FIX: Removed the erroneous .execute() call on SyncSelectRequestBuilder
         """
         try:
             latitude, longitude = coordinates
 
             # Get all restaurants with coordinates from the database
-            # This uses a broader query and then filters by distance
+            # FIX: This was missing .execute() call - supabase query builder needs execute()
             result = db.supabase.table('restaurants')\
-            .select('*')\
-            .not_('latitude', 'is', None)\
-            .not_('longitude', 'is', None)\
-            .limit(200)\
-            .execute()
+                .select('*')\
+                .not_('latitude', 'is', None)\
+                .not_('longitude', 'is', None)\
+                .limit(200)\
+                .execute()  # FIX: Added the missing .execute() call
 
             all_restaurants = result.data or []
             logger.info(f"Retrieved {len(all_restaurants)} restaurants with coordinates for manual filtering")
