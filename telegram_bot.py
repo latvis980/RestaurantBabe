@@ -89,14 +89,35 @@ def is_search_cancelled(user_id):
     return False
 
 def create_location_button():
-    """Create inline keyboard with location sharing button"""
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("📍 Share My Location", callback_data="share_location"))
+    """Create reply keyboard with one-click location sharing button"""
+    markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+    location_button = types.KeyboardButton("📍 Share My Location", request_location=True)
+    markup.add(location_button)
+    markup.add(types.KeyboardButton("❌ Cancel"))
     return markup
 
 def remove_location_button():
-    """Remove inline keyboard"""
+    """Remove reply keyboard"""
     return types.ReplyKeyboardRemove()
+
+@bot.message_handler(func=lambda message: message.text == "❌ Cancel")
+def handle_location_cancel(message):
+    """Handle location sharing cancellation"""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    # Remove from awaiting location if applicable
+    if user_id in users_awaiting_location:
+        del users_awaiting_location[user_id]
+
+    # Remove keyboard
+    bot.send_message(
+        chat_id,
+        "No problem! You can just tell me your neighborhood or area name instead.\n\n"
+        "For example: <i>\"I'm in downtown\", \"Near Central Park\", \"Chinatown area\"</i>",
+        parse_mode='HTML',
+        reply_markup=remove_location_button()
+    )
 
 # ============ CORE MESSAGE PROCESSING ============
 
