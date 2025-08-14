@@ -175,17 +175,10 @@ class SmartRestaurantScraper:
         """)
 
     async def _launch_webkit(self):
-        """Enhanced WebKit launch with text-only optimizations"""
+        """WebKit launch with ONLY WebKit-compatible arguments"""
         self.browser = await self.playwright.webkit.launch(
-            headless=True,
-            args=[
-                '--disable-web-security',
-                '--disable-features=VizDisplayCompositor',
-                '--disable-images',           # NEW: Disable image loading
-                '--disable-plugins',          # NEW: No plugins needed
-                '--memory-pressure-off',      # NEW: Reduce memory overhead
-                '--disable-background-sync',  # NEW: No background syncing
-            ]
+            headless=True
+            # NO ARGUMENTS - WebKit is very picky about args
         )
         self.browser_type = "webkit"
 

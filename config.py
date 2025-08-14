@@ -23,6 +23,9 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
+# Search APIs - ADD THIS LINE
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
+
 # Optional APIs
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
 LANGSMITH_API_KEY = os.environ.get("LANGSMITH_API_KEY")
@@ -49,115 +52,58 @@ DEEPSEEK_TIMEOUT = 120.0
 # Claude settings (for complex reasoning when needed)
 CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
 CLAUDE_TEMPERATURE = 0.2
-CLAUDE_MAX_TOKENS = 8192
-
-# Model routing strategy
-MODEL_STRATEGY = {
-    # Fast components - use DeepSeek
-    'content_cleaning': 'openai',
-
-    # Quality components - use OpenAI
-    'search_evaluation': 'openai',
-    'restaurant_extraction': 'openai',
-    'editor': 'openai',
-    'conversation': 'openai',
-
-    # Complex reasoning - use Claude when needed
-    'complex_analysis': 'claude'
-}
-
-# Token limits by model
-OPENAI_MAX_TOKENS_BY_COMPONENT = {
-    'search_agent': 512,
-    'search_evaluation': 512,
-    'conversation': 1024,
-    'editor': 2048,
-    'content_evaluation': 3072,
-    'restaurant_extraction': 4096,
-    'query_analysis': 1024,
-    'follow_up_search': 1024,
-    'source_mapping': 1024,  # Add this for source mapping agent
-    'location_analysis': 512   # Add this for location analysis
-}
+CLAUDE_MAX_RETRIES = 2
+CLAUDE_TIMEOUT = 120.0
 
 # ============================================================================
 # SEARCH CONFIGURATION
 # ============================================================================
 
-# Search settings
-BRAVE_SEARCH_COUNT = 15
+# Brave Search settings
+BRAVE_SEARCH_COUNT = 8
 BRAVE_SEARCH_TIMEOUT = 30.0
 
-# Excluded domains
+# Excluded sources
 EXCLUDED_RESTAURANT_SOURCES = [
-    "tripadvisor.com", 
-    "opentable.com", 
-    "yelp.com", 
-    "google.com/maps"
+    'tripadvisor.com', 'yelp.com', 'doordash.com', 'ubereats.com',
+    'grubhub.com', 'foursquare.com', 'zomato.com', 'opentable.com',
+    'quora.com', 'reddit.com', 'facebook.com', 'instagram.com',
+    'booking.com', 'expedia.com', 'airbnb.com'
 ]
 
 # ============================================================================
-# DATABASE CONFIGURATION
+# ORCHESTRATOR CONFIGURATION
 # ============================================================================
 
-# Database search settings
-MIN_DATABASE_RESTAURANTS = 3
-MIN_ACCEPTABLE_RATING = 4.1
-MAX_RESTAURANTS_PER_QUERY = 25
-CACHE_EXPIRY_DAYS = 7
+# Retry settings
+MAX_SEARCH_RETRIES = 2
+MAX_FORMATTING_RETRIES = 2
 
-# Geographic settings
-LOCATION_SEARCH_RADIUS_KM = 2.0
-MAX_LOCATION_RESULTS = 8
-GEOCODING_ENABLED = True
+# Timeout settings
+RESPONSE_TIMEOUT = 300.0
+SEARCH_TIMEOUT = 120.0
+FORMATTING_TIMEOUT = 60.0
 
-# Location-specific database settings
-DB_PROXIMITY_RADIUS_KM = 2.0  # Radius for database proximity search
-MIN_DB_MATCHES_REQUIRED = 3   # Minimum matches before triggering web search
-
-# ============================================================================
-# CURRENT AGENTS CONFIGURATION
-# ============================================================================
-
-# Active agents in your system
-ACTIVE_AGENTS = [
-    'query_analyzer',
-    'database_search_agent', 
-    'dbcontent_evaluation_agent',
-    'search_agent',
-    'smart_scraper',
-    'text_cleaner_agent',
-    'editor_agent',
-    'follow_up_search_agent',
-    'location_analyzer',       # Add location agents
-    'location_search_agent',
-    'media_serach_agent'
-]
-
-# Components that use each model
-DEEPSEEK_COMPONENTS = ['content_sectioning', 'content_cleaning', 'strategy_analysis']
-OPENAI_COMPONENTS = ['search_evaluation', 'restaurant_extraction', 'editor', 'conversation']
-CLAUDE_COMPONENTS = ['complex_analysis']  # When needed
+# Preview settings
+ENABLE_PREVIEWS = True
+PREVIEW_TIMEOUT = 30.0
+PREVIEW_BATCH_SIZE = 10
 
 # ============================================================================
-# TELEGRAM BOT SETTINGS
+# TELEGRAM BOT CONFIGURATION
 # ============================================================================
 
-# Voice processing
+# Bot settings
+BOT_USERNAME = "RestaurantRecommenderBot"
+MAX_MESSAGE_LENGTH = 4096
+VOICE_TIMEOUT = 60.0
+
+# Voice recognition
 WHISPER_MODEL = "whisper-1"
-MAX_VOICE_FILE_SIZE = 25 * 1024 * 1024  # 25MB
 
-# Admin settings
-ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")
-
-# ============================================================================
-# FLASK CONFIGURATION
-# ============================================================================
-
-# Flask settings for webhook/polling services
-FLASK_HOST = "0.0.0.0"
-FLASK_PORT = int(os.environ.get("PORT", 8000))
-FLASK_DEBUG = False
+# Webhook settings
+WEBHOOK_PORT = int(os.environ.get("PORT", 8000))
+WEBHOOK_PATH = "/webhook"
 
 # Scheduler settings
 ENABLE_SCHEDULER = True
