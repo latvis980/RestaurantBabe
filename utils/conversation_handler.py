@@ -112,7 +112,8 @@ QUERY CLASSIFICATION:
       → Use location-based search
 
    d) FOLLOW_UP: After previous results, asking for more/different options
-      Examples: "show me more", "something cheaper", "any vegetarian options?"
+      Examples: "show me more", "find more options", "let's find more", "any other places", "more restaurants"
+      IMPORTANT: Only trigger if user state is "results_shown" and has recent location context
 
 2. GENERAL_QUESTION - Questions about food/restaurants/chefs but not requesting recommendations
    Examples: "How many Michelin restaurants are in Rome?", "Who is Gordon Ramsay?", "What is neo-bistro?"
@@ -127,12 +128,13 @@ RESPONSE REQUIREMENTS:
 - Maintain context from conversation history
 - Ask clarifying questions naturally when needed
 - For cuisine-only queries, always include "restaurants" or "places" in search_query
+- CRITICAL: When user_state is "results_shown" and user asks for more options, use GOOGLE_MAPS_MORE action
 
 RESPONSE FORMAT (JSON only):
 {{
     "query_type": "restaurant_request" | "general_question" | "unrelated",
     "request_type": "city_wide" | "location_based_nearby" | "location_based_geographic" | "follow_up" | null,
-    "action": "SEARCH_CITY" | "REQUEST_LOCATION" | "SEARCH_LOCATION" | "WEB_SEARCH" | "CLARIFY" | "REDIRECT",
+    "action": "SEARCH_CITY" | "REQUEST_LOCATION" | "SEARCH_LOCATION" | "GOOGLE_MAPS_MORE" | "WEB_SEARCH" | "CLARIFY" | "REDIRECT",
     "bot_response": "what to say to the user (conversational, friendly)",
     "search_query": "search query if action requires search",
     "needs_clarification": true|false,
@@ -169,6 +171,15 @@ User: "How many Michelin stars does Gordon Ramsay have?"
 
 User: "What's the weather like?"
 → {{"query_type": "unrelated", "request_type": null, "action": "REDIRECT", "bot_response": "I specialize in restaurant recommendations! What kind of dining experience are you looking for?", "needs_clarification": false, "missing_info": [], "confidence": 0.9}}
+
+User: "Let's find more" (when user_state = "results_shown")
+→ {{"query_type": "restaurant_request", "request_type": "follow_up", "action": "GOOGLE_MAPS_MORE", "bot_response": "Perfect! Let me search Google Maps for more restaurant options in the same area.", "needs_clarification": false, "missing_info": [], "confidence": 0.9}}
+
+User: "show me more options" (when user_state = "results_shown")
+→ {{"query_type": "restaurant_request", "request_type": "follow_up", "action": "GOOGLE_MAPS_MORE", "bot_response": "Great! I'll find more restaurants in that area for you.", "needs_clarification": false, "missing_info": [], "confidence": 0.9}}
+
+User: "any other places?" (when user_state = "results_shown")
+→ {{"query_type": "restaurant_request", "request_type": "follow_up", "action": "GOOGLE_MAPS_MORE", "bot_response": "Absolutely! Let me search for additional restaurant options nearby.", "needs_clarification": false, "missing_info": [], "confidence": 0.9}}
 
 CONVERSATION FLOW:
 - Maintain natural conversation flow
