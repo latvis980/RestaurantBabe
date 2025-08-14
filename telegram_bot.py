@@ -14,6 +14,7 @@ from telebot import types
 import logging
 import time
 import threading
+import asyncio
 from threading import Event
 from typing import Dict, List, Any, Optional
 
@@ -105,6 +106,16 @@ def process_text_message(message_text: str, user_id: int, chat_id: int, is_voice
     This is the single entry point for all conversation processing
     """
     try:
+        # Check if conversation handler is initialized
+        if conversation_handler is None:
+            logger.error("Conversation handler not initialized")
+            bot.send_message(
+                chat_id,
+                "😔 I'm having trouble initializing. Please try again in a moment.",
+                parse_mode='HTML'
+            )
+            return
+
         # Check if user has active search
         if user_id in active_searches:
             bot.send_message(
@@ -228,7 +239,7 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
         # Clean up processing message
         try:
             bot.delete_message(chat_id, processing_msg.message_id)
-        except:
+        except Exception:
             pass
 
         if is_search_cancelled(user_id):
@@ -261,14 +272,14 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
         cleanup_search(user_id)
 
 def perform_location_search(search_query: str, user_id: int, chat_id: int):
-    """Execute location-based search (geographic location within city)"""
+    """Execute location-based search using the actual location orchestrator"""
     try:
         cancel_event = create_cancel_event(user_id, chat_id)
 
         # Send processing message
         processing_msg = bot.send_message(
             chat_id,
-            "📍 <b>Searching for restaurants in that area...</b>\n\n⏱ Checking the best places nearby.",
+            "📍 <b>Searching for restaurants in that area...</b>\n\n⏱ Checking my curated collection and finding the best places nearby.",
             parse_mode='HTML'
         )
 
@@ -276,6 +287,12 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
         location_data = location_handler.extract_location_from_text(search_query)
 
         if location_data.confidence < 0.3:
+            # Clean up processing message
+            try:
+                bot.delete_message(chat_id, processing_msg.message_id)
+            except Exception:
+                pass
+
             bot.send_message(
                 chat_id,
                 "😔 I couldn't understand the location. Could you be more specific about where you want to search?",
@@ -283,43 +300,55 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
             )
             return
 
-        # TODO: Use location orchestrator for geographic searches
-        # For now, fallback to city search
-        bot.send_message(
-            chat_id,
-            "🚧 Location-based search is being enhanced. Using city-wide search for now...",
-            parse_mode='HTML'
+        # Use the actual location orchestrator
+        from location.location_orchestrator import LocationOrchestrator
+        location_orchestrator = LocationOrchestrator(config)
+
+        def is_cancelled():
+            return is_search_cancelled(user_id)
+
+        # Call the location orchestrator asynchronously
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        result = loop.run_until_complete(
+            location_orchestrator.process_location_query(
+                query=search_query,
+                location_data=location_data,
+                cancel_check_fn=is_cancelled
+            )
         )
 
-        # Fallback to orchestrator
-        orchestrator = get_orchestrator()
-        result = orchestrator.search(
-            query=search_query,
-            cancel_check_fn=lambda: is_search_cancelled(user_id)
-        )
+        loop.close()
 
         # Clean up processing message
         try:
             bot.delete_message(chat_id, processing_msg.message_id)
-        except:
+        except Exception:
             pass
 
-        if is_search_cancelled(user_id):
+        if is_cancelled():
             return
 
-        # Send results
+        # Handle the results - the orchestrator returns properly formatted results
         if result.get("success"):
             formatted_message = result.get("formatted_message", "Found some great places!")
 
             # Store location context for potential Google Maps follow-up
-            if result.get("source") == "database_with_choice" or "location" in search_query.lower():
-                conversation_handler.store_location_search_context(
-                    user_id=user_id,
-                    query=search_query,
-                    location_data=result.get("location_data"),  # If available
-                    location_description=result.get("location_description", "searched area")
-                )
-                conversation_handler.set_user_state(user_id, ConversationState.RESULTS_SHOWN)
+            # Check if this was a database result with choice option
+            if result.get("source") == "database_with_choice" and result.get("offer_more_results"):
+                if conversation_handler is not None:
+                    conversation_handler.store_location_search_context(
+                        user_id=user_id,
+                        query=search_query,
+                        location_data=location_data,
+                        location_description=result.get("location_description", location_data.description or "searched area")
+                    )
+                    conversation_handler.set_user_state(user_id, ConversationState.RESULTS_SHOWN)
+
+                # Add note about asking for more options
+                location_desc = result.get("location_description", "the area")
+                formatted_message += f"\n\n💬 <b>Want more options?</b> Just ask me to find more restaurants in {location_desc}!"
 
             bot.send_message(
                 chat_id,
@@ -327,15 +356,24 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
                 parse_mode='HTML',
                 disable_web_page_preview=True
             )
+
+            logger.info(f"✅ Location search results sent for user {user_id}: {result.get('restaurant_count', 0)} restaurants")
         else:
+            error_message = result.get("error", "I couldn't find restaurants in that area.")
             bot.send_message(
                 chat_id,
-                "😔 I couldn't find restaurants in that area. Try a different location?",
+                f"😔 {error_message}\n\nTry a different location or be more specific about the area?",
                 parse_mode='HTML'
             )
 
     except Exception as e:
         logger.error(f"Error in location search: {e}")
+        # Clean up processing message
+        try:
+            bot.delete_message(chat_id, processing_msg.message_id)
+        except Exception:
+            pass
+
         bot.send_message(
             chat_id,
             "😔 I encountered an error while searching. Please try again!",
@@ -373,7 +411,17 @@ def perform_google_maps_followup_search(user_id: int, chat_id: int):
     NEW: Perform Google Maps follow-up search using stored location context
     This replaces the button-based Google Maps search with natural conversation
     """
+    processing_msg = None
     try:
+        # Check if conversation handler is initialized
+        if conversation_handler is None:
+            bot.send_message(
+                chat_id,
+                "😔 I'm having trouble with the conversation system. Please try again.",
+                parse_mode='HTML'
+            )
+            return
+
         # Get stored location context
         location_context = conversation_handler.get_location_search_context(user_id)
 
@@ -402,7 +450,6 @@ def perform_google_maps_followup_search(user_id: int, chat_id: int):
         logger.info(f"Starting Google Maps follow-up search for user {user_id} in {location_description}")
 
         # Import and use the existing Google Maps search function
-        # This reuses the existing perform_google_maps_only_search logic
         from location.location_orchestrator import LocationOrchestrator
         location_orchestrator = LocationOrchestrator(config)
 
@@ -410,16 +457,14 @@ def perform_google_maps_followup_search(user_id: int, chat_id: int):
             return is_search_cancelled(user_id)
 
         # Use async context for the location orchestrator
-        import asyncio
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        # Call the orchestrator's Google Maps search flow directly
+        # Call the orchestrator's process_location_query method
         result = loop.run_until_complete(
-            location_orchestrator._search_google_maps_flow(
+            location_orchestrator.process_location_query(
                 query=original_query,
-                coordinates=(location_data.latitude, location_data.longitude) if location_data else None,
-                location_desc=location_description,
+                location_data=location_data,
                 cancel_check_fn=is_cancelled
             )
         )
@@ -427,10 +472,11 @@ def perform_google_maps_followup_search(user_id: int, chat_id: int):
         loop.close()
 
         # Clean up processing message
-        try:
-            bot.delete_message(chat_id, processing_msg.message_id)
-        except:
-            pass
+        if processing_msg:
+            try:
+                bot.delete_message(chat_id, processing_msg.message_id)
+            except Exception:
+                pass
 
         if is_cancelled():
             return
@@ -457,6 +503,11 @@ def perform_google_maps_followup_search(user_id: int, chat_id: int):
 
     except Exception as e:
         logger.error(f"Error in Google Maps follow-up search: {e}")
+        if processing_msg:
+            try:
+                bot.delete_message(chat_id, processing_msg.message_id)
+            except Exception:
+                pass
         bot.send_message(
             chat_id,
             "😔 Sorry, I encountered an error searching for additional options.",
@@ -465,16 +516,8 @@ def perform_google_maps_followup_search(user_id: int, chat_id: int):
     finally:
         cleanup_search(user_id)
         # Keep location context for potential additional searches
-        conversation_handler.set_user_state(user_id, ConversationState.RESULTS_SHOWN)
-    """Handle location input from user who was awaiting location"""
-    try:
-        # Get original context
-        awaiting_data = users_awaiting_location.get(user_id, {})
-        context = awaiting_data.get("query", "restaurants")
-
-        # Remove from awaiting list
-        if user_id in users_awaiting_location:
-            del users_awaiting_location[user_id]
+        if conversation_handler is not None:
+            conversation_handler.set_user_state(user_id, ConversationState.RESULTS_SHOWN)
 
 def handle_location_input(location_text: str, user_id: int, chat_id: int):
     """Handle location input from user who was awaiting location"""
@@ -500,20 +543,60 @@ def handle_location_input(location_text: str, user_id: int, chat_id: int):
             )
 
             # Store location context for potential follow-up searches
-            conversation_handler.store_location_search_context(
-                user_id=user_id,
-                query=context,
-                location_data=location_data,
-                location_description=location_data.description
+            if conversation_handler is not None:
+                conversation_handler.store_location_search_context(
+                    user_id=user_id,
+                    query=context,
+                    location_data=location_data,
+                    location_description=location_data.description or "searched area"
+                )
+
+            # Use location orchestrator for proximity search
+            from location.location_orchestrator import LocationOrchestrator
+            location_orchestrator = LocationOrchestrator(config)
+
+            def is_cancelled():
+                return False  # No cancellation for location input processing
+
+            # Process with location orchestrator
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            result = loop.run_until_complete(
+                location_orchestrator.process_location_query(
+                    query=context,
+                    location_data=location_data,
+                    cancel_check_fn=is_cancelled
+                )
             )
 
-            # TODO: Implement proximity search using location orchestrator
-            # For now, provide acknowledgment
-            bot.send_message(
-                chat_id,
-                "🚧 Proximity search is being enhanced. Please try a city-wide search for now!",
-                parse_mode='HTML'
-            )
+            loop.close()
+
+            # Handle results
+            if result.get("success"):
+                formatted_message = result.get("formatted_message", f"Found restaurants near {location_data.description}!")
+
+                # Check if this was a database result with choice option
+                if result.get("source") == "database_with_choice" and result.get("offer_more_results"):
+                    if conversation_handler is not None:
+                        conversation_handler.set_user_state(user_id, ConversationState.RESULTS_SHOWN)
+                    location_desc = location_data.description or "the area"
+                    formatted_message += f"\n\n💬 <b>Want more options?</b> Just ask me to find more restaurants in {location_desc}!"
+
+                bot.send_message(
+                    chat_id,
+                    formatted_message,
+                    parse_mode='HTML',
+                    reply_markup=remove_location_button(),
+                    disable_web_page_preview=True
+                )
+            else:
+                location_desc = location_data.description or "that location"
+                bot.send_message(
+                    chat_id,
+                    f"😔 I couldn't find restaurants near {location_desc}. Try a different location?",
+                    parse_mode='HTML'
+                )
 
         else:
             # Poor location understanding
@@ -543,7 +626,8 @@ def send_welcome(message):
     user_id = message.from_user.id
 
     # Initialize user in conversation handler
-    conversation_handler.set_user_state(user_id, ConversationState.IDLE)
+    if conversation_handler is not None:
+        conversation_handler.set_user_state(user_id, ConversationState.IDLE)
 
     bot.reply_to(message, WELCOME_MESSAGE, parse_mode='HTML')
 
@@ -585,7 +669,8 @@ def handle_cancel(message):
         del users_awaiting_location[user_id]
 
     # Reset user state
-    conversation_handler.set_user_state(user_id, ConversationState.IDLE)
+    if conversation_handler is not None:
+        conversation_handler.set_user_state(user_id, ConversationState.IDLE)
 
     logger.info(f"Successfully cancelled search for user {user_id} after {search_duration}s")
 
@@ -635,20 +720,58 @@ def handle_gps_location(message):
         )
 
         # Store location context for potential follow-up searches
-        conversation_handler.store_location_search_context(
-            user_id=user_id,
-            query=context,
-            location_data=location_data,
-            location_description=f"GPS: {latitude:.4f}, {longitude:.4f}"
+        if conversation_handler is not None:
+            conversation_handler.store_location_search_context(
+                user_id=user_id,
+                query=context,
+                location_data=location_data,
+                location_description=f"GPS: {latitude:.4f}, {longitude:.4f}"
+            )
+
+        # Use location orchestrator for GPS proximity search
+        from location.location_orchestrator import LocationOrchestrator
+        location_orchestrator = LocationOrchestrator(config)
+
+        def is_cancelled():
+            return False  # No cancellation for GPS location processing
+
+        # Process with location orchestrator
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        result = loop.run_until_complete(
+            location_orchestrator.process_location_query(
+                query=context,
+                location_data=location_data,
+                cancel_check_fn=is_cancelled
+            )
         )
 
-        # TODO: Use location orchestrator for proximity search
-        # For now, provide acknowledgment
-        bot.send_message(
-            chat_id,
-            "🚧 GPS-based search is being enhanced. Please try a city-wide search for now!",
-            parse_mode='HTML'
-        )
+        loop.close()
+
+        # Handle results
+        if result.get("success"):
+            formatted_message = result.get("formatted_message", f"Found restaurants near your location!")
+
+            # Check if this was a database result with choice option
+            if result.get("source") == "database_with_choice" and result.get("offer_more_results"):
+                if conversation_handler is not None:
+                    conversation_handler.set_user_state(user_id, ConversationState.RESULTS_SHOWN)
+                formatted_message += f"\n\n💬 <b>Want more options?</b> Just ask me to find more restaurants around here!"
+
+            bot.send_message(
+                chat_id,
+                formatted_message,
+                parse_mode='HTML',
+                reply_markup=remove_location_button(),
+                disable_web_page_preview=True
+            )
+        else:
+            bot.send_message(
+                chat_id,
+                "😔 I couldn't find restaurants near your location. Try expanding the search area or be more specific about cuisine type?",
+                parse_mode='HTML'
+            )
 
     except Exception as e:
         logger.error(f"Error handling GPS location: {e}")
@@ -701,13 +824,22 @@ def handle_voice_message(message):
 def process_voice_in_background(message, user_id: int, chat_id: int, processing_msg_id: int):
     """Background processing of voice message"""
     try:
+        # Check if voice handler is available
+        if voice_handler is None:
+            bot.send_message(
+                chat_id,
+                "😔 Voice processing is not available right now. Please send a text message.",
+                parse_mode='HTML'
+            )
+            return
+
         # Step 1: Transcribe voice message
         transcribed_text = voice_handler.process_voice_message(bot, message.voice)
 
         # Clean up processing message
         try:
             bot.delete_message(chat_id, processing_msg_id)
-        except:
+        except Exception:
             pass
 
         if not transcribed_text:
@@ -725,6 +857,11 @@ def process_voice_in_background(message, user_id: int, chat_id: int, processing_
 
     except Exception as e:
         logger.error(f"Error processing voice message: {e}")
+        # Clean up processing message
+        try:
+            bot.delete_message(chat_id, processing_msg_id)
+        except Exception:
+            pass
         bot.send_message(
             chat_id,
             "😔 Sorry, I encountered an error processing your voice message.",
