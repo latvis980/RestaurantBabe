@@ -303,7 +303,7 @@ class Database:
             center_lat, center_lng = center
             logger.info(f"📍 Searching restaurants within {radius_km}km of ({center_lat}, {center_lng})")
 
-            # Try PostGIS search first (now with the correct RPC function)
+            # TRY PostGIS function first (now re-enabled with fixed schema)
             try:
                 result = self.supabase.rpc('search_restaurants_by_coordinates', {
                     'center_lat': center_lat,
@@ -334,32 +334,41 @@ class Database:
 
                 for restaurant in all_restaurants:
                     try:
-                        rest_lat = float(restaurant['latitude'])
-                        rest_lng = float(restaurant['longitude'])
+                        # Check if restaurant has valid coordinates
+                        lat = restaurant.get('latitude')
+                        lng = restaurant.get('longitude')
 
-                        # Calculate distance
-                        distance_km = LocationUtils.calculate_distance(
-                            (center_lat, center_lng), (rest_lat, rest_lng)
-                        )
+                        if lat is not None and lng is not None:
+                            # Convert to float safely
+                            try:
+                                lat = float(lat)
+                                lng = float(lng)
+                            except (ValueError, TypeError):
+                                continue  # Skip restaurants with invalid coordinates
 
-                        # Only include if within radius
-                        if distance_km <= radius_km:
-                            restaurant['distance_km'] = round(distance_km, 2)
-                            restaurants_with_distance.append(restaurant)
+                            # Calculate distance
+                            restaurant_coords = (lat, lng)
+                            distance_km = LocationUtils.calculate_distance(center, restaurant_coords)
 
-                    except (ValueError, TypeError) as e:
-                        logger.debug(f"Invalid coordinates for restaurant {restaurant.get('name', 'Unknown')}: {e}")
+                            # Only include if within radius
+                            if distance_km <= radius_km:
+                                restaurant['distance_km'] = distance_km
+                                restaurant['distance_text'] = LocationUtils.format_distance(distance_km)
+                                restaurants_with_distance.append(restaurant)
+
+                    except Exception as e:
+                        logger.warning(f"Error processing restaurant {restaurant.get('name', 'unknown')}: {e}")
                         continue
 
-                # Sort by distance and apply limit
-                restaurants_with_distance.sort(key=lambda x: x['distance_km'])
-                results = restaurants_with_distance[:limit]
+                # Sort by distance and limit results
+                restaurants_with_distance.sort(key=lambda x: x.get('distance_km', float('inf')))
+                limited_results = restaurants_with_distance[:limit]
 
-                logger.info(f"✅ Fallback search found {len(results)} restaurants")
-                return results
+                logger.info(f"✅ Fallback search found {len(limited_results)} restaurants within {radius_km}km")
+                return limited_results
 
         except Exception as e:
-            logger.error(f"❌ Error in coordinate search: {e}")
+            logger.error(f"❌ Error in coordinate-based search: {e}")
             return []
 
     # ============ DOMAIN INTELLIGENCE METHODS (SIMPLIFIED STUBS) ============

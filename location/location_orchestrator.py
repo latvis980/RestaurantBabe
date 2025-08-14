@@ -9,6 +9,11 @@ Business Logic:
    a. if more than 0 results - send to user + offer choice (accept or request more)
    b. if 0 results - start google maps search directly
 4. Return formatted results (location service has its own formatter)
+
+FIXES:
+- Added missing formatted_message key to all returns
+- Improved coordinate handling and geocoding fallback
+- Fixed database result formatting flow
 """
 
 import logging
@@ -99,39 +104,66 @@ class LocationOrchestrator:
             if cancel_check_fn and cancel_check_fn():
                 return self._create_cancelled_response()
 
-            # Step 3: Database results analysis
+            # Step 2: Filter and evaluate database results (MISSING STEP - NOW ADDED)
             db_restaurant_count = len(db_results)
 
             if db_restaurant_count > 0:
-                logger.info(f"✅ Found {db_restaurant_count} database results - sending to user with choice")
+                logger.info(f"🔍 Step 2: Filtering {db_restaurant_count} database results by query relevance")
 
-                # Add distance information
+                # Add distance information first
                 restaurants_with_distance = self._add_distance_info(
                     db_results, coordinates
                 )
 
-                # Format database results
-                formatted_results = self.formatter.format_database_results(
+                if cancel_check_fn and cancel_check_fn():
+                    return self._create_cancelled_response()
+
+                # STEP 2: Filter results using AI to match user query
+                filter_result = self.filter_evaluator.filter_and_evaluate(
                     restaurants=restaurants_with_distance,
                     query=query,
                     location_description=location_desc
                 )
 
-                processing_time = time.time() - start_time
+                filtered_restaurants = filter_result.get("filtered_restaurants", [])
+                filtered_count = len(filtered_restaurants)
 
-                return {
-                    "success": True,
-                    "results": formatted_results.get("restaurants", []),
-                    "source": "database_with_choice",
-                    "processing_time": processing_time,
-                    "restaurant_count": db_restaurant_count,
-                    "coordinates": coordinates,
-                    "location_description": location_desc,
-                    "offer_more_results": True  # Flag to offer Google Maps search
-                }
+                logger.info(f"🎯 Step 2 Complete: {filtered_count}/{db_restaurant_count} restaurants match query")
+
+                # Step 3: Database results analysis (CORRECTED)
+                if filtered_count > 0:
+                    logger.info(f"✅ Found {filtered_count} relevant database results - sending to user with choice")
+
+                    # Format filtered database results
+                    formatted_results = self.formatter.format_database_results(
+                        restaurants=filtered_restaurants,
+                        query=query,
+                        location_description=location_desc,
+                        offer_more_search=True
+                    )
+
+                    processing_time = time.time() - start_time
+
+                    return {
+                        "success": True,
+                        "results": filtered_restaurants,
+                        "source": "database_with_choice",
+                        "processing_time": processing_time,
+                        "restaurant_count": filtered_count,
+                        "total_found": db_restaurant_count,
+                        "coordinates": coordinates,
+                        "location_description": location_desc,
+                        "offer_more_results": True,
+                        "filter_reasoning": filter_result.get("reasoning", ""),
+                        # FIX: Add the missing formatted_message key
+                        "formatted_message": formatted_results.get("message", f"Found {filtered_count} relevant restaurants from my notes!")
+                    }
+                else:
+                    logger.info(f"📍 No relevant matches in {db_restaurant_count} database results - starting Google Maps search")
+                    return await self._search_google_maps_flow(query, coordinates, location_desc, cancel_check_fn, start_time)
 
             else:
-                logger.info("📍 No database results - starting Google Maps search directly")
+                logger.info("📍 No database results found - starting Google Maps search directly")
                 return await self._search_google_maps_flow(query, coordinates, location_desc, cancel_check_fn, start_time)
 
         except Exception as e:
@@ -194,12 +226,14 @@ class LocationOrchestrator:
 
             return {
                 "success": True,
-                "results": formatted_results.get("venues", []),
+                "results": final_venues,
                 "source": "google_maps_only",
                 "processing_time": processing_time,
                 "restaurant_count": len(final_venues),
                 "coordinates": coordinates,
-                "location_description": location_desc
+                "location_description": location_desc,
+                # FIX: Add the missing formatted_message key
+                "formatted_message": formatted_results.get("message", f"Found {len(final_venues)} restaurants via Google Maps!")
             }
 
         except Exception as e:
@@ -209,17 +243,17 @@ class LocationOrchestrator:
     # ============ HELPER METHODS ============
 
     def _get_coordinates(self, location_data: LocationData, cancel_check_fn=None) -> Optional[Tuple[float, float]]:
-        """Extract or geocode coordinates from location data"""
+        """Extract or geocode coordinates from location data - IMPROVED"""
         try:
             # If we have GPS coordinates, use them directly
             if location_data.latitude and location_data.longitude:
                 return (location_data.latitude, location_data.longitude)
 
-            # If we have a description, geocode it
+            # If we have a description, try to geocode it
             if location_data.description:
                 logger.info(f"🌍 Geocoding location: {location_data.description}")
 
-                # Check if Database class has geocoding capability
+                # Try to use the database geocoding if available
                 from utils.database import get_database
                 db = get_database()
 
@@ -230,9 +264,23 @@ class LocationOrchestrator:
                         return coordinates
                     else:
                         logger.warning(f"❌ Failed to geocode: {location_data.description}")
-                else:
-                    logger.warning("❌ Geocoding not available in database")
 
+                # FIX: Add Google Maps geocoding fallback
+                try:
+                    if hasattr(self.config, 'GOOGLE_MAPS_API_KEY') and self.config.GOOGLE_MAPS_API_KEY:
+                        import googlemaps
+                        gmaps = googlemaps.Client(key=self.config.GOOGLE_MAPS_API_KEY)
+                        geocode_result = gmaps.geocode(location_data.description)
+
+                        if geocode_result:
+                            location = geocode_result[0]['geometry']['location']
+                            coordinates = (location['lat'], location['lng'])
+                            logger.info(f"✅ Google Maps geocoded to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+                            return coordinates
+                except Exception as e:
+                    logger.warning(f"Google Maps geocoding failed: {e}")
+
+            logger.error("❌ Could not determine coordinates from location data")
             return None
 
         except Exception as e:
@@ -240,98 +288,55 @@ class LocationOrchestrator:
             return None
 
     def _add_distance_info(self, restaurants: List[Dict[str, Any]], coordinates: Tuple[float, float]) -> List[Dict[str, Any]]:
-        """Add distance information to restaurants"""
+        """Add distance information to restaurant results"""
         try:
+            from location.location_utils import LocationUtils
+
             for restaurant in restaurants:
                 if restaurant.get('latitude') and restaurant.get('longitude'):
-                    # FIXED: Use calculate_distance as static method with proper arguments
-                    distance = LocationUtils.calculate_distance(
-                        coordinates,  # First point as tuple
-                        (restaurant['latitude'], restaurant['longitude'])  # Second point as tuple
-                    )
-                    restaurant['distance_km'] = round(distance, 2)
+                    restaurant_coords = (float(restaurant['latitude']), float(restaurant['longitude']))
+                    distance_km = LocationUtils.calculate_distance(coordinates, restaurant_coords)
+
+                    restaurant['distance_km'] = distance_km
+                    restaurant['distance_text'] = LocationUtils.format_distance(distance_km)
                 else:
-                    restaurant['distance_km'] = None
+                    restaurant['distance_km'] = float('inf')
+                    restaurant['distance_text'] = "Distance unknown"
 
             # Sort by distance
-            restaurants.sort(key=lambda x: x.get('distance_km') or float('inf'))
+            restaurants.sort(key=lambda x: x.get('distance_km', float('inf')))
             return restaurants
 
         except Exception as e:
             logger.error(f"❌ Error adding distance info: {e}")
             return restaurants
 
-    async def _search_google_maps_venues(
-        self, 
-        coordinates: Tuple[float, float], 
-        query: str,
-        cancel_check_fn=None
-    ) -> List[VenueResult]:
+    async def _search_google_maps_venues(self, coordinates: Tuple[float, float], query: str, cancel_check_fn=None) -> List[VenueResult]:
         """Search Google Maps for venues"""
         try:
-            # FIXED: Use correct method name 'search_venues' instead of 'search_nearby_venues'
             venues = await self.google_maps_agent.search_venues(
                 coordinates=coordinates,
                 query=query,
-                radius_km=self.db_search_radius  # Use km directly as the method expects
+                cancel_check_fn=cancel_check_fn
             )
-
-            # Filter and sort venues
-            filtered_venues = []
-            for venue in venues:
-                if cancel_check_fn and cancel_check_fn():
-                    break
-
-                # Basic filtering
-                if venue.rating and venue.rating >= 3.5:  # Minimum rating
-                    filtered_venues.append(venue)
-
-            # Sort by rating and review count
-            filtered_venues.sort(key=lambda v: (v.rating or 0, v.user_ratings_total or 0), reverse=True)
-
-            return filtered_venues[:self.max_venues_to_verify]
-
+            return venues
         except Exception as e:
             logger.error(f"❌ Error searching Google Maps venues: {e}")
             return []
 
-    async def _verify_and_filter_venues(
-        self, 
-        venues: List[VenueResult], 
-        query: str,
-        coordinates: Tuple[float, float],
-        cancel_check_fn=None
-    ) -> List[VenueResult]:
-        """Verify and filter venues using media verification"""
+    async def _verify_and_filter_venues(self, venues: List[VenueResult], query: str, coordinates: Tuple[float, float], cancel_check_fn=None) -> List[VenueResult]:
+        """Verify venues through media sources"""
         try:
-            verified_venues = []
-
-            for venue in venues:
-                if cancel_check_fn and cancel_check_fn():
-                    break
-
-                # FIXED: Use correct method name 'verify_venues' instead of 'verify_venue'
-                verification_result = await self.media_verifier.verify_venues(
-                    venues=[venue],  # Pass as list since method expects List[VenueResult]
-                    query=query,
-                    cancel_check_fn=cancel_check_fn
-                )
-
-                if verification_result and len(verification_result) > 0:
-                    # If verification returns any results, consider the venue verified
-                    verified_venues.append(venue)
-
-                # Respect rate limits
-                await asyncio.sleep(0.5)
-
+            verified_venues = await self.media_verifier.verify_venues(
+                venues=venues,
+                query=query,
+                coordinates=coordinates,
+                cancel_check_fn=cancel_check_fn
+            )
             return verified_venues
-
         except Exception as e:
-            logger.error(f"❌ Error in venue verification: {e}")
-            # Fallback: return unverified venues
-            return venues
-
-    # ============ RESPONSE HELPERS ============
+            logger.error(f"❌ Error verifying venues: {e}")
+            return venues  # Return unverified venues as fallback
 
     def _create_error_response(self, error_message: str) -> Dict[str, Any]:
         """Create standardized error response"""
@@ -339,7 +344,8 @@ class LocationOrchestrator:
             "success": False,
             "error": error_message,
             "results": [],
-            "source": "error"
+            "restaurant_count": 0,
+            "formatted_message": f"😔 {error_message}"
         }
 
     def _create_cancelled_response(self) -> Dict[str, Any]:
@@ -347,7 +353,7 @@ class LocationOrchestrator:
         return {
             "success": False,
             "cancelled": True,
-            "error": "Search was cancelled",
             "results": [],
-            "source": "cancelled"
+            "restaurant_count": 0,
+            "formatted_message": "Search was cancelled."
         }

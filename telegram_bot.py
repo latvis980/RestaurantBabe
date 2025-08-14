@@ -940,80 +940,197 @@ def perform_location_search(query, location_data, chat_id, user_id):
 
 def handle_database_results_with_choice(result, query, location_data, chat_id, user_id):
     """
-    NEW: Handle database results and offer user choice
-    FIXED: Handle the correct data structure from orchestrator
+    FIXED: Handle database results and offer user choice
+    Now properly extracts the formatted message from orchestrator
     """
     try:
-        # The orchestrator returns results as a list, not a dict
+        # Extract data from orchestrator result
         restaurants = result.get('results', [])
         restaurant_count = result.get('restaurant_count', len(restaurants))
 
-        # Use the location formatter to create the message
-        from location.location_orchestrator import LocationOrchestrator
-        location_orchestrator = LocationOrchestrator(config)
+        # FIX: Use the formatted_message directly from orchestrator
+        formatted_message = result.get('formatted_message')
 
-        # Format the results properly
-        formatted_results = location_orchestrator.formatter.format_database_results(
-            restaurants=restaurants,
-            query=query,
-            location_description=location_data.description or "your location",
-            offer_more_search=True
+        if not formatted_message:
+            # Fallback: Create basic message if orchestrator didn't provide one
+            formatted_message = f"📝 <b>Found {restaurant_count} restaurants from my personal notes!</b>\n\n"
+            for i, restaurant in enumerate(restaurants[:6], 1):
+                name = restaurant.get('name', 'Unknown Restaurant')
+                address = restaurant.get('address', 'Address available')
+                distance = restaurant.get('distance_text', 'Distance unknown')
+
+                formatted_message += f"{i}. <b>{name}</b>\n"
+                formatted_message += f"📍 {address[:50]}{'...' if len(address) > 50 else ''}\n"
+                formatted_message += f"🚶 {distance}\n\n"
+
+            formatted_message += "💡 <b>These are from my curated collection.</b> Would you like to see these options or search for more restaurants in the area?"
+
+        # Create choice buttons
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+
+        accept_button = types.InlineKeyboardButton(
+            text="✅ Perfect! Show me these options",
+            callback_data=f"accept_db_results_{user_id}"
         )
 
-        message_text = formatted_results.get('message', 'Found some restaurants from my personal notes!')
+        more_button = types.InlineKeyboardButton(
+            text="🔍 Find more restaurants in the area",
+            callback_data=f"more_restaurants_{user_id}"
+        )
 
-        # Store pending choice data
+        keyboard.add(accept_button)
+        keyboard.add(more_button)
+
+        # Store the results for callback handling
         pending_location_choices[user_id] = {
             "query": query,
             "location_data": location_data,
             "database_results": restaurants,
-            "timestamp": time.time()
+            "timestamp": time.time(),
+            "formatted_message": formatted_message
         }
 
-        # Send results with choice buttons
+        # Send message with choice buttons
         bot.send_message(
             chat_id,
-            message_text + "\n\n" + 
-            "👆 <b>What would you like to do?</b>",
+            formatted_message,
             parse_mode='HTML',
-            reply_markup=create_choice_buttons(),
+            reply_markup=keyboard,
             disable_web_page_preview=True
         )
 
         logger.info(f"✅ Database results sent for user {user_id} with choice buttons")
-        add_to_conversation(user_id, f"Found {restaurant_count} restaurants from database", is_user=False)
+        add_to_conversation(user_id, f"Found {restaurant_count} restaurants from personal notes", is_user=False)
 
     except Exception as e:
         logger.error(f"❌ Error handling database results with choice: {e}")
+        bot.send_message(
+            chat_id,
+            f"😔 Found {len(result.get('results', []))} restaurants but had trouble displaying them properly. Please try again!",
+            parse_mode='HTML',
+            reply_markup=remove_location_button()
+        )
 
-        # Fallback: send results without choice buttons
-        try:
-            restaurants = result.get('results', [])
-            if restaurants:
-                # Simple fallback formatting
-                restaurant_names = [r.get('name', 'Unknown') for r in restaurants[:5]]
-                fallback_message = f"📝 Found {len(restaurants)} restaurants:\n\n" + "\n".join([f"{i+1}. {name}" for i, name in enumerate(restaurant_names)])
-            else:
-                fallback_message = "Found restaurants from my personal notes!"
+@bot.callback_query_handler(func=lambda call: call.data.startswith(('accept_db_results_', 'more_restaurants_')))
+def handle_location_choice_callback(call):
+    """Handle user choice for database results"""
+    try:
+        user_id = call.from_user.id
+        chat_id = call.message.chat.id
 
-            bot.send_message(
-                chat_id,
-                fallback_message,
-                parse_mode='HTML',
-                reply_markup=remove_location_button(),
-                disable_web_page_preview=True
-            )
+        # Extract action and user_id from callback data
+        if call.data.startswith('accept_db_results_'):
+            action = 'accept'
+            callback_user_id = int(call.data.replace('accept_db_results_', ''))
+        elif call.data.startswith('more_restaurants_'):
+            action = 'more'
+            callback_user_id = int(call.data.replace('more_restaurants_', ''))
+        else:
+            return
 
-            logger.info(f"✅ Fallback results sent for user {user_id}")
-            add_to_conversation(user_id, "Found restaurants from database", is_user=False)
+        # Verify the callback is from the correct user
+        if user_id != callback_user_id:
+            bot.answer_callback_query(call.id, "This button is not for you!", show_alert=True)
+            return
 
-        except Exception as fallback_error:
-            logger.error(f"❌ Error in fallback handling: {fallback_error}")
-            bot.send_message(
-                chat_id,
-                "😔 Found restaurants but had trouble displaying them. Please try your search again.",
-                parse_mode='HTML'
-            )
+        # Check if we have pending choice data
+        if user_id not in pending_location_choices:
+            bot.answer_callback_query(call.id, "This search has expired. Please start a new search.", show_alert=True)
+            return
+
+        choice_data = pending_location_choices[user_id]
+
+        # Remove from pending choices
+        del pending_location_choices[user_id]
+
+        # Answer the callback query
+        bot.answer_callback_query(call.id)
+
+        if action == 'accept':
+            # User accepted database results - show them the detailed list
+            restaurants = choice_data['database_results']
+
+            # Create detailed restaurant list
+            message_parts = []
+            message_parts.append("📝 <b>Here are my recommended restaurants:</b>\n")
+
+            for i, restaurant in enumerate(restaurants[:8], 1):  # Show up to 8 restaurants
+                name = restaurant.get('name', 'Unknown Restaurant')
+                address = restaurant.get('address', 'Address available')
+                distance = restaurant.get('distance_text', 'Distance unknown')
+                cuisine_tags = restaurant.get('cuisine_tags', [])
+                cuisine_text = ', '.join(cuisine_tags[:3]) if cuisine_tags else 'Restaurant'
+
+                restaurant_text = f"{i}. <b>{name}</b>\n"
+                restaurant_text += f"🍽️ {cuisine_text}\n"
+                restaurant_text += f"📍 {address}\n"
+                restaurant_text += f"🚶 {distance}\n"
+
+                message_parts.append(restaurant_text)
+
+            final_message = '\n\n'.join(message_parts)
+
+            # Ensure message isn't too long
+            if len(final_message) > 4000:
+                final_message = final_message[:3900] + "\n\n... (list truncated)"
+
+            final_message += "\n\n🎯 <b>Need more options?</b> Just ask me to search for more restaurants in the area!"
+
+            # Edit the original message to show acceptance
+            try:
+                bot.edit_message_text(
+                    text=final_message,
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    parse_mode='HTML',
+                    reply_markup=None,
+                    disable_web_page_preview=True
+                )
+            except Exception as e:
+                logger.warning(f"Could not edit message, sending new one: {e}")
+                bot.send_message(
+                    chat_id,
+                    final_message,
+                    parse_mode='HTML',
+                    reply_markup=remove_location_button(),
+                    disable_web_page_preview=True
+                )
+
+            logger.info(f"✅ User {user_id} accepted database results")
+            add_to_conversation(user_id, f"Accepted {len(restaurants)} restaurant recommendations", is_user=False)
+
+        elif action == 'more':
+            # User wants more options - start Google Maps search
+            query = choice_data['query']
+            location_data = choice_data['location_data']
+
+            # Edit message to show search is starting
+            try:
+                bot.edit_message_text(
+                    text="🔍 <b>Searching for more restaurants in the area...</b>\n\n"
+                         "<i>I'll check Google Maps for additional options and verify them with trusted sources.</i>\n\n"
+                         "💡 Type /cancel to stop the search",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    parse_mode='HTML',
+                    reply_markup=None
+                )
+            except Exception as e:
+                logger.warning(f"Could not edit message: {e}")
+
+            # Start Google Maps search in background
+            threading.Thread(
+                target=perform_google_maps_only_search,
+                args=(query, location_data, chat_id, user_id),
+                daemon=True
+            ).start()
+
+            logger.info(f"✅ User {user_id} requested more restaurants, starting Google Maps search")
+            add_to_conversation(user_id, "Requested additional restaurant options", is_user=False)
+
+    except Exception as e:
+        logger.error(f"❌ Error handling location choice callback: {e}")
+        bot.answer_callback_query(call.id, "Something went wrong. Please try again.", show_alert=True)
         
 def perform_google_maps_only_search(query, location_data, chat_id, user_id):
     """
