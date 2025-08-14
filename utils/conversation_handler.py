@@ -82,7 +82,7 @@ CURRENT USER MESSAGE: {user_message}
 
 USER STATE: {user_state}
 
-LOCATION CONTEXT: {location_context}
+LOCATION CONTEXT: {{location_context}}
 """)
         ])
 
