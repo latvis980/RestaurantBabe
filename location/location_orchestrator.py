@@ -243,7 +243,7 @@ class LocationOrchestrator:
     # ============ HELPER METHODS ============
 
     def _get_coordinates(self, location_data: LocationData, cancel_check_fn=None) -> Optional[Tuple[float, float]]:
-        """Extract or geocode coordinates from location data - IMPROVED GEOCODING"""
+        """Extract or geocode coordinates from location data - PROPER GEOCODING FIX"""
         try:
             # If we have GPS coordinates, use them directly
             if location_data.latitude and location_data.longitude:
@@ -253,46 +253,62 @@ class LocationOrchestrator:
             if location_data.description:
                 logger.info(f"🌍 Geocoding location: {location_data.description}")
 
-                # FIX: Improve geocoding with better Google Maps queries
+                # FIX: Use Google Maps geocoding FIRST (more reliable than database geocoding)
                 try:
                     if hasattr(self.config, 'GOOGLE_MAPS_API_KEY') and self.config.GOOGLE_MAPS_API_KEY:
                         import googlemaps
                         gmaps = googlemaps.Client(key=self.config.GOOGLE_MAPS_API_KEY)
 
-                        # FIX: Add location context for better geocoding
-                        # If the query doesn't include a city/country, add context
+                        # Use the original description without hardcoded modifications
                         description = location_data.description
-                        if not any(city in description.lower() for city in ['lisbon', 'lisboa', 'portugal']):
-                            # Add Lisbon context if it seems to be a local area
-                            if any(area in description.lower() for area in ['cais', 'sodre', 'chiado', 'bairro', 'rua']):
-                                description = f"{description}, Lisbon, Portugal"
 
+                        # FIX: Let Google Maps handle the geocoding naturally
                         geocode_result = gmaps.geocode(description)
 
                         if geocode_result:
                             location = geocode_result[0]['geometry']['location']
                             coordinates = (location['lat'], location['lng'])
-                            logger.info(f"✅ Google Maps geocoded to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+
+                            # Log the formatted address to verify correct location
+                            formatted_address = geocode_result[0].get('formatted_address', 'Unknown')
+                            logger.info(f"✅ Google Maps geocoded '{description}' to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+                            logger.info(f"📍 Formatted address: {formatted_address}")
+
                             return coordinates
                         else:
                             logger.warning(f"❌ Google Maps geocoding returned no results for: {description}")
+
                 except Exception as e:
                     logger.warning(f"Google Maps geocoding failed: {e}")
 
-                # Fallback: Try database geocoding if available
-                try:
-                    from utils.database import get_database
-                    db = get_database()
+                # FIX: SKIP database geocoding since it's returning wrong results
+                # The database geocoder seems to have bad data or is misconfigured
+                logger.info("⚠️ Skipping database geocoding due to unreliable results")
 
-                    if hasattr(db, 'geocode_address'):
-                        coordinates = db.geocode_address(location_data.description)
-                        if coordinates:
-                            logger.info(f"✅ Database geocoded to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+                # Alternative: Try a more specific Google Maps query if the first failed
+                try:
+                    if hasattr(self.config, 'GOOGLE_MAPS_API_KEY') and self.config.GOOGLE_MAPS_API_KEY:
+                        import googlemaps
+                        gmaps = googlemaps.Client(key=self.config.GOOGLE_MAPS_API_KEY)
+
+                        # Try with more specific search if original failed
+                        enhanced_description = f"{location_data.description} portugal"
+                        logger.info(f"🔍 Trying enhanced geocoding: {enhanced_description}")
+
+                        geocode_result = gmaps.geocode(enhanced_description)
+
+                        if geocode_result:
+                            location = geocode_result[0]['geometry']['location']
+                            coordinates = (location['lat'], location['lng'])
+                            formatted_address = geocode_result[0].get('formatted_address', 'Unknown')
+
+                            logger.info(f"✅ Enhanced geocoding successful: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+                            logger.info(f"📍 Enhanced formatted address: {formatted_address}")
+
                             return coordinates
-                        else:
-                            logger.warning(f"❌ Database geocoding failed: {location_data.description}")
+
                 except Exception as e:
-                    logger.warning(f"Database geocoding failed: {e}")
+                    logger.warning(f"Enhanced geocoding failed: {e}")
 
             logger.error("❌ Could not determine coordinates from location data")
             return None
@@ -300,7 +316,6 @@ class LocationOrchestrator:
         except Exception as e:
             logger.error(f"❌ Error getting coordinates: {e}")
             return None
-
 
     def _add_distance_info(self, restaurants: List[Dict[str, Any]], coordinates: Tuple[float, float]) -> List[Dict[str, Any]]:
         """Add distance information to restaurant results"""
