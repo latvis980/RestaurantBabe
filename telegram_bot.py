@@ -912,7 +912,7 @@ def main():
         logger.info("✅ Location analyzer initialized")
 
         # Initialize voice handler
-        voice_handler = VoiceMessageHandler(config)
+        voice_handler = VoiceMessageHandler()
         logger.info("✅ Voice handler initialized")
 
         # Start bot
