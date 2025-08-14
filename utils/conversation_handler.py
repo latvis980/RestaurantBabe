@@ -4,12 +4,14 @@ Centralized AI Conversation Handler
 
 Handles all conversational AI logic for the telegram bot with intelligent routing
 between different search flows and query types.
+
+FIXED: Corrected syntax errors, type issues, and brace problems from previous version.
 """
 
 import logging
 import json
 import time
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 from enum import Enum
 
 from langchain_openai import ChatOpenAI
@@ -82,7 +84,7 @@ CURRENT USER MESSAGE: {user_message}
 
 USER STATE: {user_state}
 
-LOCATION CONTEXT: {{location_context}}
+LOCATION CONTEXT: {location_context}
 """)
         ])
 
@@ -124,6 +126,7 @@ RESPONSE REQUIREMENTS:
 - Handle state transitions smoothly 
 - Maintain context from conversation history
 - Ask clarifying questions naturally when needed
+- For cuisine-only queries, always include "restaurants" or "places" in search_query
 
 RESPONSE FORMAT (JSON only):
 {{
@@ -133,7 +136,7 @@ RESPONSE FORMAT (JSON only):
     "bot_response": "what to say to the user (conversational, friendly)",
     "search_query": "search query if action requires search",
     "needs_clarification": true|false,
-    "missing_info": ["city", "cuisine", "location"] // what's missing for complete request,
+    "missing_info": ["city", "cuisine", "location"],
     "confidence": 0.0-1.0,
     "reasoning": "brief explanation of decision"
 }}
@@ -143,8 +146,20 @@ EXAMPLES:
 User: "best sushi in Tokyo"
 → {{"query_type": "restaurant_request", "request_type": "city_wide", "action": "SEARCH_CITY", "search_query": "best sushi restaurants in Tokyo", "bot_response": "Perfect! Let me find the best sushi places in Tokyo for you.", "needs_clarification": false, "missing_info": [], "confidence": 0.95}}
 
+User: "pizza"
+→ {{"query_type": "restaurant_request", "request_type": "location_based_nearby", "action": "REQUEST_LOCATION", "search_query": "pizza restaurants", "bot_response": "I'd love to help you find great pizza places nearby! Could you share your location or tell me what neighborhood you're in?", "needs_clarification": false, "missing_info": ["location"], "confidence": 0.9}}
+
 User: "restaurants near me"  
-→ {{"query_type": "restaurant_request", "request_type": "location_based_nearby", "action": "REQUEST_LOCATION", "bot_response": "I'd love to help you find great restaurants nearby! Could you share your location or tell me what neighborhood you're in?", "needs_clarification": false, "missing_info": ["location"], "confidence": 0.9}}
+→ {{"query_type": "restaurant_request", "request_type": "location_based_nearby", "action": "REQUEST_LOCATION", "search_query": "restaurants", "bot_response": "I'd love to help you find great restaurants nearby! Could you share your location or tell me what neighborhood you're in?", "needs_clarification": false, "missing_info": ["location"], "confidence": 0.9}}
+
+User: "sushi"
+→ {{"query_type": "restaurant_request", "request_type": "location_based_nearby", "action": "REQUEST_LOCATION", "search_query": "sushi restaurants", "bot_response": "I'd love to help you find amazing sushi places nearby! Could you share your location or tell me what neighborhood you're in?", "needs_clarification": false, "missing_info": ["location"], "confidence": 0.9}}
+
+User: "pizza close to Times Square"
+→ {{"query_type": "restaurant_request", "request_type": "location_based_geographic", "action": "SEARCH_LOCATION", "search_query": "pizza restaurants near Times Square", "bot_response": "Great choice! Let me find the best pizza places near Times Square for you.", "needs_clarification": false, "missing_info": [], "confidence": 0.9}}
+
+User: "best pizza in NYC"  
+→ {{"query_type": "restaurant_request", "request_type": "city_wide", "action": "SEARCH_CITY", "search_query": "best pizza restaurants in NYC", "bot_response": "Perfect! Let me find the best pizza places in NYC for you.", "needs_clarification": false, "missing_info": [], "confidence": 0.95}}
 
 User: "good Italian food in SoHo"
 → {{"query_type": "restaurant_request", "request_type": "location_based_geographic", "action": "SEARCH_LOCATION", "search_query": "Italian restaurants in SoHo", "bot_response": "Great choice! Let me find the best Italian restaurants in SoHo for you.", "needs_clarification": false, "missing_info": [], "confidence": 0.9}}
@@ -188,12 +203,14 @@ CONVERSATION FLOW:
             # Step 2: Get current state and context
             current_state = self.user_states.get(user_id, ConversationState.IDLE)
             conversation_history = self._format_conversation_history(user_id)
+            location_context = self._format_location_context(user_id)
 
             # Step 3: Analyze message with AI
             ai_response = self.main_chain.invoke({
                 "conversation_history": conversation_history,
                 "user_message": message_text,
-                "user_state": current_state.value
+                "user_state": current_state.value,
+                "location_context": location_context
             })
 
             # Step 4: Parse AI response
@@ -224,35 +241,35 @@ CONVERSATION FLOW:
                 "new_state": ConversationState.IDLE
             }
 
-    def _parse_ai_response(self, content: str) -> Dict[str, Any]:
-        """Parse AI response content into structured data"""
+    def _parse_ai_response(self, response_content: str) -> Dict[str, Any]:
+        """Parse AI response from JSON"""
         try:
-            # Clean up content
-            content = content.strip()
+            # Handle code block formatting
+            content = response_content.strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
                 content = content.split("```")[1].split("```")[0].strip()
 
+            # Parse JSON
             analysis = json.loads(content)
 
             # Validate required fields
             required_fields = ["query_type", "action", "bot_response"]
             for field in required_fields:
                 if field not in analysis:
-                    logger.warning(f"Missing required field: {field}")
                     analysis[field] = self._get_default_value(field)
 
             return analysis
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse AI response: {e}")
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.error(f"Error parsing AI response: {e}")
             return {
                 "query_type": "restaurant_request",
-                "action": "CLARIFY", 
-                "bot_response": "I'd love to help you find restaurants! What are you looking for?",
+                "action": "CLARIFY",
+                "bot_response": "I'm not sure what you're looking for. Could you tell me what kind of restaurant you'd like to find?",
                 "needs_clarification": True,
-                "confidence": 0.1
+                "confidence": 0.0
             }
 
     def _determine_action(
@@ -264,12 +281,12 @@ CONVERSATION FLOW:
         """Determine what action to take based on AI analysis"""
 
         action = analysis.get("action", "CLARIFY")
-        query_type = analysis.get("query_type", "restaurant_request")
-        request_type = analysis.get("request_type")
+        bot_response = analysis.get("bot_response", "How can I help you with restaurants?")
 
+        # Base result structure
         result = {
             "response_needed": True,
-            "bot_response": analysis.get("bot_response", "How can I help you?"),
+            "bot_response": bot_response,
             "action": action,
             "action_data": {},
             "new_state": current_state
@@ -412,7 +429,7 @@ CONVERSATION FLOW:
         """Clear location search context for a user"""
         if user_id in self.location_search_context:
             del self.location_search_context[user_id]
-        """Get default values for missing fields"""
+
     def _get_default_value(self, field: str) -> Any:
         """Get default values for missing fields"""
         defaults = {
@@ -420,21 +437,22 @@ CONVERSATION FLOW:
             "action": "CLARIFY",
             "bot_response": "How can I help you find restaurants?",
             "needs_clarification": True,
-            "confidence": 0.1
+            "confidence": 0.0
         }
         return defaults.get(field, "")
 
+    # State management methods
+    def set_user_state(self, user_id: int, state: ConversationState):
+        """Set user's conversation state"""
+        self.user_states[user_id] = state
+        logger.debug(f"Set user {user_id} state to {state.value}")
+
     def get_user_state(self, user_id: int) -> ConversationState:
-        """Get current state for a user"""
+        """Get user's current conversation state"""
         return self.user_states.get(user_id, ConversationState.IDLE)
 
-    def set_user_state(self, user_id: int, state: ConversationState):
-        """Set state for a user"""
-        self.user_states[user_id] = state
-        logger.debug(f"User {user_id} state changed to {state.value}")
-
     def clear_user_data(self, user_id: int):
-        """Clear all data for a user (for testing/reset)"""
+        """Clear all data for a user"""
         if user_id in self.user_states:
             del self.user_states[user_id]
         if user_id in self.user_conversations:
@@ -443,3 +461,4 @@ CONVERSATION FLOW:
             del self.user_context[user_id]
         if user_id in self.location_search_context:
             del self.location_search_context[user_id]
+        logger.debug(f"Cleared all data for user {user_id}")
