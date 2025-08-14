@@ -96,13 +96,6 @@ EXCLUDED_RESTAURANT_SOURCES = [
     "google.com/maps"
 ]
 
-# Restaurant keywords for analysis
-RESTAURANT_KEYWORDS = {
-    "high_value": ["restaurant", "menu", "cuisine", "chef", "dining"],
-    "medium_value": ["food", "dish", "meal", "bistro", "cafe", "bar"],
-    "low_value": ["eat", "taste", "price", "address", "rating"]
-}
-
 # ============================================================================
 # DATABASE CONFIGURATION
 # ============================================================================

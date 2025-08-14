@@ -25,7 +25,7 @@ class SmartRestaurantScraper:
     def __init__(self, config):
         self.config = config
         self.database = get_database()
-        self.max_concurrent = 1  # REDUCED: From 2 to 1 for memory savings
+        self.max_concurrent = 1  
         self.browser = None
         self.contexts = []
         self.browser_type = "webkit"  # NEW: Primary browser choice

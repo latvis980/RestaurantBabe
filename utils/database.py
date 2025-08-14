@@ -1,7 +1,7 @@
-# utils/database.py - SIMPLIFIED: Direct Supabase interface (no wrapper)
+# utils/database.py - CLEANED: Direct Supabase interface with all type errors fixed
 import logging
 from datetime import datetime, timezone
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Union
 from supabase import create_client, Client
 
 logger = logging.getLogger(__name__)
@@ -89,12 +89,6 @@ class Database:
             logger.error(f"❌ Error storing source quality: {e}")
             return False
 
-    # Also add this convenience function at the bottom of utils/database.py
-
-    def store_source_quality_data(destination: str, url: str, score: float) -> bool:
-        """Store source quality data - convenience function"""
-        return get_database().store_source_quality(destination, url, score)
-    
     # ============ RESTAURANT METHODS ============
 
     def save_restaurant(self, restaurant_data: Dict[str, Any]) -> Optional[str]:
@@ -147,9 +141,12 @@ class Database:
                 if restaurant_data.get('coordinates'):
                     coords = restaurant_data['coordinates']
                     if isinstance(coords, (list, tuple)) and len(coords) == 2:
-                        lat, lng = coords
-                        update_data['latitude'] = lat
-                        update_data['longitude'] = lng
+                        try:
+                            lat, lng = float(coords[0]), float(coords[1])
+                            update_data['latitude'] = lat
+                            update_data['longitude'] = lng
+                        except (ValueError, TypeError) as e:
+                            logger.warning(f"Invalid coordinates in restaurant data: {coords}, error: {e}")
 
                 self.supabase.table('restaurants')\
                     .update(update_data)\
@@ -178,9 +175,12 @@ class Database:
                 if restaurant_data.get('coordinates'):
                     coords = restaurant_data['coordinates']
                     if isinstance(coords, (list, tuple)) and len(coords) == 2:
-                        lat, lng = coords
-                        insert_data['latitude'] = lat
-                        insert_data['longitude'] = lng
+                        try:
+                            lat, lng = float(coords[0]), float(coords[1])
+                            insert_data['latitude'] = lat
+                            insert_data['longitude'] = lng
+                        except (ValueError, TypeError) as e:
+                            logger.warning(f"Invalid coordinates in restaurant data: {coords}, error: {e}")
 
                 result = self.supabase.table('restaurants').insert(insert_data).execute()
 
@@ -194,20 +194,6 @@ class Database:
 
         except Exception as e:
             logger.error(f"Error saving restaurant: {e}")
-            return None
-
-    def _geocode_address(self, address: str) -> Optional[Tuple[float, float]]:
-        """Geocode an address to get coordinates using the same approach as the older implementation"""
-        try:
-            if not self.geocoder:
-                return None
-
-            location = self.geocoder.geocode(address, timeout=10)
-            if location:
-                return (location.latitude, location.longitude)
-            return None
-        except Exception as e:
-            logger.error(f"Error geocoding address '{address}': {e}")
             return None
 
     def _find_existing_restaurant(self, name: str, city: str) -> Optional[Dict]:
@@ -263,9 +249,11 @@ class Database:
         try:
             lat, lng = coordinates
 
-            # First update the address
+            # Update both address and coordinates in one call
             update_data = {
                 'address': address,
+                'latitude': lat,
+                'longitude': lng,
                 'last_updated': datetime.now().isoformat()
             }
 
@@ -274,31 +262,7 @@ class Database:
                 .eq('id', restaurant_id)\
                 .execute()
 
-            # Use RPC function for coordinates (safer than raw SQL)
-            try:
-                # Try using RPC first (if the function exists in your Supabase)
-                self.supabase.rpc('update_restaurant_coordinates', {
-                    'restaurant_id': restaurant_id,
-                    'lat': lat,
-                    'lng': lng
-                }).execute()
-                logger.info(f"📍 Updated geodata for restaurant ID: {restaurant_id} with coords ({lat}, {lng}) via RPC")
-            except Exception as rpc_error:
-                # Fallback: use the latitude/longitude columns approach like your old implementation
-                logger.warning(f"RPC failed, using fallback coordinate storage: {rpc_error}")
-
-                # Update with separate lat/lng columns (like your old working implementation)
-                coord_update = {
-                    'latitude': lat,
-                    'longitude': lng
-                }
-
-                self.supabase.table('restaurants')\
-                    .update(coord_update)\
-                    .eq('id', restaurant_id)\
-                    .execute()
-
-                logger.info(f"📍 Updated geodata for restaurant ID: {restaurant_id} with coords ({lat}, {lng}) via lat/lng columns")
+            logger.info(f"📍 Updated geodata for restaurant ID: {restaurant_id} with coords ({lat}, {lng})")
 
         except Exception as e:
             logger.error(f"Error updating geodata: {e}")
@@ -319,7 +283,7 @@ class Database:
         except Exception as e:
             logger.error(f"Error getting restaurants by preference tags: {e}")
             return []
-            
+
     def get_restaurants_by_coordinates(self, center: Tuple[float, float], radius_km: float, limit: int = 20) -> List[Dict[str, Any]]:
         """
         Get restaurants within radius of coordinates using PostGIS or fallback method
@@ -359,10 +323,7 @@ class Database:
                 # Fallback: Get all restaurants with coordinates and filter manually
                 result = self.supabase.table('restaurants')\
                     .select('id, name, address, city, country, latitude, longitude, place_id, cuisine_tags, mention_count')\
-                    .not_.is_('latitude', 'null')\
-                    .not_.is_('longitude', 'null')\
-                    .neq('latitude', 0)\
-                    .neq('longitude', 0)\
+                    .or_('coordinates.not.is.null,and(latitude.not.is.null,longitude.not.is.null)')\
                     .execute()
 
                 all_restaurants = result.data or []
@@ -400,8 +361,23 @@ class Database:
         except Exception as e:
             logger.error(f"❌ Error in coordinate search: {e}")
             return []
-        
-            
+
+    # ============ DOMAIN INTELLIGENCE METHODS (SIMPLIFIED STUBS) ============
+    # These are still being called by other parts of the codebase
+
+    def save_domain_intelligence(self, domain: str, intelligence_data: Dict[str, Any]) -> bool:
+        """Save domain intelligence data - DISABLED STUB"""
+        logger.debug(f"Domain intelligence disabled: {domain}")
+        return True
+
+    def get_domain_intelligence(self, domain: str) -> Optional[Dict[str, Any]]:
+        """Get domain intelligence data - DISABLED STUB"""
+        return None
+
+    def update_domain_success(self, domain: str, success: bool, restaurants_found: int = 0):
+        """Update domain success/failure counts - DISABLED STUB"""
+        logger.debug(f"Domain intelligence disabled: {domain}, success={success}")
+
     # ============ STATISTICS AND MONITORING ============
 
     def get_database_stats(self) -> Dict[str, Any]:
@@ -409,15 +385,13 @@ class Database:
         try:
             stats = {}
 
-            # Count restaurants
-            restaurants_count = self.supabase.table('restaurants').select('id', count='exact').execute()
-            stats['total_restaurants'] = restaurants_count.count
+            # Count restaurants - Fixed count method
+            restaurants_result = self.supabase.table('restaurants').select('id').execute()
+            stats['total_restaurants'] = len(restaurants_result.data) if restaurants_result.data else 0
 
-            # Count domains
-            domains_count = self.supabase.table('domain_intelligence').select('domain', count='exact').execute()
-            stats['total_domains'] = domains_count.count
+            # Set domains to 0 since we don't have domain intelligence anymore
+            stats['total_domains'] = 0
 
-            # FIXED: Remove group_by which doesn't exist in current Supabase client
             # Get cities using a simple approach
             try:
                 cities_result = self.supabase.table('restaurants')\
@@ -426,7 +400,7 @@ class Database:
 
                 # Count cities manually
                 city_counts = {}
-                for row in cities_result.data:
+                for row in cities_result.data or []:
                     city = row.get('city', 'Unknown')
                     city_counts[city] = city_counts.get(city, 0) + 1
 
@@ -438,16 +412,19 @@ class Database:
                 logger.warning(f"Could not get city stats: {e}")
                 stats['top_cities'] = []
 
-            # Coordinate coverage
-            with_coords = self.supabase.table('restaurants')\
-                .select('id', count='exact')\
-                .not_.is_('coordinates', 'null')\
+            # Coordinate coverage - Check both coordinate columns
+            with_coords_result = self.supabase.table('restaurants')\
+                .select('id')\
+                .or_('coordinates.not.is.null,and(latitude.not.is.null,longitude.not.is.null)')\
                 .execute()
 
+            with_coords_count = len(with_coords_result.data) if with_coords_result.data else 0
+            total_count = stats['total_restaurants']
+
             stats['coordinate_coverage'] = {
-                'with_coordinates': with_coords.count,
-                'without_coordinates': restaurants_count.count - with_coords.count,
-                'coverage_percentage': round((with_coords.count / restaurants_count.count * 100), 1) if restaurants_count.count > 0 else 0
+                'with_coordinates': with_coords_count,
+                'without_coordinates': total_count - with_coords_count,
+                'coverage_percentage': round((with_coords_count / total_count * 100), 1) if total_count > 0 else 0
             }
 
             logger.info(f"📊 Database stats: {stats['total_restaurants']} restaurants, {stats['coordinate_coverage']['coverage_percentage']}% have coordinates")
@@ -475,19 +452,32 @@ class Database:
         # For now, always return None to force fresh searches
         return None
 
-    
     # ============ GEOCODING HELPER ============
 
     def geocode_address(self, address: str) -> Optional[Tuple[float, float]]:
-        """Geocode an address to get coordinates"""
+        """Geocode an address to get coordinates - SIMPLIFIED and SAFE"""
         try:
-            if not self.geocoder:
-                logger.warning("Geocoder not available")
+            if not self.geocoder or not address:
+                logger.warning("Geocoder not available or empty address")
                 return None
 
-            location = self.geocoder.geocode(address, timeout=10)
+            # Simple, safe geocoding - remove timeout parameter to avoid type issues
+            location = self.geocoder.geocode(address)
+
+            # Handle the result safely
             if location:
-                return (location.latitude, location.longitude)
+                # Extract coordinates with explicit type checking
+                lat = getattr(location, 'latitude', None)
+                lng = getattr(location, 'longitude', None)
+
+                if lat is not None and lng is not None:
+                    try:
+                        return (float(lat), float(lng))
+                    except (ValueError, TypeError):
+                        logger.warning(f"Invalid coordinate values: lat={lat}, lng={lng}")
+                        return None
+
+            logger.debug(f"No geocoding result for: {address}")
             return None
 
         except Exception as e:
@@ -545,30 +535,15 @@ def get_cached_results(query: str) -> Optional[Dict[str, Any]]:
     """Get cached search results"""
     return get_database().get_cached_results(query)
 
-# ============ LEGACY COMPATIBILITY STUBS ============
-# These prevent errors but don't do anything with the simplified schema
+# ============ CONVENIENCE FUNCTION FOR SOURCE QUALITY ============
 
-def add_to_search_history(user_id: str, query: str, results_count: int = 0):
-    """Legacy user history tracking (disabled in simplified schema)"""
-    logger.debug(f"Search history tracking disabled: {user_id} searched for {query}")
+def store_source_quality_data(destination: str, url: str, score: float) -> bool:
+    """Store source quality data - convenience function"""
+    if not destination or not url:
+        logger.warning(f"Invalid parameters for source quality: destination='{destination}', url='{url}'")
+        return False
+    return get_database().store_source_quality(destination, url, score)
 
-def save_user_preferences(user_id: str, preferences: Dict[str, Any]) -> bool:
-    """Legacy user preferences (disabled in simplified schema)"""
-    logger.debug(f"User preferences disabled: {user_id}")
-    return True
-
-def get_user_preferences(user_id: str) -> Optional[Dict[str, Any]]:
-    """Legacy user preferences (disabled in simplified schema)"""
-    return None
-
-# Deprecated RAG functions (return safe defaults)
-def save_scraped_content(source_url: str, content: str, restaurant_mentions: Optional[List[str]] = None, source_domain: str = None) -> bool:
-    """DEPRECATED: RAG disabled in simplified schema"""
-    return True
-
-def search_similar_content(query: str, limit: int = 10) -> List[Dict[str, Any]]:
-    """DEPRECATED: Vector search disabled in simplified schema"""
-    return []
 
 # ============ BACKWARDS COMPATIBILITY FOR MAIN.PY ============
 
