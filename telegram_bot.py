@@ -429,8 +429,8 @@ def request_user_location(user_id: int, chat_id: int, context: str):
 
 def perform_google_maps_followup_search(user_id: int, chat_id: int):
     """
-    NEW: Perform Google Maps follow-up search using stored location context
-    This replaces the button-based Google Maps search with natural conversation
+    Perform Google Maps follow-up search using stored location context
+    FIXED: Corrected parameter names and attribute access
     """
     processing_msg = None
     try:
@@ -470,25 +470,68 @@ def perform_google_maps_followup_search(user_id: int, chat_id: int):
 
         logger.info(f"Starting Google Maps follow-up search for user {user_id} in {location_description}")
 
-        # Import and use the existing Google Maps search function
-        from location.location_orchestrator import LocationOrchestrator
-        location_orchestrator = LocationOrchestrator(config)
-
         def is_cancelled():
             return is_search_cancelled(user_id)
 
-        # Use async context for the location orchestrator
+        # Use async context to call Google Maps agent directly
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        # Call the orchestrator's process_location_query method
-        result = loop.run_until_complete(
-            location_orchestrator.process_location_query(
-                query=original_query,
-                location_data=location_data,
-                cancel_check_fn=is_cancelled
+        # Get coordinates from location data
+        coordinates = None
+        if hasattr(location_data, 'latitude') and hasattr(location_data, 'longitude'):
+            if location_data.latitude and location_data.longitude:
+                coordinates = (location_data.latitude, location_data.longitude)
+        else:
+            # This shouldn't happen as we stored valid location data, but handle gracefully
+            logger.error("No coordinates in stored location data")
+            loop.close()
+            if processing_msg:
+                try:
+                    bot.delete_message(chat_id, processing_msg.message_id)
+                except Exception:
+                    pass
+            bot.send_message(
+                chat_id,
+                "😔 I couldn't determine the location coordinates for the search.",
+                parse_mode='HTML'
+            )
+            return
+
+        # Use Google Maps agent directly (Step 3)
+        from location.google_maps_search import GoogleMapsSearchAgent
+        google_maps_agent = GoogleMapsSearchAgent(config)
+
+        venues = loop.run_until_complete(
+            google_maps_agent.search_venues(
+                coordinates=coordinates,
+                query=original_query
             )
         )
+
+        if is_cancelled():
+            loop.close()
+            return
+
+        # Optional: Media verification (Step 4 & 5)
+        # Fixed: Check if config has the attribute properly
+        if hasattr(config, 'ENABLE_MEDIA_VERIFICATION') and getattr(config, 'ENABLE_MEDIA_VERIFICATION', False):
+            logger.info("📸 Media verification enabled for Google Maps results")
+            from location.media_verification import MediaVerificationAgent
+            media_verifier = MediaVerificationAgent(config)
+
+            verified_venues = loop.run_until_complete(
+                media_verifier.verify_venues(
+                    venues=venues,
+                    query=original_query,
+                    coordinates=coordinates
+                )
+            )
+            final_venues = verified_venues
+        else:
+            # Skip media verification - use venues directly
+            max_results = getattr(config, 'MAX_LOCATION_RESULTS', 8)
+            final_venues = venues[:max_results]
 
         loop.close()
 
@@ -502,9 +545,19 @@ def perform_google_maps_followup_search(user_id: int, chat_id: int):
         if is_cancelled():
             return
 
+        # Format results using dedicated formatter
+        from location.location_telegram_formatter import LocationTelegramFormatter
+        formatter = LocationTelegramFormatter(config)
+
+        formatted_results = formatter.format_google_maps_results(
+            venues=final_venues,
+            query=original_query,
+            location_description=location_description
+        )
+
         # Send results
-        if result.get("success"):
-            formatted_message = result.get("formatted_message", f"Found additional restaurants in {location_description}!")
+        if final_venues and formatted_results.get("message"):
+            formatted_message = formatted_results.get("message", f"Found {len(final_venues)} additional restaurants in {location_description}!")
 
             bot.send_message(
                 chat_id,
@@ -513,7 +566,7 @@ def perform_google_maps_followup_search(user_id: int, chat_id: int):
                 disable_web_page_preview=True
             )
 
-            logger.info(f"✅ Google Maps follow-up results sent for user {user_id}")
+            logger.info(f"✅ Google Maps follow-up results sent for user {user_id}: {len(final_venues)} venues")
         else:
             bot.send_message(
                 chat_id,
@@ -539,7 +592,7 @@ def perform_google_maps_followup_search(user_id: int, chat_id: int):
         # Keep location context for potential additional searches
         if conversation_handler is not None:
             conversation_handler.set_user_state(user_id, ConversationState.RESULTS_SHOWN)
-
+            
 def handle_location_input(location_text: str, user_id: int, chat_id: int):
     """Handle location input from user who was awaiting location"""
     try:
