@@ -1,7 +1,7 @@
 # config.py
 """
-Clean Configuration for Restaurant Recommendation System
-Updated for current architecture with Human Mimic Scraper + Text Cleaner Agent
+Complete Configuration for Restaurant Recommendation System
+Updated for current architecture with all required settings
 """
 
 import os
@@ -23,7 +23,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
-# Search APIs - ADD THIS LINE
+# Search APIs - FIXED: Added missing TAVILY_API_KEY
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 
 # Optional APIs
@@ -40,7 +40,7 @@ OPENAI_TEMPERATURE = 0.2
 OPENAI_MAX_RETRIES = 1
 OPENAI_TIMEOUT = 45.0
 
-# MISSING CONFIG: Add search evaluation model
+# Search evaluation model
 SEARCH_EVALUATION_MODEL = "gpt-4o-mini"  # Cost-optimized model for search evaluation
 
 # DeepSeek settings
@@ -54,22 +54,79 @@ CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
 CLAUDE_TEMPERATURE = 0.2
 CLAUDE_MAX_RETRIES = 2
 CLAUDE_TIMEOUT = 120.0
+CLAUDE_MAX_TOKENS = 8192
+
+# Model routing strategy
+MODEL_STRATEGY = {
+    # Fast components - use DeepSeek
+    'content_cleaning': 'openai',
+
+    # Quality components - use OpenAI
+    'search_evaluation': 'openai',
+    'restaurant_extraction': 'openai',
+    'editor': 'openai',
+    'conversation': 'openai',
+
+    # Complex reasoning - use Claude when needed
+    'complex_analysis': 'claude'
+}
+
+# FIXED: Added missing OPENAI_MAX_TOKENS_BY_COMPONENT
+OPENAI_MAX_TOKENS_BY_COMPONENT = {
+    'search_agent': 512,
+    'search_evaluation': 512,
+    'conversation': 1024,
+    'editor': 2048,
+    'content_evaluation': 3072,
+    'restaurant_extraction': 4096,
+    'query_analysis': 1024,
+    'follow_up_search': 1024,
+    'source_mapping': 1024,
+    'location_analysis': 512,
+    'database_search': 2048,  # FIXED: Added missing database_search
+    'dbcontent_evaluation': 3072,  # FIXED: Added missing dbcontent_evaluation
+    'text_cleaner': 2048,  # FIXED: Added missing text_cleaner
+    'smart_scraper': 4096  # FIXED: Added missing smart_scraper
+}
 
 # ============================================================================
 # SEARCH CONFIGURATION
 # ============================================================================
 
 # Brave Search settings
-BRAVE_SEARCH_COUNT = 8
+BRAVE_SEARCH_COUNT = 15
 BRAVE_SEARCH_TIMEOUT = 30.0
 
 # Excluded sources
 EXCLUDED_RESTAURANT_SOURCES = [
-    'tripadvisor.com', 'yelp.com', 'doordash.com', 'ubereats.com',
-    'grubhub.com', 'foursquare.com', 'zomato.com', 'opentable.com',
+    "tripadvisor.com", 
+    "opentable.com", 
+    "yelp.com", 
+    "google.com/maps",
+    'doordash.com', 'ubereats.com',
+    'grubhub.com', 'foursquare.com', 'zomato.com',
     'quora.com', 'reddit.com', 'facebook.com', 'instagram.com',
     'booking.com', 'expedia.com', 'airbnb.com'
 ]
+
+# ============================================================================
+# DATABASE CONFIGURATION
+# ============================================================================
+
+# Database search settings
+MIN_DATABASE_RESTAURANTS = 3
+MIN_ACCEPTABLE_RATING = 4.1
+MAX_RESTAURANTS_PER_QUERY = 25
+CACHE_EXPIRY_DAYS = 7
+
+# Geographic settings
+LOCATION_SEARCH_RADIUS_KM = 2.0
+MAX_LOCATION_RESULTS = 8
+GEOCODING_ENABLED = True
+
+# Location-specific database settings
+DB_PROXIMITY_RADIUS_KM = 2.0  # Radius for database proximity search
+MIN_DB_MATCHES_REQUIRED = 3   # Minimum matches before triggering web search
 
 # ============================================================================
 # ORCHESTRATOR CONFIGURATION
@@ -100,6 +157,10 @@ VOICE_TIMEOUT = 60.0
 
 # Voice recognition
 WHISPER_MODEL = "whisper-1"
+MAX_VOICE_FILE_SIZE = 25 * 1024 * 1024  # 25MB
+
+# Admin settings
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")
 
 # Webhook settings
 WEBHOOK_PORT = int(os.environ.get("PORT", 8000))
@@ -112,6 +173,39 @@ BUCKET_MAX_FILES_PER_POLL = 10
 
 # Webhook security
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
+
+# ============================================================================
+# CURRENT AGENTS CONFIGURATION
+# ============================================================================
+
+# Active agents in your system
+ACTIVE_AGENTS = [
+    'query_analyzer',
+    'database_search_agent', 
+    'dbcontent_evaluation_agent',
+    'search_agent',
+    'smart_scraper',
+    'text_cleaner_agent',
+    'editor_agent',
+    'follow_up_search_agent',
+    'location_analyzer',
+    'location_search_agent',
+    'media_search_agent'  # FIXED: Corrected typo from 'media_serach_agent'
+]
+
+# Components that use each model
+DEEPSEEK_COMPONENTS = ['content_sectioning', 'content_cleaning', 'strategy_analysis']
+OPENAI_COMPONENTS = ['search_evaluation', 'restaurant_extraction', 'editor', 'conversation']
+CLAUDE_COMPONENTS = ['complex_analysis']  # When needed
+
+# ============================================================================
+# FLASK CONFIGURATION
+# ============================================================================
+
+# Flask settings for webhook/polling services
+FLASK_HOST = "0.0.0.0"
+FLASK_PORT = int(os.environ.get("PORT", 8000))
+FLASK_DEBUG = False
 
 # ============================================================================
 # GOOGLE MAPS CONFIGURATION 
