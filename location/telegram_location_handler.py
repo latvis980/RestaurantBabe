@@ -10,7 +10,7 @@ Handles location-based messages from Telegram users:
 
 import logging
 import re
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -30,64 +30,34 @@ class TelegramLocationHandler:
     Handles different types of location input from Telegram users
     """
 
-    def __init__(self):
-        # Keywords that suggest location-based requests
-        self.location_keywords = [
-            "near me", "nearby", "around here", "in this area",
-            "close to", "walking distance", "in the neighborhood",
-            "in this neighborhood", "around", "local", "where I am"
-        ]
+    def __init__(self, config=None):
+        """Initialize with config for AI-powered location extraction"""
+        self.config = config
 
-        # Common location indicators
-        self.location_indicators = [
-            "street", "avenue", "road", "plaza", "square", "district",
-            "neighborhood", "area", "zone", "quarter", "block"
-        ]
+        # Initialize AI for location extraction
+        if config and hasattr(config, 'OPENAI_API_KEY'):
+            try:
+                from langchain_openai import ChatOpenAI
+                self.ai = ChatOpenAI(
+                    model=getattr(config, 'OPENAI_MODEL', 'gpt-4o-mini'),
+                    temperature=0.1,
+                    api_key=config.OPENAI_API_KEY
+                )
+                logger.info("✅ AI-powered location extraction enabled")
+            except Exception as e:
+                logger.warning(f"⚠️ AI location extraction disabled: {e}")
+                self.ai = None
+        else:
+            logger.warning("⚠️ No config provided - AI location extraction disabled")
+            self.ai = None
 
         logger.info("✅ Telegram Location Handler initialized")
 
-    def detect_location_request(self, message_text: str) -> bool:
-        """
-        Detect if a message is requesting location-based search
-
-        Args:
-            message_text: The user's message text
-
-        Returns:
-            bool: True if this appears to be a location-based request
-        """
-        text_lower = message_text.lower()
-
-        # Check for direct location keywords
-        for keyword in self.location_keywords:
-            if keyword in text_lower:
-                return True
-
-        # Check for location indicators + food/restaurant terms
-        has_location_indicator = any(indicator in text_lower for indicator in self.location_indicators)
-        has_food_terms = any(term in text_lower for term in [
-            "restaurant", "bar", "cafe", "coffee", "wine", "food", 
-            "eat", "drink", "dining", "brunch", "lunch", "dinner"
-        ])
-
-        if has_location_indicator and has_food_terms:
-            return True
-
-        # Check for patterns like "X in [location]"
-        location_patterns = [
-            r'\b(in|at|on|near)\s+[A-Z][a-z]+',  # "in Chinatown", "near Broadway"
-            r'\b(restaurant|bar|cafe)\s+(in|at|on|near)',  # "restaurant in..."
-        ]
-
-        for pattern in location_patterns:
-            if re.search(pattern, message_text):
-                return True
-
-        return False
 
     def extract_location_from_text(self, message_text: str) -> LocationData:
         """
-        Extract location information from text description
+        AI-powered location extraction from text
+        Uses AI to extract the best location keywords for Google geocoding
 
         Args:
             message_text: The user's message text
@@ -95,53 +65,82 @@ class TelegramLocationHandler:
         Returns:
             LocationData: Extracted location information
         """
-        # Extract potential address/location from text
-        location_patterns = [
-            # "in [Location]" pattern
-            r'\bin\s+([A-Z][a-zA-Z\s,]+?)(?:\s|$|[.!?])',
-            # "near [Location]" pattern  
-            r'\bnear\s+([A-Z][a-zA-Z\s,]+?)(?:\s|$|[.!?])',
-            # "at [Location]" pattern
-            r'\bat\s+([A-Z][a-zA-Z\s,]+?)(?:\s|$|[.!?])',
-            # Street address pattern
-            r'(\d+\s+[A-Z][a-zA-Z\s,]+(?:Street|St|Avenue|Ave|Road|Rd|Plaza|Square))',
-        ]
+        try:
+            # Use AI to extract location for geocoding
+            extracted_location = self._ai_extract_location(message_text)
 
-        extracted_location = None
-        confidence = 0.0
+            if extracted_location and len(extracted_location.strip()) > 2:
+                return LocationData(
+                    description=extracted_location,
+                    location_type="description",
+                    confidence=0.8
+                )
+            else:
+                return LocationData(
+                    location_type="unknown",
+                    confidence=0.0
+                )
 
-        for pattern in location_patterns:
-            matches = re.findall(pattern, message_text, re.IGNORECASE)
-            if matches:
-                # Take the longest match (likely most specific)
-                extracted_location = max(matches, key=len).strip()
-                confidence = 0.8 if len(extracted_location) > 10 else 0.6
-                break
+        except Exception as e:
+            logger.error(f"Error in AI location extraction: {e}")
+            return LocationData(
+                location_type="unknown",
+                confidence=0.0
+            )
 
-        if not extracted_location:
-            # Fallback: look for capitalized words that might be locations
-            words = message_text.split()
-            potential_locations = []
+    def _ai_extract_location(self, message_text: str) -> str:
+        """
+        Use AI to extract the best location keywords for Google geocoding
+        """
+        try:
+            if not self.ai:
+                logger.warning("AI not available for location extraction")
+                return ""
 
-            for i, word in enumerate(words):
-                if (word[0].isupper() and len(word) > 2 and 
-                    word.lower() not in ['I', 'The', 'A', 'An', 'This', 'That']):
-                    # Check if next word is also capitalized (compound location)
-                    if i + 1 < len(words) and words[i + 1][0].isupper():
-                        potential_locations.append(f"{word} {words[i + 1]}")
-                    else:
-                        potential_locations.append(word)
+            from langchain_core.prompts import ChatPromptTemplate
 
-            if potential_locations:
-                # Take the longest potential location
-                extracted_location = max(potential_locations, key=len)
-                confidence = 0.4
+            # Create prompt for location extraction
+            extraction_prompt = ChatPromptTemplate.from_messages([
+                ("system", """You are a location extraction specialist. Extract the most specific location from restaurant queries for Google Maps geocoding.
 
-        return LocationData(
-            description=extracted_location,
-            location_type="description" if extracted_location else "unknown",
-            confidence=confidence
-        )
+    RULES:
+    1. Extract the most specific location mentioned (neighborhood > street > landmark > city)
+    2. Return ONLY the location keywords that will work best with Google Maps
+    3. Include city context if helpful for disambiguation
+    4. Remove food/restaurant words - only return location
+    5. If multiple locations, choose the most specific one
+
+    EXAMPLES:
+    "restaurants in Alcantara" → "Alcantara, Lisbon"
+    "wine bars in SoHo" → "SoHo, New York"
+    "sushi on Rua Augusta" → "Rua Augusta, Lisbon"
+    "coffee near Times Square" → "Times Square, New York"
+    "bars in Chinatown" → "Chinatown"
+    "places in downtown" → "downtown"
+    "food in the Mission district" → "Mission district, San Francisco"
+    "restaurants in Belem" → "Belem"
+
+    Return only the location string, nothing else."""),
+                ("human", "Extract location from: {{user_message}}")
+            ])
+
+            # Create chain and get result
+            chain = extraction_prompt | self.ai
+            response = chain.invoke({{"user_message": message_text}})
+
+            # Extract the location from AI response
+            extracted = response.content.strip()
+
+            # Clean up any extra formatting
+            extracted = extracted.strip('"\'`')
+
+            logger.debug(f"AI extracted location: '{extracted}' from '{message_text}'")
+
+            return extracted
+
+        except Exception as e:
+            logger.error(f"Error in AI location extraction: {e}")
+            return ""
 
     def process_gps_location(self, latitude: float, longitude: float) -> LocationData:
         """
@@ -160,40 +159,6 @@ class TelegramLocationHandler:
             location_type="gps",
             confidence=1.0
         )
-
-    def create_location_request_message(self, query_type: str = "general") -> str:
-        """
-        Create a message asking user for their location
-
-        Args:
-            query_type: Type of search (for customized messaging)
-
-        Returns:
-            str: Formatted message requesting location
-        """
-        if query_type == "wine":
-            emoji = "🍷"
-            context = "wine bars and natural wine spots"
-        elif query_type == "coffee":
-            emoji = "☕"
-            context = "coffee shops and cafes"
-        elif query_type == "fine_dining":
-            emoji = "🍽️"
-            context = "fine dining restaurants"
-        else:
-            emoji = "📍"
-            context = "restaurants and bars"
-
-        message = (
-            f"{emoji} <b>Perfect! I'd love to help you find great {context} near you.</b>\n\n"
-            "To give you the best recommendations, I need to know where you are:\n\n"
-            "📌 <b>Option 1:</b> Send your location pin (tap the 📎 attachment button → Location)\n"
-            "🗺️ <b>Option 2:</b> Tell me your neighborhood, street, or nearby landmark\n\n"
-            "<i>Examples: \"I'm in Chinatown\", \"Near Times Square\", \"On Rua da Rosa in Lisbon\"</i>\n\n"
-            "💡 <b>Don't worry:</b> I only use your location to find nearby places. I don't store it."
-        )
-
-        return message
 
     def validate_gps_coordinates(self, latitude: float, longitude: float) -> bool:
         """

@@ -6,8 +6,8 @@ import threading
 import json
 import asyncio
 from threading import Event
-from typing import Dict, List, Any, Optional, Tuple
 from utils.voice_handler import VoiceMessageHandler
+from typing import Dict, List, Any, Optional
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -44,7 +44,7 @@ user_conversations = {}
 # Track active searches and their cancellation events
 active_searches = {}  # user_id -> {"thread": thread_object, "cancel_event": Event, "chat_id": chat_id}
 
-location_handler = TelegramLocationHandler()
+location_handler = TelegramLocationHandler(config)
 location_analyzer = None  # Will be initialized in main()
 
 # Track users waiting for location input - UPDATED to include button tracking
@@ -490,78 +490,18 @@ def perform_restaurant_search(search_query, chat_id, user_id):
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
-    """Handle all text messages with location-aware conversation management"""
+    """Simplified message handler"""
     try:
         user_id = message.from_user.id
-        user_message = message.text.strip()
+        user_message = message.text
 
-        logger.info(f"Received message from user {user_id}: {user_message}")
-
-        # Check if user has an active search
-        if user_id in active_searches:
-            bot.reply_to(
-                message,
-                "⏳ Oh, darling! I'm on the phone with my friend, we are discussing the list of restaurants for you. I'll be with you in a minute, or just type /cancel to stop the search.",
-                parse_mode='HTML'
-            )
-            return
-
-        # NEW: Check if user typed a location while waiting for location
-        if user_id in users_awaiting_location:
-            # User typed their location instead of using the button
-            awaiting_data = users_awaiting_location[user_id]
-            original_query = awaiting_data["query"]
-
-            # Remove from waiting list and button
-            del users_awaiting_location[user_id]
-
-            # Process text-based location
-            location_data = location_handler.extract_location_from_text(user_message)
-
-            if location_data.confidence > 0.3:  # Reasonable confidence in location extraction
-                # Confirm location and start search
-                bot.reply_to(
-                    message,
-                    f"📍 <b>Perfect! I understand you're looking in: {location_data.description}</b>\n\n"
-                    f"🔍 Now searching for: <i>{original_query}</i>\n\n"
-                    "⏱ This might take a minute while I find the best places...",
-                    parse_mode='HTML',
-                    reply_markup=remove_location_button()
-                )
-
-                # Combine original query with location
-                full_query = f"{original_query} in {location_data.description}"
-
-                # Start location search
-                threading.Thread(
-                    target=perform_location_search,
-                    args=(full_query, location_data, message.chat.id, user_id),
-                    daemon=True
-                ).start()
-                return
-            else:
-                # Couldn't understand location, ask again
-                bot.reply_to(
-                    message,
-                    "🤔 I'm having trouble understanding that location. Could you be more specific?\n\n"
-                    "Examples: \"Downtown\", \"Near Central Park\", \"Chinatown\", \"Rua da Rosa\"\n\n"
-                    "Or use the button below to send your exact coordinates:",
-                    parse_mode='HTML',
-                    reply_markup=create_location_button()
-                )
-                return
-
-        # Add user message to conversation history
+        # Add user message to conversation
         add_to_conversation(user_id, user_message, is_user=True)
 
         # Send typing indicator
         bot.send_chat_action(message.chat.id, 'typing')
 
-        # STEP 1: Check if user has shared location in recent conversation
-        recent_location = get_recent_location_from_conversation(user_id)
-
-        # STEP 2: Analyze message for location intent
-        # ADD NULL CHECK for location_analyzer
+        # Analyze message with location analyzer
         if location_analyzer is None:
             logger.warning("Location analyzer not initialized, using general search")
             handle_general_search(message, {})
@@ -570,30 +510,25 @@ def handle_message(message):
         location_analysis = location_analyzer.analyze_message(user_message)
         search_type = location_analyzer.determine_search_type(location_analysis)
 
-        logger.debug(f"Location analysis for user {user_id}: {search_type}")
-
-        # STEP 3: Route based on analysis
+        # Route based on analysis type
         if search_type == "location_search":
-            # User has specific location in message - proceed with location search
+            # Location-based search - let AI handle conversation
             handle_location_search_request(message, location_analysis)
-
         elif search_type == "request_location":
-            # User wants location search but needs to specify location
+            # Need location - ask for it
             handle_location_request(message, location_analysis)
-
         elif search_type == "general_search":
-            # Use existing general search pipeline
+            # City-wide search - use existing pipeline
             handle_general_search(message, location_analysis)
-
         else:
-            # Need clarification or off-topic
+            # Clarification needed
             handle_clarification_needed(message, location_analysis)
 
     except Exception as e:
         logger.error(f"Error handling message: {e}")
         bot.reply_to(
             message, 
-            "I'm having trouble understanding right now. Could you try asking again about restaurants in a specific city?",
+            "I'm having trouble understanding. Could you tell me what restaurants you're looking for and where?",
             parse_mode='HTML',
             reply_markup=remove_location_button()
         )
@@ -681,27 +616,199 @@ def get_recent_location_from_conversation(user_id):
     return None
 
 def handle_location_search_request(message, location_analysis):
-    """Handle requests with specific location mentioned"""
+    """Simple AI-powered location conversation until clarity is reached"""
     user_id = message.from_user.id
-    location_detected = location_analysis.get("location_detected")
-    cuisine_preference = location_analysis.get("cuisine_preference", "restaurants")
 
-    # Confirm and start search
-    response_text = f"🔍 <b>Perfect! Searching for {cuisine_preference} in {location_detected}.</b>\n\n"
-    response_text += "⏱ This might take a minute while I find the best places and verify them with reputable sources..."
+    # Get conversation history for context
+    conversation_context = get_conversation_context(user_id)
 
-    bot.reply_to(message, response_text, parse_mode='HTML', reply_markup=remove_location_button())
-    add_to_conversation(user_id, response_text, is_user=False)
+    # Let AI handle the entire location conversation
+    ai_response = handle_location_conversation(message.text, conversation_context, user_id)
 
-    # Create location data from text
-    location_data = location_handler.extract_location_from_text(message.text)
+    # Send AI's response to user
+    bot_message = ai_response.get("bot_response", "Let me help you find restaurants!")
+    bot.reply_to(message, bot_message, parse_mode='HTML', reply_markup=remove_location_button())
+    add_to_conversation(user_id, bot_message, is_user=False)
 
-    # Start location search
-    threading.Thread(
-        target=perform_location_search,
-        args=(message.text, location_data, message.chat.id, user_id),
-        daemon=True
-    ).start()
+    # Check if AI has confirmed location and wants to search
+    if ai_response.get("action") == "SEARCH_CONFIRMED":
+        coordinates = ai_response.get("coordinates")
+        location_description = ai_response.get("location_description")
+
+        if coordinates and len(coordinates) == 2:
+            # Create confirmed location data
+            location_data = LocationData(
+                latitude=coordinates[0],
+                longitude=coordinates[1],
+                description=location_description,
+                location_type="gps",
+                confidence=1.0
+            )
+
+            # Start the search
+            threading.Thread(
+                target=perform_location_search,
+                args=(message.text, location_data, message.chat.id, user_id),
+                daemon=True
+            ).start()
+
+def handle_location_conversation(current_message: str, conversation_context: str, user_id: int) -> Dict[str, Any]:
+    """
+    Single AI conversation handler for all location resolution
+    """
+    try:
+        from langchain_core.prompts import ChatPromptTemplate
+
+        # Single AI prompt that handles everything
+        location_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a location conversation specialist. Your goal is to get a clear, unambiguous location for restaurant searches through natural conversation.
+
+PROCESS:
+1. Understand what location the user wants from their message and conversation history
+2. If location is clear and unambiguous → provide coordinates and search
+3. If location is ambiguous (multiple places) → ask natural follow-up questions
+4. If location is unclear → ask for clarification
+
+Use Google Maps geocoding to check locations. Only proceed to search when you're confident about the specific place.
+
+ACTIONS:
+- SEARCH_CONFIRMED: Location is clear, here are coordinates 
+- CONTINUE_CONVERSATION: Need more clarity, ask follow-up
+
+OUTPUT (JSON only):
+{{
+    "action": "SEARCH_CONFIRMED" | "CONTINUE_CONVERSATION",
+    "bot_response": "natural message to user",
+    "location_description": "confirmed location" or null,
+    "coordinates": [lat, lng] or null,
+    "reasoning": "why this action"
+}}
+
+EXAMPLES:
+
+"restaurants in Belem"
+→ Check geocoding → Multiple results found
+→ {{
+    "action": "CONTINUE_CONVERSATION",
+    "bot_response": "I found a couple of places called Belem! Are you thinking of the one in Brazil or the neighborhood in Lisbon, Portugal?",
+    "reasoning": "Multiple countries found, need clarification"
+}}
+
+User follows up: "the one in Portugal"
+→ {{
+    "action": "SEARCH_CONFIRMED", 
+    "bot_response": "Perfect! Searching for restaurants in Belem, Lisbon 🔍",
+    "location_description": "Belem, Lisbon, Portugal",
+    "coordinates": [38.6979, -9.2071],
+    "reasoning": "Location clarified to Portugal"
+}}
+
+"wine bars in SoHo"
+→ Check geocoding → Only NYC found
+→ {{
+    "action": "SEARCH_CONFIRMED",
+    "bot_response": "Great! Looking for wine bars in SoHo, New York 🍷",
+    "location_description": "SoHo, New York",
+    "coordinates": [40.7230, -74.0030],
+    "reasoning": "Clear single location"
+}}"""),
+            ("human", "Current message: {{current_message}}\n\nConversation context:\n{{conversation_context}}")
+        ])
+
+        # Get AI response
+        chain = location_prompt | conversation_ai
+        response = chain.invoke({
+            "current_message": current_message,
+            "conversation_context": conversation_context
+        })
+
+        # Parse AI response
+        import json
+        try:
+            ai_decision = json.loads(response.content.strip())
+
+            # If AI wants to search, validate with real geocoding
+            if ai_decision.get("action") == "SEARCH_CONFIRMED":
+                ai_decision = validate_location_with_geocoding(ai_decision)
+
+            return ai_decision
+
+        except json.JSONDecodeError:
+            return {
+                "action": "CONTINUE_CONVERSATION",
+                "bot_response": "I'm having trouble understanding that location. Could you tell me which city or neighborhood you're interested in?",
+                "reasoning": "JSON parsing failed"
+            }
+
+    except Exception as e:
+        logger.error(f"Error in location conversation: {e}")
+        return {
+            "action": "CONTINUE_CONVERSATION",
+            "bot_response": "Let me help you find restaurants! Which area are you looking in?",
+            "reasoning": f"Error: {str(e)}"
+        }
+
+def validate_location_with_geocoding(ai_decision: Dict) -> Dict[str, Any]:
+    """
+    Quick validation that the AI's location actually geocodes
+    """
+    try:
+        location_desc = ai_decision.get("location_description", "")
+        if not location_desc:
+            return {
+                "action": "CONTINUE_CONVERSATION",
+                "bot_response": "Could you be more specific about the location?",
+                "reasoning": "No location description provided"
+            }
+
+        # Try geocoding
+        api_key = (getattr(config, 'GOOGLE_MAPS_KEY2', None) or 
+                   getattr(config, 'GOOGLE_MAPS_API_KEY', None))
+
+        if api_key:
+            import googlemaps
+            gmaps = googlemaps.Client(key=api_key)
+            results = gmaps.geocode(location_desc)
+
+            if results:
+                # Update coordinates with real ones
+                location = results[0]['geometry']['location']
+                ai_decision["coordinates"] = [location['lat'], location['lng']]
+            else:
+                # Couldn't geocode, ask for clarification
+                return {
+                    "action": "CONTINUE_CONVERSATION",
+                    "bot_response": f"I'm having trouble finding '{location_desc}'. Could you be more specific or try a different way to describe the location?",
+                    "reasoning": "Geocoding failed"
+                }
+
+        return ai_decision
+
+    except Exception as e:
+        logger.error(f"Error validating location: {e}")
+        return {
+            "action": "CONTINUE_CONVERSATION", 
+            "bot_response": "Could you clarify which area you're looking for restaurants in?",
+            "reasoning": "Validation error"
+        }
+
+def get_conversation_context(user_id: int) -> str:
+    """Get recent conversation for context"""
+    try:
+        if user_id not in user_conversations:
+            return "No previous conversation."
+
+        # Get last 5 messages for context
+        recent_messages = user_conversations[user_id][-5:]
+        context_lines = []
+
+        for msg in recent_messages:
+            role = "User" if msg["role"] == "user" else "Bot"
+            context_lines.append(f"{role}: {msg['message']}")
+
+        return "\n".join(context_lines)
+    except Exception:
+        return "No conversation context available."
 
 def handle_location_request(message, location_analysis):
     """Handle requests that need location specification - NOW WITH BUTTON"""
