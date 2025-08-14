@@ -26,9 +26,10 @@ class SmartRestaurantScraper:
         self.config = config
         self.database = get_database()
         self.max_concurrent = 1  
-        self.browser = None
-        self.contexts = []
+        self.browser: Optional[Browser] = None
+        self.contexts: List[BrowserContext] = []
         self.browser_type = "webkit"  # NEW: Primary browser choice
+        self.playwright = None
 
         # Progressive timeout strategy
         self.default_timeout = 30000  # 30 seconds default
@@ -89,35 +90,135 @@ class SmartRestaurantScraper:
         # Create optimized contexts
         await self._create_optimized_contexts()
 
+    async def _configure_page_with_adblock(self, page: Page):
+        """
+        ENHANCED: Ultra-aggressive resource blocking for text-only scraping
+        Blocks everything except HTML and essential JavaScript while preserving text structure
+        """
+        # 1. COMPREHENSIVE MEDIA BLOCKING - Block ALL visual/audio content
+        await page.route("**/*.{png,jpg,jpeg,gif,svg,webp,ico,bmp,tiff,avif,heic,heif}", lambda route: route.abort())
+        await page.route("**/*.{woff,woff2,ttf,otf,eot}", lambda route: route.abort())  # Fonts
+        await page.route("**/*.{css}", lambda route: route.abort())  # Stylesheets
+        await page.route("**/*.{mp4,avi,mov,wmv,flv,webm,m4v,mp3,wav,aac,ogg,flac}", lambda route: route.abort())  # Media
+        await page.route("**/*.{pdf,doc,docx,xls,xlsx,ppt,pptx}", lambda route: route.abort())  # Documents
+
+        # 2. ENHANCED AD/TRACKING DOMAIN BLOCKING
+        blocked_domains = [
+            # Major ad networks
+            'doubleclick.net', 'googleadservices.com', 'googlesyndication.com',
+            'adsystem.amazon.com', 'amazon-adsystem.com', 'facebook.com/tr',
+            'googletagmanager.com', 'google-analytics.com', 'googleanalytics.com',
+            # Analytics & tracking
+            'hotjar.com', 'crazyegg.com', 'mouseflow.com', 'fullstory.com',
+            'mixpanel.com', 'segment.com', 'amplitude.com', 'chartbeat.com',
+            'quantserve.com', 'scorecardresearch.com', 'omtrdc.net',
+            # Social media widgets  
+            'twitter.com/widgets', 'instagram.com/embed', 'youtube.com/embed',
+            'facebook.com/plugins', 'linkedin.com/embed',
+            # CDNs serving primarily media/ads
+            'imgur.com', 'giphy.com', 'tenor.com', 'cloudinary.com', 'imagekit.io',
+            # Comment systems
+            'disqus.com', 'disquscdn.com', 'livefyre.com'
+        ]
+
+        await page.route("**/*", lambda route: (
+            route.abort() if any(domain in route.request.url for domain in blocked_domains)
+            else route.continue_()
+        ))
+
+        # 3. RESOURCE TYPE BLOCKING - Block by request type  
+        await page.route("**/*", lambda route: (
+            route.abort() if route.request.resource_type in [
+                'image', 'media', 'font', 'stylesheet', 'manifest', 'other'
+            ] else route.continue_()
+        ))
+
+        # 4. TEXT-ONLY HEADERS
+        await page.set_extra_http_headers({
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate',
+            'Cache-Control': 'no-cache',
+            'DNT': '1'  # Do Not Track
+        })
+
+        # 5. DISABLE IMAGES AT BROWSER LEVEL
+        await page.add_init_script("""
+            // Disable image loading completely
+            Object.defineProperty(HTMLImageElement.prototype, 'src', {
+                set: function() { /* do nothing */ },
+                get: function() { return ''; }
+            });
+
+            // Disable background images
+            const originalSetProperty = CSSStyleDeclaration.prototype.setProperty;
+            CSSStyleDeclaration.prototype.setProperty = function(property, value, priority) {
+                if (property === 'background-image' || property === 'background') {
+                    return;
+                }
+                return originalSetProperty.call(this, property, value, priority);
+            };
+
+            // Speed up animations for faster text loading
+            document.addEventListener('DOMContentLoaded', function() {
+                const style = document.createElement('style');
+                style.textContent = `
+                    *, *::before, *::after {
+                        animation-duration: 0.01ms !important;
+                        animation-delay: -0.01ms !important;
+                        transition-duration: 0.01ms !important;
+                        transition-delay: -0.01ms !important;
+                    }
+                `;
+                document.head.appendChild(style);
+            });
+        """)
+
     async def _launch_webkit(self):
-        """Launch WebKit browser (lightest memory footprint)"""
+        """Enhanced WebKit launch with text-only optimizations"""
         self.browser = await self.playwright.webkit.launch(
             headless=True,
-            # WebKit has fewer args than Chromium
             args=[
-                '--disable-web-security',  # May help with some sites
-                '--disable-features=VizDisplayCompositor',  # Memory saver
+                '--disable-web-security',
+                '--disable-features=VizDisplayCompositor',
+                '--disable-images',           # NEW: Disable image loading
+                '--disable-plugins',          # NEW: No plugins needed
+                '--memory-pressure-off',      # NEW: Reduce memory overhead
+                '--disable-background-sync',  # NEW: No background syncing
             ]
         )
         self.browser_type = "webkit"
 
     async def _launch_firefox(self):
-        """Launch Firefox browser (medium memory footprint)"""
+        """Enhanced Firefox launch optimized for text extraction"""
         self.browser = await self.playwright.firefox.launch(
             headless=True,
-            # Firefox-specific memory optimizations
+            firefox_user_prefs={
+                # DISABLE IMAGES AND MEDIA
+                'permissions.default.image': 2,          # Block images
+                'media.autoplay.enabled': False,         # No autoplay
+                # PERFORMANCE OPTIMIZATIONS  
+                'browser.cache.disk.enable': False,      # No disk cache
+                'browser.cache.memory.enable': True,     # Memory cache only
+                'network.dns.disableIPv6': True,         # IPv4 only (faster)
+                # PRIVACY (faster loading)
+                'privacy.trackingprotection.enabled': True,   # Block trackers
+                'dom.webnotifications.enabled': False,        # No notifications
+                'geo.enabled': False,                          # No geolocation
+            },
             args=[
                 '--memory-pressure-off',
-                '--no-remote',
+                '--no-remote'
             ]
         )
         self.browser_type = "firefox"
 
     async def _launch_chromium_minimal(self):
-        """Launch minimal Chromium as last resort"""
+        """Enhanced Chromium with aggressive text-only optimizations"""
         self.browser = await self.playwright.chromium.launch(
             headless=True,
             args=[
+                # EXISTING ARGS
                 '--no-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
@@ -127,67 +228,50 @@ class SmartRestaurantScraper:
                 '--disable-extensions',
                 '--disable-plugins',
                 '--memory-pressure-off',
-                '--max_old_space_size=512',  # REDUCED: From 4096 to 512MB
-                '--single-process',  # KEY: Single process mode for memory savings
+                '--max_old_space_size=256',  # REDUCED: From 512 to 256MB
+                '--single-process',
                 '--disable-features=VizDisplayCompositor',
+
+                # NEW TEXT-ONLY OPTIMIZATIONS
+                '--blink-settings=imagesEnabled=false',      # Disable images at Blink level
+                '--disable-images',                          # Additional image blocking
+                '--disable-background-timer-throttling',
+                '--disable-renderer-backgrounding',
+                '--disable-features=TranslateUI,BlinkGenPropertyTrees',
+                '--disable-audio-output',                    # No audio needed
+                '--mute-audio',                             # Mute everything
+                '--disable-ipc-flooding-protection',        # Faster IPC
+                '--disable-domain-reliability',
             ]
         )
         self.browser_type = "chromium_minimal"
 
     async def _create_optimized_contexts(self):
-        """Create memory-optimized browser contexts"""
+        """Enhanced context creation with text-only optimizations"""
+        if not self.browser:
+            raise RuntimeError("Browser not initialized")
+
         for i in range(self.max_concurrent):
             context = await self.browser.new_context(
-                viewport={'width': 1366, 'height': 768},  # REDUCED: Smaller viewport
-                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                viewport={'width': 1024, 'height': 600},  # REDUCED: Smaller viewport for less rendering
+                user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 TextExtractor/1.0',
                 extra_http_headers={
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'Cache-Control': 'no-cache',
+                    'DNT': '1',  # Do Not Track
                 },
-                # Block unnecessary permissions that can slow things down
                 permissions=[],
                 geolocation=None,
                 ignore_https_errors=True,
-                # NEW: Additional memory optimizations
                 java_script_enabled=True,  # Keep JS for dynamic content
-                bypass_csp=True,  # May help with some sites
+                bypass_csp=True,
             )
 
             self.contexts.append(context)
 
-        logger.info(f"✅ {len(self.contexts)} browser contexts ready with {self.browser_type}")
-
-    async def _configure_page_with_adblock(self, page: Page):
-        """Configure page with lightweight ad blocking for memory savings"""
-        # 1. Block images and media (major memory savings)
-        await page.route("**/*.{png,jpg,jpeg,gif,svg,webp,ico,css,woff,woff2}", lambda route: route.abort())
-
-        # 2. Block ad/tracking domains (lightweight but effective)
-        ad_domains = [
-            'doubleclick.net',
-            'googleadservices.com', 
-            'googlesyndication.com',
-            'facebook.com/tr',
-            'analytics.google.com',
-            'googletagmanager.com',
-            'google-analytics.com',
-            'hotjar.com',
-            'crazyegg.com',
-            'mouseflow.com',
-            'fullstory.com',
-            'mixpanel.com',
-            'segment.com',
-            'amplitude.com'
-        ]
-
-        await page.route("**/*", lambda route: (
-            route.abort() if any(ad_domain in route.request.url for ad_domain in ad_domains)
-            else route.continue_()
-        ))
-
-        # 3. Set faster user agent (optional)
-        await page.set_extra_http_headers({
-            'Accept-Language': 'en-US,en;q=0.9',
-        })
+        logger.info(f"✅ {len(self.contexts)} text-optimized contexts ready ({self.browser_type})")
 
     async def stop(self):
         """Clean up all browser resources"""
@@ -227,7 +311,7 @@ class SmartRestaurantScraper:
         initial_timeout = self.default_timeout
 
         start_time = time.time()
-        page = None
+        page: Optional[Page] = None
         final_timeout = initial_timeout
 
         try:
