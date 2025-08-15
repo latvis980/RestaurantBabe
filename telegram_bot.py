@@ -257,7 +257,7 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
         orchestrator = get_orchestrator()
 
         # FIXED: Use the orchestrator.search() method (not .chain.invoke())
-        result = orchestrator.run(search_query)
+        result = orchestrator.process_query(search_query)
 
         # Clean up processing message
         try:
