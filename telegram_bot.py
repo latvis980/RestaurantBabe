@@ -638,18 +638,15 @@ def perform_google_maps_followup_search(user_id: int, chat_id: int):
             conversation_handler.set_user_state(
                 user_id, ConversationState.RESULTS_SHOWN)
 
-async def handle_google_maps_with_verification(update, context, orchestrator_result, original_query, location_description):
+async def handle_google_maps_with_verification(chat_id: int, user_id: int, orchestrator_result: Dict[str, Any], original_query: str, location_description: str):
     """
     Handle Google Maps results that require media verification
     Two-step process: intermediate message + verification + final results
-    FIXED: Use location_orchestrator instead of undefined orchestrator
+    FIXED: Correct parameters and function calls for current architecture
     """
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-
     try:
-        # Step 1: Send intermediate message (UPDATED - don't mention Google Maps)
-        intermediate_message = orchestrator_result.get("location_formatted_results", 
+        # Step 1: Send intermediate message (don't mention Google Maps)
+        intermediate_message = orchestrator_result.get("formatted_message", 
             "Found some restaurants in the vicinity, let me check what local media and international guides have to say about them.")
 
         processing_msg = bot.send_message(
@@ -663,9 +660,13 @@ async def handle_google_maps_with_verification(update, context, orchestrator_res
         coordinates = orchestrator_result.get("coordinates")
         query = orchestrator_result.get("query", original_query)
 
-        # FIXED: Create location orchestrator instance
+        # Create location orchestrator instance
         from location.location_orchestrator import LocationOrchestrator
         location_orchestrator = LocationOrchestrator(config)
+
+        # Define cancel check function
+        def cancel_check():
+            return is_search_cancelled(user_id)
 
         # Run media verification using location_orchestrator
         final_result = await location_orchestrator.complete_media_verification(
@@ -673,7 +674,7 @@ async def handle_google_maps_with_verification(update, context, orchestrator_res
             query=query,
             coordinates=coordinates,
             location_desc=location_description,
-            cancel_check_fn=lambda: is_cancelled()
+            cancel_check_fn=cancel_check
         )
 
         # Clean up processing message
@@ -683,7 +684,7 @@ async def handle_google_maps_with_verification(update, context, orchestrator_res
             except Exception:
                 pass
 
-        if is_cancelled():
+        if is_search_cancelled(user_id):
             return
 
         # Step 3: Send final verified results
@@ -712,155 +713,6 @@ async def handle_google_maps_with_verification(update, context, orchestrator_res
         bot.send_message(
             chat_id,
             "😔 Had trouble verifying restaurants. Please try again.",
-            parse_mode='HTML'
-        )
-
-try:
-    # Step 1: Send intermediate message (UPDATED - don't mention Google Maps)
-    intermediate_message = orchestrator_result.get("location_formatted_results", 
-        "Found some restaurants in the vicinity, let me check what local media and international guides have to say about them.")
-
-    processing_msg = bot.send_message(
-        chat_id,
-        intermediate_message,
-        parse_mode='HTML'
-    )
-
-    # Step 2: Complete media verification
-    venues = orchestrator_result.get("venues_for_verification", [])
-    coordinates = orchestrator_result.get("coordinates")
-    query = orchestrator_result.get("query", original_query)
-
-    # FIXED: Create location orchestrator instance
-    from location.location_orchestrator import LocationOrchestrator
-    location_orchestrator = LocationOrchestrator(config)
-
-    # Run media verification using location_orchestrator
-    final_result = await location_orchestrator.complete_media_verification(
-        venues=venues,
-        query=query,
-        coordinates=coordinates,
-        location_desc=location_description,
-        cancel_check_fn=lambda: is_cancelled()
-    )
-
-    # Clean up processing message
-    if processing_msg:
-        try:
-            bot.delete_message(chat_id, processing_msg.message_id)
-        except Exception:
-            pass
-
-    if is_cancelled():
-        return
-
-    # Step 3: Send final verified results
-    if final_result.get("success") and final_result.get("results"):
-        formatted_message = final_result.get("location_formatted_results", 
-            f"Found {len(final_result.get('results', []))} verified restaurants!")
-
-        bot.send_message(
-            chat_id,
-            formatted_message,
-            parse_mode='HTML',
-            disable_web_page_preview=True
-        )
-
-        logger.info(f"✅ Google Maps with verification completed for user {user_id}: {len(final_result.get('results', []))} venues")
-    else:
-        error_message = final_result.get("location_formatted_results", "😔 No suitable restaurants found after verification.")
-        bot.send_message(
-            chat_id,
-            error_message,
-            parse_mode='HTML'
-        )
-
-except Exception as e:
-    logger.error(f"❌ Error in Google Maps verification flow: {e}")
-    bot.send_message(
-        chat_id,
-        "😔 Had trouble verifying restaurants. Please try again.",
-        parse_mode='HTML'
-    )
-
-# Update the existing handle_location_search function
-def handle_location_search(update, context):
-    """
-    UPDATED: Handle location-based searches with new Google Maps flow
-    """
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-
-    try:
-        # ... existing location parsing code ...
-
-        # Process through location orchestrator
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        orchestrator_result = loop.run_until_complete(
-            orchestrator.process_location_query(
-                query=original_query,
-                location_data=location_data,
-                cancel_check_fn=lambda: is_cancelled()
-            )
-        )
-
-        if is_cancelled():
-            loop.close()
-            return
-
-        # Handle different result types
-        source = orchestrator_result.get("source", "")
-
-        if source == "database_with_choice":
-            # Database results with user choice - existing flow
-            formatted_message = orchestrator_result.get("location_formatted_results", "Found restaurants from my notes!")
-
-            bot.send_message(
-                chat_id,
-                formatted_message,
-                parse_mode='HTML',
-                disable_web_page_preview=True
-            )
-
-        elif source == "google_maps_with_verification":
-            # NEW: Google Maps results requiring verification
-            # Handle two-step verification process
-            loop.run_until_complete(
-                handle_google_maps_with_verification(
-                    update, context, orchestrator_result, 
-                    original_query, location_description
-                )
-            )
-
-        elif source == "google_maps_verified":
-            # Already verified results - send directly
-            formatted_message = orchestrator_result.get("location_formatted_results", "Found verified restaurants!")
-
-            bot.send_message(
-                chat_id,
-                formatted_message,
-                parse_mode='HTML',
-                disable_web_page_preview=True
-            )
-
-        else:
-            # Error or other cases
-            error_message = orchestrator_result.get("formatted_message", "😔 No restaurants found in this area.")
-            bot.send_message(
-                chat_id,
-                error_message,
-                parse_mode='HTML'
-            )
-
-        loop.close()
-
-    except Exception as e:
-        logger.error(f"❌ Error in location search: {e}")
-        bot.send_message(
-            chat_id,
-            "😔 Something went wrong with the location search. Please try again.",
             parse_mode='HTML'
         )
 
