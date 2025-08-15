@@ -58,106 +58,43 @@ class LocationOrchestrator:
         cancel_check_fn=None
     ) -> Dict[str, Any]:
         """
-        Process location query with CORRECT business logic:
+        Process location query with ambiguity detection
 
-        1. User enters location (text or pin) - already handled
-        2. Database search
-        3. Database results analysis:
-           a. if more than 0 results - send to user + offer choice
-           b. if 0 results - start google maps search directly
-        4. Return formatted results
+        UPDATED: Check for ambiguous locations before proceeding with geocoding
         """
         start_time = time.time()
 
         try:
-            # Get coordinates from location data
+            # NEW: Check if this is an ambiguous location before geocoding
+            if hasattr(location_data, 'description') and location_data.description:
+                # Use LocationAnalyzer to check for ambiguity
+                from location.location_analyzer import LocationAnalyzer
+                analyzer = LocationAnalyzer(self.config)
+
+                # Analyze the query with location for ambiguity
+                analysis = analyzer.analyze_message(f"{query} {location_data.description}")
+
+                # Check if location is ambiguous
+                if analysis.get("is_ambiguous", False):
+                    logger.info(f"🤔 Ambiguous location detected: {location_data.description}")
+
+                    return {
+                        "success": False,
+                        "is_ambiguous": True,
+                        "analysis_result": analysis,  # Pass full analysis to conversation handler
+                        "needs_clarification": True
+                    }
+
+            # Continue with existing logic if not ambiguous...
             coordinates = self._get_coordinates(location_data, cancel_check_fn)
             if not coordinates:
                 return self._create_error_response("Could not determine location coordinates")
 
-            location_desc = location_data.description or f"{coordinates[0]:.4f}, {coordinates[1]:.4f}"
-
-            logger.info(f"🎯 Processing location query: '{query}' at {location_desc}")
-
-            if cancel_check_fn and cancel_check_fn():
-                return self._create_cancelled_response()
-
-            # Step 1: Database search
-            logger.info("🗄️ Step 1: Database search")
-            db_results = self.database_service.search_by_proximity(
-                coordinates=coordinates,
-                radius_km=self.db_search_radius,
-                extract_descriptions=True
-            )
-
-            if cancel_check_fn and cancel_check_fn():
-                return self._create_cancelled_response()
-
-            # Step 2: Filter and evaluate database results (MISSING STEP - NOW ADDED)
-            db_restaurant_count = len(db_results)
-
-            if db_restaurant_count > 0:
-                logger.info(f"🔍 Step 2: Filtering {db_restaurant_count} database results by query relevance")
-
-                # Add distance information first
-                restaurants_with_distance = self._add_distance_info(
-                    db_results, coordinates
-                )
-
-                if cancel_check_fn and cancel_check_fn():
-                    return self._create_cancelled_response()
-
-                # STEP 2: Filter results using AI to match user query
-                filter_result = self.filter_evaluator.filter_and_evaluate(
-                    restaurants=restaurants_with_distance,
-                    query=query,
-                    location_description=location_desc
-                )
-
-                filtered_restaurants = filter_result.get("filtered_restaurants", [])
-                filtered_count = len(filtered_restaurants)
-
-                logger.info(f"🎯 Step 2 Complete: {filtered_count}/{db_restaurant_count} restaurants match query")
-
-                # Step 3: Database results analysis (CORRECTED)
-                if filtered_count > 0:
-                    logger.info(f"✅ Found {filtered_count} relevant database results - sending to user with choice")
-
-                    # Format filtered database results
-                    formatted_results = self.formatter.format_database_results(
-                        restaurants=filtered_restaurants,
-                        query=query,
-                        location_description=location_desc,
-                        offer_more_search=True
-                    )
-
-                    processing_time = time.time() - start_time
-
-                    return {
-                        "success": True,
-                        "results": filtered_restaurants,
-                        "source": "database_with_choice",
-                        "processing_time": processing_time,
-                        "restaurant_count": filtered_count,
-                        "total_found": db_restaurant_count,
-                        "coordinates": coordinates,
-                        "location_description": location_desc,
-                        "offer_more_results": True,
-                        "filter_reasoning": filter_result.get("reasoning", ""),
-                        # FIX: Add the missing formatted_message key
-                        "location_formatted_results": formatted_results.get("message", f"Found {filtered_count} relevant restaurants from my notes!")
-                    }
-                else:
-                    logger.info(f"📍 No relevant matches in {db_restaurant_count} database results - starting Google Maps search")
-                    return await self._search_google_maps_flow(query, coordinates, location_desc, cancel_check_fn, start_time)
-
-            else:
-                logger.info("📍 No database results found - starting Google Maps search directly")
-                return await self._search_google_maps_flow(query, coordinates, location_desc, cancel_check_fn, start_time)
+            # ... rest of existing method
 
         except Exception as e:
             logger.error(f"❌ Error in location query processing: {e}")
-            return self._create_error_response(f"Search failed: {str(e)}")
+            return self._create_error_response(str(e))
 
     # ============ GOOGLE MAPS SEARCH FLOW - UPDATED ============
 

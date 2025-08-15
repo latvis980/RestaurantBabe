@@ -160,6 +160,12 @@ def process_text_message(message_text: str,
             handle_location_input(message_text, user_id, chat_id)
             return
 
+        if conversation_handler and conversation_handler.get_user_state(user_id) == ConversationState.AWAITING_LOCATION_CLARIFICATION:
+            # Handle clarification response directly
+            result = conversation_handler.handle_location_clarification(user_id, message_text)
+            execute_action(result, user_id, chat_id)
+            return
+
         # Send typing indicator
         bot.send_chat_action(chat_id, 'typing')
 
@@ -212,6 +218,32 @@ def execute_action(result: Dict[str, Any], user_id: int, chat_id: int):
         threading.Thread(target=perform_location_search,
                          args=(search_query, user_id, chat_id),
                          daemon=True).start()
+
+    elif action == "SEND_LOCATION_CLARIFICATION":
+        # Send clarification request (bot_response already sent above)
+        analysis_result = action_data.get("analysis_result", {})
+
+        # Store context for clarification
+        if conversation_handler:
+            conversation_handler.store_ambiguous_location_context(user_id, {
+                "query": analysis_result.get("original_message", ""),
+                "location_detected": analysis_result.get("location_detected", ""),
+                "ambiguity_reason": analysis_result.get("ambiguity_reason", "")
+            })
+
+    elif action == "PROCESS_LOCATION_CLARIFICATION":
+        # Process user's clarification
+        clarification_text = action_data.get("clarification_text", "")
+
+        if conversation_handler:
+            clarification_result = conversation_handler.handle_location_clarification(
+                user_id, clarification_text)
+
+            if clarification_result.get("action") == "SEARCH_LOCATION":
+                search_query = clarification_result.get("search_query", "")
+                threading.Thread(target=perform_location_search,
+                               args=(search_query, user_id, chat_id),
+                               daemon=True).start()
 
     elif action == "LAUNCH_GOOGLE_MAPS_SEARCH":
         # Google Maps search for more options in same location

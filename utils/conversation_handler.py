@@ -39,7 +39,9 @@ class ConversationState(Enum):
     AWAITING_LOCATION = "awaiting_location"
     SEARCHING = "searching"
     AWAITING_CHOICE = "awaiting_choice"
-    RESULTS_SHOWN = "results_shown"  # NEW: Location results shown, can ask for more
+    RESULTS_SHOWN = "results_shown"
+    AWAITING_LOCATION_CLARIFICATION = "awaiting_location_clarification"  # for ambiguous locations
+
 
 class CentralizedConversationHandler:
     """
@@ -48,28 +50,88 @@ class CentralizedConversationHandler:
     """
 
     def __init__(self, config):
+        """Initialize with enhanced state tracking for location clarification"""
         self.config = config
 
-        # Initialize AI models
-        self.conversation_ai = ChatOpenAI(
+        # Initialize AI model
+        self.ai = ChatOpenAI(
             model=config.OPENAI_MODEL,
             temperature=0.3,
             api_key=config.OPENAI_API_KEY
         )
 
-        # User states and conversation history
+        # User state tracking with location context
         self.user_states = {}  # user_id -> ConversationState
-        self.user_conversations = {}  # user_id -> [messages]
-        self.user_context = {}  # user_id -> context info
+        self.user_contexts = {}  # user_id -> context dict
+        self.location_search_contexts = {}  # user_id -> location search context
+        self.ambiguous_location_contexts = {}  # user_id -> clarification context
 
-        # NEW: Track location search context for follow-up Google Maps searches
-        self.location_search_context = {}  # user_id -> {"query": str, "location_data": LocationData, "last_search_time": float}
+        # NEW: Track ambiguous location clarification
+        self.ambiguous_location_contexts = {}  # user_id -> clarification context
 
-        # Build prompts
-        self._build_prompts()
+        # Create conversation analysis prompt
+        self._setup_conversation_prompt()
 
-        logger.info("✅ Centralized Conversation Handler initialized")
+        logger.info("✅ Centralized Conversation Handler initialized with ambiguity support")
 
+    def store_ambiguous_location_context(self, user_id: int, context: Dict[str, Any]):
+        """Store context for ambiguous location clarification"""
+        self.ambiguous_location_contexts[user_id] = {
+            "original_query": context.get("query", ""),
+            "location_detected": context.get("location_detected", ""),
+            "ambiguity_reason": context.get("ambiguity_reason", ""),
+            "timestamp": time.time()
+        }
+        self.user_states[user_id] = ConversationState.AWAITING_LOCATION_CLARIFICATION
+
+    def handle_location_clarification(self, user_id: int, clarification_text: str) -> Dict[str, Any]:
+        """
+        Handle user's clarification of ambiguous location
+
+        Args:
+            user_id: Telegram user ID
+            clarification_text: User's clarification (e.g., "Massachusetts", "the one in UK")
+
+        Returns:
+            Dict with processed clarification and next action
+        """
+        try:
+            # Get stored context
+            context = self.ambiguous_location_contexts.get(user_id)
+            if not context:
+                return {
+                    "action": "CLARIFY",
+                    "bot_response": "I'm not sure what location you're referring to. Could you please search again?",
+                    "needs_clarification": True
+                }
+
+            # Clear the stored context
+            del self.ambiguous_location_contexts[user_id]
+            self.user_states[user_id] = ConversationState.IDLE
+
+            # Combine original location with clarification
+            original_location = context["location_detected"]
+            combined_location = f"{original_location}, {clarification_text}"
+            original_query = context["original_query"]
+
+            logger.info(f"Location clarified: '{original_location}' + '{clarification_text}' = '{combined_location}'")
+
+            return {
+                "action": "SEARCH_LOCATION",
+                "bot_response": f"Perfect! Searching for {original_query} in {combined_location}...",
+                "search_query": f"{original_query} in {combined_location}",
+                "clarified_location": combined_location,
+                "needs_clarification": False
+            }
+
+        except Exception as e:
+            logger.error(f"Error handling location clarification: {e}")
+            return {
+                "action": "CLARIFY", 
+                "bot_response": "Sorry, I had trouble understanding that. Could you search again?",
+                "needs_clarification": True
+            }
+    
     def _build_prompts(self):
         """Build all AI prompts for different analysis stages"""
 
@@ -92,101 +154,72 @@ LOCATION CONTEXT: {location_context}
         self.main_chain = self.main_prompt | self.conversation_ai
 
     def _get_main_system_prompt(self) -> str:
-        """Get the main system prompt for conversation analysis"""
-        return """You are Restaurant Babe (or simply Babe), a friendly AI assistant specializing in restaurant recommendations worldwide. You are enthusiastic about food and dining.
+        """Enhanced system prompt with ambiguity handling"""
+        return """
+    You are an AI conversation analyzer for a restaurant recommendation bot with location ambiguity handling.
 
-CORE TASK: Analyze user messages and classify them into query types, then provide appropriate responses.
+    ANALYZE each message and determine the appropriate response and action.
 
-QUERY CLASSIFICATION:
+    USER STATES:
+    - idle: Normal conversation 
+    - awaiting_location: User needs to provide location for "near me" searches
+    - awaiting_location_clarification: User needs to clarify ambiguous location
+    - results_shown: Results were just shown, user can ask for more
+    - searching: Currently searching (handled separately)
 
-1. RESTAURANT REQUEST - User wants restaurant recommendations
-   Sub-types:
-   a) CITY_WIDE: Need city + cuisine type → use LangChain orchestrator
-      Examples: "sushi in Tokyo", "best pizza in Rome"
+    QUERY TYPES:
+    1. RESTAURANT_REQUEST - User wants restaurant recommendations
+       a. city_wide: "best sushi in Tokyo" → SEARCH_CITY
+       b. location_based_nearby: "pizza near me" → REQUEST_LOCATION  
+       c. location_based_geographic: "bars in SoHo" → SEARCH_LOCATION
+       d. follow_up: "show more" when results_shown → GOOGLE_MAPS_MORE
 
-   b) LOCATION_BASED_NEARBY: "Near me", "nearby", "within walking distance"
-      → Request user's physical location
+    2. GENERAL_QUESTION - Questions about food/restaurants/chefs but not requesting recommendations
+       Examples: "How many Michelin restaurants are in Rome?", "Who is Gordon Ramsay?"
+       → WEB_SEARCH
 
-   c) LOCATION_BASED_GEOGRAPHIC: Specific neighborhood/street/landmark within city
-      Examples: "restaurants in SoHo", "good food on Broadway", "near Times Square"
-      → Use location-based search
+    3. UNRELATED - Nothing to do with restaurants/food/cuisine
+       → REDIRECT
 
-   d) FOLLOW_UP: After previous results, asking for more/different options
-      Examples: "show me more", "find more options", "let's find more", "any other places", "more restaurants"
-      IMPORTANT: Only trigger if user state is "results_shown" and has recent location context
+    4. LOCATION_AMBIGUOUS - When location analysis detects ambiguous location
+       → Generate contextual clarification request based on the ambiguity
 
-2. GENERAL_QUESTION - Questions about food/restaurants/chefs but not requesting recommendations
-   Examples: "How many Michelin restaurants are in Rome?", "Who is Gordon Ramsay?", "What is neo-bistro?"
-   → Trigger web search (not implemented yet)
+    SPECIAL HANDLING:
+    - If user_state is "awaiting_location_clarification", treat ANY response as location clarification
+    - When user_state is "results_shown" and user asks for more options, use GOOGLE_MAPS_MORE action
+    - When location is ambiguous, generate smart clarification questions based on the specific ambiguity
 
-3. UNRELATED - Nothing to do with restaurants/food/cuisine
-   → Politely redirect to restaurant focus
+    AMBIGUOUS LOCATION EXAMPLES:
+    - Springfield (multiple US cities): Ask which state
+    - Cambridge (UK vs Massachusetts): Give specific options
+    - Generic ambiguity: Ask for city/state/country clarification
 
-RESPONSE REQUIREMENTS:
-- Be conversational and friendly, not robotic
-- Handle state transitions smoothly 
-- Maintain context from conversation history
-- Ask clarifying questions naturally when needed
-- For cuisine-only queries, always include "restaurants" or "places" in search_query
-- CRITICAL: When user_state is "results_shown" and user asks for more options, use GOOGLE_MAPS_MORE action
+    RESPONSE FORMAT (JSON only):
+    {{
+        "query_type": "restaurant_request" | "general_question" | "unrelated" | "location_clarification" | "location_ambiguous",
+        "request_type": "city_wide" | "location_based_nearby" | "location_based_geographic" | "follow_up" | null,
+        "action": "SEARCH_CITY" | "REQUEST_LOCATION" | "SEARCH_LOCATION" | "GOOGLE_MAPS_MORE" | "WEB_SEARCH" | "CLARIFY" | "REDIRECT" | "HANDLE_LOCATION_CLARIFICATION" | "REQUEST_LOCATION_CLARIFICATION",
+        "bot_response": "what to say to the user (conversational, friendly)",
+        "search_query": "search query if action requires search",
+        "needs_clarification": true|false,
+        "missing_info": ["city", "cuisine", "location"],
+        "confidence": 0.0-1.0,
+        "reasoning": "brief explanation of decision"
+    }}
 
-RESPONSE FORMAT (JSON only):
-{{
-    "query_type": "restaurant_request" | "general_question" | "unrelated",
-    "request_type": "city_wide" | "location_based_nearby" | "location_based_geographic" | "follow_up" | null,
-    "action": "SEARCH_CITY" | "REQUEST_LOCATION" | "SEARCH_LOCATION" | "GOOGLE_MAPS_MORE" | "WEB_SEARCH" | "CLARIFY" | "REDIRECT",
-    "bot_response": "what to say to the user (conversational, friendly)",
-    "search_query": "search query if action requires search",
-    "needs_clarification": true|false,
-    "missing_info": ["city", "cuisine", "location"],
-    "confidence": 0.0-1.0,
-    "reasoning": "brief explanation of decision"
-}}
+    EXAMPLES:
 
-EXAMPLES:
+    User: "Massachusetts" (when user_state = "awaiting_location_clarification")
+    → {{"query_type": "location_clarification", "action": "HANDLE_LOCATION_CLARIFICATION", "bot_response": "Perfect! Searching in Massachusetts...", "needs_clarification": false, "confidence": 0.9}}
 
-User: "best sushi in Tokyo"
-→ {{"query_type": "restaurant_request", "request_type": "city_wide", "action": "SEARCH_CITY", "search_query": "best sushi restaurants in Tokyo", "bot_response": "Perfect! Let me find the best sushi places in Tokyo for you.", "needs_clarification": false, "missing_info": [], "confidence": 0.95}}
+    User: "show me more" (when user_state = "results_shown")
+    → {{"query_type": "restaurant_request", "request_type": "follow_up", "action": "GOOGLE_MAPS_MORE", "bot_response": "Great! I'll find more restaurants in that area for you.", "needs_clarification": false, "confidence": 0.9}}
 
-User: "pizza"
-→ {{"query_type": "restaurant_request", "request_type": "location_based_nearby", "action": "REQUEST_LOCATION", "search_query": "pizza restaurants", "bot_response": "I'd love to help you find great pizza places nearby! Could you share your location or tell me what neighborhood you're in?", "needs_clarification": false, "missing_info": ["location"], "confidence": 0.9}}
-
-User: "restaurants near me"  
-→ {{"query_type": "restaurant_request", "request_type": "location_based_nearby", "action": "REQUEST_LOCATION", "search_query": "restaurants", "bot_response": "I'd love to help you find great restaurants nearby! Could you share your location or tell me what neighborhood you're in?", "needs_clarification": false, "missing_info": ["location"], "confidence": 0.9}}
-
-User: "sushi"
-→ {{"query_type": "restaurant_request", "request_type": "location_based_nearby", "action": "REQUEST_LOCATION", "search_query": "sushi restaurants", "bot_response": "I'd love to help you find amazing sushi places nearby! Could you share your location or tell me what neighborhood you're in?", "needs_clarification": false, "missing_info": ["location"], "confidence": 0.9}}
-
-User: "pizza close to Times Square"
-→ {{"query_type": "restaurant_request", "request_type": "location_based_geographic", "action": "SEARCH_LOCATION", "search_query": "pizza restaurants near Times Square", "bot_response": "Great choice! Let me find the best pizza places near Times Square for you.", "needs_clarification": false, "missing_info": [], "confidence": 0.9}}
-
-User: "best pizza in NYC"  
-→ {{"query_type": "restaurant_request", "request_type": "city_wide", "action": "SEARCH_CITY", "search_query": "best pizza restaurants in NYC", "bot_response": "Perfect! Let me find the best pizza places in NYC for you.", "needs_clarification": false, "missing_info": [], "confidence": 0.95}}
-
-User: "good Italian food in SoHo"
-→ {{"query_type": "restaurant_request", "request_type": "location_based_geographic", "action": "SEARCH_LOCATION", "search_query": "Italian restaurants in SoHo", "bot_response": "Great choice! Let me find the best Italian restaurants in SoHo for you.", "needs_clarification": false, "missing_info": [], "confidence": 0.9}}
-
-User: "How many Michelin stars does Gordon Ramsay have?"
-→ {{"query_type": "general_question", "request_type": null, "action": "WEB_SEARCH", "search_query": "Gordon Ramsay Michelin stars", "bot_response": "Let me look that up for you!", "needs_clarification": false, "missing_info": [], "confidence": 0.85}}
-
-User: "What's the weather like?"
-→ {{"query_type": "unrelated", "request_type": null, "action": "REDIRECT", "bot_response": "I specialize in restaurant recommendations! What kind of dining experience are you looking for?", "needs_clarification": false, "missing_info": [], "confidence": 0.9}}
-
-User: "Let's find more" (when user_state = "results_shown")
-→ {{"query_type": "restaurant_request", "request_type": "follow_up", "action": "GOOGLE_MAPS_MORE", "bot_response": "Perfect! Let me search Google Maps for more restaurant options in the same area.", "needs_clarification": false, "missing_info": [], "confidence": 0.9}}
-
-User: "show me more options" (when user_state = "results_shown")
-→ {{"query_type": "restaurant_request", "request_type": "follow_up", "action": "GOOGLE_MAPS_MORE", "bot_response": "Great! I'll find more restaurants in that area for you.", "needs_clarification": false, "missing_info": [], "confidence": 0.9}}
-
-User: "any other places?" (when user_state = "results_shown")
-→ {{"query_type": "restaurant_request", "request_type": "follow_up", "action": "GOOGLE_MAPS_MORE", "bot_response": "Absolutely! Let me search for additional restaurant options nearby.", "needs_clarification": false, "missing_info": [], "confidence": 0.9}}
-
-CONVERSATION FLOW:
-- Maintain natural conversation flow
-- Remember context from previous messages  
-- Handle incomplete requests gracefully
-- Guide users toward successful searches
-- Be enthusiastic about food and dining"""
+    For ambiguous locations, create smart clarification messages like:
+    - "I found multiple places called Springfield. Which state did you mean?"
+    - "Which Cambridge - the one in England or Massachusetts?"
+    - "Could you be more specific about which {{location}} you meant? (city, state, or country)"
+    """
 
     def process_message(
         self, 
@@ -363,6 +396,26 @@ CONVERSATION FLOW:
                 "new_state": ConversationState.IDLE
             })
 
+        elif action == "REQUEST_LOCATION_CLARIFICATION":
+            # Location is ambiguous - ask for clarification
+            result.update({
+                "action": "SEND_LOCATION_CLARIFICATION",
+                "action_data": {
+                    "analysis_result": analysis.get("analysis_result", {})
+                },
+                "new_state": ConversationState.AWAITING_LOCATION_CLARIFICATION
+            })
+
+        elif action == "HANDLE_LOCATION_CLARIFICATION":
+            # User provided clarification for ambiguous location
+            result.update({
+                "action": "PROCESS_LOCATION_CLARIFICATION",
+                "action_data": {
+                    "clarification_text": analysis.get("search_query", "")
+                },
+                "new_state": ConversationState.SEARCHING
+            })
+
         else:
             # CLARIFY or unknown
             result.update({
@@ -370,6 +423,8 @@ CONVERSATION FLOW:
                 "action_data": {},
                 "new_state": ConversationState.IDLE
             })
+
+        
 
         return result
 

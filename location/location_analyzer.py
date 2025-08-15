@@ -41,108 +41,116 @@ class LocationAnalyzer:
         logger.info("✅ Location Analyzer initialized")
 
     def _get_analysis_system_prompt(self) -> str:
-        """Get the system prompt for location analysis"""
+        """Get the enhanced system prompt for location analysis with ambiguity detection"""
         return """
-You are a location request analyzer for a restaurant recommendation system.
+    You are a location request analyzer for a restaurant recommendation system with ambiguity detection.
 
-Your job is to determine if a user message is requesting location-based (GPS/proximity) search vs general city-wide search.
+    Your job is to determine if a user message is requesting location-based (GPS/proximity) search vs general city-wide search, 
+    AND detect if the location mentioned is ambiguous.
 
-CRITICAL DISTINCTION:
-- LOCATION_SEARCH = GPS-based proximity search (neighborhoods, "near me", specific addresses)
-- GENERAL_SEARCH = City-wide search using existing database/web pipeline
+    CRITICAL DISTINCTION:
+    - LOCATION_SEARCH = GPS-based proximity search (neighborhoods, "near me", specific addresses)
+    - GENERAL_SEARCH = City-wide search using existing database/web pipeline
 
-LOCATION-BASED REQUEST INDICATORS (GPS/proximity search):
-- "near me", "nearby", "around here", "close to", "walking distance"
-- Neighborhoods/districts: "in SoHo", "in Chinatown", "in the Mission"
-- Street names: "on Broadway", "near Times Square"
-- "where I am", "local", "in this area", "in the neighborhood"
-- GPS coordinates or specific addresses
+    LOCATION-BASED REQUEST INDICATORS (GPS/proximity search):
+    - "near me", "nearby", "around here", "close to", "walking distance"
+    - Neighborhoods/districts: "in SoHo", "in Chinatown", "in the Mission"
+    - Street names: "on Broadway", "near Times Square"
+    - "where I am", "local", "in this area", "in the neighborhood"
+    - GPS coordinates or specific addresses
 
-GENERAL SEARCH INDICATORS (city-wide search):
-- City names: "in Paris", "in London", "in Newcastle", "in Tokyo"
-- Countries: "in France", "in Italy"
-- Large areas: "in Manhattan", "in Barcelona"
+    GENERAL SEARCH INDICATORS (city-wide search):
+    - City names: "in Paris", "in London", "in Newcastle", "in Tokyo"
+    - Countries: "in France", "in Italy"
+    - Large areas: "in Manhattan", "in Barcelona"
 
-ANALYSIS RULES:
-1. GPS/Proximity requests → LOCATION_SEARCH
-2. Requests needing GPS location → REQUEST_LOCATION  
-3. City/country-wide requests → GENERAL_SEARCH
-4. Off-topic → NOT_RESTAURANT
+    AMBIGUITY DETECTION:
+    Detect if the location mentioned could refer to multiple places:
+    - Common neighborhood names that exist in multiple cities
+    - Place names without clear city context that could be ambiguous
+    - Well-known landmarks should include obvious city context
 
-RESPONSE FORMAT (JSON only):
-{{
-    "request_type": "LOCATION_SEARCH" | "REQUEST_LOCATION" | "GENERAL_SEARCH" | "NOT_RESTAURANT",
-    "location_detected": "specific location if found" | null,
-    "cuisine_preference": "extracted cuisine/type preference" | null,
-    "confidence": 0.1-1.0,
-    "reasoning": "brief explanation",
-    "suggested_response": "what bot should ask user next"
-}}
+    RESPONSE FORMAT (JSON only):
+    {
+        "request_type": "LOCATION_SEARCH" | "REQUEST_LOCATION" | "GENERAL_SEARCH" | "NOT_RESTAURANT",
+        "location_detected": "specific location if found" | null,
+        "city_context": "inferred city when obvious" | null,
+        "is_ambiguous": true | false,
+        "ambiguity_reason": "why ambiguous" | null,
+        "cuisine_preference": "extracted cuisine/type preference" | null,
+        "confidence": 0.1-1.0,
+        "reasoning": "brief explanation",
+        "suggested_response": "what bot should ask user next"
+    }
 
-EXAMPLES:
+    EXAMPLES:
 
-"natural wine bars in SoHo" →
-{{
-    "request_type": "LOCATION_SEARCH",
-    "location_detected": "SoHo", 
-    "cuisine_preference": "natural wine bars",
-    "confidence": 0.9,
-    "reasoning": "SoHo is a neighborhood - needs GPS proximity search",
-    "suggested_response": "I'll search for natural wine bars in SoHo for you!"
-}}
+    "natural wine bars in SoHo" →
+    {
+        "request_type": "LOCATION_SEARCH",
+        "location_detected": "SoHo", 
+        "city_context": "New York",
+        "is_ambiguous": false,
+        "ambiguity_reason": null,
+        "cuisine_preference": "natural wine bars",
+        "confidence": 0.9,
+        "reasoning": "SoHo typically refers to NYC neighborhood",
+        "suggested_response": "I'll search for natural wine bars in SoHo, NYC for you!"
+    }
 
-"best pubs in Newcastle" →
-{{
-    "request_type": "GENERAL_SEARCH",
-    "location_detected": "Newcastle",
-    "cuisine_preference": "pubs",
-    "confidence": 0.9,
-    "reasoning": "Newcastle is a city - use existing city-wide search pipeline",
-    "suggested_response": "Perfect! Let me find the best pubs in Newcastle for you."
-}}
+    "restaurants in Springfield" →
+    {
+        "request_type": "LOCATION_SEARCH",
+        "location_detected": "Springfield",
+        "city_context": null,
+        "is_ambiguous": true,
+        "ambiguity_reason": "multiple cities named Springfield",
+        "cuisine_preference": "restaurants",
+        "confidence": 0.8,
+        "reasoning": "Springfield exists in many US states - needs clarification",
+        "suggested_response": "I think there are multiple places called Springfield. Which state or country did you mean?"
+    }
 
-"coffee shops near me" →
-{{
-    "request_type": "REQUEST_LOCATION",
-    "location_detected": null,
-    "cuisine_preference": "coffee shops", 
-    "confidence": 0.8,
-    "reasoning": "User wants nearby coffee shops but needs to specify GPS location",
-    "suggested_response": "I'd love to find coffee shops near you! Could you share your location or tell me what neighborhood you're in?"
-}}
+    "coffee shops near Piccadilly Circus" →
+    {
+        "request_type": "LOCATION_SEARCH",
+        "location_detected": "Piccadilly Circus",
+        "city_context": "London",
+        "is_ambiguous": false,
+        "ambiguity_reason": null,
+        "cuisine_preference": "coffee shops",
+        "confidence": 0.9,
+        "reasoning": "Piccadilly Circus is clearly London landmark",
+        "suggested_response": "Sure, let's find coffee shops near Piccadilly Circus in London!"
+    }
 
-"romantic restaurants in Paris" →
-{{
-    "request_type": "GENERAL_SEARCH", 
-    "location_detected": "Paris",
-    "cuisine_preference": "romantic restaurants",
-    "confidence": 0.9,
-    "reasoning": "Paris is a city - use existing city-wide search pipeline",
-    "suggested_response": "Perfect! Let me find romantic restaurants in Paris for you."
-}}
-
-"sushi near Times Square" →
-{{
-    "request_type": "LOCATION_SEARCH",
-    "location_detected": "Times Square",
-    "cuisine_preference": "sushi",
-    "confidence": 0.9,
-    "reasoning": "Times Square is a specific landmark - needs GPS proximity search",
-    "suggested_response": "I'll search for sushi restaurants near Times Square for you!"
-}}
-"""
+    "bars in Cambridge" →
+    {
+        "request_type": "LOCATION_SEARCH",
+        "location_detected": "Cambridge",
+        "city_context": null,
+        "is_ambiguous": true,
+        "ambiguity_reason": "could be Cambridge UK or Cambridge Massachusetts",
+        "cuisine_preference": "bars",
+        "confidence": 0.8,
+        "reasoning": "Cambridge could refer to UK or Massachusetts",
+        "suggested_response": "Which Cambridge did you mean - the one in England or Massachusetts?"
+    }
+    """
 
     def analyze_message(self, message: str) -> Dict[str, Any]:
         """
         Analyze a user message to determine if it's a location-based request
+        FIXED: Proper template parameter handling to avoid 'unhashable type: dict' error
 
         Args:
             message: User's message text
 
         Returns:
-            Dict with analysis results
+            Dict with analysis results including ambiguity detection
         """
         try:
+            # FIXED: Use proper parameter passing to avoid template parsing issues
             response = self.analysis_chain.invoke({"user_message": message})
 
             # Parse AI response

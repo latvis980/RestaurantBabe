@@ -91,6 +91,7 @@ class TelegramLocationHandler:
     def _ai_extract_location(self, message_text: str) -> str:
         """
         Use AI to extract the best location keywords for Google geocoding
+        FIXED: Proper template parameter handling
         """
         try:
             if not self.ai:
@@ -99,7 +100,7 @@ class TelegramLocationHandler:
 
             from langchain_core.prompts import ChatPromptTemplate
 
-            # Create prompt for location extraction
+            # FIXED: Create prompt with proper parameter syntax
             extraction_prompt = ChatPromptTemplate.from_messages([
                 ("system", """You are a location extraction specialist. Extract the most specific location from restaurant queries for Google Maps geocoding.
 
@@ -121,12 +122,14 @@ class TelegramLocationHandler:
     "restaurants in Belem" → "Belem"
 
     Return only the location string, nothing else."""),
-                ("human", "Extract location from: {{user_message}}")
+                ("human", "Extract location from: {user_message}")  # FIXED: Single curly braces
             ])
 
             # Create chain and get result
             chain = extraction_prompt | self.ai
-            response = chain.invoke({{"user_message": message_text}})
+
+            # FIXED: Pass parameters properly 
+            response = chain.invoke({"user_message": message_text})
 
             # Extract the location from AI response
             extracted = response.content.strip()
