@@ -130,7 +130,7 @@ class LocationOrchestrator:
             if db_restaurant_count > 0:
                 logger.info(f"🔍 Step 3: Filtering {db_restaurant_count} database results by query relevance")
 
-                # Add distance information first
+                # FIXED: Add distance information with correct method call
                 restaurants_with_distance = self._add_distance_info(
                     db_results, coordinates
                 )
@@ -138,24 +138,23 @@ class LocationOrchestrator:
                 if cancel_check_fn and cancel_check_fn():
                     return self._create_cancelled_response()
 
-                # STEP 3: Filter results using AI to match user query (FIXED method name)
+                # FIXED: Use correct method name and parameters
                 try:
-                    filter_result = await self.filter_evaluator.evaluate_and_filter(
+                    filter_result = self.filter_evaluator.filter_and_evaluate(
                         restaurants=restaurants_with_distance,
                         query=query,
-                        coordinates=coordinates,
-                        cancel_check_fn=cancel_check_fn
+                        location_description=location_desc
                     )
                 except Exception as e:
                     logger.error(f"❌ Error in filter evaluation: {e}")
                     # Fallback to unfiltered results
                     filter_result = {
-                        "restaurants": restaurants_with_distance[:self.max_venues_to_verify],
+                        "filtered_restaurants": restaurants_with_distance[:self.max_venues_to_verify],
                         "reasoning": "Filter evaluation failed - showing proximity results"
                     }
 
-                # FIXED: Safe access to filter results
-                filtered_restaurants = filter_result.get("restaurants", []) if filter_result else []
+                # FIXED: Correct key access for filtered results
+                filtered_restaurants = filter_result.get("filtered_restaurants", []) if filter_result else []
                 filtered_count = len(filtered_restaurants)
 
                 logger.info(f"🎯 Step 3 Complete: {filtered_count}/{db_restaurant_count} restaurants match query")
@@ -164,13 +163,13 @@ class LocationOrchestrator:
                 if filtered_count > 0:
                     logger.info(f"✅ Found {filtered_count} relevant database results - sending to user with choice")
 
-                    # Format filtered database results (FIXED with safe access)
+                    # FIXED: Use correct parameter name for formatter
                     try:
                         formatted_results = self.formatter.format_database_results(
                             restaurants=filtered_restaurants,
                             query=query,
                             location_description=location_desc,
-                            offer_more_results=True  # FIXED: Correct parameter name
+                            offer_more_search=True  # FIXED: Correct parameter name
                         )
                     except Exception as e:
                         logger.error(f"❌ Error formatting database results: {e}")
@@ -410,7 +409,7 @@ class LocationOrchestrator:
             return None
 
     def _add_distance_info(self, restaurants: List[Dict[str, Any]], coordinates: Tuple[float, float]) -> List[Dict[str, Any]]:
-        """Add distance information to restaurants"""
+        """Add distance information to restaurants - FIXED method call"""
         try:
             restaurants_with_distance = []
 
@@ -420,9 +419,10 @@ class LocationOrchestrator:
                 restaurant_lng = restaurant.get('longitude')
 
                 if restaurant_lat and restaurant_lng:
+                    # FIXED: Pass coordinates as tuples, not separate arguments
                     distance_km = LocationUtils.calculate_distance(
-                        coordinates[0], coordinates[1],
-                        restaurant_lat, restaurant_lng
+                        coordinates,  # (lat, lng) tuple
+                        (restaurant_lat, restaurant_lng)  # (lat, lng) tuple
                     )
                     restaurant['distance_km'] = distance_km
                     restaurant['distance_text'] = LocationUtils.format_distance(distance_km)
