@@ -63,7 +63,7 @@ class LocationAnalyzer:
     GENERAL SEARCH INDICATORS (city-wide search):
     - City names: "in Paris", "in London", "in Newcastle", "in Tokyo"
     - Countries: "in France", "in Italy"
-    - Large areas: "in Manhattan", "in Barcelona"
+    - Large areas, though not formally cities: "in Manhattan", "in Barcelona", "in Tuscany", "around Lake Como
 
     AMBIGUITY DETECTION:
     Detect if the location mentioned could refer to multiple places:
@@ -72,7 +72,7 @@ class LocationAnalyzer:
     - Well-known landmarks should include obvious city context
 
     RESPONSE FORMAT (JSON only):
-    {
+    {{
         "request_type": "LOCATION_SEARCH" | "REQUEST_LOCATION" | "GENERAL_SEARCH" | "NOT_RESTAURANT",
         "location_detected": "specific location if found" | null,
         "city_context": "inferred city when obvious" | null,
@@ -82,12 +82,12 @@ class LocationAnalyzer:
         "confidence": 0.1-1.0,
         "reasoning": "brief explanation",
         "suggested_response": "what bot should ask user next"
-    }
+    }}
 
     EXAMPLES:
 
     "natural wine bars in SoHo" →
-    {
+    {{
         "request_type": "LOCATION_SEARCH",
         "location_detected": "SoHo", 
         "city_context": "New York",
@@ -97,10 +97,10 @@ class LocationAnalyzer:
         "confidence": 0.9,
         "reasoning": "SoHo typically refers to NYC neighborhood",
         "suggested_response": "I'll search for natural wine bars in SoHo, NYC for you!"
-    }
+    }}
 
     "restaurants in Springfield" →
-    {
+    {{
         "request_type": "LOCATION_SEARCH",
         "location_detected": "Springfield",
         "city_context": null,
@@ -110,10 +110,10 @@ class LocationAnalyzer:
         "confidence": 0.8,
         "reasoning": "Springfield exists in many US states - needs clarification",
         "suggested_response": "I think there are multiple places called Springfield. Which state or country did you mean?"
-    }
+    }}
 
     "coffee shops near Piccadilly Circus" →
-    {
+    {{
         "request_type": "LOCATION_SEARCH",
         "location_detected": "Piccadilly Circus",
         "city_context": "London",
@@ -123,10 +123,10 @@ class LocationAnalyzer:
         "confidence": 0.9,
         "reasoning": "Piccadilly Circus is clearly London landmark",
         "suggested_response": "Sure, let's find coffee shops near Piccadilly Circus in London!"
-    }
+    }}
 
     "bars in Cambridge" →
-    {
+    {{
         "request_type": "LOCATION_SEARCH",
         "location_detected": "Cambridge",
         "city_context": null,
@@ -136,7 +136,7 @@ class LocationAnalyzer:
         "confidence": 0.8,
         "reasoning": "Cambridge could refer to UK or Massachusetts",
         "suggested_response": "Which Cambridge did you mean - the one in England or Massachusetts?"
-    }
+    }}
     """
 
     def analyze_message(self, message: str) -> Dict[str, Any]:

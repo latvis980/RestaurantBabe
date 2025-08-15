@@ -172,6 +172,17 @@ class LocationUtils:
             return None
 
     @staticmethod
+    def geocode_location(address: str) -> Optional[Tuple[float, float]]:
+        """Wrapper for database geocoding"""
+        try:
+            from utils.database import get_database
+            database = get_database()
+            return database.geocode_address(address)
+        except Exception as e:
+            logger.error(f"Error geocoding '{address}': {e}")
+            return None
+    
+    @staticmethod
     def is_within_radius(
         center: Tuple[float, float], 
         point: Tuple[float, float], 
