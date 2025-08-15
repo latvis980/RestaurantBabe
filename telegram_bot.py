@@ -42,7 +42,7 @@ bot = telebot.TeleBot(config.TELEGRAM_BOT_TOKEN)
 conversation_handler = None  # Will be initialized in main()
 
 # Initialize other components
-location_handler = TelegramLocationHandler()
+location_handler = TelegramLocationHandler(config)
 location_analyzer = None  # Will be initialized in main()
 voice_handler = None  # Will be initialized in main()
 
@@ -248,10 +248,22 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
         cancel_event = create_cancel_event(user_id, chat_id)
 
         # Send processing message
-        processing_msg = bot.send_message(
-            chat_id,
-            "🔍 <b>Searching for the best restaurants...</b>\n\n⏱ This might take a minute while I check with my sources.",
-            parse_mode='HTML')
+        # Send processing message with video
+        try:
+            with open('media/searching.mp4', 'rb') as video:
+                processing_msg = bot.send_video(
+                    chat_id,
+                    video,
+                    caption="🔍 <b>Searching for the best restaurants...</b>\n\n⏱ This might take a minute while I check with my sources.",
+                    parse_mode='HTML'
+                )
+        except Exception as e:
+            logger.warning(f"Could not send video: {e}")
+            # Fallback to text message
+            processing_msg = bot.send_message(
+                chat_id,
+                "🔍 <b>Searching for the best restaurants...</b>\n\n⏱ This might take a minute while I check with my sources.",
+                parse_mode='HTML')
 
         # Get orchestrator instance
         orchestrator = get_orchestrator()
@@ -311,11 +323,22 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
     try:
         cancel_event = create_cancel_event(user_id, chat_id)
 
-        # Send processing message
-        processing_msg = bot.send_message(
-            chat_id,
-            "📍 <b>Searching for restaurants in that area...</b>\n\n⏱ Checking my curated collection and finding the best places nearby.",
-            parse_mode='HTML')
+        # Send processing message with video
+        try:
+            with open('media/searching.mp4', 'rb') as video:
+                processing_msg = bot.send_video(
+                    chat_id,
+                    video,
+                    caption="📍 <b>Searching for restaurants in that area...</b>\n\n⏱ Checking my curated collection and finding the best places nearby.",
+                    parse_mode='HTML'
+                )
+        except Exception as e:
+            logger.warning(f"Could not send video: {e}")
+            # Fallback to text message
+            processing_msg = bot.send_message(
+                chat_id,
+                "📍 <b>Searching for restaurants in that area...</b>\n\n⏱ Checking my curated collection and finding the best places nearby.",
+                parse_mode='HTML')
 
         # Extract location from search query using location handler
         location_data = location_handler.extract_location_from_text(
@@ -469,11 +492,22 @@ def perform_google_maps_followup_search(user_id: int, chat_id: int):
 
         cancel_event = create_cancel_event(user_id, chat_id)
 
-        # Send processing message
-        processing_msg = bot.send_message(
-            chat_id,
-            "🔍 <b>Searching Google Maps for more restaurants in the same area...</b>\n\n⏱ Finding additional options and verifying them.",
-            parse_mode='HTML')
+        # Send processing message with video
+        try:
+            with open('media/searching.mp4', 'rb') as video:
+                processing_msg = bot.send_video(
+                    chat_id,
+                    video,
+                    caption="🔍 <b>Searching for more restaurants in the same area...</b>\n\n⏱ Finding additional options and verifying them.",
+                    parse_mode='HTML'
+                )
+        except Exception as e:
+            logger.warning(f"Could not send video: {e}")
+            # Fallback to text message
+            processing_msg = bot.send_message(
+                chat_id,
+                "🔍 <b>Searching Google Maps for more restaurants in the same area...</b>\n\n⏱ Finding additional options and verifying them.",
+                parse_mode='HTML')
 
         # Extract context data
         original_query = location_context.get("query", "restaurants")
@@ -605,76 +639,81 @@ def perform_google_maps_followup_search(user_id: int, chat_id: int):
                 user_id, ConversationState.RESULTS_SHOWN)
 
 async def handle_google_maps_with_verification(update, context, orchestrator_result, original_query, location_description):
-    """
-    Handle Google Maps results that require media verification
-    Two-step process: intermediate message + verification + final results
-    """
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
+"""
+Handle Google Maps results that require media verification
+Two-step process: intermediate message + verification + final results
+FIXED: Use location_orchestrator instead of undefined orchestrator
+"""
+chat_id = update.effective_chat.id
+user_id = update.effective_user.id
 
-    try:
-        # Step 1: Send intermediate message (UPDATED - don't mention Google Maps)
-        intermediate_message = orchestrator_result.get("location_formatted_results", 
-            "Found some restaurants in the vicinity, let me check what local media and international guides have to say about them.")
+try:
+    # Step 1: Send intermediate message (UPDATED - don't mention Google Maps)
+    intermediate_message = orchestrator_result.get("location_formatted_results", 
+        "Found some restaurants in the vicinity, let me check what local media and international guides have to say about them.")
 
-        processing_msg = bot.send_message(
-            chat_id,
-            intermediate_message,
-            parse_mode='HTML'
-        )
+    processing_msg = bot.send_message(
+        chat_id,
+        intermediate_message,
+        parse_mode='HTML'
+    )
 
-        # Step 2: Complete media verification
-        venues = orchestrator_result.get("venues_for_verification", [])
-        coordinates = orchestrator_result.get("coordinates")
-        query = orchestrator_result.get("query", original_query)
+    # Step 2: Complete media verification
+    venues = orchestrator_result.get("venues_for_verification", [])
+    coordinates = orchestrator_result.get("coordinates")
+    query = orchestrator_result.get("query", original_query)
 
-        # Run media verification
-        final_result = await orchestrator.complete_media_verification(
-            venues=venues,
-            query=query,
-            coordinates=coordinates,
-            location_desc=location_description,
-            cancel_check_fn=lambda: is_cancelled()
-        )
+    # FIXED: Create location orchestrator instance
+    from location.location_orchestrator import LocationOrchestrator
+    location_orchestrator = LocationOrchestrator(config)
 
-        # Clean up processing message
-        if processing_msg:
-            try:
-                bot.delete_message(chat_id, processing_msg.message_id)
-            except Exception:
-                pass
+    # Run media verification using location_orchestrator
+    final_result = await location_orchestrator.complete_media_verification(
+        venues=venues,
+        query=query,
+        coordinates=coordinates,
+        location_desc=location_description,
+        cancel_check_fn=lambda: is_cancelled()
+    )
 
-        if is_cancelled():
-            return
+    # Clean up processing message
+    if processing_msg:
+        try:
+            bot.delete_message(chat_id, processing_msg.message_id)
+        except Exception:
+            pass
 
-        # Step 3: Send final verified results
-        if final_result.get("success") and final_result.get("results"):
-            formatted_message = final_result.get("location_formatted_results", 
-                f"Found {len(final_result.get('results', []))} verified restaurants!")
+    if is_cancelled():
+        return
 
-            bot.send_message(
-                chat_id,
-                formatted_message,
-                parse_mode='HTML',
-                disable_web_page_preview=True
-            )
+    # Step 3: Send final verified results
+    if final_result.get("success") and final_result.get("results"):
+        formatted_message = final_result.get("location_formatted_results", 
+            f"Found {len(final_result.get('results', []))} verified restaurants!")
 
-            logger.info(f"✅ Google Maps with verification completed for user {user_id}: {len(final_result.get('results', []))} venues")
-        else:
-            error_message = final_result.get("location_formatted_results", "😔 No suitable restaurants found after verification.")
-            bot.send_message(
-                chat_id,
-                error_message,
-                parse_mode='HTML'
-            )
-
-    except Exception as e:
-        logger.error(f"❌ Error in Google Maps verification flow: {e}")
         bot.send_message(
             chat_id,
-            "😔 Had trouble verifying restaurants. Please try again.",
+            formatted_message,
+            parse_mode='HTML',
+            disable_web_page_preview=True
+        )
+
+        logger.info(f"✅ Google Maps with verification completed for user {user_id}: {len(final_result.get('results', []))} venues")
+    else:
+        error_message = final_result.get("location_formatted_results", "😔 No suitable restaurants found after verification.")
+        bot.send_message(
+            chat_id,
+            error_message,
             parse_mode='HTML'
         )
+
+except Exception as e:
+    logger.error(f"❌ Error in Google Maps verification flow: {e}")
+    bot.send_message(
+        chat_id,
+        "😔 Had trouble verifying restaurants. Please try again.",
+        parse_mode='HTML'
+    )
 
 # Update the existing handle_location_search function
 def handle_location_search(update, context):
