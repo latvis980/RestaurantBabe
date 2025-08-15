@@ -256,14 +256,11 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
         # Get orchestrator instance
         orchestrator = get_orchestrator()
 
-        # FIXED: Use the correct method to invoke the LangChain chain
-        # The orchestrator has a .chain property, not a .search() method
-        result = orchestrator.chain.invoke({
-            "query":
-            search_query,
-            "cancel_check_fn":
-            lambda: is_search_cancelled(user_id)
-        })
+        # FIXED: Use the orchestrator.search() method (not .chain.invoke())
+        result = orchestrator.search(
+            query=search_query,
+            cancel_check_fn=lambda: is_search_cancelled(user_id)
+        )
 
         # Clean up processing message
         try:
@@ -274,15 +271,25 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
         if is_search_cancelled(user_id):
             return
 
-        # Send results - the chain returns formatted results
-        if result and result.get("final_message"):
-            formatted_message = result["final_message"]
-            bot.send_message(chat_id,
-                             formatted_message,
-                             parse_mode='HTML',
-                             disable_web_page_preview=True)
+        # FIXED: Send results using the correct key name
+        if result and result.get("telegram_formatted_text"):
+            formatted_message = result["telegram_formatted_text"]
+
+            # Debug logging to see what we got
+            logger.info(f"🔍 Result keys: {list(result.keys())}")
+            logger.info(f"📱 Message length: {len(formatted_message)} characters")
+
+            bot.send_message(
+                chat_id,
+                formatted_message,
+                parse_mode='HTML',
+                disable_web_page_preview=True)
             logger.info(f"✅ City search results sent for user {user_id}")
         else:
+            # Log the actual result structure for debugging
+            logger.warning(f"❌ Search failed or no telegram_formatted_text. Result keys: {list(result.keys()) if result else 'None'}")
+            logger.warning(f"❌ Result content: {result}")
+
             bot.send_message(
                 chat_id,
                 "😔 I couldn't find any restaurants matching your criteria. Could you try a different search?",
@@ -301,7 +308,6 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
             parse_mode='HTML')
     finally:
         cleanup_search(user_id)
-
 
 def perform_location_search(search_query: str, user_id: int, chat_id: int):
     """Execute location-based search using the actual location orchestrator"""
