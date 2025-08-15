@@ -11,7 +11,7 @@ Extracts descriptions from trusted sources
 import logging
 import asyncio
 import json
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Union
 from dataclasses import dataclass
 
 from location.google_maps_search import VenueResult
@@ -34,7 +34,7 @@ class VerifiedVenue:
     rating: Optional[float] = None
     place_id: Optional[str] = None
     description: str = ""
-    media_sources: List[str] = None
+    media_sources: Optional[List[str]] = None
     google_maps_url: str = ""
 
     def __post_init__(self):
@@ -128,18 +128,21 @@ class MediaVerificationAgent:
         self,
         venues: List[VenueResult],
         query: str,
+        coordinates: Optional[Tuple[float, float]] = None,  # ADDED: for distance calculation
         cancel_check_fn=None
     ) -> List[Dict[str, Any]]:
         """
         STEPS 4-5: Verify venues in media and extract descriptions
+        UPDATED: Added coordinates parameter for distance calculation in formatting
 
         Args:
             venues: List of VenueResult objects from Google Maps
             query: Original search query
+            coordinates: Optional user coordinates for distance calculation
             cancel_check_fn: Function to check if operation should be cancelled
 
         Returns:
-            List of verified venue dictionaries with media descriptions
+            List of verified venue dictionaries with media descriptions and distances
         """
         try:
             logger.info(f"🔍 Starting media verification for {len(venues)} venues")
@@ -159,23 +162,20 @@ class MediaVerificationAgent:
                         venue, media_verification['sources']
                     )
 
-                    # Create verified venue record
+                    # Create verified venue record with distance calculation
                     verified_venue = self._create_verified_venue(
-                        venue, media_verification, description
+                        venue, media_verification, description, coordinates
                     )
                     verified_venues.append(verified_venue)
 
             logger.info(f"✅ Media verification completed: {len(verified_venues)}/{len(venues)} venues verified")
-
-            # TODO: Replace AI filtering with source_quality table verification in supabase
-            # For now, using AI evaluation as specified
 
             return verified_venues
 
         except Exception as e:
             logger.error(f"❌ Error in venue verification: {e}")
             # Fallback: return venues without verification
-            return self._convert_venues_to_dict(venues)
+            return self._convert_venues_to_dict(venues, coordinates)
 
     async def _verify_venue_in_media(
         self, 
@@ -250,8 +250,9 @@ class MediaVerificationAgent:
                 ]
             }
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, timeout=30) as response:
+            timeout = aiohttp.ClientTimeout(total=30)  # Create ClientTimeout object
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, json=payload) as response:  # Remove timeout from here
                     if response.status == 200:
                         data = await response.json()
                         results = data.get('results', [])
@@ -288,7 +289,12 @@ class MediaVerificationAgent:
                     }
 
                     response = await self.eval_chain.ainvoke(evaluation_input)
+
+                    # FIXED: Proper type handling for response content
                     evaluation_text = response.content
+                    if not isinstance(evaluation_text, str):
+                        # Handle case where content might not be a string
+                        evaluation_text = str(evaluation_text)
 
                     # Parse AI evaluation
                     if "```json" in evaluation_text:
@@ -390,21 +396,35 @@ class MediaVerificationAgent:
         self, 
         venue: VenueResult, 
         media_verification: Dict[str, Any], 
-        description: str
+        description: str,
+        user_coordinates: Optional[Tuple[float, float]] = None
     ) -> Dict[str, Any]:
         """
         Create verified venue dictionary with all required fields
+        UPDATED: Added distance calculation for formatting
         """
         sources = media_verification.get('sources', [])
         source_names = [source.get('domain', 'Unknown') for source in sources]
+
+        # Calculate distance if user coordinates provided
+        distance_km = venue.distance_km  # Use existing if available
+        distance_text = LocationUtils.format_distance(distance_km) if distance_km else "Distance unknown"
+
+        if user_coordinates and venue.latitude and venue.longitude:
+            # Recalculate distance with user coordinates
+            distance_km = LocationUtils.calculate_distance(
+                user_coordinates, 
+                (venue.latitude, venue.longitude)
+            )
+            distance_text = LocationUtils.format_distance(distance_km)
 
         return {
             'name': venue.name,
             'address': venue.address,
             'latitude': venue.latitude,
             'longitude': venue.longitude,
-            'distance_km': venue.distance_km,
-            'distance_text': LocationUtils.format_distance(venue.distance_km),
+            'distance_km': distance_km,
+            'distance_text': distance_text,
             'rating': venue.rating,
             'place_id': venue.place_id,
             'description': description,
@@ -415,27 +435,46 @@ class MediaVerificationAgent:
             'verification_query': media_verification.get('search_query', '')
         }
 
-    def _convert_venues_to_dict(self, venues: List[VenueResult]) -> List[Dict[str, Any]]:
+    def _convert_venues_to_dict(
+        self, 
+        venues: List[VenueResult], 
+        user_coordinates: Optional[Tuple[float, float]] = None
+    ) -> List[Dict[str, Any]]:
         """
         Convert VenueResult objects to dictionaries (fallback when verification fails)
+        UPDATED: Added distance calculation
         """
-        return [
-            {
+        result_venues = []
+
+        for venue in venues:
+            # Calculate distance if coordinates provided
+            distance_km = venue.distance_km
+            distance_text = LocationUtils.format_distance(distance_km) if distance_km else "Distance unknown"
+
+            if user_coordinates and venue.latitude and venue.longitude:
+                distance_km = LocationUtils.calculate_distance(
+                    user_coordinates, 
+                    (venue.latitude, venue.longitude)
+                )
+                distance_text = LocationUtils.format_distance(distance_km)
+
+            result_venues.append({
                 'name': venue.name,
                 'address': venue.address,
                 'latitude': venue.latitude,
                 'longitude': venue.longitude,
-                'distance_km': venue.distance_km,
-                'distance_text': LocationUtils.format_distance(venue.distance_km),
+                'distance_km': distance_km,
+                'distance_text': distance_text,
                 'rating': venue.rating,
                 'place_id': venue.place_id,
                 'description': f"Restaurant in {self._extract_city_from_address(venue.address)}",
                 'sources': [],
                 'media_verified': False,
                 'google_maps_url': venue.google_maps_url
-            }
-            for venue in venues
-        ]
+            })
+
+        return result_venues
+
 
     def _extract_city_from_address(self, address: str) -> str:
         """Extract city name from venue address"""

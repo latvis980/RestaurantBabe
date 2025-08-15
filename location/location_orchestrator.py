@@ -337,9 +337,11 @@ class LocationOrchestrator:
     ) -> List[Dict[str, Any]]:
         """Verify venues through media sources and filter by reputation"""
         try:
+            # FIXED: Pass coordinates for distance calculation in formatting
             verified_venues = await self.media_verifier.verify_venues(
                 venues=venues,
                 query=query,
+                coordinates=coordinates,  # ADDED: coordinates parameter
                 cancel_check_fn=cancel_check_fn
             )
 
@@ -352,26 +354,43 @@ class LocationOrchestrator:
         except Exception as e:
             logger.error(f"❌ Error in venue verification: {e}")
             # Fallback: convert venues to dict format without verification
-            return self._convert_venues_to_fallback(venues)
+            return self._convert_venues_to_fallback(venues, coordinates)  # ADDED: coordinates parameter
 
-    def _convert_venues_to_fallback(self, venues: List[VenueResult]) -> List[Dict[str, Any]]:
-        """Convert VenueResult objects to dictionary format (fallback)"""
-        return [
-            {
-                'name': venue.name,
-                'address': venue.address,
-                'latitude': venue.latitude,
-                'longitude': venue.longitude,
-                'distance_km': venue.distance_km,
-                'rating': venue.rating,
-                'place_id': venue.place_id,
-                'description': f"Restaurant in {self._extract_city_from_address(venue.address)}",
-                'sources': [],
-                'media_verified': False,
-                'google_maps_url': venue.google_maps_url
-            }
-            for venue in venues[:self.max_venues_to_verify]
-        ]
+
+    def _convert_venues_to_fallback(self, venues: List[VenueResult], coordinates: Tuple[float, float]) -> List[Dict[str, Any]]:
+        """Convert VenueResult objects to fallback format with distance calculation"""
+        try:
+            fallback_venues = []
+
+            for venue in venues:
+                # Calculate distance for formatting
+                distance_km = venue.distance_km
+                if coordinates and venue.latitude and venue.longitude:
+                    distance_km = LocationUtils.calculate_distance(
+                        coordinates, 
+                        (venue.latitude, venue.longitude)
+                    )
+
+                fallback_venues.append({
+                    'name': venue.name,
+                    'address': venue.address,
+                    'latitude': venue.latitude,
+                    'longitude': venue.longitude,
+                    'distance_km': distance_km,
+                    'distance_text': LocationUtils.format_distance(distance_km) if distance_km else "Distance unknown",
+                    'rating': venue.rating,
+                    'place_id': venue.place_id,
+                    'description': f"Restaurant near {venue.address}",
+                    'sources': [],
+                    'media_verified': False,
+                    'google_maps_url': venue.google_maps_url
+                })
+
+            return fallback_venues
+
+        except Exception as e:
+            logger.error(f"❌ Error in fallback conversion: {e}")
+            return []
 
     def _extract_city_from_address(self, address: str) -> str:
         """Extract city name from venue address"""

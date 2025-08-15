@@ -16,7 +16,7 @@ import time
 import threading
 import asyncio
 from threading import Event
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 
 # Import the centralized handler
 from utils.conversation_handler import CentralizedConversationHandler, ConversationState
@@ -246,12 +246,28 @@ def execute_action(result: Dict[str, Any], user_id: int, chat_id: int):
                                daemon=True).start()
 
     elif action == "LAUNCH_GOOGLE_MAPS_SEARCH":
-        # Google Maps search for more options in same location
+    # Google Maps search for more options in same location
         search_type = action_data.get("search_type")
         if search_type == "google_maps_more":
-            threading.Thread(target=perform_google_maps_followup_search,
-                             args=(user_id, chat_id),
-                             daemon=True).start()
+        # CHANGED: Use location search instead of legacy follow-up function
+
+        # Get stored location context
+            if conversation_handler is None:
+                bot.send_message(chat_id, "😔 I'm having trouble with the conversation system. Please try again.", parse_mode='HTML')
+                return
+
+            location_context = conversation_handler.get_location_search_context(user_id)
+            if not location_context:
+                bot.send_message(chat_id, "😔 I don't have the location context for a follow-up search. Could you specify the area again?", parse_mode='HTML')
+                return
+
+            # Use the original query from context for follow-up search
+            original_query = location_context.get("query", "restaurants")
+
+            # Launch location search (will go through orchestrator and use Google Maps since DB was already checked)
+            threading.Thread(target=perform_location_search,
+                         args=(original_query, user_id, chat_id),
+                         daemon=True).start()
         else:
             logger.warning(f"Unknown Google Maps search type: {search_type}")
 
@@ -353,8 +369,9 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
 def perform_location_search(search_query: str, user_id: int, chat_id: int):
     """
     Execute location-based search using the actual location orchestrator
-    FIXED: Properly handle Google Maps verification flow
+    CLEAN VERSION: Orchestrator handles ALL verification internally
     """
+    processing_msg = None
     try:
         cancel_event = create_cancel_event(user_id, chat_id)
 
@@ -369,26 +386,20 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
                 )
         except Exception as e:
             logger.warning(f"Could not send video: {e}")
-            # Fallback to text message
             processing_msg = bot.send_message(
                 chat_id,
                 "📍 <b>Searching for restaurants in that area...</b>\n\n⏱ Checking my curated collection and finding the best places nearby.",
                 parse_mode='HTML')
 
-        # Extract location from search query using location handler
+        # Extract location from search query
         location_data = location_handler.extract_location_from_text(search_query)
 
         if location_data.confidence < 0.3:
-            # Clean up processing message
             try:
                 bot.delete_message(chat_id, processing_msg.message_id)
             except Exception:
                 pass
-
-            bot.send_message(
-                chat_id,
-                "😔 I couldn't understand the location. Could you be more specific about where you want to search?",
-                parse_mode='HTML')
+            bot.send_message(chat_id, "😔 I couldn't understand the location. Could you be more specific about where you want to search?", parse_mode='HTML')
             return
 
         # Store location context for follow-up searches
@@ -411,7 +422,7 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        # Process location query with orchestrator
+        # Process location query with orchestrator - ORCHESTRATOR HANDLES EVERYTHING
         result = loop.run_until_complete(
             location_orchestrator.process_location_query(
                 query=search_query,
@@ -422,7 +433,7 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
 
         loop.close()
 
-        # Clean up initial processing message
+        # Clean up processing message
         if processing_msg:
             try:
                 bot.delete_message(chat_id, processing_msg.message_id)
@@ -432,53 +443,26 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
         if is_search_cancelled(user_id):
             return
 
-        # Handle different result types
+        # CLEAN: Handle ALL result types the same way - no special verification logic
         if result.get("success"):
-            source = result.get("source")
+            formatted_message = result.get("location_formatted_results", 
+                f"Found {result.get('restaurant_count', 0)} restaurants!")
 
-            # FIXED: Handle Google Maps verification flow properly
-            if source == "google_maps_with_verification":
-                # This requires media verification - handle it asynchronously
-                logger.info(f"🔍 Google Maps verification flow triggered for user {user_id}")
+            # Handle database choice option
+            if result.get("source") == "database_with_choice" and result.get("offer_more_results"):
+                if conversation_handler is not None:
+                    conversation_handler.set_user_state(user_id, ConversationState.RESULTS_SHOWN)
+                location_desc = location_data.description or "the area"
+                formatted_message += f"\n\n💬 <b>Want more options?</b> Just ask me to find more restaurants in {location_desc}!"
 
-                # Create new event loop for async verification
-                verification_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(verification_loop)
+            bot.send_message(
+                chat_id,
+                formatted_message,
+                parse_mode='HTML',
+                disable_web_page_preview=True
+            )
 
-                try:
-                    # Run the verification flow
-                    verification_loop.run_until_complete(
-                        handle_google_maps_with_verification_async(
-                            chat_id=chat_id,
-                            user_id=user_id,
-                            orchestrator_result=result,
-                            original_query=search_query,
-                            location_description=location_data.description or "the area"
-                        )
-                    )
-                finally:
-                    verification_loop.close()
-
-            else:
-                # Standard results (database, google_maps_verified, etc.)
-                formatted_message = result.get("location_formatted_results", 
-                    f"Found {result.get('restaurant_count', 0)} restaurants!")
-
-                # Check if this was a database result with choice option
-                if result.get("source") == "database_with_choice" and result.get("offer_more_results"):
-                    if conversation_handler is not None:
-                        conversation_handler.set_user_state(user_id, ConversationState.RESULTS_SHOWN)
-                    location_desc = location_data.description or "the area"
-                    formatted_message += f"\n\n💬 <b>Want more options?</b> Just ask me to find more restaurants in {location_desc}!"
-
-                bot.send_message(
-                    chat_id,
-                    formatted_message,
-                    parse_mode='HTML',
-                    disable_web_page_preview=True
-                )
-
-                logger.info(f"✅ Location search results sent for user {user_id}: {result.get('restaurant_count', 0)} restaurants")
+            logger.info(f"✅ Location search results sent for user {user_id}: {result.get('restaurant_count', 0)} restaurants")
 
         else:
             error_message = result.get("error", "I couldn't find restaurants in that area.")
@@ -489,110 +473,15 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
 
     except Exception as e:
         logger.error(f"Error in location search: {e}")
-        # Clean up processing message
-        try:
-            bot.delete_message(chat_id, processing_msg.message_id)
-        except Exception:
-            pass
-
-        bot.send_message(
-            chat_id,
-            "😔 I encountered an error while searching. Please try again!",
-            parse_mode='HTML')
+        if processing_msg:
+            try:
+                bot.delete_message(chat_id, processing_msg.message_id)
+            except Exception:
+                pass
+        bot.send_message(chat_id, "😔 I encountered an error while searching. Please try again!", parse_mode='HTML')
     finally:
         cleanup_search(user_id)
 
-
-async def handle_google_maps_with_verification_async(
-    chat_id: int, 
-    user_id: int, 
-    orchestrator_result: Dict[str, Any], 
-    original_query: str, 
-    location_description: str
-):
-    """
-    Async version of Google Maps verification handler
-    FIXED: Properly handles the verification flow without blocking
-    """
-    processing_msg = None
-    try:
-        # Step 1: Send intermediate message (don't mention Google Maps)
-        intermediate_message = orchestrator_result.get("formatted_message", 
-            "Found some restaurants in the vicinity, let me check what local media and international guides have to say about them.")
-
-        processing_msg = bot.send_message(
-            chat_id,
-            intermediate_message,
-            parse_mode='HTML'
-        )
-
-        # Step 2: Complete media verification
-        venues = orchestrator_result.get("venues_for_verification", [])
-        coordinates = orchestrator_result.get("coordinates")
-        query = orchestrator_result.get("query", original_query)
-
-        # Create location orchestrator instance
-        from location.location_orchestrator import LocationOrchestrator
-        location_orchestrator = LocationOrchestrator(config)
-
-        # Define cancel check function
-        def cancel_check():
-            return is_search_cancelled(user_id)
-
-        # Run media verification using location_orchestrator
-        final_result = await location_orchestrator.complete_media_verification(
-            venues=venues,
-            query=query,
-            coordinates=coordinates,
-            location_desc=location_description,
-            cancel_check_fn=cancel_check
-        )
-
-        # Clean up processing message
-        if processing_msg:
-            try:
-                bot.delete_message(chat_id, processing_msg.message_id)
-            except Exception:
-                pass
-
-        if is_search_cancelled(user_id):
-            return
-
-        # Step 3: Send final verified results
-        if final_result.get("success") and final_result.get("results"):
-            formatted_message = final_result.get("location_formatted_results", 
-                f"Found {len(final_result.get('results', []))} verified restaurants!")
-
-            bot.send_message(
-                chat_id,
-                formatted_message,
-                parse_mode='HTML',
-                disable_web_page_preview=True
-            )
-
-            logger.info(f"✅ Google Maps with verification completed for user {user_id}: {len(final_result.get('results', []))} venues")
-        else:
-            error_message = final_result.get("location_formatted_results", "😔 No suitable restaurants found after verification.")
-            bot.send_message(
-                chat_id,
-                error_message,
-                parse_mode='HTML'
-            )
-
-    except Exception as e:
-        logger.error(f"❌ Error in Google Maps verification flow: {e}")
-        # Clean up processing message if still exists
-        if processing_msg:
-            try:
-                bot.delete_message(chat_id, processing_msg.message_id)
-            except Exception:
-                pass
-
-        bot.send_message(
-            chat_id,
-            "😔 Had trouble verifying restaurants. Please try again.",
-            parse_mode='HTML'
-        )
 
 def request_user_location(user_id: int, chat_id: int, context: str):
     """Request user's physical location with button"""
@@ -615,181 +504,6 @@ def request_user_location(user_id: int, chat_id: int, context: str):
         "query": context,
         "timestamp": time.time()
     }
-
-
-def perform_google_maps_followup_search(user_id: int, chat_id: int):
-    """
-    Perform Google Maps follow-up search using stored location context
-    FIXED: Corrected parameter names and attribute access
-    """
-    processing_msg = None
-    try:
-        # Check if conversation handler is initialized
-        if conversation_handler is None:
-            bot.send_message(
-                chat_id,
-                "😔 I'm having trouble with the conversation system. Please try again.",
-                parse_mode='HTML')
-            return
-
-        # Get stored location context
-        location_context = conversation_handler.get_location_search_context(
-            user_id)
-
-        if not location_context:
-            bot.send_message(
-                chat_id,
-                "😔 I don't have the location context for a follow-up search. Could you specify the area again?",
-                parse_mode='HTML')
-            return
-
-        cancel_event = create_cancel_event(user_id, chat_id)
-
-        # Send processing message with video
-        try:
-            with open('media/searching.mp4', 'rb') as video:
-                processing_msg = bot.send_video(
-                    chat_id,
-                    video,
-                    caption="🔍 <b>Searching for more restaurants in the same area...</b>\n\n⏱ Finding additional options and verifying them.",
-                    parse_mode='HTML'
-                )
-        except Exception as e:
-            logger.warning(f"Could not send video: {e}")
-            # Fallback to text message
-            processing_msg = bot.send_message(
-                chat_id,
-                "🔍 <b>Searching Google Maps for more restaurants in the same area...</b>\n\n⏱ Finding additional options and verifying them.",
-                parse_mode='HTML')
-
-        # Extract context data
-        original_query = location_context.get("query", "restaurants")
-        location_data = location_context.get("location_data")
-        location_description = location_context.get("location_description",
-                                                    "the area")
-
-        logger.info(
-            f"Starting Google Maps follow-up search for user {user_id} in {location_description}"
-        )
-
-        def is_cancelled():
-            return is_search_cancelled(user_id)
-
-        # Use async context to call Google Maps agent directly
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        # Get coordinates from location data
-        coordinates = None
-        if hasattr(location_data, 'latitude') and hasattr(
-                location_data, 'longitude'):
-            if location_data.latitude and location_data.longitude:
-                coordinates = (location_data.latitude, location_data.longitude)
-        else:
-            # This shouldn't happen as we stored valid location data, but handle gracefully
-            logger.error("No coordinates in stored location data")
-            loop.close()
-            if processing_msg:
-                try:
-                    bot.delete_message(chat_id, processing_msg.message_id)
-                except Exception:
-                    pass
-            bot.send_message(
-                chat_id,
-                "😔 I couldn't determine the location coordinates for the search.",
-                parse_mode='HTML')
-            return
-
-        # Use Google Maps agent directly (Step 3)
-        from location.google_maps_search import GoogleMapsSearchAgent
-        google_maps_agent = GoogleMapsSearchAgent(config)
-
-        venues = loop.run_until_complete(
-            google_maps_agent.search_venues(coordinates=coordinates,
-                                            query=original_query))
-
-        if is_cancelled():
-            loop.close()
-            return
-
-        # Optional: Media verification (Step 4 & 5)
-        # Fixed: Check if config has the attribute properly
-        if hasattr(config, 'ENABLE_MEDIA_VERIFICATION') and getattr(
-                config, 'ENABLE_MEDIA_VERIFICATION', False):
-            logger.info("📸 Media verification enabled for Google Maps results")
-            from location.media_verification import MediaVerificationAgent
-            media_verifier = MediaVerificationAgent(config)
-
-            verified_venues = loop.run_until_complete(
-                media_verifier.verify_venues(venues=venues,
-                                             query=original_query,
-                                             coordinates=coordinates))
-            final_venues = verified_venues
-        else:
-            # Skip media verification - use venues directly
-            max_results = getattr(config, 'MAX_LOCATION_RESULTS', 8)
-            final_venues = venues[:max_results]
-
-        loop.close()
-
-        # Clean up processing message
-        if processing_msg:
-            try:
-                bot.delete_message(chat_id, processing_msg.message_id)
-            except Exception:
-                pass
-
-        if is_cancelled():
-            return
-
-        # Format results using dedicated formatter
-        from location.location_telegram_formatter import LocationTelegramFormatter
-        formatter = LocationTelegramFormatter(config)
-
-        formatted_results = formatter.format_google_maps_results(
-            venues=final_venues,
-            query=original_query,
-            location_description=location_description)
-
-        # Send results
-        if final_venues and formatted_results.get("googlemaps_formatted_results"):
-            formatted_message = formatted_results.get(
-                "googlemaps_formatted_results",
-                f"Found {len(final_venues)} additional restaurants in {location_description}!"
-            )
-
-            bot.send_message(chat_id,
-                             formatted_message,
-                             parse_mode='HTML',
-                             disable_web_page_preview=True)
-
-            logger.info(
-                f"✅ Google Maps follow-up results sent for user {user_id}: {len(final_venues)} venues"
-            )
-        else:
-            bot.send_message(
-                chat_id,
-                f"😔 I couldn't find additional restaurants in {location_description}.\n\n"
-                "The recommendations from my curated collection might be your best options in this area!",
-                parse_mode='HTML')
-
-    except Exception as e:
-        logger.error(f"Error in Google Maps follow-up search: {e}")
-        if processing_msg:
-            try:
-                bot.delete_message(chat_id, processing_msg.message_id)
-            except Exception:
-                pass
-        bot.send_message(
-            chat_id,
-            "😔 Sorry, I encountered an error searching for additional options.",
-            parse_mode='HTML')
-    finally:
-        cleanup_search(user_id)
-        # Keep location context for potential additional searches
-        if conversation_handler is not None:
-            conversation_handler.set_user_state(
-                user_id, ConversationState.RESULTS_SHOWN)
 
 async def handle_google_maps_with_verification(chat_id: int, user_id: int, orchestrator_result: Dict[str, Any], original_query: str, location_description: str):
     """
