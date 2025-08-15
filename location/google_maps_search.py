@@ -12,7 +12,7 @@ This implements Step 3 of the location search flow:
 import logging
 import googlemaps
 from typing import Dict, List, Any, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import time
 
 from location.location_utils import LocationUtils
@@ -30,13 +30,11 @@ class VenueResult:
     rating: Optional[float] = None
     user_ratings_total: Optional[int] = None
     price_level: Optional[int] = None
-    types: List[str] = None
+    types: List[str] = field(default_factory=list)  # FIXED: Use field(default_factory=list)
     distance_km: Optional[float] = None
     google_maps_url: str = ""
 
     def __post_init__(self):
-        if self.types is None:
-            self.types = []
         if not self.google_maps_url and self.place_id:
             self.google_maps_url = f"https://maps.google.com/maps/place/?q=place_id:{self.place_id}"
 
@@ -101,10 +99,11 @@ class GoogleMapsSearchAgent:
         try:
             latitude, longitude = coordinates
             search_radius_m = (radius_km * 1000) if radius_km else self.search_radius
-            max_results = max_results or self.max_results
+            # FIXED: Ensure max_results is always an int
+            max_results_int = max_results if max_results is not None else self.max_results
 
             logger.info(f"🗺️ STEP 3: Google Maps search for '{query}' near {latitude:.4f}, {longitude:.4f}")
-            logger.info(f"🔍 Search parameters: radius={search_radius_m/1000}km, max_results={max_results}")
+            logger.info(f"🔍 Search parameters: radius={search_radius_m/1000}km, max_results={max_results_int}")
 
             # Perform the search
             venues = await self._perform_places_search(
@@ -112,7 +111,7 @@ class GoogleMapsSearchAgent:
                 longitude=longitude,
                 query=query,
                 radius_meters=search_radius_m,
-                max_results=max_results
+                max_results=max_results_int  # FIXED: Pass int, not Optional[int]
             )
 
             logger.info(f"✅ STEP 3 COMPLETE: Found {len(venues)} venues from Google Maps")
@@ -171,6 +170,7 @@ class GoogleMapsSearchAgent:
         try:
             logger.info(f"🔍 Trying text search for: '{query}'")
 
+            # FIXED: Use the correct method name from googlemaps library
             response = self.gmaps.places(
                 query=query,
                 location=location,
@@ -242,15 +242,31 @@ class GoogleMapsSearchAgent:
             name = place.get('name')
 
             if not place_id or not name:
+                logger.debug(f"Missing place_id or name: place_id={place_id}, name={name}")
                 return None
 
-            # Extract location
+            # Extract location - MORE ROBUST ERROR HANDLING
             geometry = place.get('geometry', {})
             location = geometry.get('location', {})
             latitude = location.get('lat')
             longitude = location.get('lng')
 
+            # FIXED: Check for None values before using them
             if latitude is None or longitude is None:
+                logger.debug(f"Missing coordinates for {name}: lat={latitude}, lng={longitude}")
+                return None
+
+            # FIXED: Validate coordinates are actually numbers
+            try:
+                latitude = float(latitude)
+                longitude = float(longitude)
+            except (ValueError, TypeError):
+                logger.debug(f"Invalid coordinate types for {name}: lat={type(latitude)}, lng={type(longitude)}")
+                return None
+
+            # FIXED: Validate coordinate ranges
+            if not LocationUtils.validate_coordinates(latitude, longitude):
+                logger.debug(f"Invalid coordinate values for {name}: lat={latitude}, lng={longitude}")
                 return None
 
             # Extract other fields
@@ -260,10 +276,20 @@ class GoogleMapsSearchAgent:
             price_level = place.get('price_level')
             types = place.get('types', [])
 
-            # Calculate distance
-            distance_km = LocationUtils.calculate_distance(
-                user_location, (latitude, longitude)
-            )
+            # Calculate distance - FIXED: Only if we have valid coordinates
+            distance_km = None
+            try:
+                if user_location and len(user_location) == 2:
+                    user_lat, user_lng = user_location
+                    if user_lat is not None and user_lng is not None:
+                        distance_km = LocationUtils.calculate_distance(
+                            (user_lat, user_lng), (latitude, longitude)
+                        )
+                        if distance_km is not None:
+                            distance_km = round(distance_km, 2)
+            except Exception as e:
+                logger.debug(f"Error calculating distance for {name}: {e}")
+                distance_km = None
 
             return VenueResult(
                 name=name,
@@ -275,7 +301,7 @@ class GoogleMapsSearchAgent:
                 user_ratings_total=user_ratings_total,
                 price_level=price_level,
                 types=types,
-                distance_km=round(distance_km, 2)
+                distance_km=distance_km
             )
 
         except Exception as e:
