@@ -11,6 +11,7 @@ This implements Step 3 of the location search flow:
 
 import logging
 import googlemaps
+print("googlemaps version:", googlemaps.__version__)
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
 import time

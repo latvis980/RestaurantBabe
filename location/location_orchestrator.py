@@ -315,16 +315,66 @@ class LocationOrchestrator:
         """
         Process "more results" query - goes directly to Google Maps search
         Bypasses database search since it was already done
+        FIXED: Uses provided coordinates directly, no extraction needed
         """
         logger.info(f"🔍 Processing 'more results' query: '{query}' at {location_desc}")
 
-        # Go directly to Google Maps flow
-        return await self._search_google_maps_flow(
-            query=query,
-            coordinates=coordinates,
-            location_desc=location_desc,
-            cancel_check_fn=cancel_check_fn
-        )
+        # FIXED: Validate coordinates before proceeding
+        if not coordinates or len(coordinates) != 2:
+            logger.error(f"❌ Invalid coordinates provided to more results: {coordinates}")
+            return self._create_error_response("Invalid coordinates for more results search")
+
+        latitude, longitude = coordinates
+        if latitude is None or longitude is None:
+            logger.error(f"❌ None coordinates in more results: lat={latitude}, lng={longitude}")
+            return self._create_error_response("Missing coordinates for more results search")
+
+        try:
+            # Validate coordinate values
+            latitude = float(latitude)
+            longitude = float(longitude)
+            if not LocationUtils.validate_coordinates(latitude, longitude):
+                logger.error(f"❌ Invalid coordinate values: lat={latitude}, lng={longitude}")
+                return self._create_error_response("Invalid coordinate values")
+
+            logger.info(f"✅ Using existing coordinates for more results: {latitude:.4f}, {longitude:.4f}")
+
+        except (ValueError, TypeError) as e:
+            logger.error(f"❌ Cannot convert coordinates to float: {coordinates}, error={e}")
+            return self._create_error_response("Invalid coordinate format")
+
+        # FIXED: Go directly to Google Maps search with validated coordinates
+        start_time = time.time()
+
+        try:
+            # Step 3: Google Maps venue search (skip database search)
+            logger.info("🗺️ Step 3: Google Maps venue search (more results)")
+            venues = await self._search_google_maps_venues(coordinates, query, cancel_check_fn)
+
+            if cancel_check_fn and cancel_check_fn():
+                return self._create_cancelled_response()
+
+            if not venues:
+                return self._create_error_response("No additional restaurants found in the area")
+
+            # Return intermediate message for media verification
+            return {
+                "success": True,
+                "results": venues,
+                "source": "google_maps_with_verification",
+                "processing_time": time.time() - start_time,
+                "restaurant_count": len(venues),
+                "coordinates": coordinates,
+                "location_description": location_desc,
+                "requires_verification": True,
+                "formatted_message": f"Found some additional restaurants in the vicinity, let me check what local media and international guides have to say about them.",
+                "query": query,
+                "venues_for_verification": venues
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error in more results Google Maps search: {e}")
+            return self._create_error_response(f"More results search failed: {str(e)}")
     
     async def _search_google_maps_venues(
         self, 
