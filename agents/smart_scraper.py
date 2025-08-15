@@ -27,7 +27,7 @@ class SmartRestaurantScraper:
         self.database = get_database()
         self.max_concurrent = 1  
         self.browser: Optional[Browser] = None
-        self.contexts: List[BrowserContext] = []
+        self.context: List[BrowserContext] = []
         self.browser_type = "webkit"  # NEW: Primary browser choice
         self.playwright = None
 
@@ -62,7 +62,7 @@ class SmartRestaurantScraper:
         logger.info("✅ Smart Restaurant Scraper initialized with WebKit (memory optimized)")
 
     async def start(self):
-        """Initialize Playwright and browser contexts with WebKit (memory optimized)"""
+        """Initialize Playwright and browser context with WebKit (memory optimized)"""
         if self.browser:
             return  # Already started
 
@@ -87,8 +87,8 @@ class SmartRestaurantScraper:
                 self.stats["browser_used"] = "chromium_minimal"
                 logger.info("✅ Minimal Chromium launched as last resort")
 
-        # Create optimized contexts
-        await self._create_optimized_contexts()
+        # Create optimized context
+        await self._create_optimized_context()
 
     async def _configure_page_with_adblock(self, page: Page):
         """
@@ -239,7 +239,7 @@ class SmartRestaurantScraper:
         )
         self.browser_type = "chromium_minimal"
 
-    async def _create_optimized_contexts(self):
+    async def _create_optimized_context(self):
         """Enhanced context creation with text-only optimizations"""
         if not self.browser:
             raise RuntimeError("Browser not initialized")
@@ -262,18 +262,18 @@ class SmartRestaurantScraper:
                 bypass_csp=True,
             )
 
-            self.contexts.append(context)
+            self.context.append(context)
 
-        logger.info(f"✅ {len(self.contexts)} text-optimized contexts ready ({self.browser_type})")
+        logger.info(f"✅ {len(self.context)} text-optimized context ready ({self.browser_type})")
 
     async def stop(self):
         """Clean up all browser resources"""
         try:
             # Close all contexts
-            for context in self.contexts:
+            for context in self.context:
                 if context:
                     await context.close()
-            self.contexts.clear()
+            self.context.clear()
 
             # Close browser
             if self.browser:
@@ -311,7 +311,7 @@ class SmartRestaurantScraper:
             logger.info(f"🎭 Context-{context_index} scraping: {url} (timeout: {initial_timeout/1000}s, browser: {self.browser_type})")
 
             # Get the appropriate context
-            context = self.contexts[context_index % len(self.contexts)]
+            context = self.context[context_index % len(self.context)]
             page = await context.new_page()
 
             # Configure page for optimal performance (includes ad blocking now)
@@ -489,7 +489,7 @@ class SmartRestaurantScraper:
             await self.start()
 
         urls = [result.get('url') for result in search_results if result.get('url')]
-        logger.info(f"🎭 Memory-optimized scraping {len(urls)} URLs with {self.max_concurrent} concurrent contexts ({self.browser_type})")
+        logger.info(f"🎭 Memory-optimized scraping {len(urls)} URLs with {self.max_concurrent} concurrent context ({self.browser_type})")
 
         # Create semaphore for concurrency control
         semaphore = asyncio.Semaphore(self.max_concurrent)
@@ -497,7 +497,7 @@ class SmartRestaurantScraper:
         # Scrape all URLs concurrently - filter None URLs properly
         valid_urls = [(i, url) for i, url in enumerate(urls) if url is not None]
         scrape_tasks = [
-            self._scrape_url_with_semaphore(semaphore, url, i % len(self.contexts))
+            self._scrape_url_with_semaphore(semaphore, url, i % len(self.context))
             for i, url in valid_urls
         ]
 
@@ -535,7 +535,7 @@ class SmartRestaurantScraper:
         return {
             **self.stats,
             "success_rate": (self.stats["successful_scrapes"] / max(self.stats["total_processed"], 1)) * 100,
-            "concurrent_contexts": len(self.contexts),
+            "concurrent_context": len(self.context),
             "memory_optimized": True,
             "browser_used": self.browser_type
         }

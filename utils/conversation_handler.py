@@ -24,6 +24,7 @@ class QueryType(Enum):
     RESTAURANT_REQUEST = "restaurant_request"
     GENERAL_QUESTION = "general_question" 
     UNRELATED = "unrelated"
+    LOCATION_BASED_AMBIGUOUS = "location_based_ambiguous"
 
 class RequestType(Enum):
     """Types of restaurant requests"""
@@ -54,7 +55,7 @@ class CentralizedConversationHandler:
         self.config = config
 
         # Initialize AI model
-        self.ai = ChatOpenAI(
+        self.conversation_ai = ChatOpenAI(
             model=config.OPENAI_MODEL,
             temperature=0.3,
             api_key=config.OPENAI_API_KEY
@@ -63,20 +64,19 @@ class CentralizedConversationHandler:
         # User state tracking with location context
         self.user_states = {}  # user_id -> ConversationState
         self.user_contexts = {}  # user_id -> context dict
-        self.location_search_contexts = {}  # user_id -> location search context
-        self.ambiguous_location_contexts = {}  # user_id -> clarification context
+        self.location_search_context = {}  # user_id -> location search context
+        self.ambiguous_location_context = {}  # user_id -> clarification context
+        self.user_conversations = {}
 
-        # NEW: Track ambiguous location clarification
-        self.ambiguous_location_contexts = {}  # user_id -> clarification context
 
         # Create conversation analysis prompt
-        self._setup_conversation_prompt()
+        self._build_prompts()
 
         logger.info("✅ Centralized Conversation Handler initialized with ambiguity support")
 
     def store_ambiguous_location_context(self, user_id: int, context: Dict[str, Any]):
         """Store context for ambiguous location clarification"""
-        self.ambiguous_location_contexts[user_id] = {
+        self.ambiguous_location_context[user_id] = {
             "original_query": context.get("query", ""),
             "location_detected": context.get("location_detected", ""),
             "ambiguity_reason": context.get("ambiguity_reason", ""),
@@ -97,7 +97,7 @@ class CentralizedConversationHandler:
         """
         try:
             # Get stored context
-            context = self.ambiguous_location_contexts.get(user_id)
+            context = self.ambiguous_location_context.get(user_id)
             if not context:
                 return {
                     "action": "CLARIFY",
@@ -106,7 +106,7 @@ class CentralizedConversationHandler:
                 }
 
             # Clear the stored context
-            del self.ambiguous_location_contexts[user_id]
+            del self.ambiguous_location_context[user_id]
             self.user_states[user_id] = ConversationState.IDLE
 
             # Combine original location with clarification
@@ -129,6 +129,41 @@ class CentralizedConversationHandler:
             return {
                 "action": "CLARIFY", 
                 "bot_response": "Sorry, I had trouble understanding that. Could you search again?",
+                "needs_clarification": True
+            }
+
+    def handle_ambiguous_location(self, user_id: int, analysis_result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Handle ambiguous location detection by letting AI generate clarification message
+
+        Args:
+            user_id: Telegram user ID
+            analysis_result: Full analysis result from LocationAnalyzer
+
+        Returns:
+            Dict with AI-generated clarification response
+        """
+        try:
+            # Store context for clarification
+            self.store_ambiguous_location_context(user_id, {
+                "query": analysis_result.get("original_message", ""),
+                "location_detected": analysis_result.get("location_detected", ""),
+                "ambiguity_reason": analysis_result.get("ambiguity_reason", "")
+            })
+
+            # Return the action that will be used by telegram bot
+            return {
+                "action": "REQUEST_LOCATION_CLARIFICATION",
+                "bot_response": analysis_result.get("suggested_response", "Could you be more specific about the location?"),
+                "needs_clarification": True,
+                "analysis_result": analysis_result
+            }
+
+        except Exception as e:
+            logger.error(f"Error handling ambiguous location: {e}")
+            return {
+                "action": "CLARIFY",
+                "bot_response": "Could you be more specific about the location you're looking for?",
                 "needs_clarification": True
             }
     
@@ -173,6 +208,8 @@ LOCATION CONTEXT: {location_context}
        b. location_based_nearby: "pizza near me" → REQUEST_LOCATION  
        c. location_based_geographic: "bars in SoHo" → SEARCH_LOCATION
        d. follow_up: "show more" when results_shown → GOOGLE_MAPS_MORE
+       e. location_based_ambiguous: "restaurants in Springfield" → REQUEST_LOCATION_CLARIFICATION
+
 
     2. GENERAL_QUESTION - Questions about food/restaurants/chefs but not requesting recommendations
        Examples: "How many Michelin restaurants are in Rome?", "Who is Gordon Ramsay?"
@@ -181,8 +218,9 @@ LOCATION CONTEXT: {location_context}
     3. UNRELATED - Nothing to do with restaurants/food/cuisine
        → REDIRECT
 
-    4. LOCATION_AMBIGUOUS - When location analysis detects ambiguous location
-       → Generate contextual clarification request based on the ambiguity
+    4. LOCATION_CLARIFICATION - User responding to ambiguous location request
+   Examples: "Massachusetts" when user_state = "awaiting_location_clarification"
+   → HANDLE_LOCATION_CLARIFICATION
 
     SPECIAL HANDLING:
     - If user_state is "awaiting_location_clarification", treat ANY response as location clarification
@@ -523,8 +561,10 @@ LOCATION CONTEXT: {location_context}
             del self.user_states[user_id]
         if user_id in self.user_conversations:
             del self.user_conversations[user_id]
-        if user_id in self.user_context:
-            del self.user_context[user_id]
+        if user_id in self.user_contexts:
+            del self.user_contexts[user_id]
         if user_id in self.location_search_context:
             del self.location_search_context[user_id]
+        if user_id in self.ambiguous_location_context:
+            del self.ambiguous_location_context[user_id]
         logger.debug(f"Cleared all data for user {user_id}")
