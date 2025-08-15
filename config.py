@@ -109,6 +109,11 @@ EXCLUDED_RESTAURANT_SOURCES = [
     'booking.com', 'expedia.com', 'airbnb.com'
 ]
 
+# Required for media verification
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
+ENABLE_MEDIA_VERIFICATION = True  # Enable the verification flow
+MIN_MEDIA_MENTIONS_REQUIRED = 1  # Minimum sources needed for verification
+
 # ============================================================================
 # DATABASE CONFIGURATION
 # ============================================================================

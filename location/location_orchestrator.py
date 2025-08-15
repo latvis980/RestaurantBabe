@@ -1,19 +1,8 @@
 # location/location_orchestrator.py
 """
-Location Search Orchestrator - FIXED VERSION
+Location Search Orchestrator - UPDATED with Media Verification
 
-Business Logic:
-1. User enters location (text or pin)
-2. Database search
-3. Database results analysis:
-   a. if more than 0 results - send to user + offer choice (accept or request more)
-   b. if 0 results - start google maps search directly
-4. Return formatted results (location service has its own formatter)
-
-FIXES:
-- Added missing formatted_message key to all returns
-- Improved coordinate handling and geocoding fallback
-- Fixed database result formatting flow
+UPDATED: Fixed Google Maps flow with proper media verification message and implementation
 """
 
 import logging
@@ -170,7 +159,7 @@ class LocationOrchestrator:
             logger.error(f"❌ Error in location query processing: {e}")
             return self._create_error_response(f"Search failed: {str(e)}")
 
-    # ============ GOOGLE MAPS SEARCH FLOW ============
+    # ============ GOOGLE MAPS SEARCH FLOW - UPDATED ============
 
     async def _search_google_maps_flow(
         self, 
@@ -180,7 +169,7 @@ class LocationOrchestrator:
         cancel_check_fn=None,
         start_time=None
     ) -> Dict[str, Any]:
-        """Google Maps search flow when database has no results"""
+        """Google Maps search flow with UPDATED media verification message"""
         if start_time is None:
             start_time = time.time()
 
@@ -193,23 +182,53 @@ class LocationOrchestrator:
                 return self._create_cancelled_response()
 
             if not venues:
-                return self._create_error_response("No restaurants found in Google Maps")
+                return self._create_error_response("No restaurants found in the area")
 
-            # Step 4 & 5: Media verification (optional)
-            if hasattr(self.config, 'ENABLE_MEDIA_VERIFICATION') and self.config.ENABLE_MEDIA_VERIFICATION:
-                logger.info("📸 Steps 4 & 5: Media verification and filtering")
+            # UPDATED: Return intermediate message for media verification
+            return {
+                "success": True,
+                "results": venues,
+                "source": "google_maps_with_verification",
+                "processing_time": time.time() - start_time,
+                "restaurant_count": len(venues),
+                "coordinates": coordinates,
+                "location_description": location_desc,
+                "requires_verification": True,
+                # UPDATED MESSAGE: Don't mention Google Maps, just say "found some restaurants"
+                "formatted_message": f"Found some restaurants in the vicinity, let me check what local media and international guides have to say about them.",
+                "query": query,
+                "venues_for_verification": venues
+            }
 
-                verified_venues = await self._verify_and_filter_venues(
-                    venues, query, coordinates, cancel_check_fn
-                )
+        except Exception as e:
+            logger.error(f"❌ Error in Google Maps search flow: {e}")
+            return self._create_error_response(f"Google Maps search failed: {str(e)}")
 
-                if cancel_check_fn and cancel_check_fn():
-                    return self._create_cancelled_response()
+    async def complete_media_verification(
+        self,
+        venues: List[VenueResult],
+        query: str,
+        coordinates: Tuple[float, float],
+        location_desc: str,
+        cancel_check_fn=None
+    ) -> Dict[str, Any]:
+        """
+        Complete the media verification flow (Steps 4 & 5)
+        Called after the initial "checking media" message
+        """
+        start_time = time.time()
 
-                final_venues = verified_venues
-            else:
-                # Skip media verification - use venues directly
-                final_venues = venues[:self.max_venues_to_verify]
+        try:
+            logger.info("📸 Steps 4 & 5: Media verification and filtering")
+
+            verified_venues = await self._verify_and_filter_venues(
+                venues, query, coordinates, cancel_check_fn
+            )
+
+            if cancel_check_fn and cancel_check_fn():
+                return self._create_cancelled_response()
+
+            final_venues = verified_venues
 
             if not final_venues:
                 return self._create_error_response("No suitable restaurants found after verification")
@@ -222,168 +241,167 @@ class LocationOrchestrator:
             )
 
             processing_time = time.time() - start_time
-            logger.info(f"✅ Google Maps search completed in {processing_time:.1f}s")
+            logger.info(f"✅ Google Maps search with verification completed in {processing_time:.1f}s")
 
             return {
                 "success": True,
                 "results": final_venues,
-                "source": "google_maps_only",
+                "source": "google_maps_verified",
                 "processing_time": processing_time,
                 "restaurant_count": len(final_venues),
                 "coordinates": coordinates,
                 "location_description": location_desc,
-                # FIX: Add the missing formatted_message key
-                "formatted_message": formatted_results.get("message", f"Found {len(final_venues)} restaurants via Google Maps!")
+                "formatted_message": formatted_results.get("message", f"Found {len(final_venues)} restaurants after verification!")
             }
 
         except Exception as e:
-            logger.error(f"❌ Error in Google Maps search flow: {e}")
-            return self._create_error_response(f"Google Maps search failed: {str(e)}")
+            logger.error(f"❌ Error in media verification: {e}")
+            return self._create_error_response(f"Media verification failed: {str(e)}")
 
     # ============ HELPER METHODS ============
 
-    def _get_coordinates(self, location_data: LocationData, cancel_check_fn=None) -> Optional[Tuple[float, float]]:
-        """
-        Extract or geocode coordinates - EXPECTS CONFIRMED LOCATION DATA
-        The conversation layer should have already resolved any ambiguity
-        """
+    async def _search_google_maps_venues(
+        self, 
+        coordinates: Tuple[float, float], 
+        query: str, 
+        cancel_check_fn=None
+    ) -> List[VenueResult]:
+        """Search Google Maps for venues"""
         try:
-            # If we have GPS coordinates, use them directly
+            venues = await self.google_maps_agent.search_venues(
+                coordinates=coordinates,
+                query=query
+            )
+
+            if cancel_check_fn and cancel_check_fn():
+                return []
+
+            logger.info(f"🗺️ Found {len(venues)} venues from Google Maps")
+            return venues
+
+        except Exception as e:
+            logger.error(f"❌ Error searching Google Maps: {e}")
+            return []
+
+    async def _verify_and_filter_venues(
+        self, 
+        venues: List[VenueResult], 
+        query: str, 
+        coordinates: Tuple[float, float],
+        cancel_check_fn=None
+    ) -> List[Dict[str, Any]]:
+        """Verify venues through media sources and filter by reputation"""
+        try:
+            verified_venues = await self.media_verifier.verify_venues(
+                venues=venues,
+                query=query,
+                cancel_check_fn=cancel_check_fn
+            )
+
+            if cancel_check_fn and cancel_check_fn():
+                return []
+
+            logger.info(f"📸 Media verification completed: {len(verified_venues)} venues verified")
+            return verified_venues
+
+        except Exception as e:
+            logger.error(f"❌ Error in venue verification: {e}")
+            # Fallback: convert venues to dict format without verification
+            return self._convert_venues_to_fallback(venues)
+
+    def _convert_venues_to_fallback(self, venues: List[VenueResult]) -> List[Dict[str, Any]]:
+        """Convert VenueResult objects to dictionary format (fallback)"""
+        return [
+            {
+                'name': venue.name,
+                'address': venue.address,
+                'latitude': venue.latitude,
+                'longitude': venue.longitude,
+                'distance_km': venue.distance_km,
+                'rating': venue.rating,
+                'place_id': venue.place_id,
+                'description': f"Restaurant in {self._extract_city_from_address(venue.address)}",
+                'sources': [],
+                'media_verified': False,
+                'google_maps_url': venue.google_maps_url
+            }
+            for venue in venues[:self.max_venues_to_verify]
+        ]
+
+    def _extract_city_from_address(self, address: str) -> str:
+        """Extract city name from venue address"""
+        try:
+            if not address:
+                return "Unknown"
+
+            parts = [part.strip() for part in address.split(',')]
+            if len(parts) >= 3:
+                return parts[1]
+            elif len(parts) == 2:
+                return parts[0]
+            else:
+                return parts[0] if parts else "Unknown"
+        except Exception:
+            return "Unknown"
+
+    def _get_coordinates(self, location_data: LocationData, cancel_check_fn=None) -> Optional[Tuple[float, float]]:
+        """Extract coordinates from location data"""
+        try:
             if location_data.latitude and location_data.longitude:
-                logger.info(f"✅ Using provided GPS coordinates: {location_data.latitude:.4f}, {location_data.longitude:.4f}")
                 return (location_data.latitude, location_data.longitude)
 
-            # If we have a description, geocode it (should be unambiguous at this point)
+            # Try geocoding if we have a description
             if location_data.description:
-                logger.info(f"🌍 Geocoding confirmed location: {location_data.description}")
-
-                # Use Google Maps geocoding
-                coordinates = self._simple_geocode_location(location_data.description)
+                logger.info(f"🌍 Geocoding location: {location_data.description}")
+                coordinates = LocationUtils.geocode_location(location_data.description)
                 if coordinates:
-                    logger.info(f"✅ Geocoded to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
                     return coordinates
 
-                # Fallback to database geocoding
-                try:
-                    from utils.database import get_database
-                    db = get_database()
-
-                    if hasattr(db, 'geocode_address'):
-                        coordinates = db.geocode_address(location_data.description)
-                        if coordinates:
-                            logger.info(f"✅ Database geocoded to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
-                            return coordinates
-                except Exception as e:
-                    logger.warning(f"Database geocoding failed: {e}")
-
-            logger.error("❌ Could not determine coordinates from confirmed location data")
             return None
 
         except Exception as e:
             logger.error(f"❌ Error getting coordinates: {e}")
             return None
 
-    def _simple_geocode_location(self, location_description: str) -> Optional[Tuple[float, float]]:
-        """
-        Simple geocoding - just takes first result since conversation layer resolved ambiguity
-        """
-        if not location_description:
-            return None
-
-        # Use Google Maps API key from config
-        api_key = (getattr(self.config, 'GOOGLE_MAPS_KEY2', None) or 
-                   getattr(self.config, 'GOOGLE_MAPS_API_KEY', None))
-
-        if not api_key:
-            logger.warning("No Google Maps API key available for geocoding")
-            return None
-
-        try:
-            import googlemaps
-            gmaps = googlemaps.Client(key=api_key)
-
-            logger.debug(f"Simple geocoding: {location_description}")
-            geocode_result = gmaps.geocode(location_description)
-
-            if geocode_result and len(geocode_result) > 0:
-                # Just take the first result - conversation layer should have resolved ambiguity
-                location = geocode_result[0]['geometry']['location']
-                coordinates = (location['lat'], location['lng'])
-                logger.info(f"✅ Geocoded '{location_description}' to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
-                return coordinates
-            else:
-                logger.warning(f"❌ No geocoding results for: {location_description}")
-                return None
-
-        except Exception as e:
-            logger.error(f"❌ Error geocoding location: {e}")
-            return None
-
     def _add_distance_info(self, restaurants: List[Dict[str, Any]], coordinates: Tuple[float, float]) -> List[Dict[str, Any]]:
-        """Add distance information to restaurant results"""
+        """Add distance information to restaurants"""
         try:
-            from location.location_utils import LocationUtils
+            restaurants_with_distance = []
 
             for restaurant in restaurants:
-                if restaurant.get('latitude') and restaurant.get('longitude'):
-                    restaurant_coords = (float(restaurant['latitude']), float(restaurant['longitude']))
-                    distance_km = LocationUtils.calculate_distance(coordinates, restaurant_coords)
+                # Calculate distance if restaurant has coordinates
+                restaurant_lat = restaurant.get('latitude')
+                restaurant_lng = restaurant.get('longitude')
 
+                if restaurant_lat and restaurant_lng:
+                    distance_km = LocationUtils.calculate_distance(
+                        coordinates[0], coordinates[1],
+                        restaurant_lat, restaurant_lng
+                    )
                     restaurant['distance_km'] = distance_km
                     restaurant['distance_text'] = LocationUtils.format_distance(distance_km)
                 else:
-                    restaurant['distance_km'] = float('inf')
+                    restaurant['distance_km'] = None
                     restaurant['distance_text'] = "Distance unknown"
 
-            # Sort by distance
-            restaurants.sort(key=lambda x: x.get('distance_km', float('inf')))
-            return restaurants
+                restaurants_with_distance.append(restaurant)
+
+            return restaurants_with_distance
 
         except Exception as e:
             logger.error(f"❌ Error adding distance info: {e}")
             return restaurants
 
-    async def _search_google_maps_venues(self, coordinates: Tuple[float, float], query: str, cancel_check_fn=None) -> List[VenueResult]:
-        """Search Google Maps for venues - FIX: Remove cancel_check_fn parameter"""
-        try:
-            # FIX: Don't pass cancel_check_fn to search_venues - it doesn't accept this parameter
-            venues = await self.google_maps_agent.search_venues(
-                coordinates=coordinates,
-                query=query
-                # Removed: cancel_check_fn=cancel_check_fn  # This parameter doesn't exist
-            )
+    # ============ RESPONSE HELPERS ============
 
-            # Handle cancellation manually if needed
-            if cancel_check_fn and cancel_check_fn():
-                return []
-
-            return venues
-        except Exception as e:
-            logger.error(f"❌ Error searching Google Maps venues: {e}")
-            return []
-
-    async def _verify_and_filter_venues(self, venues: List[VenueResult], query: str, coordinates: Tuple[float, float], cancel_check_fn=None) -> List[VenueResult]:
-        """Verify venues through media sources"""
-        try:
-            verified_venues = await self.media_verifier.verify_venues(
-                venues=venues,
-                query=query,
-                coordinates=coordinates,
-                cancel_check_fn=cancel_check_fn
-            )
-            return verified_venues
-        except Exception as e:
-            logger.error(f"❌ Error verifying venues: {e}")
-            return venues  # Return unverified venues as fallback
-
-    def _create_error_response(self, error_message: str) -> Dict[str, Any]:
+    def _create_error_response(self, message: str) -> Dict[str, Any]:
         """Create standardized error response"""
         return {
             "success": False,
-            "error": error_message,
+            "error": message,
             "results": [],
             "restaurant_count": 0,
-            "formatted_message": f"😔 {error_message}"
+            "formatted_message": f"😔 {message}"
         }
 
     def _create_cancelled_response(self) -> Dict[str, Any]:
@@ -393,5 +411,5 @@ class LocationOrchestrator:
             "cancelled": True,
             "results": [],
             "restaurant_count": 0,
-            "formatted_message": "Search was cancelled."
+            "formatted_message": "Search cancelled by user"
         }
