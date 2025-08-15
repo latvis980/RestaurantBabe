@@ -284,6 +284,9 @@ class Database:
             logger.error(f"Error getting restaurants by preference tags: {e}")
             return []
 
+    # utils/database.py - PARTIAL UPDATE
+    # This is the section that needs to be updated to fix the missing description and sources in location search
+
     def get_restaurants_by_coordinates(self, center: Tuple[float, float], radius_km: float, limit: int = 20) -> List[Dict[str, Any]]:
         """
         Get restaurants within radius of coordinates using PostGIS or fallback method
@@ -320,9 +323,9 @@ class Database:
                 logger.warning(f"PostGIS search failed: {postgis_error}")
                 logger.info("🔄 Falling back to manual distance calculation...")
 
-                # Fallback: Get all restaurants with coordinates and filter manually
+                # FIXED: Fallback method now includes ALL fields (raw_description, sources, etc.)
                 result = self.supabase.table('restaurants')\
-                    .select('id, name, address, city, country, latitude, longitude, place_id, cuisine_tags, mention_count')\
+                    .select('*')\
                     .or_('coordinates.not.is.null,and(latitude.not.is.null,longitude.not.is.null)')\
                     .execute()
 
@@ -370,22 +373,6 @@ class Database:
         except Exception as e:
             logger.error(f"❌ Error in coordinate-based search: {e}")
             return []
-
-    # ============ DOMAIN INTELLIGENCE METHODS (SIMPLIFIED STUBS) ============
-    # These are still being called by other parts of the codebase
-
-    def save_domain_intelligence(self, domain: str, intelligence_data: Dict[str, Any]) -> bool:
-        """Save domain intelligence data - DISABLED STUB"""
-        logger.debug(f"Domain intelligence disabled: {domain}")
-        return True
-
-    def get_domain_intelligence(self, domain: str) -> Optional[Dict[str, Any]]:
-        """Get domain intelligence data - DISABLED STUB"""
-        return None
-
-    def update_domain_success(self, domain: str, success: bool, restaurants_found: int = 0):
-        """Update domain success/failure counts - DISABLED STUB"""
-        logger.debug(f"Domain intelligence disabled: {domain}, success={success}")
 
     # ============ STATISTICS AND MONITORING ============
 

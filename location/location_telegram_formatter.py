@@ -365,9 +365,11 @@ class LocationTelegramFormatter:
             return "Distance unknown"
 
     def _format_description(self, restaurant: Dict[str, Any]) -> str:
-        """Format restaurant description"""
+        """Format restaurant description with robust field handling"""
         try:
-            description = restaurant.get('description', '').strip()
+            # Check both possible description field names
+            description = (restaurant.get('description', '').strip() or 
+                          restaurant.get('raw_description', '').strip())
 
             if not description:
                 return ""
@@ -379,11 +381,12 @@ class LocationTelegramFormatter:
 
             return f"💭 {clean_description}\n"
 
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Error formatting description: {e}")
             return ""
 
     def _format_sources(self, restaurant: Dict[str, Any]) -> str:
-        """Format restaurant sources/recommendations"""
+        """Format restaurant sources/recommendations with robust handling"""
         try:
             sources = restaurant.get('sources', [])
 
@@ -391,16 +394,23 @@ class LocationTelegramFormatter:
                 return ""
 
             if isinstance(sources, list) and sources:
-                sources_text = ", ".join(sources[:2])  # Show max 2 sources
-                if len(sources) > 2:
-                    sources_text += f" +{len(sources)-2} more"
+                # Filter out empty strings
+                valid_sources = [s for s in sources if s and str(s).strip()]
+                if not valid_sources:
+                    return ""
+
+                sources_text = ", ".join(valid_sources[:2])  # Show max 2 sources
+                if len(valid_sources) > 2:
+                    sources_text += f" +{len(valid_sources)-2} more"
                 return f"📚 From {sources_text}\n"
+
             elif isinstance(sources, str) and sources.strip():
                 return f"📚 From {sources.strip()}\n"
             else:
                 return ""
 
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Error formatting sources: {e}")
             return ""
 
     def _clean_html(self, text: str) -> str:
