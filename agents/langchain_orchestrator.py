@@ -608,7 +608,7 @@ class LangChainOrchestrator:
             return {**x, "enhanced_results": {"main_list": []}}
 
     def _format_step(self, x):
-        """Format step - converts enhanced_results to telegram_formatted_text"""
+        """Format step - converts enhanced_results to langchain_formatted_results"""
         try:
             logger.info("📱 ENTERING FORMAT STEP")
 
@@ -619,7 +619,7 @@ class LangChainOrchestrator:
                 logger.warning("⚠️ No restaurants to format for Telegram")
                 return {
                     **x,
-                    "telegram_formatted_text": "Sorry, no restaurant recommendations found for your query."
+                    "langchain_formatted_results": "Sorry, no restaurant recommendations found for your query."
                 }
 
             logger.info(f"📱 Formatting {len(main_list)} restaurants for Telegram")
@@ -634,7 +634,7 @@ class LangChainOrchestrator:
             return {
                 **x,
                 "raw_query": x.get("raw_query", x.get("query", "")),  # Preserve raw query
-                "telegram_formatted_text": telegram_text,
+                "langchain_formatted_results": telegram_text,
                 "final_results": enhanced_results
             }
 
@@ -643,7 +643,7 @@ class LangChainOrchestrator:
             dump_chain_state("format_error", x, error=e)
             return {
                 **x,
-                "telegram_formatted_text": "Sorry, there was an error formatting the restaurant recommendations."
+                "langchain_formatted_results": "Sorry, there was an error formatting the restaurant recommendations."
             }
 
     def _save_scraped_content_for_processing(self, pipeline_data, scraped_results):
@@ -816,7 +816,7 @@ class LangChainOrchestrator:
             user_query: The user's restaurant request
 
         Returns:
-            Dict with telegram_formatted_text and other results
+            Dict with langchain_formatted_results and other results
         """
         start_time = time.time()  # FIXED: Add start_time for error handling
 
@@ -850,7 +850,7 @@ class LangChainOrchestrator:
                 logger.info(f"📊 Process completed: {user_query} → {result.get('destination', 'Unknown')} → {content_source}")
 
                 # Extract results with correct key names
-                telegram_text = result.get("telegram_formatted_text", 
+                telegram_text = result.get("langchain_formatted_results", 
                                          "Sorry, no recommendations found.")
 
                 enhanced_results = result.get("enhanced_results", {})
@@ -862,9 +862,9 @@ class LangChainOrchestrator:
                 processing_time = time.time() - start_time
                 self._update_enhanced_stats(result, processing_time)
 
-                # CLEANED: Return with smart scraper statistics (no Firecrawl remnants)
+                # CLEANED: Return with smart scraper statistics
                 return {
-                    "telegram_formatted_text": telegram_text,
+                    "langchain_formatted_results": telegram_text,
                     "enhanced_results": enhanced_results,
                     "main_list": main_list,
                     "destination": result.get("destination"),
@@ -896,7 +896,7 @@ class LangChainOrchestrator:
 
                 return {
                     "main_list": [],
-                    "telegram_formatted_text": "Sorry, there was an error processing your request.",
+                    "langchain_formatted_results": "Sorry, there was an error processing your request.",
                     "raw_query": user_query,
                     "scraper_stats": self.scraper.get_stats()  # CLEANED: Updated field name
                 }

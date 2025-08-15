@@ -272,8 +272,8 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
             return
 
         # FIXED: Send results using the correct key name
-        if result and result.get("telegram_formatted_text"):
-            formatted_message = result["telegram_formatted_text"]
+        if result and result.get("langchain_formatted_results"):
+            formatted_message = result["langchain_formatted_results"]
 
             # Debug logging to see what we got
             logger.info(f"🔍 Result keys: {list(result.keys())}")
@@ -287,7 +287,7 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
             logger.info(f"✅ City search results sent for user {user_id}")
         else:
             # Log the actual result structure for debugging
-            logger.warning(f"❌ Search failed or no telegram_formatted_text. Result keys: {list(result.keys()) if result else 'None'}")
+            logger.warning(f"❌ Search failed or no langchain_formatted_results. Result keys: {list(result.keys()) if result else 'None'}")
             logger.warning(f"❌ Result content: {result}")
 
             bot.send_message(
@@ -367,7 +367,7 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
 
         # Handle the results - the orchestrator returns properly formatted results
         if result.get("success"):
-            formatted_message = result.get("formatted_message",
+            formatted_message = result.get("location_formatted_results",
                                            "Found some great places!")
 
             # Store location context for potential Google Maps follow-up
@@ -568,9 +568,9 @@ def perform_google_maps_followup_search(user_id: int, chat_id: int):
             location_description=location_description)
 
         # Send results
-        if final_venues and formatted_results.get("message"):
+        if final_venues and formatted_results.get("googlemaps_formatted_results"):
             formatted_message = formatted_results.get(
-                "message",
+                "googlemaps_formatted_results",
                 f"Found {len(final_venues)} additional restaurants in {location_description}!"
             )
 
@@ -617,7 +617,7 @@ async def handle_google_maps_with_verification(update, context, orchestrator_res
 
     try:
         # Step 1: Send intermediate message (UPDATED - don't mention Google Maps)
-        intermediate_message = orchestrator_result.get("formatted_message", 
+        intermediate_message = orchestrator_result.get("location_formatted_results", 
             "Found some restaurants in the vicinity, let me check what local media and international guides have to say about them.")
 
         processing_msg = bot.send_message(
@@ -652,7 +652,7 @@ async def handle_google_maps_with_verification(update, context, orchestrator_res
 
         # Step 3: Send final verified results
         if final_result.get("success") and final_result.get("results"):
-            formatted_message = final_result.get("formatted_message", 
+            formatted_message = final_result.get("location_formatted_results", 
                 f"Found {len(final_result.get('results', []))} verified restaurants!")
 
             bot.send_message(
@@ -664,7 +664,7 @@ async def handle_google_maps_with_verification(update, context, orchestrator_res
 
             logger.info(f"✅ Google Maps with verification completed for user {user_id}: {len(final_result.get('results', []))} venues")
         else:
-            error_message = final_result.get("formatted_message", "😔 No suitable restaurants found after verification.")
+            error_message = final_result.get("location_formatted_results", "😔 No suitable restaurants found after verification.")
             bot.send_message(
                 chat_id,
                 error_message,
@@ -711,7 +711,7 @@ def handle_location_search(update, context):
 
         if source == "database_with_choice":
             # Database results with user choice - existing flow
-            formatted_message = orchestrator_result.get("formatted_message", "Found restaurants from my notes!")
+            formatted_message = orchestrator_result.get("location_formatted_results", "Found restaurants from my notes!")
 
             bot.send_message(
                 chat_id,
@@ -732,7 +732,7 @@ def handle_location_search(update, context):
 
         elif source == "google_maps_verified":
             # Already verified results - send directly
-            formatted_message = orchestrator_result.get("formatted_message", "Found verified restaurants!")
+            formatted_message = orchestrator_result.get("location_formatted_results", "Found verified restaurants!")
 
             bot.send_message(
                 chat_id,
@@ -814,7 +814,7 @@ def handle_location_input(location_text: str, user_id: int, chat_id: int):
             # Handle results
             if result.get("success"):
                 formatted_message = result.get(
-                    "formatted_message",
+                    "location_formatted_results",
                     f"Found restaurants near {location_data.description}!")
 
                 # Check if this was a database result with choice option
@@ -991,7 +991,7 @@ def handle_gps_location(message):
         # Handle results
         if result.get("success"):
             formatted_message = result.get(
-                "formatted_message", f"Found restaurants near your location!")
+                "location_formatted_results", f"Found restaurants near your location!")
 
             # Check if this was a database result with choice option
             if result.get("source") == "database_with_choice" and result.get(

@@ -145,7 +145,7 @@ class LocationOrchestrator:
                         "offer_more_results": True,
                         "filter_reasoning": filter_result.get("reasoning", ""),
                         # FIX: Add the missing formatted_message key
-                        "formatted_message": formatted_results.get("message", f"Found {filtered_count} relevant restaurants from my notes!")
+                        "location_formatted_results": formatted_results.get("message", f"Found {filtered_count} relevant restaurants from my notes!")
                     }
                 else:
                     logger.info(f"📍 No relevant matches in {db_restaurant_count} database results - starting Google Maps search")
@@ -251,7 +251,7 @@ class LocationOrchestrator:
                 "restaurant_count": len(final_venues),
                 "coordinates": coordinates,
                 "location_description": location_desc,
-                "formatted_message": formatted_results.get("message", f"Found {len(final_venues)} restaurants after verification!")
+                "location_formatted_results": formatted_results.get("message", f"Found {len(final_venues)} restaurants after verification!")
             }
 
         except Exception as e:
