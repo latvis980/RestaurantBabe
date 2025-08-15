@@ -305,6 +305,27 @@ class LocationOrchestrator:
 
     # ============ HELPER METHODS ============
 
+    async def process_more_results_query(
+        self,
+        query: str,
+        coordinates: Tuple[float, float], 
+        location_desc: str,
+        cancel_check_fn=None
+    ) -> Dict[str, Any]:
+        """
+        Process "more results" query - goes directly to Google Maps search
+        Bypasses database search since it was already done
+        """
+        logger.info(f"🔍 Processing 'more results' query: '{query}' at {location_desc}")
+
+        # Go directly to Google Maps flow
+        return await self._search_google_maps_flow(
+            query=query,
+            coordinates=coordinates,
+            location_desc=location_desc,
+            cancel_check_fn=cancel_check_fn
+        )
+    
     async def _search_google_maps_venues(
         self, 
         coordinates: Tuple[float, float], 

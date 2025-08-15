@@ -246,28 +246,34 @@ def execute_action(result: Dict[str, Any], user_id: int, chat_id: int):
                                daemon=True).start()
 
     elif action == "LAUNCH_GOOGLE_MAPS_SEARCH":
-    # Google Maps search for more options in same location
+        # FIXED: Google Maps search for more options in same location
         search_type = action_data.get("search_type")
         if search_type == "google_maps_more":
-        # CHANGED: Use location search instead of legacy follow-up function
-
-        # Get stored location context
+            # Get stored location context
             if conversation_handler is None:
                 bot.send_message(chat_id, "😔 I'm having trouble with the conversation system. Please try again.", parse_mode='HTML')
                 return
 
             location_context = conversation_handler.get_location_search_context(user_id)
             if not location_context:
-                bot.send_message(chat_id, "😔 I don't have the location context for a follow-up search. Could you specify the area again?", parse_mode='HTML')
+                bot.send_message(chat_id, "😔 I don't have the location context. Please search again.", parse_mode='HTML')
                 return
 
-            # Use the original query from context for follow-up search
+            # Use the dedicated "more results" method
             original_query = location_context.get("query", "restaurants")
+            location_data = location_context.get("location_data")
+            location_description = location_context.get("location_description", "the area")
 
-            # Launch location search (will go through orchestrator and use Google Maps since DB was already checked)
-            threading.Thread(target=perform_location_search,
-                         args=(original_query, user_id, chat_id),
-                         daemon=True).start()
+            # Extract coordinates
+            coordinates = (location_data.latitude, location_data.longitude) if location_data else None
+            if not coordinates:
+                bot.send_message(chat_id, "😔 Could not get coordinates. Please try again.", parse_mode='HTML')
+                return
+
+            # Call orchestrator's "more results" method directly
+            threading.Thread(target=call_orchestrator_more_results,
+                           args=(original_query, coordinates, location_description, user_id, chat_id),
+                           daemon=True).start()
         else:
             logger.warning(f"Unknown Google Maps search type: {search_type}")
 
@@ -286,6 +292,117 @@ def execute_action(result: Dict[str, Any], user_id: int, chat_id: int):
     else:
         logger.warning(f"Unknown action: {action}")
 
+
+def call_orchestrator_more_results(query: str, coordinates: tuple, location_desc: str, user_id: int, chat_id: int):
+    """
+    Call orchestrator's more results method for Google Maps search
+    This is a clean wrapper that delegates to the location orchestrator
+    """
+    processing_msg = None
+    try:
+        logger.info(f"🔍 Starting 'more results' search for user {user_id}: '{query}' in {location_desc}")
+
+        # Add to active searches for cancellation tracking
+        create_cancel_event(user_id, chat_id)
+
+        # Send processing message
+        processing_msg = bot.send_message(
+            chat_id,
+            f"🔍 <b>Searching for more {query} options in {location_desc}...</b>",
+            parse_mode='HTML'
+        )
+
+        # Create location orchestrator
+        from location.location_orchestrator import LocationOrchestrator
+        location_orchestrator = LocationOrchestrator(config)
+
+        def cancel_check():
+            return is_search_cancelled(user_id)
+
+        # Create async loop and call orchestrator's more results method
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        result = loop.run_until_complete(
+            location_orchestrator.process_more_results_query(
+                query=query,
+                coordinates=coordinates,
+                location_desc=location_desc,
+                cancel_check_fn=cancel_check
+            )
+        )
+
+        loop.close()
+
+        # Clean up processing message
+        if processing_msg:
+            try:
+                bot.delete_message(chat_id, processing_msg.message_id)
+            except Exception:
+                pass
+
+        if is_search_cancelled(user_id):
+            return
+
+        # Handle results using the same logic as perform_location_search
+        if result.get("success"):
+            # Check if this requires media verification
+            if result.get("requires_verification"):
+                # Handle Google Maps with verification flow
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+                loop.run_until_complete(
+                    handle_google_maps_with_verification(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        orchestrator_result=result,
+                        original_query=query,
+                        location_description=location_desc
+                    )
+                )
+
+                loop.close()
+            else:
+                # Direct results without verification
+                formatted_message = result.get("location_formatted_results", 
+                    f"Found {result.get('restaurant_count', 0)} more restaurants!")
+
+                bot.send_message(
+                    chat_id,
+                    formatted_message,
+                    parse_mode='HTML',
+                    disable_web_page_preview=True
+                )
+
+            logger.info(f"✅ 'More results' search completed for user {user_id}: {result.get('restaurant_count', 0)} restaurants")
+        else:
+            # Handle error case
+            error_message = result.get("location_formatted_results", "😔 Couldn't find more restaurants in that area.")
+            bot.send_message(
+                chat_id,
+                error_message,
+                parse_mode='HTML'
+            )
+
+    except Exception as e:
+        logger.error(f"❌ Error in 'more results' search for user {user_id}: {e}")
+
+        # Clean up processing message
+        if processing_msg:
+            try:
+                bot.delete_message(chat_id, processing_msg.message_id)
+            except Exception:
+                pass
+
+        bot.send_message(
+            chat_id,
+            "😔 I had trouble searching for more restaurants. Please try again.",
+            parse_mode='HTML'
+        )
+    finally:
+        # Always clean up search tracking
+        cleanup_search(user_id)
 
 # ============ SEARCH EXECUTION FUNCTIONS ============
 
