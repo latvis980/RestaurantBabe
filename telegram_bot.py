@@ -639,13 +639,81 @@ def perform_google_maps_followup_search(user_id: int, chat_id: int):
                 user_id, ConversationState.RESULTS_SHOWN)
 
 async def handle_google_maps_with_verification(update, context, orchestrator_result, original_query, location_description):
-"""
-Handle Google Maps results that require media verification
-Two-step process: intermediate message + verification + final results
-FIXED: Use location_orchestrator instead of undefined orchestrator
-"""
-chat_id = update.effective_chat.id
-user_id = update.effective_user.id
+    """
+    Handle Google Maps results that require media verification
+    Two-step process: intermediate message + verification + final results
+    FIXED: Use location_orchestrator instead of undefined orchestrator
+    """
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+
+    try:
+        # Step 1: Send intermediate message (UPDATED - don't mention Google Maps)
+        intermediate_message = orchestrator_result.get("location_formatted_results", 
+            "Found some restaurants in the vicinity, let me check what local media and international guides have to say about them.")
+
+        processing_msg = bot.send_message(
+            chat_id,
+            intermediate_message,
+            parse_mode='HTML'
+        )
+
+        # Step 2: Complete media verification
+        venues = orchestrator_result.get("venues_for_verification", [])
+        coordinates = orchestrator_result.get("coordinates")
+        query = orchestrator_result.get("query", original_query)
+
+        # FIXED: Create location orchestrator instance
+        from location.location_orchestrator import LocationOrchestrator
+        location_orchestrator = LocationOrchestrator(config)
+
+        # Run media verification using location_orchestrator
+        final_result = await location_orchestrator.complete_media_verification(
+            venues=venues,
+            query=query,
+            coordinates=coordinates,
+            location_desc=location_description,
+            cancel_check_fn=lambda: is_cancelled()
+        )
+
+        # Clean up processing message
+        if processing_msg:
+            try:
+                bot.delete_message(chat_id, processing_msg.message_id)
+            except Exception:
+                pass
+
+        if is_cancelled():
+            return
+
+        # Step 3: Send final verified results
+        if final_result.get("success") and final_result.get("results"):
+            formatted_message = final_result.get("location_formatted_results", 
+                f"Found {len(final_result.get('results', []))} verified restaurants!")
+
+            bot.send_message(
+                chat_id,
+                formatted_message,
+                parse_mode='HTML',
+                disable_web_page_preview=True
+            )
+
+            logger.info(f"✅ Google Maps with verification completed for user {user_id}: {len(final_result.get('results', []))} venues")
+        else:
+            error_message = final_result.get("location_formatted_results", "😔 No suitable restaurants found after verification.")
+            bot.send_message(
+                chat_id,
+                error_message,
+                parse_mode='HTML'
+            )
+
+    except Exception as e:
+        logger.error(f"❌ Error in Google Maps verification flow: {e}")
+        bot.send_message(
+            chat_id,
+            "😔 Had trouble verifying restaurants. Please try again.",
+            parse_mode='HTML'
+        )
 
 try:
     # Step 1: Send intermediate message (UPDATED - don't mention Google Maps)
