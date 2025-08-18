@@ -238,7 +238,7 @@ class LocationTelegramFormatter:
             # Media verification status
             sources_line = ""
             if media_verified and sources:
-                sources_text = ", ".join(sources[:2])  # Show max 2 sources
+                sources_text = ", ".join(sources[:4])  # Show up to 4 sources
                 if len(sources) > 2:
                     sources_text += f" +{len(sources)-2} more"
                 sources_line = f"✅ Recommended by {sources_text}\n"

@@ -306,11 +306,57 @@ class DatabaseSearchAgent:
 
         return selected_restaurants
 
+    def _parse_sources_field(self, restaurant: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Parse the sources field from TEXT to actual list
+
+        The sources column in Supabase is stored as TEXT but contains JSON-like strings
+        We need to convert these to actual Python lists
+        """
+        try:
+            sources_raw = restaurant.get('sources', [])
+
+            # If it's already a list, return as-is
+            if isinstance(sources_raw, list):
+                restaurant['sources'] = sources_raw
+                return restaurant
+
+            # If it's a string that looks like a JSON array, parse it
+            if isinstance(sources_raw, str) and sources_raw.strip():
+                try:
+                    # Try JSON parsing first
+                    sources_list = json.loads(sources_raw)
+                    if isinstance(sources_list, list):
+                        restaurant['sources'] = sources_list
+                    else:
+                        # If JSON parsing returns non-list, wrap in list
+                        restaurant['sources'] = [str(sources_list)]
+                except json.JSONDecodeError:
+                    try:
+                        # Try ast.literal_eval as fallback
+                        sources_list = ast.literal_eval(sources_raw)
+                        if isinstance(sources_list, list):
+                            restaurant['sources'] = sources_list
+                        else:
+                            restaurant['sources'] = [str(sources_list)]
+                    except (ValueError, SyntaxError):
+                        # If all parsing fails, treat as single source
+                        restaurant['sources'] = [sources_raw]
+            else:
+                # Empty or None sources
+                restaurant['sources'] = []
+
+            return restaurant
+
+        except Exception as e:
+            logger.error(f"Error parsing sources for restaurant {restaurant.get('name', 'Unknown')}: {e}")
+            restaurant['sources'] = []
+            return restaurant
+
     def _get_full_restaurant_details(self, filtered_restaurants: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         STEP 4: Fetch full details (descriptions, sources) for AI-selected restaurants
-
-        Only called for restaurants that passed AI filtering
+        FIXED: Parse sources field from TEXT to list
         """
         try:
             from utils.database import get_database
@@ -333,6 +379,9 @@ class DatabaseSearchAgent:
                     if result.data:
                         full_restaurant = result.data[0]
 
+                        # FIXED: Parse sources field from TEXT to list
+                        full_restaurant = self._parse_sources_field(full_restaurant)
+
                         # Preserve AI filtering metadata from step 3
                         filtered_restaurant = next(
                             (r for r in filtered_restaurants if str(r.get('id')) == restaurant_id), 
@@ -342,6 +391,11 @@ class DatabaseSearchAgent:
                         # Add AI analysis metadata
                         full_restaurant['_relevance_score'] = filtered_restaurant.get('_relevance_score', 0)
                         full_restaurant['_reasoning'] = filtered_restaurant.get('_reasoning', '')
+
+                        # Log sources parsing success
+                        sources_count = len(full_restaurant.get('sources', []))
+                        sources_preview = full_restaurant.get('sources', [])[:2] if sources_count > 0 else []
+                        logger.debug(f"✅ Restaurant {restaurant_id} sources parsed: {sources_count} sources - {sources_preview}")
 
                         # Log description availability for debugging
                         if not full_restaurant.get('raw_description'):
@@ -359,6 +413,11 @@ class DatabaseSearchAgent:
                     continue
 
             logger.info(f"✅ Retrieved full details for {len(detailed_restaurants)} restaurants")
+
+            # Log final sources summary
+            total_sources = sum(len(r.get('sources', [])) for r in detailed_restaurants)
+            restaurants_with_sources = sum(1 for r in detailed_restaurants if r.get('sources'))
+            logger.info(f"📊 Sources summary: {restaurants_with_sources}/{len(detailed_restaurants)} restaurants have sources, {total_sources} total sources")
 
             return detailed_restaurants
 
