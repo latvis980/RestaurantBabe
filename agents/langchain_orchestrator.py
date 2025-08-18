@@ -615,6 +615,15 @@ class LangChainOrchestrator:
             enhanced_results = x.get("enhanced_results", {})
             main_list = enhanced_results.get("main_list", [])
 
+            # ADD THIS DEBUG LOGGING:
+            logger.info(f"🔍 FORMATTER INPUT - Processing {len(main_list)} restaurants")
+            for i, restaurant in enumerate(main_list):
+                name = restaurant.get('name', 'Unknown')
+                sources = restaurant.get('sources', [])
+                logger.info(f"🔍 FORMATTER INPUT - Restaurant {i+1}: {name}")
+                logger.info(f"🔍 FORMATTER INPUT - Sources type: {type(sources)}")
+                logger.info(f"🔍 FORMATTER INPUT - Sources content: {sources}")
+
             if not main_list:
                 logger.warning("⚠️ No restaurants to format for Telegram")
                 return {
@@ -631,19 +640,18 @@ class LangChainOrchestrator:
 
             logger.info("✅ Telegram formatting complete")
 
+            # ADD THIS DEBUG LOGGING:
+            logger.info(f"🔍 FORMATTER OUTPUT - Final telegram text length: {len(telegram_text)}")
+            if "tripadvisor" in telegram_text.lower():
+                logger.warning("🚨 TRIPADVISOR DETECTED in final output!")
+            if "timeout.com" in telegram_text.lower():
+                logger.info("✅ timeout.com found in final output")
+
             return {
                 **x,
-                "raw_query": x.get("raw_query", x.get("query", "")),  # Preserve raw query
+                "raw_query": x.get("raw_query", x.get("query", "")),
                 "langchain_formatted_results": telegram_text,
                 "final_results": enhanced_results
-            }
-
-        except Exception as e:
-            logger.error(f"❌ Error in format step: {e}")
-            dump_chain_state("format_error", x, error=e)
-            return {
-                **x,
-                "langchain_formatted_results": "Sorry, there was an error formatting the restaurant recommendations."
             }
 
     def _save_scraped_content_for_processing(self, pipeline_data, scraped_results):

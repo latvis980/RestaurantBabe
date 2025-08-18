@@ -440,34 +440,44 @@ Extract restaurants using the diplomatic concierge approach. Include good option
             return self._fallback_response()
 
     def _process_database_restaurants(self, database_restaurants, raw_query, destination):
-        """Process restaurants from AI-matched database"""
+        """Process restaurants from AI-matched database - FIXED to preserve sources"""
         try:
             logger.info(f"🗃️ Processing {len(database_restaurants)} restaurants from database for {destination}")
 
-            # Prepare database restaurant data for AI formatting
-            database_content = self._prepare_database_content(database_restaurants)
+            # Your existing code here...
+            processed_restaurants = []
 
-            if not database_content.strip():
-                logger.warning("No substantial database content to process")
-                return self._fallback_response()
+            for restaurant in database_restaurants:
+                # Your processing logic...
 
-            # Get AI formatting with diplomatic approach
-            response = self.database_chain.invoke({
-                "raw_query": raw_query,
-                "destination": destination,
-                "database_restaurants": database_content
-            })
+                # ADD THIS DEBUG LOGGING:
+                sources = restaurant.get('sources', [])
+                logger.info(f"🔍 EDITOR INPUT - Restaurant: {restaurant.get('name')}")
+                logger.info(f"🔍 EDITOR INPUT - Sources type: {type(sources)}")
+                logger.info(f"🔍 EDITOR INPUT - Sources content: {sources}")
 
-            result = self._post_process_results(response, "database", destination)
+                processed_restaurant = {
+                    "name": name,
+                    "address": address, 
+                    "description": description,
+                    "sources": sources,  # Your preserved sources
+                    # ... other fields
+                }
 
-            logger.info(f"✅ Successfully formatted {len(result['edited_results']['main_list'])} database restaurants")
+                processed_restaurants.append(processed_restaurant)
 
-            return result
+                # ADD THIS DEBUG LOGGING:
+                logger.info(f"🔍 EDITOR OUTPUT - Restaurant: {processed_restaurant['name']}")
+                logger.info(f"🔍 EDITOR OUTPUT - Sources: {processed_restaurant['sources']}")
 
-        except Exception as e:
-            logger.error(f"❌ Error processing database restaurants: {e}")
-            dump_chain_state("database_processing_error", locals(), error=e)
-            return self._fallback_response()
+            logger.info(f"✅ Successfully preserved sources for {len(processed_restaurants)} database restaurants")
+
+            return {
+                "edited_results": {
+                    "main_list": processed_restaurants
+                },
+                "follow_up_queries": []
+            }
 
     def _process_scraped_content(self, scraped_results, raw_query, destination):
         """Process scraped web content with chunking support"""

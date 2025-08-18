@@ -93,6 +93,9 @@ class TelegramFormatter:
 
         return f'📍 <a href="{escape(google_url, quote=True)}">{clean_street}</a>\n'
 
+    # Quick fix for formatters/telegram_formatter.py
+    # Add this logging to the _format_restaurant method, right at the beginning:
+
     def _format_restaurant(self, restaurant, index):
         """Format a single restaurant - simple and reliable"""
         name = restaurant.get('name', '').strip()
@@ -103,6 +106,11 @@ class TelegramFormatter:
         address = restaurant.get('address', '')
         sources = restaurant.get('sources', [])
         place_id = restaurant.get('place_id')
+
+        # ADD THIS DEBUG LOGGING:
+        logger.info(f"🔍 TELEGRAM FORMATTER - Restaurant {index}: {name}")
+        logger.info(f"🔍 TELEGRAM FORMATTER - Sources type: {type(sources)}")
+        logger.info(f"🔍 TELEGRAM FORMATTER - Sources content: {sources}")
 
         # Store current restaurant for URL access
         self._current_restaurant = restaurant
@@ -127,13 +135,23 @@ class TelegramFormatter:
         sources_line = self._format_sources(sources)
         if sources_line:
             parts.append(sources_line)
+            # ADD THIS DEBUG LOGGING:
+            logger.info(f"🔍 TELEGRAM FORMATTER - Generated sources line: {sources_line}")
+        else:
+            logger.warning(f"⚠️ No sources line generated for {name}")
 
         parts.append("\n")  # Spacing between restaurants
 
         # Clear current restaurant
         self._current_restaurant = None
 
-        return ''.join(parts)
+        formatted_result = ''.join(parts)
+
+        # ADD THIS DEBUG LOGGING:
+        logger.info(f"🔍 TELEGRAM FORMATTER - Final formatted restaurant:")
+        logger.info(f"🔍 TELEGRAM FORMATTER - Result: {formatted_result}")
+
+        return formatted_result
 
     def _extract_street(self, full_address):
         """Extract street address using AI - handles international formats"""
@@ -185,7 +203,7 @@ Address to clean: "{full_address}"
 Return only the cleaned address, nothing else."""
 
             response = client.chat.completions.create(
-                model="deepseek-chat",  # Light model for speed
+                model="gpt-4o-mini",  # CHANGED: Use GPT-4o Mini instead of deepseek-chat
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=100,
                 temperature=0.1  # Low temperature for consistency
