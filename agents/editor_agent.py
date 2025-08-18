@@ -512,7 +512,14 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
         except Exception as e:
             logger.error(f"❌ Error processing scraped content: {e}")
-            dump_chain_state("scraped_processing_error", locals(), error=e)
+            # Import dump_chain_state if available, otherwise just log the error
+            try:
+                from utils.debug_utils import dump_chain_state
+                dump_chain_state("scraped_processing_error", locals(), error=e)
+            except ImportError:
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+
             return self._fallback_response()
 
     def _process_scraped_content_with_chunks(self, scraped_content, raw_query, destination):
