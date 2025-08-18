@@ -654,6 +654,15 @@ class LangChainOrchestrator:
                 "final_results": enhanced_results
             }
 
+        except Exception as e:
+            logger.error(f"❌ Error in format step: {e}")
+            return {
+                **x,
+                "raw_query": x.get("raw_query", x.get("query", "")),
+                "langchain_formatted_results": "Sorry, there was an error formatting your restaurant recommendations.",
+                "final_results": {"main_list": []}
+            }
+
     def _save_scraped_content_for_processing(self, pipeline_data, scraped_results):
         """
         UPDATED: Upload existing TXT file from text cleaner to Supabase
