@@ -43,7 +43,7 @@ class EditorAgent:
 
         CONCIERGE APPROACH:
         - If restaurants don't perfectly match ALL user requirements and were included due to very limited results and very narrow query, explain diplomatically why you chose them
-        - Use phrases like "While this may not have X specifically mentioned, it offers Y which makes it worth considering"
+        - Whenever necessary (limited results), use phrases like "While this may not have X specifically mentioned, it offers Y which makes it worth considering"
         - Be honest about uncertainties: "though I cannot confirm if they have vegan options, their modern approach suggests they likely accommodate dietary preferences"
         - Focus on positive aspects and potential matches rather than strict filtering
 
@@ -444,31 +444,40 @@ Extract restaurants using the diplomatic concierge approach. Include good option
         try:
             logger.info(f"🗃️ Processing {len(database_restaurants)} restaurants from database for {destination}")
 
-            # Your existing code here...
-            processed_restaurants = []
+            # Prepare database content for AI processing
+            database_content = self._prepare_database_content(database_restaurants)
 
-            for restaurant in database_restaurants:
-                # Your processing logic...
+            if not database_content.strip():
+                logger.warning("No substantial database content to process")
+                return self._fallback_response()
 
-                # ADD THIS DEBUG LOGGING:
-                sources = restaurant.get('sources', [])
-                logger.info(f"🔍 EDITOR INPUT - Restaurant: {restaurant.get('name')}")
-                logger.info(f"🔍 EDITOR INPUT - Sources type: {type(sources)}")
-                logger.info(f"🔍 EDITOR INPUT - Sources content: {sources}")
+            # Get AI formatting
+            response = self.database_chain.invoke({
+                "raw_query": raw_query,
+                "destination": destination,
+                "database_restaurants": database_content
+            })
 
-                processed_restaurant = {
-                    "name": name,
-                    "address": address, 
-                    "description": description,
-                    "sources": sources,  # Your preserved sources
-                    # ... other fields
-                }
+            result = self._post_process_results(response, "database", destination)
 
-                processed_restaurants.append(processed_restaurant)
+            # Preserve original sources for database restaurants
+            processed_restaurants = result.get('edited_results', {}).get('main_list', [])
 
-                # ADD THIS DEBUG LOGGING:
-                logger.info(f"🔍 EDITOR OUTPUT - Restaurant: {processed_restaurant['name']}")
-                logger.info(f"🔍 EDITOR OUTPUT - Sources: {processed_restaurant['sources']}")
+            for processed_restaurant in processed_restaurants:
+                # Find matching original restaurant by name
+                name = processed_restaurant.get('name', '').lower().strip()
+
+                for original_restaurant in database_restaurants:
+                    original_name = original_restaurant.get('name', '').lower().strip()
+
+                    if name == original_name:
+                        # Preserve the original sources
+                        original_sources = original_restaurant.get('sources', [])
+                        processed_restaurant['sources'] = original_sources
+
+                        logger.info(f"🔍 EDITOR OUTPUT - Restaurant: {processed_restaurant['name']}")
+                        logger.info(f"🔍 EDITOR OUTPUT - Sources: {processed_restaurant['sources']}")
+                        break
 
             logger.info(f"✅ Successfully preserved sources for {len(processed_restaurants)} database restaurants")
 
@@ -478,6 +487,17 @@ Extract restaurants using the diplomatic concierge approach. Include good option
                 },
                 "follow_up_queries": []
             }
+
+        except Exception as e:
+            logger.error(f"❌ Error processing database restaurants: {e}")
+            try:
+                from utils.debug_utils import dump_chain_state
+                dump_chain_state("database_processing_error", locals(), error=e)
+            except ImportError:
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+
+            return self._fallback_response()
 
     def _process_scraped_content(self, scraped_results, raw_query, destination):
         """Process scraped web content with chunking support"""
