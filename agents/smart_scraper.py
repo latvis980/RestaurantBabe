@@ -40,7 +40,6 @@ class SmartRestaurantScraper:
         self.session_timeout = 300  # 5 minutes of inactivity before closing
         self.last_activity = None
         self.cleanup_timer = None
-        self.session_lock = asyncio.Lock()
         self._cleanup_scheduled = False
 
         # Railway environment detection
@@ -122,23 +121,21 @@ class SmartRestaurantScraper:
 
     async def _cleanup_inactive_session(self):
         """Clean up browser session if inactive"""
-        async with self.session_lock:
-            if self.last_activity and (time.time() - self.last_activity) >= self.session_timeout:
-                logger.info(f"🧹 Closing inactive browser session ({self.session_timeout}s timeout)")
-                await self._stop_browser_session()
+        if self.last_activity and (time.time() - self.last_activity) >= self.session_timeout:
+            logger.info(f"🧹 Closing inactive browser session ({self.session_timeout}s timeout)")
+            await self._stop_browser_session()
 
     async def _ensure_browser_session(self):
         """Ensure browser session is active, start if needed"""
-        async with self.session_lock:
             # Check for scheduled cleanup first
-            await self._check_and_cleanup_if_needed()
+        await self._check_and_cleanup_if_needed()
 
-            if not self.browser:
-                await self._start_browser_session()
+        if not self.browser:
+            await self._start_browser_session()
 
             # Update activity and reset cleanup timer
-            self.last_activity = time.time()
-            self._schedule_cleanup()
+        self.last_activity = time.time()
+        self._schedule_cleanup()
 
     async def start(self):
         """Initialize Playwright and browser context (with session management)"""
