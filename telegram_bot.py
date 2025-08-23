@@ -10,6 +10,7 @@ Key Changes:
 """
 
 import telebot
+import json
 from telebot import types
 import logging
 import time
@@ -464,7 +465,6 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
     try:
         cancel_event = create_cancel_event(user_id, chat_id)
 
-        # Send processing message
         # Send processing message with video
         try:
             with open('media/searching.mp4', 'rb') as video:

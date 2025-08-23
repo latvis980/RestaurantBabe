@@ -143,46 +143,75 @@ class TextCleanerAgent:
 
     def _create_cleaning_prompt(self) -> str:
         """
-        Create AI prompt for cleaning restaurant content with source attribution
-        FIXED: Now properly handles double curly braces for LangChain compatibility
+        Create AI prompt for cleaning restaurant content with enhanced location extraction
+        UPDATED: Based on enhanced text cleaner prompt with LangChain formatting
         """
-        return """You are a content cleaning specialist for restaurant recommendation systems. 
-Your job is to extract clean, useful restaurant information from scraped web content.
+        return """You are a restaurant content specialist. Your task is to:
+    1. Clean and structure web content to focus on restaurant information
+    2. Identify the primary city and country this content is about
 
-The content comes from a single source. The source URL is shown at the top of the content.
+    **Instructions for Content Cleaning:**
+    1. Focus ONLY on restaurants, cafes, bars, bistros, and similar dining establishments
+    2. Extract restaurant name and a comprehensive description with all key details (cuisine, atmosphere, chef, concept, signature dishes etc.)
+    3. Ignore: navigation menus, ads, cookie notices, social media links, unrelated articles
+    4. Preserve: restaurant names, addresses, descriptions as-is, only translated to English if necessary
+    5. IMPORTANT: Add the source URL to EACH restaurant entry
+    6. IMPORTANT: add city and country to each restaurant entry
 
-TASK: Extract restaurant names and descriptions from the provided content.
+    **CRITICAL LOCATION EXTRACTION RULES:**
+    1. Assign a city and country to every restaurant you extract
+    2. Look for location clues in:
+       - Article titles and content context
+       - Restaurant addresses
+       - Regional context mentions
 
-RULES:
-1. Focus ONLY on restaurants, cafes, bars, bistros, and similar dining establishments
-2. Extract restaurant name and a comprehensive description with all key details (cuisine, atmosphere, chef, concept, signature dishes etc.)
-3. Ignore: navigation menus, ads, cookie notices, social media links, unrelated articles
-4. Preserve: restaurant names, addresses, descriptions as-is, only translated to English if in a foreign language
-5. IMPORTANT: Add the source URL (from the top of the content) to each restaurant entry
-6. Format: "Restaurant Name (source_url): Description, address if available"
-7. If there are no description, only restaurant names, but the source is very reputable (i.e. Michelin), just include names and url, and set description to "recommended by..." and the name of the source.
+    3. For multi-city content (e.g., "Best restaurants in Tuscany"):
+       - Extract the SPECIFIC city for each restaurant from context/address
+       - If specific city unclear, use the main region/city from the article
 
-CONTENT TYPE: Restaurant guide/listing page
-DESIRED OUTPUT: Clean list of restaurants with descriptions, addresses, and source URLs
+    **Content to clean:**
+    {{content}}
 
-Content to clean:
-{content}
+    **REQUIRED OUTPUT FORMAT:**
 
-OUTPUT FORMAT:
-Restaurant Name 1
-source_url
-Description in English
-address if available
+    First, provide the header:
+    Original URL: [Extract from content header]
+    Title: [Extract title if available]
+    City: [Primary city name]
+    Country: [Country name]
+    Confidence about location: [high|medium|low]
+    Reasoning: [Brief explanation of how you identified the location]
 
-Restaurant Name 2
-source_url
-Description in English
-address if available
+    Then, provide the cleaned content with each restaurant entry in this exact format:
 
-...
+    RESTAURANT_ENTRIES:
 
-If no clear restaurants are found, respond with: "No restaurants found in this content."
-"""
+    Name: [Restaurant Name]
+    City: [Specific city for this restaurant]
+    Country: [Country for this restaurant]
+    Description: [Comprehensive description including cuisine, atmosphere, specialties, etc. - translated to English if necessary]
+    Address: [Full address if available, or "Not specified" if unavailable]
+    Source: [Source URL from content header]
+
+    [Empty line between restaurant entries]
+
+    Name: [Next Restaurant Name]
+    City: [Specific city for this restaurant]
+    Country: [Country for this restaurant]
+    Description: [Description]
+    Address: [Address or "Not specified"]
+    Source: [Source URL from content header]
+
+    **IMPORTANT NOTES:**
+    - If there are no descriptions, only restaurant names, but the source is reputable (i.e. Michelin), set description to "Recommended by [source name]"
+    - Translate descriptions to English if they are in a foreign language
+    - Each restaurant MUST have Name, City, Country, Description, Address, and Source
+    - Use "Not specified" for missing addresses
+    - Extract ALL restaurants mentioned in the content
+
+    If no clear restaurants are found, respond with: "No restaurants found in this content."
+
+    Return ONLY the location info and restaurant entries in the specified format, no other text."""
 
     async def clean_single_source(self, content: str, url: str, content_format: str = 'text') -> str:
         """
