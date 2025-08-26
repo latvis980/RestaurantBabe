@@ -10,7 +10,6 @@ import asyncio
 import logging
 import concurrent.futures
 import threading
-import requests
 from datetime import datetime
 
 from utils.database import get_restaurants_by_city
@@ -719,36 +718,30 @@ class LangChainOrchestrator:
                     'local_file': os.path.basename(txt_file_path)
                 }
 
-                # Background upload TXT file to Supabase
-                def perform_background_uploads():
-                    try:
-                        if hasattr(self, 'storage_manager') and self.storage_manager:
-                            logger.info("☁️ Uploading clean restaurant TXT to Supabase Storage...")
+                # Direct upload TXT file to Supabase (synchronous)
+                try:
+                    if hasattr(self, 'storage_manager') and self.storage_manager:
+                        logger.info("☁️ Uploading clean restaurant TXT to Supabase Storage...")
 
-                            # Upload clean TXT content to Supabase
-                            success, storage_path = self.storage_manager.upload_scraped_content(
-                                clean_content,  # Clean text from file
-                                metadata, 
-                                file_type="txt"  # TXT files for Supabase
-                            )
+                        # Direct synchronous upload - no threading needed
+                        success, storage_path = self.storage_manager.upload_scraped_content(
+                            clean_content,  # Clean text from file
+                            metadata, 
+                            file_type="txt"  # TXT files for Supabase
+                        )
 
-                            if success:
-                                logger.info(f"✅ Clean restaurant TXT uploaded to: {storage_path}")
-                            else:
-                                logger.warning("⚠️ Failed to upload clean TXT to Supabase Storage")
-
+                        if success:
+                            logger.info(f"✅ Clean restaurant TXT uploaded to: {storage_path}")
                         else:
-                            logger.warning("⚠️ No storage manager available - TXT file saved locally only")
+                            logger.warning("⚠️ Failed to upload clean TXT to Supabase Storage")
 
-                    except Exception as upload_error:
-                        logger.error(f"❌ Error in TXT upload: {upload_error}")
+                    else:
+                        logger.warning("⚠️ No storage manager available - TXT file saved locally only")
 
-                # Execute background upload
-                from threading import Thread
-                upload_thread = Thread(target=perform_background_uploads, daemon=True)
-                upload_thread.start()
+                except Exception as upload_error:
+                    logger.error(f"❌ Error in TXT upload: {upload_error}")
 
-                logger.info("🚀 TXT background upload initiated")
+                logger.info("✅ TXT upload completed synchronously")
 
             else:
                 # Fallback: Save raw content as TXT

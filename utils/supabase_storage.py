@@ -1,7 +1,7 @@
 # utils/supabase_storage.py - UPDATED: Simplified storage structure
 """
-Enhanced Supabase Storage functionality for uploading scraped content files.
-This handles uploading scraped content to Supabase Storage bucket.
+Enhanced Supabase Storage functionality for uploading cleaned content files.
+This handles uploading cleaned content to Supabase Storage bucket.
 
 UPDATED: Simplified bucket structure - unprocessed/ and processed/ folders only
 """
@@ -65,7 +65,7 @@ class SupabaseStorageManager:
             city = metadata.get('city', 'unknown').replace(' ', '_').lower()
 
             # SIMPLIFIED: Direct to unprocessed folder
-            file_path = f"unprocessed/scraped_{timestamp}_{city}_{content_hash}.{file_type}"
+            file_path = f"unprocessed/cleanedRB_{timestamp}_{city}_{content_hash}.{file_type}"
 
             # Prepare content for upload
             if file_type == "json":
@@ -258,9 +258,9 @@ class SupabaseStorageManager:
                     ext = file_path.split('.')[-1].lower()
                     stats["file_types"][ext] = stats["file_types"].get(ext, 0) + 1
 
-                # Extract city from filename (scraped_timestamp_city_hash.ext)
+                # Extract city from filename (cleanedRB_timestamp_city_hash.ext)
                 filename = file_path.split('/')[-1]  # Get just filename
-                if filename.startswith('scraped_') and filename.count('_') >= 3:
+                if filename.startswith('cleanedRB_') and filename.count('_') >= 3:
                     parts = filename.split('_')
                     if len(parts) >= 4:
                         city = parts[2].replace('_', ' ').title()  # timestamp_city_hash
