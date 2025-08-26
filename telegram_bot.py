@@ -10,14 +10,14 @@ Key Changes:
 """
 
 import telebot
-import json
 from telebot import types
 import logging
 import time
+import re
 import threading
 import asyncio
 from threading import Event
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, Any
 
 # Import the centralized handler
 from utils.conversation_handler import CentralizedConversationHandler, ConversationState
@@ -48,8 +48,7 @@ location_analyzer = None  # Will be initialized in main()
 voice_handler = None  # Will be initialized in main()
 
 # Track active searches for cancellation
-active_searches = {
-}  # user_id -> {"cancel_event": Event, "chat_id": int, "start_time": float}
+active_searches = {}  # user_id -> {"cancel_event": Event, "chat_id": int, "start_time": float}
 
 # Track users awaiting location input
 users_awaiting_location = {}  # user_id -> {"query": str, "timestamp": float}
@@ -66,7 +65,7 @@ WELCOME_MESSAGE = (
 # ============ UTILITY FUNCTIONS ============
 
 
-def create_cancel_event(user_id, chat_id):
+def create_cancel_event(user_id: int, chat_id: int) -> Event:
     """Create a cancellation event for a user's search"""
     cancel_event = Event()
     active_searches[user_id] = {
@@ -78,19 +77,63 @@ def create_cancel_event(user_id, chat_id):
     return cancel_event
 
 
-def cleanup_search(user_id):
+def cleanup_search(user_id: int) -> None:
     """Clean up search tracking for a user"""
     if user_id in active_searches:
         del active_searches[user_id]
         logger.info(f"Cleaned up search tracking for user {user_id}")
 
 
-def is_search_cancelled(user_id):
+def is_search_cancelled(user_id: int) -> bool:
     """Check if search has been cancelled for this user"""
     if user_id in active_searches:
         return active_searches[user_id]["cancel_event"].is_set()
     return False
 
+def fix_telegram_html(text: str) -> str:
+    """
+    Simple fix for Telegram HTML parsing errors
+    Just ensures basic tags are properly closed
+    """
+    if not text:
+        return text
+
+    # Track open tags
+    open_tags = []
+    result = []
+
+    # Find all HTML tags
+    tag_pattern = r'<(/?)(\w+)[^>]*>'
+    last_pos = 0
+
+    for match in re.finditer(tag_pattern, text):
+        # Add text before tag
+        result.append(text[last_pos:match.start()])
+
+        is_closing = bool(match.group(1))
+        tag_name = match.group(2).lower()
+
+        if is_closing:
+            # Closing tag - remove from stack if it matches
+            if open_tags and open_tags[-1] == tag_name:
+                open_tags.pop()
+                result.append(match.group(0))  # Keep the closing tag
+            # If no matching open tag, just ignore this closing tag
+        else:
+            # Opening tag
+            open_tags.append(tag_name)
+            result.append(match.group(0))  # Keep the opening tag
+
+        last_pos = match.end()
+
+    # Add remaining text
+    result.append(text[last_pos:])
+
+    # Close any unclosed tags
+    for tag in reversed(open_tags):
+        result.append(f'</{tag}>')
+
+    return ''.join(result)
 
 def create_location_button():
     """Create reply keyboard with one-click location sharing button"""
@@ -246,8 +289,6 @@ def execute_action(result: Dict[str, Any], user_id: int, chat_id: int):
                                args=(search_query, user_id, chat_id),
                                daemon=True).start()
 
-    # Replace the coordinate extraction part in the LAUNCH_GOOGLE_MAPS_SEARCH action:
-
     elif action == "LAUNCH_GOOGLE_MAPS_SEARCH":
         # FIXED: Google Maps search for more options in same location
         search_type = action_data.get("search_type")
@@ -281,13 +322,13 @@ def execute_action(result: Dict[str, Any], user_id: int, chat_id: int):
 
             # Method 2: Try to get from stored coordinates in context
             if not coordinates and 'coordinates' in location_context:
-                try:
-                    stored_coords = location_context['coordinates']
-                    if stored_coords and len(stored_coords) == 2:
+                stored_coords = location_context.get('coordinates')  # FIXED: Use .get() instead of direct access
+                if stored_coords and isinstance(stored_coords, (list, tuple)) and len(stored_coords) == 2:
+                    try:
                         coordinates = (float(stored_coords[0]), float(stored_coords[1]))
                         logger.info(f"✅ Extracted coordinates from context: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
-                except (ValueError, TypeError, IndexError) as e:
-                    logger.warning(f"❌ Invalid coordinates in context: {stored_coords} - {e}")
+                    except (ValueError, TypeError, IndexError) as e:
+                        logger.warning(f"❌ Invalid coordinates in context: {stored_coords} - {e}")
 
             # Method 3: Try to geocode the location description again
             if not coordinates and location_data and hasattr(location_data, 'description') and location_data.description:
@@ -303,7 +344,7 @@ def execute_action(result: Dict[str, Any], user_id: int, chat_id: int):
 
             # Final validation
             if not coordinates:
-                logger.error(f"❌ Could not extract coordinates from location context. Available data:")
+                logger.error("❌ Could not extract coordinates from location context. Available data:")
                 logger.error(f"  location_data: {location_data}")
                 logger.error(f"  location_context keys: {list(location_context.keys()) if location_context else 'None'}")
                 bot.send_message(chat_id, "😔 Could not get coordinates. Please try again.", parse_mode='HTML')
@@ -423,7 +464,7 @@ def call_orchestrator_more_results(query: str, coordinates: tuple, location_desc
 
                 bot.send_message(
                     chat_id,
-                    formatted_message,
+                    fix_telegram_html(formatted_message),
                     parse_mode='HTML',
                     disable_web_page_preview=True
                 )
@@ -462,8 +503,9 @@ def call_orchestrator_more_results(query: str, coordinates: tuple, location_desc
 
 def perform_city_search(search_query: str, chat_id: int, user_id: int):
     """Execute city-wide restaurant search using existing orchestrator"""
+    processing_msg = None
     try:
-        cancel_event = create_cancel_event(user_id, chat_id)
+        create_cancel_event(user_id, chat_id)
 
         # Send processing message with video
         try:
@@ -485,19 +527,20 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
         # Get orchestrator instance
         orchestrator = get_orchestrator()
 
-        # FIXED: Use the orchestrator.search() method (not .chain.invoke())
+        # Use the orchestrator.search() method
         result = orchestrator.process_query(search_query)
 
         # Clean up processing message
-        try:
-            bot.delete_message(chat_id, processing_msg.message_id)
-        except Exception:
-            pass
+        if processing_msg:
+            try:
+                bot.delete_message(chat_id, processing_msg.message_id)
+            except Exception:
+                pass
 
         if is_search_cancelled(user_id):
             return
 
-        # FIXED: Send results using the correct key name
+        # Send results using the correct key name
         if result and result.get("langchain_formatted_results"):
             formatted_message = result["langchain_formatted_results"]
 
@@ -507,9 +550,10 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
 
             bot.send_message(
                 chat_id,
-                formatted_message,
+                fix_telegram_html(formatted_message),
                 parse_mode='HTML',
                 disable_web_page_preview=True)
+
             logger.info(f"✅ City search results sent for user {user_id}")
         else:
             # Log the actual result structure for debugging
@@ -524,10 +568,11 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
     except Exception as e:
         logger.error(f"Error in city search: {e}")
         # Clean up processing message
-        try:
-            bot.delete_message(chat_id, processing_msg.message_id)
-        except Exception:
-            pass
+        if processing_msg:
+            try:
+                bot.delete_message(chat_id, processing_msg.message_id)
+            except Exception:
+                pass
         bot.send_message(
             chat_id,
             "😔 I encountered an error while searching. Please try again!",
@@ -543,7 +588,7 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
     """
     processing_msg = None
     try:
-        cancel_event = create_cancel_event(user_id, chat_id)
+        create_cancel_event(user_id, chat_id)
 
         # Send processing message with video
         try:
@@ -565,10 +610,11 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
         location_data = location_handler.extract_location_from_text(search_query)
 
         if location_data.confidence < 0.3:
-            try:
-                bot.delete_message(chat_id, processing_msg.message_id)
-            except Exception:
-                pass
+            if processing_msg:
+                try:
+                    bot.delete_message(chat_id, processing_msg.message_id)
+                except Exception:
+                    pass
             bot.send_message(chat_id, "😔 I couldn't understand the location. Could you be more specific about where you want to search?", parse_mode='HTML')
             return
 
@@ -583,7 +629,7 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        # Process location query with orchestrator - ORCHESTRATOR HANDLES EVERYTHING
+        # Process location query with orchestrator
         result = loop.run_until_complete(
             location_orchestrator.process_location_query(
                 query=search_query,
@@ -594,17 +640,21 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
 
         loop.close()
 
-        # FIXED: If search was successful, update location_data with coordinates from result
+        # If search was successful, update location_data with coordinates from result
         if result.get("success") and result.get("coordinates"):
             coordinates = result.get("coordinates")
-            # Update the location_data with the successfully geocoded coordinates
-            location_data.latitude = coordinates[0]
-            location_data.longitude = coordinates[1]
-            logger.info(f"✅ Updated location_data with geocoded coordinates: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+            # Validate coordinates before accessing
+            if coordinates and isinstance(coordinates, (list, tuple)) and len(coordinates) >= 2:
+                # Update the location_data with the successfully geocoded coordinates
+                location_data.latitude = coordinates[0]
+                location_data.longitude = coordinates[1]
+                logger.info(f"✅ Updated location_data with geocoded coordinates: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+            else:
+                logger.warning(f"❌ Invalid coordinates format in result: {coordinates}")
 
         # Store location context for follow-up searches with UPDATED location_data
         if conversation_handler is not None:
-            # FIXED: Store both location_data (with coordinates) and coordinates separately for reliability
+            # Store both location_data (with coordinates) and coordinates separately for reliability
             conversation_handler.store_location_search_context(
                 user_id=user_id,
                 query=search_query,
@@ -612,7 +662,7 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
                 location_description=location_data.description or "the area"
             )
 
-            # FIXED: Also store coordinates separately in the context for extra reliability
+            # Also store coordinates separately in the context for extra reliability
             if result.get("coordinates"):
                 context = conversation_handler.get_location_search_context(user_id)
                 if context:
@@ -629,7 +679,7 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
         if is_search_cancelled(user_id):
             return
 
-        # CLEAN: Handle ALL result types the same way - no special verification logic
+        # Handle ALL result types the same way - no special verification logic
         if result.get("success"):
             formatted_message = result.get("location_formatted_results", 
                 f"Found {result.get('restaurant_count', 0)} restaurants!")
@@ -643,7 +693,7 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
 
             bot.send_message(
                 chat_id,
-                formatted_message,
+                fix_telegram_html(formatted_message),
                 parse_mode='HTML',
                 disable_web_page_preview=True
             )
@@ -670,11 +720,11 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
     except Exception as e:
         logger.error(f"Error in location search: {e}")
         # Clean up processing message
-        try:
-            if processing_msg:
+        if processing_msg:
+            try:
                 bot.delete_message(chat_id, processing_msg.message_id)
-        except Exception:
-            pass
+            except Exception:
+                pass
         bot.send_message(
             chat_id,
             "😔 I encountered an error while searching. Please try again!",
@@ -708,12 +758,12 @@ async def handle_google_maps_with_verification(chat_id: int, user_id: int, orche
     """
     Handle Google Maps results that require media verification
     Two-step process: intermediate message + verification + final results
-    FIXED: Correct parameters and function calls for current architecture
     """
+    processing_msg = None
     try:
         # Step 1: Send intermediate message (don't mention Google Maps)
         intermediate_message = orchestrator_result.get("formatted_message", 
-            "Found some restaurants in the vicinity, let me check what local media and international guides have to say about them.")
+            "Found some restaurants in the vicinity, let me check what local media and international guides have to say about them.") if orchestrator_result else "Processing restaurant search..."
 
         processing_msg = bot.send_message(
             chat_id,
@@ -721,10 +771,25 @@ async def handle_google_maps_with_verification(chat_id: int, user_id: int, orche
             parse_mode='HTML'
         )
 
-        # Step 2: Complete media verification
-        venues = orchestrator_result.get("venues_for_verification", [])
-        coordinates = orchestrator_result.get("coordinates")
-        query = orchestrator_result.get("query", original_query)
+        # Step 2: Complete media verification - with proper None checks
+        venues = orchestrator_result.get("venues_for_verification", []) if orchestrator_result else []
+        coordinates = orchestrator_result.get("coordinates") if orchestrator_result else None
+        query = orchestrator_result.get("query", original_query) if orchestrator_result else original_query
+
+        # Validate coordinates before proceeding
+        if coordinates is None or not isinstance(coordinates, (list, tuple)) or len(coordinates) != 2:
+            logger.error(f"Invalid coordinates for verification: {coordinates}")
+            if processing_msg:
+                try:
+                    bot.delete_message(chat_id, processing_msg.message_id)
+                except Exception:
+                    pass
+            bot.send_message(
+                chat_id,
+                "😔 Had trouble with location coordinates. Please try again.",
+                parse_mode='HTML'
+            )
+            return
 
         # Create location orchestrator instance
         from location.location_orchestrator import LocationOrchestrator
@@ -738,7 +803,7 @@ async def handle_google_maps_with_verification(chat_id: int, user_id: int, orche
         final_result = await location_orchestrator.complete_media_verification(
             venues=venues,
             query=query,
-            coordinates=coordinates,
+            coordinates=(float(coordinates[0]), float(coordinates[1])),  # Ensure tuple of floats
             location_desc=location_description,
             cancel_check_fn=cancel_check
         )
@@ -760,7 +825,7 @@ async def handle_google_maps_with_verification(chat_id: int, user_id: int, orche
 
             bot.send_message(
                 chat_id,
-                formatted_message,
+                fix_telegram_html(formatted_message),
                 parse_mode='HTML',
                 disable_web_page_preview=True
             )
@@ -776,6 +841,11 @@ async def handle_google_maps_with_verification(chat_id: int, user_id: int, orche
 
     except Exception as e:
         logger.error(f"❌ Error in Google Maps verification flow: {e}")
+        if processing_msg:
+            try:
+                bot.delete_message(chat_id, processing_msg.message_id)
+            except Exception:
+                pass
         bot.send_message(
             chat_id,
             "😔 Had trouble verifying restaurants. Please try again.",
@@ -840,9 +910,7 @@ def handle_location_input(location_text: str, user_id: int, chat_id: int):
                     f"Found restaurants near {location_data.description}!")
 
                 # Check if this was a database result with choice option
-                if result.get(
-                        "source") == "database_with_choice" and result.get(
-                            "offer_more_results"):
+                if result.get("source") == "database_with_choice" and result.get("offer_more_results"):
                     if conversation_handler is not None:
                         conversation_handler.set_user_state(
                             user_id, ConversationState.RESULTS_SHOWN)
@@ -850,7 +918,7 @@ def handle_location_input(location_text: str, user_id: int, chat_id: int):
                     formatted_message += f"\n\n💬 <b>Want more options?</b> Just ask me to find more restaurants in {location_desc}!"
 
                 bot.send_message(chat_id,
-                                 formatted_message,
+                                 fix_telegram_html(formatted_message),
                                  parse_mode='HTML',
                                  reply_markup=remove_location_button(),
                                  disable_web_page_preview=True)
@@ -899,7 +967,6 @@ def send_welcome(message):
 def handle_cancel(message):
     """Handle /cancel command to stop current search"""
     user_id = message.from_user.id
-    chat_id = message.chat.id
 
     logger.info(f"Cancel command received from user {user_id}")
 
@@ -1013,7 +1080,7 @@ def handle_gps_location(message):
         # Handle results
         if result.get("success"):
             formatted_message = result.get(
-                "location_formatted_results", f"Found restaurants near your location!")
+                "location_formatted_results", "Found restaurants near your location!")
 
             # Check if this was a database result with choice option
             if result.get("source") == "database_with_choice" and result.get(
@@ -1021,10 +1088,10 @@ def handle_gps_location(message):
                 if conversation_handler is not None:
                     conversation_handler.set_user_state(
                         user_id, ConversationState.RESULTS_SHOWN)
-                formatted_message += f"\n\n💬 <b>Want more options?</b> Just ask me to find more restaurants around here!"
+                formatted_message += "\n\n💬 <b>Want more options?</b> Just ask me to find more restaurants around here!"
 
             bot.send_message(chat_id,
-                             formatted_message,
+                             fix_telegram_html(formatted_message),
                              parse_mode='HTML',
                              reply_markup=remove_location_button(),
                              disable_web_page_preview=True)
