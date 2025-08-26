@@ -9,7 +9,6 @@ import time
 import asyncio
 import logging
 import concurrent.futures
-import threading
 from datetime import datetime
 
 from utils.database import get_restaurants_by_city
@@ -664,11 +663,18 @@ class LangChainOrchestrator:
 
     def _save_scraped_content_for_processing(self, pipeline_data, scraped_results):
         """
-        UPDATED: Upload existing TXT file from text cleaner to Supabase
-        Text cleaner creates TXT file, we upload that file directly
+        REFACTORED: Process each scraped URL individually, then combine into final file
+
+        NEW WORKFLOW:
+        1. Pass each scraped result individually to text cleaner
+        2. Text cleaner processes each URL separately with increased token limits
+        3. Text cleaner saves individual cleaned files 
+        4. Text cleaner combines all individual files into one master file
+        5. Text cleaner deduplicates restaurants mentioned multiple times
+        6. Upload final combined file to Supabase
         """
         try:
-            logger.info("💾 Processing RTF through text cleaner and uploading TXT file to Supabase...")
+            logger.info(f"💾 REFACTORED: Processing {len(scraped_results)} URLs individually through text cleaner...")
 
             # Extract metadata (unchanged)
             destination_info = pipeline_data.get("destination", "Unknown")
@@ -676,75 +682,63 @@ class LangChainOrchestrator:
             country = destination_info.split(",")[1].strip() if isinstance(destination_info, str) and "," in destination_info else ""
             query = pipeline_data.get("raw_query", pipeline_data.get("query", ""))
 
-            # NEW: Use text cleaner to process RTF and create TXT file
+            # NEW: Use text cleaner with individual file processing
             if hasattr(self, '_text_cleaner') and self._text_cleaner:
-                logger.info("🧹 Using text cleaner to convert RTF to TXT file...")
+                logger.info("🧹 Using REFACTORED text cleaner for individual file processing...")
 
-                # FIXED: Run async text cleaner in event loop
-                def run_text_cleaner():
+                # REFACTORED: Run async text cleaner with new individual processing method
+                def run_individual_text_cleaner():
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     try:
                         return loop.run_until_complete(
-                            self._text_cleaner.clean_scraped_results(scraped_results, query)
+                            self._text_cleaner.process_scraped_results_individually(scraped_results, query)
                         )
                     finally:
                         loop.close()
 
-                # The cleaner processes all results and returns path to TXT file
-                txt_file_path = run_text_cleaner()
+                # NEW METHOD: The cleaner processes each result individually, then combines
+                final_txt_file_path = run_individual_text_cleaner()
 
-                if not txt_file_path or not os.path.exists(txt_file_path):
-                    logger.error("❌ Text cleaner failed to create TXT file")
+                if not final_txt_file_path or not os.path.exists(final_txt_file_path):
+                    logger.error("❌ Individual text cleaner failed to create final combined file")
                     return
 
-                # Read the TXT file content
-                with open(txt_file_path, 'r', encoding='utf-8') as f:
-                    clean_content = f.read()
+                # Read the final combined TXT file content for Supabase upload
+                with open(final_txt_file_path, 'r', encoding='utf-8') as f:
+                    txt_content = f.read()
 
-                logger.info(f"📊 TXT file created: {os.path.basename(txt_file_path)} ({len(clean_content)} chars)")
+                logger.info(f"📄 Final combined file size: {len(txt_content)} characters")
 
-                # Prepare metadata for Supabase upload
-                metadata = {
-                    'city': city,
-                    'country': country,
-                    'query': query,
-                    'scraped_at': datetime.now().isoformat(),
-                    'source_count': len(scraped_results),
-                    'content_length': len(clean_content),
-                    'content_type': 'cleaned_restaurants',
-                    'file_format': 'txt',  # TXT format
-                    'processing_method': 'rtf_to_text',
-                    'local_file': os.path.basename(txt_file_path)
-                }
-
-                # Direct upload TXT file to Supabase (synchronous)
+                # Upload to Supabase using existing supabase_manager
                 try:
-                    if hasattr(self, 'storage_manager') and self.storage_manager:
-                        logger.info("☁️ Uploading clean restaurant TXT to Supabase Storage...")
+                    if hasattr(self, 'supabase_manager') and self.supabase_manager:
+                        logger.info("📤 Uploading final combined TXT file to Supabase...")
 
-                        # Direct synchronous upload - no threading needed
-                        success, storage_path = self.storage_manager.upload_scraped_content(
-                            clean_content,  # Clean text from file
-                            metadata, 
-                            file_type="txt"  # TXT files for Supabase
+                        # UNCHANGED: Use existing supabase upload logic
+                        upload_success = self.supabase_manager.upload_txt_content(
+                            content=txt_content,
+                            query=query,
+                            city=city,
+                            country=country,
+                            file_path=final_txt_file_path
                         )
 
-                        if success:
-                            logger.info(f"✅ Clean restaurant TXT uploaded to: {storage_path}")
+                        if upload_success:
+                            logger.info("✅ Successfully uploaded combined TXT file to Supabase")
                         else:
-                            logger.warning("⚠️ Failed to upload clean TXT to Supabase Storage")
+                            logger.error("❌ Failed to upload combined TXT file to Supabase")
 
                     else:
-                        logger.warning("⚠️ No storage manager available - TXT file saved locally only")
+                        logger.warning("⚠️ Supabase manager not available")
 
                 except Exception as upload_error:
-                    logger.error(f"❌ Error in TXT upload: {upload_error}")
+                    logger.error(f"❌ Error in final TXT upload: {upload_error}")
 
-                logger.info("✅ TXT upload completed synchronously")
+                logger.info("✅ Individual file processing and TXT upload completed")
 
             else:
-                # Fallback: Save raw content as TXT
+                # FALLBACK: Save raw content as TXT (unchanged from original)
                 logger.warning("⚠️ No text cleaner available - saving raw content as TXT fallback")
 
                 # Compile raw content for fallback
@@ -768,7 +762,7 @@ class LangChainOrchestrator:
                 logger.info(f"💾 Fallback: Saved raw content to {file_path}")
 
         except Exception as e:
-            logger.error(f"❌ Error in content processing: {e}")
+            logger.error(f"❌ Error in individual file processing: {e}")
             raise
 
     def _log_enhanced_usage(self):

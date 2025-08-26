@@ -71,22 +71,73 @@ MODEL_STRATEGY = {
     'complex_analysis': 'claude'
 }
 
-# FIXED: Added missing OPENAI_MAX_TOKENS_BY_COMPONENT
+# ============================================================================
+# ENHANCED TOKEN LIMITS FOR INDIVIDUAL FILE PROCESSING
+# ============================================================================
+
+# DEEPSEEK Token limits - SIGNIFICANTLY INCREASED for individual file processing
+DEEPSEEK_MAX_TOKENS_BY_COMPONENT = {
+    'content_sectioning': 8192,      # Increased from 4096
+    'content_cleaning': 12288,       # MAJOR INCREASE from 2048 for individual file processing
+    'strategy_analysis': 6144,       # Increased from 3072
+    'url_analysis': 4096,           # Increased from 2048
+    'restaurant_deduplication': 8192, # NEW: For restaurant merging logic
+    'text_combination': 10240        # NEW: For combining individual files
+}
+
+# OPENAI Token limits - SIGNIFICANTLY INCREASED for individual file processing  
 OPENAI_MAX_TOKENS_BY_COMPONENT = {
-    'search_agent': 512,
-    'search_evaluation': 512,
-    'conversation': 1024,
-    'editor': 2048,
-    'content_evaluation': 3072,
-    'restaurant_extraction': 4096,
-    'query_analysis': 1024,
-    'follow_up_search': 1024,
-    'source_mapping': 1024,
-    'location_analysis': 512,
-    'database_search': 2048,  # FIXED: Added missing database_search
-    'dbcontent_evaluation': 3072,  # FIXED: Added missing dbcontent_evaluation
-    'text_cleaner': 2048,  # FIXED: Added missing text_cleaner
-    'smart_scraper': 4096  # FIXED: Added missing smart_scraper
+    'search_agent': 1024,           # Unchanged - sufficient
+    'search_evaluation': 1024,      # Increased from 512
+    'conversation': 2048,           # Increased from 1024
+    'editor': 4096,                 # Increased from 2048
+    'content_evaluation': 6144,     # Increased from 3072
+    'restaurant_extraction': 8192,  # Increased from 4096
+    'query_analysis': 2048,         # Increased from 1024
+    'follow_up_search': 2048,       # Increased from 1024
+    'source_mapping': 2048,         # Increased from 1024
+    'location_analysis': 1024,      # Increased from 512
+    'database_search': 4096,        # Increased from 2048
+    'dbcontent_evaluation': 6144,   # Increased from 3072
+    'content_cleaning': 12288,      # MAJOR INCREASE from 2048 for individual file processing
+    'text_cleaner': 12288,          # MAJOR INCREASE from 2048 for individual file processing
+    'smart_scraper': 8192,          # Increased from 4096
+    'restaurant_deduplication': 8192, # NEW: For restaurant merging logic
+    'text_combination': 10240,      # NEW: For combining individual files
+    'individual_cleaning': 12288    # NEW: Specific for individual file cleaning
+}
+
+# ============================================================================
+# NEW: INDIVIDUAL FILE PROCESSING CONFIGURATION
+# ============================================================================
+
+# Individual file processing settings
+INDIVIDUAL_FILE_PROCESSING = {
+    'enabled': True,
+    'max_files_per_batch': 10,           # Process up to 10 files individually
+    'individual_timeout': 120,           # 2 minutes per individual file
+    'combination_timeout': 180,          # 3 minutes for combining files
+    'deduplication_enabled': True,       # Enable restaurant deduplication
+    'save_individual_files': True,       # Keep individual cleaned files
+    'individual_files_directory': 'scraped_content/individual',
+    'combined_files_directory': 'scraped_content/combined'
+}
+
+# Restaurant deduplication settings
+RESTAURANT_DEDUPLICATION = {
+    'name_similarity_threshold': 0.85,   # 85% similarity to consider same restaurant
+    'address_similarity_threshold': 0.70, # 70% similarity for address matching
+    'combine_descriptions': True,        # Combine descriptions from multiple sources
+    'preserve_best_source': True,        # Keep the most authoritative source info
+    'max_sources_per_restaurant': 5     # Limit sources per restaurant entry
+}
+
+# File management for individual processing
+INDIVIDUAL_FILE_CLEANUP = {
+    'cleanup_individual_files_after_hours': 72,  # Keep individual files for 3 days
+    'cleanup_combined_files_after_hours': 168,   # Keep combined files for 1 week
+    'max_individual_files_per_query': 50        # Prevent file system overflow
+}
 }
 
 # ============================================================================
