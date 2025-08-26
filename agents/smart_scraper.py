@@ -669,48 +669,268 @@ class SmartRestaurantScraper:
 
     async def _extract_content_enhanced_multiStrategy(self, page: Page) -> str:
         """
-        ENHANCED: Multi-strategy content extraction with debugging
+        ENHANCED: Multi-strategy content extraction with comprehensive logging
         Combines the best of both implementations with enhanced fallback
         """
-        try:
-            logger.info("🎹 Starting enhanced keyboard-based content selection")
+        page_url = page.url
+        strategy_start_time = time.time()
 
+        logger.info(f"🎯 STARTING MULTI-STRATEGY CONTENT EXTRACTION")
+        logger.info(f"🎯 Target URL: {page_url}")
+        logger.info(f"🎯 Browser: {self.browser_type}")
+
+        try:
             # Strategy 1: Enhanced keyboard selection with detailed debugging
+            logger.info("🎹 === STRATEGY 1: KEYBOARD SELECTION ===")
+            strategy1_start = time.time()
             content = await self._try_keyboard_selection(page)
+            strategy1_time = time.time() - strategy1_start
+
             if content and len(content.strip()) > 100:
                 self.stats["selection_method_stats"]["keyboard_success"] += 1
-                logger.info(f"✅ Keyboard selection successful: {len(content)} chars")
+                total_time = time.time() - strategy_start_time
+                logger.info(f"✅ STRATEGY 1 SUCCESS: Keyboard selection in {strategy1_time:.2f}s")
+                logger.info(f"✅ Total extraction time: {total_time:.2f}s")
+                logger.info(f"✅ Final content length: {len(content)} characters")
                 return self._clean_scraped_text(content)
+            else:
+                logger.warning(f"❌ STRATEGY 1 FAILED: Keyboard selection insufficient ({len(content) if content else 0} chars) in {strategy1_time:.2f}s")
 
             # Strategy 2: Manual range selection on main content
-            logger.warning("🔧 Keyboard selection insufficient, trying manual range selection")
+            logger.info("🔧 === STRATEGY 2: MANUAL RANGE SELECTION ===")
+            strategy2_start = time.time()
             content = await self._try_manual_selection(page)
+            strategy2_time = time.time() - strategy2_start
+
             if content and len(content.strip()) > 100:
                 self.stats["selection_method_stats"]["manual_success"] += 1
-                logger.info(f"✅ Manual selection successful: {len(content)} chars")
+                total_time = time.time() - strategy_start_time
+                logger.info(f"✅ STRATEGY 2 SUCCESS: Manual selection in {strategy2_time:.2f}s")
+                logger.info(f"✅ Total extraction time: {total_time:.2f}s")
+                logger.info(f"✅ Final content length: {len(content)} characters")
                 return self._clean_scraped_text(content)
+            else:
+                logger.warning(f"❌ STRATEGY 2 FAILED: Manual selection insufficient ({len(content) if content else 0} chars) in {strategy2_time:.2f}s")
 
             # Strategy 3: Smart content area extraction
-            logger.warning("🆘 Manual selection failed, trying smart content extraction")
+            logger.info("🆘 === STRATEGY 3: SMART CONTENT EXTRACTION ===")
+            strategy3_start = time.time()
             content = await self._extract_content_smart_fallback(page)
+            strategy3_time = time.time() - strategy3_start
+
             if content and len(content.strip()) > 100:
                 self.stats["selection_method_stats"]["smart_fallback_success"] += 1
-                logger.info(f"✅ Smart fallback successful: {len(content)} chars")
+                total_time = time.time() - strategy_start_time
+                logger.info(f"✅ STRATEGY 3 SUCCESS: Smart fallback in {strategy3_time:.2f}s")
+                logger.info(f"✅ Total extraction time: {total_time:.2f}s")  
+                logger.info(f"✅ Final content length: {len(content)} characters")
                 return self._clean_scraped_text(content)
+            else:
+                logger.warning(f"❌ STRATEGY 3 FAILED: Smart fallback insufficient ({len(content) if content else 0} chars) in {strategy3_time:.2f}s")
 
             # Strategy 4: Emergency fallback with strict limits
-            logger.error("🚨 All primary methods failed, using emergency extraction")
+            logger.info("🚨 === STRATEGY 4: EMERGENCY EXTRACTION ===")
+            strategy4_start = time.time()
             content = await self._emergency_content_extraction(page)
+            strategy4_time = time.time() - strategy4_start
+
             if content:
                 self.stats["selection_method_stats"]["emergency_fallback"] += 1
-                logger.warning(f"⚠️ Emergency fallback used: {len(content)} chars")
+                total_time = time.time() - strategy_start_time
+                logger.warning(f"⚠️ STRATEGY 4 SUCCESS: Emergency fallback used in {strategy4_time:.2f}s")
+                logger.warning(f"⚠️ Total extraction time: {total_time:.2f}s")
+                logger.warning(f"⚠️ Final content length: {len(content)} characters")
                 return self._clean_scraped_text(content)
+            else:
+                logger.error(f"❌ STRATEGY 4 FAILED: Emergency extraction returned no content in {strategy4_time:.2f}s")
 
-            logger.error("❌ All content extraction strategies failed")
+            # Complete failure
+            total_time = time.time() - strategy_start_time
+            logger.error(f"❌ ALL STRATEGIES FAILED for {page_url}")
+            logger.error(f"❌ Total time spent: {total_time:.2f}s")
+            logger.error(f"❌ Browser: {self.browser_type}")
             return ""
 
         except Exception as e:
-            logger.error(f"❌ Multi-strategy content extraction error: {e}")
+            total_time = time.time() - strategy_start_time
+            logger.error(f"❌ MULTI-STRATEGY EXTRACTION CRITICAL ERROR: {e}")
+            logger.error(f"❌ Error type: {type(e).__name__}")
+            logger.error(f"❌ Time elapsed: {total_time:.2f}s")
+            logger.error(f"❌ URL: {page_url}")
+            return ""
+
+    async def _try_keyboard_selection(self, page: Page) -> str:
+        """
+        Enhanced keyboard selection with detailed debugging and comprehensive logging
+        """
+        try:
+            # Wait for page to be fully ready for selection
+            await asyncio.sleep(self.interaction_delay)
+
+            # Enhanced browser and page info for debugging
+            browser_info = await page.evaluate("navigator.userAgent")
+            page_url = page.url
+            page_title = await page.title() or "No title"
+
+            logger.info(f"🔤 KEYBOARD SELECTION ATTEMPT - URL: {page_url[:80]}...")
+            logger.info(f"🔤 Page title: {page_title[:60]}...")
+            logger.info(f"🔤 Browser: {browser_info[:100]}...")
+
+            # Check page readiness
+            try:
+                page_ready_info = await page.evaluate("""
+                    () => {
+                        return {
+                            readyState: document.readyState,
+                            bodyExists: !!document.body,
+                            bodyChildCount: document.body ? document.body.children.length : 0,
+                            totalTextLength: document.body ? document.body.textContent.length : 0,
+                            hasSelection: !!window.getSelection
+                        };
+                    }
+                """)
+                logger.info(f"🔤 Page readiness: {page_ready_info}")
+            except Exception as e:
+                logger.warning(f"🔤 Could not check page readiness: {e}")
+
+            # Try different keyboard selection strategies with enhanced logging
+            selection_strategies = [
+                ("Meta+a", "Mac/WebKit-style (Cmd+A)"),
+                ("Control+a", "Windows/Linux-style (Ctrl+A)"),
+            ]
+
+            for strategy_idx, (key_combination, description) in enumerate(selection_strategies, 1):
+                try:
+                    logger.info(f"🔤 STRATEGY {strategy_idx}: Attempting {description}: {key_combination}")
+
+                    # Clear any existing selection first
+                    await page.evaluate("window.getSelection().removeAllRanges()")
+                    await asyncio.sleep(0.1)
+
+                    # Enhanced focus attempt with logging
+                    focus_success = await page.evaluate("""
+                        () => {
+                            try {
+                                document.body.focus();
+                                return {
+                                    success: true,
+                                    activeElement: document.activeElement ? document.activeElement.tagName : 'none',
+                                    bodyFocusable: document.body.tabIndex !== undefined
+                                };
+                            } catch (e) {
+                                return { success: false, error: e.message };
+                            }
+                        }
+                    """)
+                    logger.debug(f"🔤 Focus attempt: {focus_success}")
+                    await asyncio.sleep(0.1)
+
+                    # Perform keyboard selection with timing
+                    selection_start = time.time()
+                    await page.keyboard.press(key_combination)
+                    await asyncio.sleep(self.interaction_delay)
+                    selection_time = time.time() - selection_start
+
+                    # Enhanced selection analysis
+                    selection_info = await page.evaluate("""
+                        () => {
+                            const selection = window.getSelection();
+                            const selectedText = selection.toString();
+
+                            return {
+                                rangeCount: selection.rangeCount,
+                                selectedLength: selectedText.length,
+                                selectedPreview: selectedText.substring(0, 200) + (selectedText.length > 200 ? '...' : ''),
+                                anchorNode: selection.anchorNode ? selection.anchorNode.nodeName : 'none',
+                                focusNode: selection.focusNode ? selection.focusNode.nodeName : 'none',
+                                isCollapsed: selection.isCollapsed,
+                                rangeStartContainer: selection.rangeCount > 0 ? 
+                                    selection.getRangeAt(0).startContainer.nodeName : 'none',
+                                rangeEndContainer: selection.rangeCount > 0 ? 
+                                    selection.getRangeAt(0).endContainer.nodeName : 'none'
+                            };
+                        }
+                    """)
+
+                    logger.info(f"🔤 STRATEGY {strategy_idx} RESULTS:")
+                    logger.info(f"     Selection time: {selection_time:.3f}s")
+                    logger.info(f"     Range count: {selection_info['rangeCount']}")
+                    logger.info(f"     Selected length: {selection_info['selectedLength']} chars")
+                    logger.info(f"     Is collapsed: {selection_info['isCollapsed']}")
+                    logger.info(f"     Anchor node: {selection_info['anchorNode']}")
+                    logger.info(f"     Focus node: {selection_info['focusNode']}")
+
+                    if selection_info['selectedLength'] > 0:
+                        logger.info(f"     Content preview: {selection_info['selectedPreview'][:100]}...")
+
+                    # Extract the selected content with detailed logging
+                    content_extraction_start = time.time()
+                    content = await page.evaluate("""
+                        () => {
+                            const selection = window.getSelection();
+                            if (selection.rangeCount > 0 && selection.toString().length > 0) {
+                                const range = selection.getRangeAt(0);
+                                const div = document.createElement('div');
+                                div.appendChild(range.cloneContents());
+
+                                // Count elements before cleanup
+                                const elementsBeforeCleanup = div.querySelectorAll('*').length;
+
+                                // Remove non-content elements but keep the content structure
+                                const elementsToRemove = div.querySelectorAll(
+                                    'script, style, noscript'
+                                );
+                                elementsToRemove.forEach(el => el.remove());
+
+                                const elementsAfterCleanup = div.querySelectorAll('*').length;
+                                const text = div.textContent || div.innerText || '';
+
+                                return {
+                                    content: text,
+                                    elementsBeforeCleanup,
+                                    elementsAfterCleanup,
+                                    elementsRemoved: elementsBeforeCleanup - elementsAfterCleanup
+                                };
+                            }
+                            return { content: null, elementsBeforeCleanup: 0, elementsAfterCleanup: 0, elementsRemoved: 0 };
+                        }
+                    """)
+                    content_extraction_time = time.time() - content_extraction_start
+
+                    logger.info(f"🔤 Content extraction completed in {content_extraction_time:.3f}s")
+                    logger.info(f"     Elements before cleanup: {content['elementsBeforeCleanup']}")
+                    logger.info(f"     Elements removed: {content['elementsRemoved']}")
+                    logger.info(f"     Final content length: {len(content['content']) if content['content'] else 0} chars")
+
+                    # Validate that we got actual content
+                    if content['content'] and len(content['content'].strip()) > 100:
+                        logger.info(f"✅ STRATEGY {strategy_idx} SUCCESS: {description}")
+                        logger.info(f"     Final content: {len(content['content'])} characters extracted")
+                        logger.info(f"     Content starts with: {content['content'][:150]}...")
+                        return content['content']
+                    else:
+                        content_length = len(content['content']) if content['content'] else 0
+                        logger.warning(f"❌ STRATEGY {strategy_idx} FAILED: {description}")
+                        logger.warning(f"     Insufficient content: {content_length} chars (need >100)")
+                        if content['content']:
+                            logger.warning(f"     What we got: '{content['content'][:100]}'")
+
+                except Exception as e:
+                    logger.error(f"❌ STRATEGY {strategy_idx} EXCEPTION: {description}")
+                    logger.error(f"     Error: {e}")
+                    logger.error(f"     Error type: {type(e).__name__}")
+                    continue
+
+            # If we get here, all strategies failed
+            logger.error(f"❌ ALL KEYBOARD STRATEGIES FAILED for {page_url}")
+            logger.error(f"     Tried {len(selection_strategies)} different key combinations")
+            logger.error(f"     Browser: {self.browser_type}")
+            return ""
+
+        except Exception as e:
+            logger.error(f"❌ KEYBOARD SELECTION CRITICAL ERROR: {e}")
+            logger.error(f"     Error type: {type(e).__name__}")
+            logger.error(f"     Page URL: {page.url if page else 'unknown'}")
             return ""
 
     async def _try_keyboard_selection(self, page: Page) -> str:
