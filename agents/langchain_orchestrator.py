@@ -381,7 +381,7 @@ class LangChainOrchestrator:
 
             # ENHANCED: Log smart scraper statistics
             scraper_stats = self.scraper.get_stats()
-            logger.info(f"🤖 Smart scraping complete:")
+            logger.info("🤖 Smart scraping complete:")
             logger.info(f"   💰 Cost estimate: {scraper_stats.get('total_cost_estimate', 0):.1f} credits")
             logger.info(f"   💾 Cost saved: {scraper_stats.get('cost_saved_vs_all_firecrawl', 0):.1f} credits")
 
@@ -452,7 +452,7 @@ class LangChainOrchestrator:
             database_restaurants_hybrid = x.get("database_restaurants_hybrid", [])
             scraped_results = x.get("scraped_results", [])
 
-            logger.info(f"📊 Content analysis:")
+            logger.info("📊 Content analysis:")
             logger.info(f"   database_restaurants_final: {len(database_restaurants_final)}")
             logger.info(f"   database_restaurants_hybrid: {len(database_restaurants_hybrid)}")
             logger.info(f"   scraped_results: {len(scraped_results)}")
@@ -768,7 +768,7 @@ class LangChainOrchestrator:
                 logger.info(f"💾 Fallback: Saved raw content to {file_path}")
 
         except Exception as e:
-            logger.error(f"❌ Error in RTF-to-TXT processing: {e}")
+            logger.error(f"❌ Error in content processing: {e}")
             raise
 
     def _log_enhanced_usage(self):
@@ -835,7 +835,7 @@ class LangChainOrchestrator:
 
         with tracing_v2_enabled(project_name="restaurant-recommender"):
             try:
-                logger.info(f"🚀 STARTING RECOMMENDATION PIPELINE")
+                logger.info("🚀 STARTING RECOMMENDATION PIPELINE")
                 logger.info(f"Query: {user_query}")
 
                 # Prepare input data (UPDATED to include raw query from the start)
