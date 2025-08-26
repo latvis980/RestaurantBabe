@@ -712,16 +712,24 @@ class LangChainOrchestrator:
 
                 # Upload to Supabase using existing supabase_manager
                 try:
-                    if hasattr(self, 'supabase_manager') and self.supabase_manager:
+                    if hasattr(self, 'storage_manager') and self.storage_manager:  # FIXED: storage_manager not supabase_manager
                         logger.info("📤 Uploading final combined TXT file to Supabase...")
 
-                        # UNCHANGED: Use existing supabase upload logic
-                        upload_success = self.supabase_manager.upload_txt_content(
+                        # Use existing storage upload logic (FIXED method name)
+                        upload_success, storage_path = self.storage_manager.upload_scraped_content(
                             content=txt_content,
-                            query=query,
-                            city=city,
-                            country=country,
-                            file_path=final_txt_file_path
+                            metadata={
+                                'city': city,
+                                'country': country,
+                                'query': query,
+                                'scraped_at': datetime.now().isoformat(),
+                                'content_length': len(txt_content),
+                                'content_type': 'cleaned_restaurants_combined',
+                                'file_format': 'txt',
+                                'processing_method': 'individual_with_deduplication',
+                                'local_file': os.path.basename(final_txt_file_path)
+                            },
+                            file_type="txt"
                         )
 
                         if upload_success:
@@ -730,7 +738,7 @@ class LangChainOrchestrator:
                             logger.error("❌ Failed to upload combined TXT file to Supabase")
 
                     else:
-                        logger.warning("⚠️ Supabase manager not available")
+                        logger.warning("⚠️ Storage manager not available")
 
                 except Exception as upload_error:
                     logger.error(f"❌ Error in final TXT upload: {upload_error}")

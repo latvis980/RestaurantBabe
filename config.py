@@ -128,7 +128,7 @@ RESTAURANT_DEDUPLICATION = {
     'name_similarity_threshold': 0.85,   # 85% similarity to consider same restaurant
     'address_similarity_threshold': 0.70, # 70% similarity for address matching
     'combine_descriptions': True,        # Combine descriptions from multiple sources
-    'preserve_best_source': True,        # Keep the most authoritative source info
+    'preserve_all_sources': True,        # FIXED: Keep ALL sources, not just best
     'max_sources_per_restaurant': 5     # Limit sources per restaurant entry
 }
 
