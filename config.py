@@ -138,7 +138,6 @@ INDIVIDUAL_FILE_CLEANUP = {
     'cleanup_combined_files_after_hours': 168,   # Keep combined files for 1 week
     'max_individual_files_per_query': 50        # Prevent file system overflow
 }
-}
 
 # ============================================================================
 # SEARCH CONFIGURATION
