@@ -24,6 +24,7 @@ pyTelegramBotAPI>=4.20.0
 
 # Google Maps integration
 googlemaps>=4.10.0
+google-maps-places>=0.2.2  # NEW: Google Places API (New) for enhanced verification
 
 # Observability
 langsmith
