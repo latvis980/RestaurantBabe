@@ -264,6 +264,9 @@ FLASK_DEBUG = False
 # GOOGLE MAPS CONFIGURATION 
 # ============================================================================
 
+ENHANCED_RATING_THRESHOLD = 4.5  # Only verify venues with rating >= this threshold
+MIN_DATABASE_RESULTS_TRIGGER = 2  # Trigger enhanced search when DB results < this number
+
 # Google Maps keys (prioritize GOOGLE_MAPS_KEY2 if available)
 GOOGLE_MAPS_KEY2 = os.environ.get("GOOGLE_MAPS_KEY2")
 
@@ -276,6 +279,77 @@ GOOGLE_PLACES_SEARCH_TYPES = [
 # Location search timeout
 LOCATION_SEARCH_TIMEOUT = 30.0
 
+# Enhanced Google Maps settings
+ENHANCED_GOOGLE_MAPS_FIELDS = [
+    'name', 'formatted_address', 'geometry', 
+    'business_status', 'rating', 'user_ratings_total',
+    'reviews', 'place_id'
+]
+
+# Review analysis settings
+MAX_REVIEWS_FOR_ANALYSIS = 5  # Number of Google reviews to analyze per restaurant
+REVIEW_QUALITY_THRESHOLD = 6.0  # Minimum quality score (0-10) for venue selection
+
+# Media verification settings (existing but may need updates)
+TAVILY_SEARCH_MAX_RESULTS = 10  # Results per Tavily search
+MEDIA_SEARCH_TIMEOUT = 30.0  # Timeout for media searches
+MAX_PROFESSIONAL_SOURCES = 3  # Max professional sources to scrape per venue
+
+# Smart scraping configuration (for future integration)
+SMART_SCRAPER_API_KEY = os.environ.get("SMART_SCRAPER_API_KEY")  # Thunderbit, Browse AI, etc.
+ENABLE_SMART_SCRAPING = False  # Enable when smart scraper integration is ready
+MAX_SCRAPING_COST_PER_VENUE = 0.10  # Cost control for scraping services
+
+# AI model assignments for enhanced verification
+ENHANCED_VERIFICATION_MODELS = {
+    'review_analysis': 'gpt-4o-mini',  # For analyzing Google reviews
+    'media_analysis': 'gpt-4o-mini',   # For analyzing media sources
+    'description_generation': 'gpt-4o-mini'  # For creating professional descriptions
+}
+
+# Enhanced verification quality thresholds
+PROFESSIONAL_SOURCE_MIN_SCORE = 7.0  # Minimum credibility score for professional sources
+MEDIA_COVERAGE_BOOST = 1.5  # Rating boost for restaurants with professional coverage
+
+# Text editor settings
+DESCRIPTION_TEMPERATURE = 0.3  # Slightly higher for creative descriptions
+DESCRIPTION_MAX_LENGTH = 150  # Max characters for descriptions
+ENABLE_MEDIA_MENTION = True  # Whether to mention media sources in descriptions
+
+# Performance and cost optimization
+ENABLE_PARALLEL_PROCESSING = True  # Process multiple venues in parallel
+MAX_CONCURRENT_VERIFICATIONS = 3  # Max number of venues to verify simultaneously
+CACHE_MEDIA_RESULTS_HOURS = 24  # Hours to cache Tavily/media results
+
+# Error handling and fallbacks
+ENABLE_GRACEFUL_DEGRADATION = True  # Continue with fewer venues if some fail
+FALLBACK_TO_SIMPLE_DESCRIPTIONS = True  # Use simple descriptions if AI fails
+MAX_RETRY_ATTEMPTS = 2  # Max retries for failed API calls
+
+# Logging and monitoring
+LOG_VERIFICATION_STATS = True  # Log detailed verification statistics
+LOG_AI_ANALYSIS_RESULTS = False  # Log AI analysis details (for debugging)
+TRACK_API_COSTS = True  # Track API usage costs
+
+# Additional Places API (New) field mappings
+PLACES_API_NEW_FIELDS = {
+    'basic': [
+        'id', 'displayName', 'formattedAddress', 'location', 
+        'businessStatus', 'rating', 'userRatingCount'
+    ],
+    'atmosphere': [
+        'reviews', 'editorialSummary', 'generativeSummary'
+    ]
+}
+
+# Rate limiting for enhanced verification
+ENHANCED_VERIFICATION_RATE_LIMITS = {
+    'google_maps_calls_per_minute': 30,
+    'tavily_calls_per_minute': 10,
+    'openai_calls_per_minute': 50
+}
+
+
 # ============================================================================
 # SUPABASE BUCKET CONFIGURATION
 # ============================================================================
@@ -287,6 +361,25 @@ BUCKET_NAME = "scraped-content"
 # VALIDATION
 # ============================================================================
 
+
+def validate_enhanced_config():
+    """Validate enhanced verification configuration"""
+    required_enhanced_vars = [
+        "TAVILY_API_KEY",  # Required for media searches
+    ]
+
+    missing = []
+    for var in required_enhanced_vars:
+        if not globals().get(var):
+            missing.append(var)
+
+    if missing:
+        logger.warning(f"⚠️ Enhanced verification features disabled - missing: {missing}")
+        return False
+
+    return True
+
+# Update the main validation function
 def validate_config():
     """Validate that required configuration is present"""
     required_vars = [
@@ -305,7 +398,14 @@ def validate_config():
     if missing:
         raise ValueError(f"Missing required environment variables: {missing}")
 
-    return True
+    # Validate enhanced features
+    enhanced_available = validate_enhanced_config()
+
+    return {
+        'basic_config_valid': True,
+        'enhanced_features_available': enhanced_available
+    }
+
 
 # Auto-validate on import
 if __name__ != "__main__":
