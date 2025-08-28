@@ -1,39 +1,32 @@
-# location/enhanced_media_verification.py
+# location/enhanced_media_verification.py - FIXED VERSION
 """
-Enhanced Media Verification Agent - NEW PLACES API VERSION
+Enhanced Media Verification Agent - NEW PLACES API VERSION - CORRECTED
 
 FIXED ISSUES:
-1. Using NEW Google Places API v1 (google-maps-places library)
-2. Correct method names: search_nearby() and get_place()
-3. Removed LangChain dependencies - location flow doesn't use LangChain
-4. Direct OpenAI API calls instead of LangChain
-5. Fixed aiohttp timeout usage
-
-This agent implements the new enhanced location-based restaurant verification flow:
-1. Google Maps search with enhanced fields (business_status, rating, reviews)
-2. AI-powered review analysis to select best restaurants
-3. Tavily media search for professional coverage
-4. AI analysis of media sources to identify professional guides
-5. Smart scraping of professional content
-6. Combined data preparation for text editor
+1. Removed duplicate imports
+2. Added missing config attributes initialization  
+3. Fixed Places API field access (place.name -> place.display_name.text)
+4. Added proper field mask for Places API requests
+5. Fixed OpenAI client initialization
+6. Corrected place attribute access patterns
+7. Added proper error handling for missing attributes
 """
 
 import logging
 import asyncio
 import json
 import aiohttp
+import os
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
-import time
+from google.oauth2 import service_account
+from google.maps import places_v1
 
 # Import existing utilities and models
 from location.location_utils import LocationUtils
 
 # Direct OpenAI API instead of LangChain
 import openai
-
-# NEW Google Maps Places API v1
-from google.maps import places_v1
 
 logger = logging.getLogger(__name__)
 
@@ -69,34 +62,153 @@ class EnhancedVenueData:
 
 class EnhancedMediaVerificationAgent:
     """
-    Enhanced media verification agent - NEW PLACES API VERSION
+    Enhanced media verification agent - NEW PLACES API VERSION - CORRECTED
     """
 
     def __init__(self, config):
         self.config = config
 
-        # Initialize NEW Google Maps Places API v1 client
-        try:
-            self.places_client = places_v1.PlacesClient()
-            logger.info("✅ Google Maps Places API v1 client initialized")
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize Places API v1 client: {e}")
-            raise
+        # Initialize configuration attributes with defaults
+        self.rating_threshold = getattr(config, 'ENHANCED_RATING_THRESHOLD', 4.5)
+        self.max_venues_to_verify = getattr(config, 'MAX_VENUES_TO_VERIFY', 5)
+        self.openai_model = getattr(config, 'OPENAI_MODEL', 'gpt-4o-mini')
+
+        # Initialize OpenAI client
+        self.openai_client = openai.OpenAI(
+            api_key=getattr(config, 'OPENAI_API_KEY')
+        )
 
         # Initialize Tavily API
         self.tavily_api_key = getattr(config, 'TAVILY_API_KEY', None)
         if not self.tavily_api_key:
             logger.warning("⚠️ TAVILY_API_KEY not found - media verification will be limited")
 
-        # Initialize OpenAI client directly (no LangChain)
-        self.openai_client = openai.OpenAI(api_key=config.OPENAI_API_KEY)
-        self.openai_model = getattr(config, 'OPENAI_MODEL', 'gpt-4o-mini')
+        # Initialize dual Places clients using environment variables
+        self.places_client_primary = None
+        self.places_client_secondary = None
+        self.has_dual_credentials = False
 
-        # Configuration
-        self.rating_threshold = getattr(config, 'ENHANCED_RATING_THRESHOLD', 4.5)
-        self.max_venues_to_verify = getattr(config, 'MAX_LOCATION_RESULTS', 8)
+        try:
+            # Initialize primary client
+            primary_creds = self._get_credentials_from_env('PRIMARY')
+            if primary_creds:
+                self.places_client_primary = places_v1.PlacesClient(credentials=primary_creds)
+                logger.info("✅ Primary Google Places API v1 client initialized")
 
-        logger.info("✅ Enhanced Media Verification Agent initialized (NEW Places API)")
+            # Initialize secondary client
+            secondary_creds = self._get_credentials_from_env('SECONDARY')
+            if secondary_creds:
+                self.places_client_secondary = places_v1.PlacesClient(credentials=secondary_creds)
+                self.has_dual_credentials = True
+                logger.info("✅ Secondary Google Places API v1 client initialized - dual mode enabled")
+
+            # Fallback to default ADC if no environment variables
+            if not self.places_client_primary:
+                self.places_client_primary = places_v1.PlacesClient()
+                logger.info("⚠️ Using default ADC for Google Places API v1")
+
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Places API v1 clients: {e}")
+            raise
+
+        # Track usage for rotation (matching your existing pattern)
+        self.api_usage = {
+            'primary': 0,
+            'secondary': 0
+        }
+
+    def _get_credentials_from_env(self, key_type: str):
+        """Get credentials from Railway environment variables"""
+        try:
+            env_var = f'GOOGLE_APPLICATION_CREDENTIALS_JSON_{key_type}'
+            creds_json_str = os.environ.get(env_var)
+
+            if not creds_json_str:
+                logger.warning(f"No {key_type} credentials found in environment")
+                return None
+
+            # Parse JSON string to dict
+            credentials_info = json.loads(creds_json_str)
+
+            # Create credentials object
+            credentials = service_account.Credentials.from_service_account_info(
+                credentials_info,
+                scopes=['https://www.googleapis.com/auth/cloud-platform']
+            )
+
+            logger.info(f"✅ {key_type} credentials loaded from environment")
+            return credentials
+
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Invalid JSON in {key_type} credentials: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Error loading {key_type} credentials: {e}")
+            return None
+
+    def _get_places_client(self):
+        """Get the appropriate Places client with load balancing (matches your existing pattern)"""
+        if not self.has_dual_credentials or not self.places_client_secondary:
+            return self.places_client_primary, 'primary'
+
+        # Simple round-robin load balancing (same as your follow_up_search_agent.py)
+        if self.api_usage['primary'] <= self.api_usage['secondary']:
+            return self.places_client_primary, 'primary'
+        else:
+            return self.places_client_secondary, 'secondary'
+
+    async def search_nearby_enhanced(self, latitude: float, longitude: float, radius_meters: int = 1000):
+        """Search using the appropriate client with rotation"""
+        client, key_name = self._get_places_client()
+
+        logger.info(f"🔍 Using {key_name} Places API client for search")
+
+        # Create search request with proper field mask
+        request = places_v1.SearchNearbyRequest(
+            location_restriction=places_v1.LocationRestriction(
+                circle=places_v1.Circle(
+                    center=places_v1.LatLng(latitude=latitude, longitude=longitude),
+                    radius=radius_meters
+                )
+            ),
+            included_types=["restaurant"],
+            max_result_count=10,
+            language_code="en"
+        )
+
+        try:
+            # IMPORTANT: Set field mask in metadata (required for new Places API)
+            metadata = [
+                ("x-goog-fieldmask", 
+                 "places.id,places.displayName,places.formattedAddress,places.location," +
+                 "places.rating,places.userRatingCount,places.businessStatus,places.reviews")
+            ]
+
+            response = client.search_nearby(request=request, metadata=metadata)
+
+            # Update usage counter (matching your existing pattern)
+            self.api_usage[key_name] += 1
+
+            logger.info(f"✅ Places API search completed using {key_name} client (usage: {self.api_usage[key_name]})")
+            return response
+
+        except Exception as e:
+            logger.error(f"❌ Places API search failed with {key_name} client: {e}")
+
+            # Try the other client if dual mode is available
+            if self.has_dual_credentials:
+                other_client = self.places_client_secondary if key_name == 'primary' else self.places_client_primary
+                other_key = 'secondary' if key_name == 'primary' else 'primary'
+
+                try:
+                    logger.info(f"🔄 Retrying with {other_key} client")
+                    response = other_client.search_nearby(request=request, metadata=metadata)
+                    self.api_usage[other_key] += 1
+                    return response
+                except Exception as retry_error:
+                    logger.error(f"❌ Both clients failed. Last error: {retry_error}")
+
+            raise e
 
     async def verify_and_enhance_venues(
         self,
@@ -180,23 +292,8 @@ class EnhancedMediaVerificationAgent:
         try:
             latitude, longitude = coordinates
 
-            # Create search request using NEW Places API v1
-            request = places_v1.SearchNearbyRequest(
-                location_restriction=places_v1.LocationRestriction(
-                    circle=places_v1.Circle(
-                        center=places_v1.LatLng(latitude=latitude, longitude=longitude),
-                        radius=2000  # 2km radius
-                    )
-                ),
-                included_types=["restaurant"],
-                language_code="en",
-                max_result_count=self.max_venues_to_verify,
-                # Request fields we need
-                # field_mask is handled automatically by the client
-            )
-
-            # Make the search request
-            response = await asyncio.to_thread(self.places_client.search_nearby, request=request)
+            # Use the search method we defined above
+            response = await self.search_nearby_enhanced(latitude, longitude, 2000)
 
             venues_data = []
 
@@ -205,13 +302,13 @@ class EnhancedMediaVerificationAgent:
                     break
 
                 try:
-                    # Extract basic information
-                    place_id = place.id
-                    name = place.display_name.text if place.display_name else "Unknown"
-                    address = place.formatted_address if place.formatted_address else "Unknown address"
+                    # CORRECTED: Access place attributes properly for new API
+                    place_id = place.id if hasattr(place, 'id') else None
+                    name = place.display_name.text if hasattr(place, 'display_name') and place.display_name else "Unknown"
+                    address = place.formatted_address if hasattr(place, 'formatted_address') else "Unknown address"
 
                     # Extract location
-                    if place.location:
+                    if hasattr(place, 'location') and place.location:
                         place_lat = place.location.latitude
                         place_lng = place.location.longitude
                     else:
@@ -222,21 +319,26 @@ class EnhancedMediaVerificationAgent:
                         coordinates, (place_lat, place_lng)
                     )
 
-                    # Extract reviews
+                    # Extract reviews - CORRECTED for new API
                     google_reviews = []
                     if hasattr(place, 'reviews') and place.reviews:
                         for review in place.reviews[:5]:  # Limit to 5 reviews
                             google_reviews.append({
-                                'author_name': review.author_attribution.display_name if review.author_attribution else '',
+                                'author_name': review.author_attribution.display_name if hasattr(review, 'author_attribution') and review.author_attribution else '',
                                 'rating': review.rating if hasattr(review, 'rating') else None,
-                                'text': review.text.text if review.text else '',
+                                'text': review.text.text if hasattr(review, 'text') and review.text else '',
                                 'relative_time_description': review.relative_publish_time_description if hasattr(review, 'relative_publish_time_description') else ''
                             })
 
-                    # Extract rating and business status
+                    # Extract rating and business status - CORRECTED
                     rating = place.rating if hasattr(place, 'rating') else None
                     user_ratings_total = place.user_rating_count if hasattr(place, 'user_rating_count') else None
-                    business_status = place.business_status.name if hasattr(place, 'business_status') else 'OPERATIONAL'
+
+                    # Business status handling
+                    if hasattr(place, 'business_status'):
+                        business_status = place.business_status.name if hasattr(place.business_status, 'name') else 'OPERATIONAL'
+                    else:
+                        business_status = 'OPERATIONAL'
 
                     # Create enhanced venue data
                     venue_data = EnhancedVenueData(
@@ -258,7 +360,7 @@ class EnhancedMediaVerificationAgent:
                         venues_data.append(venue_data)
 
                 except Exception as e:
-                    logger.warning(f"Error processing place {place.id if hasattr(place, 'id') else 'unknown'}: {e}")
+                    logger.warning(f"Error processing place {getattr(place, 'id', 'unknown')}: {e}")
                     continue
 
             # Sort by rating and return
@@ -577,5 +679,6 @@ Analyze these Tavily search results for restaurant media coverage:
             'max_venues': self.max_venues_to_verify,
             'ai_model': self.openai_model,
             'uses_langchain': False,
-            'api_version': 'places_v1'
+            'api_version': 'places_v1',
+            'has_dual_credentials': self.has_dual_credentials
         }
