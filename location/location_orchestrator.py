@@ -1,13 +1,19 @@
 # location/location_orchestrator.py
 """
-Location Search Orchestrator - COMPLETE CLEAN VERSION
+Location Search Orchestrator - COMPLETE CLEAN VERSION WITH AI DESCRIPTION EDITOR
 
 Uses enhanced media verification system when database results < 2 restaurants.
 All legacy Google Maps search code removed to prevent VenueResult conflicts.
 
+ENHANCED FLOW:
+1. Database search (extract raw_descriptions, sources)
+2. AI filter restaurants 
+3. AI edit descriptions (NEW STEP)
+4. Format and send to Telegram
+
 FIXED METHOD NAMES:
 - database_service.search_by_proximity() ✅ (not search_nearby_restaurants)
-- filter_evaluator.filter_and_evaluate() ✅ (not filter_and_rank_restaurants)
+- filter_evaluator.filter_and_evaluate() ✅ (not filter_and_rank_restaurants)  
 - LocationData has .latitude and .longitude attributes, not .coordinates ✅
 """
 
@@ -26,16 +32,26 @@ from location.database_search import LocationDatabaseService
 from location.filter_evaluator import LocationFilterEvaluator
 from location.location_telegram_formatter import LocationTelegramFormatter
 
+# AI Description Editor (NEW)
+from location.location_ai_description_editor import LocationAIDescriptionEditor
+
 # Enhanced verification system
 from location.enhanced_media_verification import EnhancedMediaVerificationAgent
 from location.location_text_editor import LocationTextEditor
+
+# AI components
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
 
 logger = logging.getLogger(__name__)
 
 class LocationOrchestrator:
     """
-    Location search orchestrator with enhanced media verification
+    Location search orchestrator with enhanced media verification AND AI description editing
     Uses new enhanced system when database results < 2 restaurants
+
+    Enhanced flow:
+    1. Database search → 2. Filter evaluation → 3. AI description editing → 4. Telegram format
     """
 
     def __init__(self, config):
@@ -44,6 +60,9 @@ class LocationOrchestrator:
         # Initialize location-specific services
         self.database_service = LocationDatabaseService(config)  # Step 1
         self.filter_evaluator = LocationFilterEvaluator(config)  # Step 2
+
+        # NEW: AI Description Editor (Step 3)
+        self.description_editor = LocationAIDescriptionEditor(config)
 
         # Enhanced verification system
         self.enhanced_verifier = EnhancedMediaVerificationAgent(config)  # Steps 1-6
@@ -56,7 +75,7 @@ class LocationOrchestrator:
         self.min_db_matches = 2  # Trigger enhanced search when < 2 results
         self.max_venues_to_verify = getattr(config, 'MAX_LOCATION_RESULTS', 8)
 
-        logger.info("✅ Location Orchestrator initialized with Enhanced Media Verification")
+        logger.info("✅ Location Orchestrator initialized with Enhanced Media Verification and AI Description Editor")
 
     # ============ MAIN PROCESSING METHOD ============
 
@@ -67,12 +86,14 @@ class LocationOrchestrator:
         cancel_check_fn=None
     ) -> Dict[str, Any]:
         """
-        Process location query with enhanced verification trigger
+        Process location query with AI description editing
 
-        Logic:
+        Enhanced Logic:
         1. Database search
-        2. If < 2 relevant results → Enhanced verification flow
-        3. If >= 2 results → Traditional database flow
+        2. Filter evaluation  
+        3. AI description editing (NEW)
+        4. If < 2 relevant results → Enhanced verification flow
+        5. Format for Telegram
         """
         start_time = time.time()
 
@@ -86,11 +107,12 @@ class LocationOrchestrator:
             if not coordinates:
                 return self._create_error_response("Unable to determine location coordinates")
 
-            # Step 2: Database search - FIXED METHOD NAME (not async)
+            # Step 2: Database search with raw descriptions and sources - FIXED METHOD NAME (not async)
+            logger.info("📊 Step 1: Database proximity search...")
             db_restaurants = self.database_service.search_by_proximity(
                 coordinates=coordinates,
                 radius_km=self.db_search_radius,
-                extract_descriptions=True  # Get cuisine_tags and descriptions
+                extract_descriptions=True  # Get raw_descriptions, sources, and domains
             )
 
             if cancel_check_fn and cancel_check_fn():
@@ -100,7 +122,8 @@ class LocationOrchestrator:
             logger.info(f"📊 Database search found {db_restaurant_count} restaurants")
 
             if db_restaurant_count > 0:
-                # Filter database results - FIXED METHOD NAME (not async)
+                # Step 3: Filter database results - FIXED METHOD NAME (not async)
+                logger.info("🔍 Step 2: AI filtering evaluation...")
                 filter_result = self.filter_evaluator.filter_and_evaluate(
                     restaurants=db_restaurants,
                     query=query,
@@ -111,30 +134,45 @@ class LocationOrchestrator:
                 filtered_count = len(filtered_restaurants)
                 logger.info(f"🔍 After filtering: {filtered_count} relevant restaurants")
 
-                # Check if we have enough results (>= 2)
-                if filtered_count >= self.min_db_matches:
-                    # Traditional database flow - sufficient results
-                    logger.info(f"✅ Sufficient database results ({filtered_count}), using traditional flow")
+                # Step 4: AI Description Editing (NEW STEP)
+                if filtered_restaurants:
+                    logger.info("🎨 Step 3: AI description editing...")
+                    edited_restaurants = self.description_editor.edit_descriptions(
+                        filtered_restaurants=filtered_restaurants,
+                        user_query=query,
+                        location_description=location_desc
+                    )
 
-                    formatted_results = self.formatter.format_database_results(
-                        restaurants=filtered_restaurants,
-                        query=query,
+                    logger.info(f"✅ AI edited {len(edited_restaurants)} restaurant descriptions")
+                else:
+                    edited_restaurants = []
+
+                # Check if we have enough results (>= 2)
+                if len(edited_restaurants) >= self.min_db_matches:
+                    # Traditional database flow - sufficient results with AI descriptions
+                    logger.info(f"✅ Sufficient database results ({len(edited_restaurants)}), using enhanced database flow")
+
+                    # Step 5: Format for Telegram using AI-edited descriptions
+                    formatted_results = self.description_editor.create_telegram_formatted_results(
+                        edited_restaurants=edited_restaurants,
+                        user_query=query,
                         location_description=location_desc
                     )
 
                     return {
                         "success": True,
-                        "results": filtered_restaurants,
-                        "source": "database",
+                        "results": edited_restaurants,
+                        "source": "database_ai_enhanced", 
                         "processing_time": time.time() - start_time,
-                        "restaurant_count": filtered_count,
+                        "restaurant_count": len(edited_restaurants),
                         "coordinates": coordinates,
                         "location_description": location_desc,
-                        "location_formatted_results": formatted_results.get("message", f"Found {filtered_count} relevant restaurants!")
+                        "location_formatted_results": formatted_results.get("message", f"Found {len(edited_restaurants)} relevant restaurants!"),
+                        "ai_edited": True  # Flag to indicate AI enhancement
                     }
                 else:
                     # Enhanced verification flow - insufficient database results
-                    logger.info(f"⚡ Insufficient database results ({filtered_count} < {self.min_db_matches}), starting enhanced verification flow")
+                    logger.info(f"⚡ Insufficient database results ({len(edited_restaurants)} < {self.min_db_matches}), starting enhanced verification flow")
                     return await self._enhanced_verification_flow(query, coordinates, location_desc, cancel_check_fn, start_time)
 
             else:
@@ -144,6 +182,8 @@ class LocationOrchestrator:
 
         except Exception as e:
             logger.error(f"❌ Error in location query processing: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return self._create_error_response(f"Search failed: {str(e)}")
 
     # ============ ENHANCED VERIFICATION FLOW ============
@@ -360,12 +400,91 @@ class LocationOrchestrator:
             "location_formatted_results": "🚫 Search cancelled"
         }
 
+    def _create_no_results_response(self, query: str, location_desc: str, processing_time: float) -> Dict[str, Any]:
+        """Create response when no results are found"""
+        return {
+            "success": False,
+            "no_results": True,
+            "processing_time": processing_time,
+            "location_formatted_results": f"Sorry, I couldn't find any restaurants matching '{query}' near {location_desc}. Try broadening your search or checking a different area."
+        }
+
     def get_pipeline_stats(self) -> Dict[str, Any]:
         """Get statistics about the pipeline"""
         return {
             'database_service': True,
             'enhanced_verifier': True,
             'text_editor': True,
+            'description_editor': True,  # NEW
             'min_db_matches_trigger': self.min_db_matches,
             'enhanced_verification_stats': self.enhanced_verifier.get_verification_stats()
         }
+
+    # ============ DEBUGGING METHODS ============
+
+    async def debug_location_search(
+        self, 
+        query: str, 
+        location_data: LocationData
+    ) -> Dict[str, Any]:
+        """
+        Debug method to show detailed pipeline information
+        """
+        debug_info = {
+            "query": query,
+            "location_data": {
+                "latitude": getattr(location_data, 'latitude', None),
+                "longitude": getattr(location_data, 'longitude', None),
+                "description": getattr(location_data, 'description', None)
+            },
+            "pipeline_steps": {}
+        }
+
+        try:
+            # Step 1: Database search
+            coordinates = self._extract_coordinates(location_data)
+            if coordinates:
+                db_restaurants = self.database_service.search_by_proximity(coordinates, extract_descriptions=True)
+                debug_info["pipeline_steps"]["database_search"] = {
+                    "restaurant_count": len(db_restaurants),
+                    "with_descriptions": sum(1 for r in db_restaurants if r.get('raw_description')),
+                    "with_sources": sum(1 for r in db_restaurants if r.get('sources_domains')),
+                    "sample_restaurants": [r.get('name', 'Unknown') for r in db_restaurants[:3]]
+                }
+
+                # Step 2: Filtering
+                if db_restaurants:
+                    filter_result = self.filter_evaluator.filter_and_evaluate(
+                        restaurants=db_restaurants,
+                        query=query,
+                        location_description=location_data.description or "your location"
+                    )
+                    filtered_restaurants = filter_result.get("filtered_restaurants", [])
+                    debug_info["pipeline_steps"]["filtering"] = {
+                        "filtered_count": len(filtered_restaurants),
+                        "filter_reasoning": filter_result.get("reasoning", "No reasoning provided")
+                    }
+
+                    # Step 3: AI Description Editing
+                    if filtered_restaurants:
+                        edited_restaurants = self.description_editor.edit_descriptions(
+                            filtered_restaurants=filtered_restaurants,
+                            user_query=query,
+                            location_description=location_data.description or "your location"
+                        )
+                        debug_info["pipeline_steps"]["ai_description_editing"] = {
+                            "edited_count": len(edited_restaurants),
+                            "sample_descriptions": [
+                                {
+                                    "name": r.get('name', 'Unknown'),
+                                    "description": r.get('description', '')[:100] + "..."
+                                }
+                                for r in edited_restaurants[:2]
+                            ]
+                        }
+
+            return debug_info
+
+        except Exception as e:
+            debug_info["error"] = str(e)
+            return debug_info

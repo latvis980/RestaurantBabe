@@ -8,12 +8,13 @@ Handles coordinate-based queries to the main app's database with PostGIS.
 This implements Step 1 of the location search flow:
 - Proximity search using coordinates (PostGIS, 3 km radius)
 - Extract all database results by proximity 
-- Extract cuisine_tags and descriptions
+- Extract cuisine_tags, descriptions, and sources
 - Compile results for further analysis in Step 2
 """
 
 import logging
 import math
+import json
 from typing import Dict, List, Any, Optional, Tuple
 from utils.database import get_database
 from location.location_utils import LocationUtils
@@ -39,8 +40,8 @@ class LocationDatabaseService:
         """
         STEP 1: Database proximity search using coordinates (PostGIS, 3 km radius)
 
-        Extract all database results by proximity, then extract cuisine_tags 
-        and descriptions for further analysis in Step 2.
+        Extract all database results by proximity, then extract cuisine_tags,
+        descriptions, and sources for further analysis in Step 2.
 
         Args:
             coordinates: (latitude, longitude) tuple
@@ -48,7 +49,7 @@ class LocationDatabaseService:
             extract_descriptions: Whether to include full description data
 
         Returns:
-            List of restaurant dictionaries with distance info and descriptions
+            List of restaurant dictionaries with distance info, descriptions, and sources
         """
         try:
             if radius_km is None:
@@ -70,9 +71,9 @@ class LocationDatabaseService:
 
             logger.info(f"📊 STEP 1 COMPLETE: Found {len(restaurants)} restaurants within {radius_km}km")
 
-            # Add cuisine tags and description extraction for Step 2
+            # Add cuisine tags, description, and sources extraction for Step 2
             if extract_descriptions:
-                restaurants = self._extract_cuisine_and_descriptions(restaurants)
+                restaurants = self._extract_cuisine_descriptions_and_sources(restaurants)
 
             return restaurants
 
@@ -131,47 +132,46 @@ class LocationDatabaseService:
             all_restaurants = result.data or []
             logger.info(f"Retrieved {len(all_restaurants)} restaurants with coordinates for manual filtering")
 
-            # Filter by distance manually
-            restaurants_with_distance = []
-            center_lat, center_lng = coordinates
+            # Filter by distance
+            nearby_restaurants = []
 
             for restaurant in all_restaurants:
                 try:
-                    rest_lat = float(restaurant['latitude'])
-                    rest_lng = float(restaurant['longitude'])
+                    rest_lat = float(restaurant.get('latitude', 0))
+                    rest_lon = float(restaurant.get('longitude', 0))
 
-                    # Use LocationUtils to calculate distance
-                    distance_km = LocationUtils.calculate_distance(
-                        (center_lat, center_lng), (rest_lat, rest_lng)
+                    if rest_lat == 0 or rest_lon == 0:
+                        continue
+
+                    # Calculate distance using haversine formula
+                    distance = LocationUtils.calculate_distance(
+                        (latitude, longitude),
+                        (rest_lat, rest_lon)
                     )
 
-                    # Only include if within radius
-                    if distance_km <= radius_km:
-                        restaurant['distance_km'] = round(distance_km, 2)
-                        restaurants_with_distance.append(restaurant)
+                    if distance <= radius_km:
+                        restaurant['distance_km'] = round(distance, 2)
+                        nearby_restaurants.append(restaurant)
 
                 except (ValueError, TypeError) as e:
-                    logger.debug(f"Invalid coordinates for restaurant {restaurant.get('name', 'Unknown')}: {e}")
+                    logger.debug(f"Invalid coordinates for restaurant {restaurant.get('id')}: {e}")
                     continue
 
             # Sort by distance
-            restaurants_with_distance.sort(key=lambda x: x['distance_km'])
+            nearby_restaurants.sort(key=lambda x: x.get('distance_km', float('inf')))
 
-            logger.info(f"Manual distance filtering found {len(restaurants_with_distance)} restaurants")
-            return restaurants_with_distance
+            logger.info(f"Manual distance filtering: {len(nearby_restaurants)} restaurants within {radius_km}km")
+            return nearby_restaurants
 
         except Exception as e:
-            logger.error(f"❌ Error in manual distance search: {e}")
+            logger.error(f"❌ Error in manual distance calculation: {e}")
             return []
 
-    def _extract_cuisine_and_descriptions(
-        self, 
-        restaurants: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+    def _extract_cuisine_descriptions_and_sources(self, restaurants: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Extract cuisine_tags and descriptions for Step 2 analysis
+        Enhanced: Extract cuisine tags, descriptions, AND sources for Step 2 processing
 
-        This compiles the data needed for AI filtering in Step 2.
+        This ensures all necessary data is available for AI filtering and description editing
         """
         try:
             enriched_restaurants = []
@@ -193,25 +193,118 @@ class LocationDatabaseService:
                 enriched_restaurant['description'] = description
                 enriched_restaurant['raw_description'] = description
 
+                # Extract and parse sources - convert from database text to domain list
+                sources = self._parse_sources_field(restaurant)
+                enriched_restaurant['sources'] = sources
+                enriched_restaurant['sources_domains'] = self._extract_domains_from_sources(sources)
+
                 # Add summary info for Step 2 filtering
                 enriched_restaurant['has_description'] = bool(description and len(description) > 10)
                 enriched_restaurant['cuisine_count'] = len(cuisine_tags)
+                enriched_restaurant['sources_count'] = len(sources)
 
                 enriched_restaurants.append(enriched_restaurant)
 
-            logger.info(f"📋 Extracted cuisine and description data for {len(enriched_restaurants)} restaurants")
+            logger.info(f"📋 Extracted cuisine, description, and sources data for {len(enriched_restaurants)} restaurants")
 
             # Log summary statistics for Step 2
             with_descriptions = sum(1 for r in enriched_restaurants if r['has_description'])
+            with_sources = sum(1 for r in enriched_restaurants if r['sources_count'] > 0)
             total_cuisines = sum(r['cuisine_count'] for r in enriched_restaurants)
 
-            logger.info(f"📊 Step 1 Summary: {with_descriptions}/{len(enriched_restaurants)} have descriptions, {total_cuisines} total cuisine tags")
+            logger.info(f"📊 Step 1 Summary: {with_descriptions}/{len(enriched_restaurants)} have descriptions")
+            logger.info(f"📊 Step 1 Summary: {with_sources}/{len(enriched_restaurants)} have sources")
+            logger.info(f"📊 Step 1 Summary: {total_cuisines} total cuisine tags")
 
             return enriched_restaurants
 
         except Exception as e:
-            logger.error(f"❌ Error extracting cuisine and descriptions: {e}")
+            logger.error(f"❌ Error extracting cuisine, descriptions, and sources: {e}")
             return restaurants
+
+    def _parse_sources_field(self, restaurant: Dict[str, Any]) -> List[str]:
+        """
+        Parse the sources field from database TEXT to actual list
+
+        The sources column in Supabase is stored as TEXT but contains JSON-like strings
+        We need to convert these to actual Python lists
+        """
+        try:
+            sources_raw = restaurant.get('sources', [])
+
+            # If it's already a list, return as-is
+            if isinstance(sources_raw, list):
+                return sources_raw
+
+            # If it's a string that looks like a JSON array, parse it
+            if isinstance(sources_raw, str) and sources_raw.strip():
+                try:
+                    # Try JSON parsing first
+                    sources_list = json.loads(sources_raw)
+                    if isinstance(sources_list, list):
+                        return sources_list
+                    else:
+                        # If JSON parsing returns non-list, wrap in list
+                        return [str(sources_list)]
+                except json.JSONDecodeError:
+                    try:
+                        # Try ast.literal_eval as fallback
+                        import ast
+                        sources_list = ast.literal_eval(sources_raw)
+                        if isinstance(sources_list, list):
+                            return sources_list
+                        else:
+                            return [str(sources_list)]
+                    except (ValueError, SyntaxError):
+                        # If all parsing fails, treat as single source
+                        return [sources_raw]
+            else:
+                # Empty or None sources
+                return []
+
+        except Exception as e:
+            logger.error(f"Error parsing sources for restaurant {restaurant.get('name', 'Unknown')}: {e}")
+            return []
+
+    def _extract_domains_from_sources(self, sources: List[str]) -> List[str]:
+        """
+        Extract just the domain names from full URLs in sources
+
+        Args:
+            sources: List of full URLs
+
+        Returns:
+            List of domain names (e.g., ['timeout.com', 'eater.com'])
+        """
+        try:
+            domains = []
+
+            for source in sources:
+                if not source or not isinstance(source, str):
+                    continue
+
+                # Extract domain from URL
+                try:
+                    from urllib.parse import urlparse
+                    parsed_url = urlparse(source)
+                    domain = parsed_url.netloc.lower()
+
+                    # Remove 'www.' prefix if present
+                    if domain.startswith('www.'):
+                        domain = domain[4:]
+
+                    if domain and domain not in domains:
+                        domains.append(domain)
+
+                except Exception as e:
+                    logger.debug(f"Could not parse URL {source}: {e}")
+                    continue
+
+            return domains
+
+        except Exception as e:
+            logger.error(f"Error extracting domains from sources: {e}")
+            return []
 
     def get_restaurants_by_proximity(
         self, 
