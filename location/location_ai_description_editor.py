@@ -298,7 +298,7 @@ SOURCES: {', '.join(sources_domains) if sources_domains else 'No sources'}
                 }
 
             # Create header
-            header = f"🏠 From my personal restaurant notes:\n\n"
+            header = "Here are some addresses from my personal notes:\n\n"
 
             # Format each restaurant using original formatting
             restaurant_entries = []
@@ -313,7 +313,7 @@ SOURCES: {', '.join(sources_domains) if sources_domains else 'No sources'}
 
             # Add footer if needed
             if len(edited_restaurants) > 1:
-                message += f"\n\n💡 These {len(edited_restaurants)} restaurants match your request for {location_description}."
+                message += "\n\n💡 If you need some more tips, just let me know!"
 
             return {
                 "success": True,

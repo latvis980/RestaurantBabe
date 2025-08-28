@@ -465,73 +465,82 @@ class EnhancedMediaVerificationAgent:
         cancel_check_fn=None
     ) -> List[EnhancedVenueData]:
         """
-        Step 2: AI analysis to select venues with the best reviews
-        Direct OpenAI API calls instead of LangChain
+        Step 2: AI analysis to select venues with the best reviews - WITH JSON FIX
         """
         try:
+            if not venues_data:
+                logger.warning("No venues to analyze")
+                return []
+
             # Prepare data for AI analysis
             restaurant_data = []
             for venue in venues_data:
-                restaurant_data.append({
+                venue_info = {
                     'place_id': venue.place_id,
                     'name': venue.name,
                     'rating': venue.rating,
                     'review_count': venue.user_ratings_total,
                     'reviews': venue.google_reviews[:3]  # Send top 3 reviews for analysis
-                })
+                }
+                restaurant_data.append(venue_info)
 
-            # Direct OpenAI API call
+            # Enhanced prompt with clearer JSON format requirements
             prompt = f"""You are a food expert analyzing Google Reviews to identify the best restaurants.
 
-Look for reviews that are:
-- DETAILED and descriptive (not just "great place!")
-- WARM and emotional (genuine enthusiasm)
-- SPECIFIC about dishes, cocktails, or menu items
-- Show personal experience and genuine appreciation
+    IMPORTANT: You must respond with valid JSON only. No additional text or explanation.
 
-Rate each restaurant from 0-10 based on review quality. Prioritize restaurants where reviewers:
-- Name specific dishes or drinks
-- Describe flavors, atmosphere, service details
-- Show genuine emotional connection to the experience
-- Provide context about why they loved it
+    Look for reviews that are:
+    - DETAILED and descriptive (not just "great place!")
+    - WARM and emotional (genuine enthusiasm)
+    - SPECIFIC about dishes, cocktails, or menu items
+    - Show personal experience and genuine appreciation
 
-Return JSON format:
-{{
-  "analysis": [
+    Rate each restaurant from 0-10 based on review quality. Select the top restaurants with scores 7.0 and above.
+
+    RESPOND ONLY WITH THIS JSON FORMAT:
     {{
-      "place_id": "place_id_here", 
-      "name": "restaurant_name",
-      "quality_score": 8.5,
-      "selected": true,
-      "reasoning": "Reviews mention specific dishes like 'amazing truffle pasta' and 'perfectly crafted negronis'. Multiple reviewers describe warm atmosphere and exceptional service."
+      "analysis": [
+        {{
+          "place_id": "place_id_here", 
+          "name": "restaurant_name",
+          "quality_score": 8.5,
+          "selected": true,
+          "reasoning": "Brief explanation"
+        }}
+      ]
     }}
-  ]
-}}
 
-Analyze these restaurants and their Google Reviews:
+    Restaurants to analyze:
+    {json.dumps(restaurant_data, indent=2)}"""
 
-{json.dumps(restaurant_data, indent=2)}"""
+            logger.debug(f"🤖 Sending venue analysis request for {len(restaurant_data)} venues")
 
-            # Make direct OpenAI API call
-            response = await asyncio.to_thread(
-                self.openai_client.chat.completions.create,
-                model=self.openai_model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2
+            # Make OpenAI API call with timeout
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.openai_client.chat.completions.create,
+                    model=self.openai_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.2,
+                    max_tokens=2000
+                ),
+                timeout=30  # 30 second timeout
             )
 
-            # Handle OpenAI response properly
-            try:
-                response_text = response.choices[0].message.content
-                analysis_data = json.loads(response_text)
-                analysis_results = analysis_data.get('analysis', [])
+            # Use the safe parsing method
+            analysis_data = self._safe_parse_openai_response(
+                response, 
+                fallback_data={"analysis": []}, 
+                context="venue analysis"
+            )
 
-            except (json.JSONDecodeError, AttributeError) as e:
-                logger.error(f"❌ Error in venue analysis: {e}")
-                logger.debug(f"Response: {response_text}")
+            analysis_results = analysis_data.get('analysis', [])
+
+            if not analysis_results:
+                logger.warning("No analysis results from AI, using rating-based fallback")
                 # Fallback: select top rated venues
                 venues_data.sort(key=lambda x: x.rating or 0, reverse=True)
-                return venues_data[:3]
+                return venues_data[:self.max_venues_to_verify]
 
             # Update venues with AI analysis results
             selected_venues = []
@@ -544,12 +553,20 @@ Analyze these restaurants and their Google Reviews:
                     venue.review_quality_score = analysis.get('quality_score', 0)
                     venue.selected_for_verification = True
                     selected_venues.append(venue)
+                    logger.debug(f"Selected {venue.name} with quality score {venue.review_quality_score}")
 
-            # Sort by quality score
+            # Sort by quality score and limit results
             selected_venues.sort(key=lambda x: x.review_quality_score, reverse=True)
+            final_selection = selected_venues[:self.max_venues_to_verify]
 
-            return selected_venues[:5]  # Limit to top 5 quality venues
+            logger.info(f"✅ AI selected {len(final_selection)} venues from {len(venues_data)} candidates")
+            return final_selection
 
+        except asyncio.TimeoutError:
+            logger.error("❌ Venue analysis timed out")
+            # Fallback: select top rated venues
+            venues_data.sort(key=lambda x: x.rating or 0, reverse=True)
+            return venues_data[:3]
         except Exception as e:
             logger.error(f"❌ Error in venue analysis: {e}")
             # Fallback: select top rated venues
@@ -613,8 +630,7 @@ Analyze these restaurants and their Google Reviews:
 
     async def _analyze_media_sources(self, venues: List[EnhancedVenueData], cancel_check_fn=None):
         """
-        Step 5: AI analysis of media sources to identify professional guides
-        Direct OpenAI API calls instead of LangChain
+        Step 5: AI analysis of media sources to identify professional guides - WITH JSON FIX
         """
         for venue in venues:
             if cancel_check_fn and cancel_check_fn():
@@ -626,65 +642,74 @@ Analyze these restaurants and their Google Reviews:
                 continue
 
             try:
-                # Direct OpenAI API call
+                # Enhanced prompt with clearer JSON requirements
                 prompt = f"""You are a media analyst identifying professional restaurant guides and publications.
 
-IDENTIFY PROFESSIONAL SOURCES:
-- Food & travel magazines (Conde Nast, Forbes Travel, Food & Wine, etc.)
-- Local newspapers and magazines (Time Out, local papers)
-- Professional food critics and established food blogs
-- Tourism boards and official city guides
-- Restaurant award guides (Michelin, World's 50 Best, etc.)
+    IMPORTANT: Respond with valid JSON only. No additional text.
 
-IGNORE:
-- TripAdvisor, Yelp, user review sites
-- Social media posts
-- Generic listicles
-- Travel booking sites
-- Personal blogs without professional credentials
+    IDENTIFY PROFESSIONAL SOURCES:
+    - Food & travel magazines (Conde Nast, Forbes Travel, Food & Wine, etc.)
+    - Local newspapers and magazines (Time Out, local papers)
+    - Professional food critics and established food blogs
+    - Tourism boards and official city guides
+    - Restaurant award guides (Michelin, World's 50 Best, etc.)
 
-Return JSON:
-{{
-  "professional_sources": [
+    IGNORE:
+    - TripAdvisor, Yelp, user review sites
+    - Social media posts
+    - Generic listicles
+    - Travel booking sites
+    - Personal blogs without professional credentials
+
+    RESPOND ONLY WITH THIS JSON FORMAT:
     {{
-      "url": "https://example.com/article",
-      "title": "article title",
-      "description": "description",
-      "source_type": "food_magazine|local_newspaper|tourism_guide|food_critic",
-      "credibility_score": 9.0,
-      "worth_scraping": true
+      "professional_sources": [
+        {{
+          "url": "https://example.com/article",
+          "title": "article title",
+          "description": "description",
+          "source_type": "food_magazine",
+          "credibility_score": 9.0,
+          "worth_scraping": true
+        }}
+      ],
+      "total_results": 15,
+      "professional_count": 3
     }}
-  ],
-  "total_results": 15,
-  "professional_count": 3
-}}
 
-Analyze these Tavily search results for restaurant media coverage:
+    Media search results for {venue.name}:
+    {json.dumps(venue.media_search_results[:10], indent=2)}"""  # Limit to 10 results to avoid token limits
 
-{json.dumps(venue.media_search_results, indent=2)}"""
+                logger.debug(f"🔍 Analyzing media sources for {venue.name}")
 
-                response = await asyncio.to_thread(
-                    self.openai_client.chat.completions.create,
-                    model=self.openai_model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.2
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.openai_client.chat.completions.create,
+                        model=self.openai_model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.2,
+                        max_tokens=1500
+                    ),
+                    timeout=20  # 20 second timeout
                 )
 
-                # Handle OpenAI response properly
-                try:
-                    response_text = response.choices[0].message.content
-                    media_analysis = json.loads(response_text)
-                    professional_sources = media_analysis.get('professional_sources', [])
+                # Use the safe parsing method
+                media_analysis = self._safe_parse_openai_response(
+                    response, 
+                    fallback_data={"professional_sources": [], "professional_count": 0}, 
+                    context=f"media analysis for {venue.name}"
+                )
 
-                except (json.JSONDecodeError, AttributeError) as e:
-                    logger.error(f"❌ Error parsing media analysis for {venue.name}: {e}")
-                    professional_sources = []
-
+                professional_sources = media_analysis.get('professional_sources', [])
                 venue.professional_sources = professional_sources
                 venue.has_professional_coverage = len(professional_sources) > 0
 
-                logger.debug(f"{venue.name}: Found {len(professional_sources)} professional sources")
+                logger.debug(f"✅ {venue.name}: Found {len(professional_sources)} professional sources")
 
+            except asyncio.TimeoutError:
+                logger.error(f"❌ Media analysis timed out for {venue.name}")
+                venue.professional_sources = []
+                venue.has_professional_coverage = False
             except Exception as e:
                 logger.error(f"❌ Error analyzing media sources for {venue.name}: {e}")
                 venue.professional_sources = []
@@ -722,9 +747,7 @@ Analyze these Tavily search results for restaurant media coverage:
                 logger.debug(f"{venue.name}: Prepared {len(scraping_targets)} sources for scraping")
 
     def _prepare_combined_data(self, venues: List[EnhancedVenueData]):
-        """
-        Prepare combined review and media data for the text editor
-        """
+        """Step 6: Prepare combined data for text editor"""
         for venue in venues:
             # Combine Google reviews and scraped professional content
             combined_data = {
@@ -741,6 +764,62 @@ Analyze these Tavily search results for restaurant media coverage:
             }
 
             venue.combined_review_data = combined_data
+
+    def _safe_parse_openai_response(self, response, fallback_data=None, context=""):
+        """
+        Safely parse OpenAI response with detailed error handling and logging
+
+        Args:
+            response: OpenAI response object
+            fallback_data: Default data to return if parsing fails
+            context: Context string for logging (e.g., "venue analysis", "media analysis")
+
+        Returns:
+            Parsed JSON data or fallback_data
+        """
+        try:
+            if not response or not hasattr(response, 'choices') or not response.choices:
+                logger.error(f"❌ Empty or invalid OpenAI response for {context}")
+                return fallback_data or {}
+
+            response_text = response.choices[0].message.content
+
+            # Log the raw response for debugging
+            logger.debug(f"🔍 Raw OpenAI response for {context}: {response_text[:200]}...")
+
+            if not response_text or response_text.strip() == "":
+                logger.error(f"❌ Empty response text from OpenAI for {context}")
+                return fallback_data or {}
+
+            # Clean up the response text
+            response_text = response_text.strip()
+
+            # Handle cases where the model returns text before the JSON
+            if response_text.startswith('```json'):
+                # Extract JSON from code block
+                start_idx = response_text.find('{')
+                end_idx = response_text.rfind('}')
+                if start_idx != -1 and end_idx != -1:
+                    response_text = response_text[start_idx:end_idx+1]
+            elif not response_text.startswith('{'):
+                # Look for JSON in the response
+                start_idx = response_text.find('{')
+                if start_idx != -1:
+                    response_text = response_text[start_idx:]
+
+            # Try to parse the JSON
+            try:
+                parsed_data = json.loads(response_text)
+                logger.debug(f"✅ Successfully parsed JSON for {context}")
+                return parsed_data
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ JSON decode error for {context}: {e}")
+                logger.error(f"Problematic text: {response_text}")
+                return fallback_data or {}
+
+        except Exception as e:
+            logger.error(f"❌ Unexpected error parsing OpenAI response for {context}: {e}")
+            return fallback_data or {}
 
     def _extract_city_from_address(self, address: str) -> str:
         """Extract city name from address"""
