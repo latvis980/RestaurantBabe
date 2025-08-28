@@ -199,7 +199,7 @@ Write one concise professional description (2-3 sentences maximum):"""
                     info_parts.append(f"Professional Recognition: {media_insights}")
 
             # Rating context (without mentioning source)
-            if venue.rating and venue.rating >= 4.5:
+            if venue.rating and venue.rating >= 4.3:
                 info_parts.append("Highly rated establishment")
 
             return "\n".join(info_parts)

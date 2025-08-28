@@ -6,6 +6,9 @@ Updated for current architecture with all required settings
 
 import os
 from enum import Enum
+import logging
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # API KEYS - Environment Variables
@@ -264,8 +267,9 @@ FLASK_DEBUG = False
 # GOOGLE MAPS CONFIGURATION 
 # ============================================================================
 
-ENHANCED_RATING_THRESHOLD = 4.5  # Only verify venues with rating >= this threshold
+ENHANCED_RATING_THRESHOLD = 4.3  # Only verify venues with rating >= this threshold
 MIN_DATABASE_RESULTS_TRIGGER = 2  # Trigger enhanced search when DB results < this number
+MAX_VENUES_TO_VERIFY = 5
 
 # Google Maps keys (prioritize GOOGLE_MAPS_KEY2 if available)
 GOOGLE_MAPS_KEY2 = os.environ.get("GOOGLE_MAPS_KEY2")

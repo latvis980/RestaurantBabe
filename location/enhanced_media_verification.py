@@ -69,7 +69,7 @@ class EnhancedMediaVerificationAgent:
         self.config = config
 
         # Initialize configuration attributes with defaults
-        self.rating_threshold = getattr(config, 'ENHANCED_RATING_THRESHOLD', 4.5)
+        self.rating_threshold = getattr(config, 'ENHANCED_RATING_THRESHOLD', 4.3)
         self.max_venues_to_verify = getattr(config, 'MAX_VENUES_TO_VERIFY', 5)
         self.openai_model = getattr(config, 'OPENAI_MODEL', 'gpt-4o-mini')
 
