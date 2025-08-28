@@ -387,6 +387,8 @@ def execute_action(result: Dict[str, Any], user_id: int, chat_id: int):
         logger.warning(f"Unknown action: {action}")
 
 
+# In telegram_bot.py, replace the call_orchestrator_more_results function with this fixed version:
+
 def call_orchestrator_more_results(query: str, coordinates: tuple, location_desc: str, user_id: int, chat_id: int):
     """
     Call orchestrator's more results method for Google Maps search
@@ -458,10 +460,11 @@ def call_orchestrator_more_results(query: str, coordinates: tuple, location_desc
 
                 loop.close()
             else:
-                # Direct results without verification
+                # FIXED: Direct results without verification - SEND THE ACTUAL MESSAGE
                 formatted_message = result.get("location_formatted_results", 
                     f"Found {result.get('restaurant_count', 0)} more restaurants!")
 
+                # This was the missing piece! We need to actually send the message to Telegram
                 bot.send_message(
                     chat_id,
                     fix_telegram_html(formatted_message),
@@ -469,20 +472,20 @@ def call_orchestrator_more_results(query: str, coordinates: tuple, location_desc
                     disable_web_page_preview=True
                 )
 
-            logger.info(f"✅ 'More results' search completed for user {user_id}: {result.get('restaurant_count', 0)} restaurants")
+                logger.info(f"✅ 'More results' search completed for user {user_id}: {result.get('restaurant_count', 0)} restaurants")
         else:
             # Handle error case
-            error_message = result.get("location_formatted_results", "😔 Couldn't find more restaurants in that area.")
+            error_message = result.get("error_message", "No additional restaurants found in that area.")
             bot.send_message(
                 chat_id,
-                error_message,
+                f"😔 {error_message}",
                 parse_mode='HTML'
             )
 
     except Exception as e:
-        logger.error(f"❌ Error in 'more results' search for user {user_id}: {e}")
+        logger.error(f"❌ Error in call_orchestrator_more_results: {e}")
 
-        # Clean up processing message
+        # Clean up processing message on error
         if processing_msg:
             try:
                 bot.delete_message(chat_id, processing_msg.message_id)
@@ -491,11 +494,10 @@ def call_orchestrator_more_results(query: str, coordinates: tuple, location_desc
 
         bot.send_message(
             chat_id,
-            "😔 I had trouble searching for more restaurants. Please try again.",
+            "😔 I encountered an error while searching for more restaurants. Please try again!",
             parse_mode='HTML'
         )
     finally:
-        # Always clean up search tracking
         cleanup_search(user_id)
 
 # ============ SEARCH EXECUTION FUNCTIONS ============

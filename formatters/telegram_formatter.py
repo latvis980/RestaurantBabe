@@ -2,12 +2,15 @@
 """
 SIMPLE Telegram HTML formatter - production approach
 Based on Telegram bot best practices: keep it simple and reliable
+
+FIXED: Domain extraction from full URLs in sources
 """
 import re
 import logging
 from html import escape
 import urllib.parse
 import requests
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +54,7 @@ class TelegramFormatter:
             logger.error(f"❌ Error in Telegram formatting: {e}")
             return self._no_results_message()
 
-    def _canonical_google_url(self, url: str, place_id: str = None) -> str:   # ➋  new
+    def _canonical_google_url(self, url: str, place_id: str = None) -> str:
         """Return https://maps.google.com/?cid=… or a place_id URL."""
         if not url:
             url = ""
@@ -74,84 +77,74 @@ class TelegramFormatter:
                     f"?q=place_id:{place_id}")
 
         return url or "#"
-    
-    def _format_address_link(self, address, place_id):          # ➌  replace
+
+    def _format_address_link(self, address, place_id):
         """Create Google-Maps link with canonical URL."""
-        if not address or address == "Address unavailable":
-            return "📍 Address unavailable\n"
-
-        street_address = self._extract_street(address)
-        clean_street   = self._clean_html(street_address)
-
-        # -- pick whatever URL the agent stored ----------------------------
-        google_url = (self._current_restaurant.get("google_maps_url")     # may already be canonical
-                      or self._current_restaurant.get("google_url")
-                      or self._current_restaurant.get("url")
-                      or "")
-
-        google_url = self._canonical_google_url(google_url, place_id)     # normalise
-
-        return f'📍 <a href="{escape(google_url, quote=True)}">{clean_street}</a>\n'
-
-    # Quick fix for formatters/telegram_formatter.py
-    # Add this logging to the _format_restaurant method, right at the beginning:
-
-    def _format_restaurant(self, restaurant, index):
-        """Format a single restaurant - simple and reliable"""
-        name = restaurant.get('name', '').strip()
-        if not name:
+        if not address:
             return ""
 
-        description = restaurant.get('description', '').strip()
-        address = restaurant.get('address', '')
-        sources = restaurant.get('sources', [])
-        place_id = restaurant.get('place_id')
+        clean_address = self._extract_street(address)
 
-        # ADD THIS DEBUG LOGGING:
-        logger.info(f"🔍 TELEGRAM FORMATTER - Restaurant {index}: {name}")
-        logger.info(f"🔍 TELEGRAM FORMATTER - Sources type: {type(sources)}")
-        logger.info(f"🔍 TELEGRAM FORMATTER - Sources content: {sources}")
-
-        # Store current restaurant for URL access
-        self._current_restaurant = restaurant
-
-        # Clean text for HTML (simple escaping)
-        name_clean = self._clean_html(name)
-        desc_clean = self._clean_html(description)
-
-        # Build restaurant entry
-        parts = [f"<b>{index}. {name_clean}</b>\n"]
-
-        # Add address with link
-        address_line = self._format_address_link(address, place_id)
-        if address_line:
-            parts.append(address_line)
-
-        # Add description
-        if desc_clean:
-            parts.append(f"{desc_clean}\n")
-
-        # Add sources
-        sources_line = self._format_sources(sources)
-        if sources_line:
-            parts.append(sources_line)
-            # ADD THIS DEBUG LOGGING:
-            logger.info(f"🔍 TELEGRAM FORMATTER - Generated sources line: {sources_line}")
+        if place_id:
+            google_url = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
         else:
-            logger.warning(f"⚠️ No sources line generated for {name}")
+            google_url = self._canonical_google_url("")
 
-        parts.append("\n")  # Spacing between restaurants
+        return f'📍 <a href="{google_url}">{clean_address}</a>\n'
 
-        # Clear current restaurant
-        self._current_restaurant = None
+    def _format_restaurant(self, restaurant, index):
+        """Format single restaurant with all details"""
+        try:
+            name = restaurant.get("name", "").strip()
+            address = restaurant.get("address", "").strip()
+            description = restaurant.get("description", "").strip()
+            sources = restaurant.get("sources", [])
+            place_id = restaurant.get("place_id")
 
-        formatted_result = ''.join(parts)
+            if not name:
+                logger.warning(f"Restaurant {index} missing name")
+                return ""
 
-        # ADD THIS DEBUG LOGGING:
-        logger.info(f"🔍 TELEGRAM FORMATTER - Final formatted restaurant:")
-        logger.info(f"🔍 TELEGRAM FORMATTER - Result: {formatted_result}")
+            # Clean name
+            name_clean = self._clean_html(name)
 
-        return formatted_result
+            # Clean description
+            desc_clean = self._clean_html(description) if description else ""
+
+            # Build restaurant text
+            parts = [f"<b>{index}. {name_clean}</b>\n"]
+
+            # Add address with link
+            address_line = self._format_address_link(address, place_id)
+            if address_line:
+                parts.append(address_line)
+
+            # Add description
+            if desc_clean:
+                parts.append(f"{desc_clean}\n")
+
+            # Add sources - FIXED: Extract domains from URLs
+            sources_line = self._format_sources(sources)
+            if sources_line:
+                parts.append(sources_line)
+                # ADD THIS DEBUG LOGGING:
+                logger.debug(f"🔍 TELEGRAM FORMATTER - Generated sources line: {sources_line}")
+            else:
+                logger.debug(f"⚠️ No sources line generated for {name}")
+
+            parts.append("\n")  # Spacing between restaurants
+
+            formatted_result = ''.join(parts)
+
+            # ADD THIS DEBUG LOGGING:
+            logger.debug(f"🔍 TELEGRAM FORMATTER - Final formatted restaurant:")
+            logger.debug(f"🔍 TELEGRAM FORMATTER - Result: {formatted_result}")
+
+            return formatted_result
+
+        except Exception as e:
+            logger.error(f"❌ Error formatting restaurant {index}: {e}")
+            return ""
 
     def _extract_street(self, full_address):
         """Extract street address using AI - handles international formats"""
@@ -159,7 +152,7 @@ class TelegramFormatter:
             return "Address available"
 
         try:
-            # Use DeepSeek for smart address cleaning
+            # Use AI for smart address cleaning
             cleaned_address = self._ai_clean_address(full_address)
             if cleaned_address:
                 return cleaned_address
@@ -171,16 +164,16 @@ class TelegramFormatter:
             return self._clean_html(full_address)  # Use full address as fallback
 
     def _ai_clean_address(self, full_address):
-        """Use DeepSeek to intelligently remove postal codes and countries"""
+        """Use AI to intelligently remove postal codes and countries"""
         try:
             from openai import OpenAI
 
             # Check if we have config and API key
             if not self.config or not getattr(self.config, 'DEEPSEEK_API_KEY', None):
-                logger.warning("No DeepSeek API key found, using full address")
+                logger.warning("No API key found for address cleaning, using full address")
                 return self._clean_html(full_address)  # Return full address if no API key
 
-            # Initialize DeepSeek client
+            # Initialize client
             client = OpenAI(
                 api_key=getattr(self.config, 'DEEPSEEK_API_KEY'),
                 base_url="https://api.deepseek.com"
@@ -220,7 +213,7 @@ Return only the cleaned address, nothing else."""
                 return self._clean_html(full_address)  # Return full address if AI result is suspicious
 
         except Exception as e:
-            logger.error(f"DeepSeek API error: {e}, using full address")
+            logger.error(f"AI API error: {e}, using full address")
             return self._clean_html(full_address)  # Return full address on any error
 
     def _simple_extract_street(self, full_address):
@@ -235,23 +228,53 @@ Return only the cleaned address, nothing else."""
         return street if street else "Address available"
 
     def _format_sources(self, sources):
-        """Format sources - simple approach"""
+        """Format sources - FIXED: Extract domains from URLs and deduplicate"""
         if not sources or not isinstance(sources, list):
             return ""
 
-        # Clean and limit sources
-        clean_sources = []
+        # Extract domains from URLs and clean them
+        clean_domains = []
+        seen_domains = set()  # For deduplication
+
         for source in sources[:3]:  # Max 3 sources
             if source and str(source).strip():
-                clean_source = self._clean_html(str(source).strip())
-                if clean_source:
-                    clean_sources.append(clean_source)
+                # Extract domain from URL if it's a URL, otherwise use as-is
+                domain = self._extract_domain_from_url(str(source).strip())
 
-        if clean_sources:
-            sources_text = ", ".join(clean_sources)
+                # Clean the domain/source
+                clean_domain = self._clean_html(domain)
+
+                # Add to list if not already seen (deduplicate)
+                if clean_domain and clean_domain.lower() not in seen_domains:
+                    clean_domains.append(clean_domain)
+                    seen_domains.add(clean_domain.lower())
+
+        if clean_domains:
+            sources_text = ", ".join(clean_domains)
             return f"<i>✅ Recommended by: {sources_text}</i>\n"
 
         return ""
+
+    def _extract_domain_from_url(self, source):
+        """Extract domain from URL, or return source as-is if not a URL"""
+        try:
+            # Check if it looks like a URL
+            if '://' in source or source.startswith('www.'):
+                parsed_url = urlparse(source if '://' in source else f'http://{source}')
+                domain = parsed_url.netloc.lower()
+
+                # Remove 'www.' prefix if present
+                if domain.startswith('www.'):
+                    domain = domain[4:]
+
+                return domain if domain else source
+            else:
+                # Not a URL, return as-is (might be a publication name)
+                return source
+
+        except Exception as e:
+            logger.debug(f"Could not parse URL {source}: {e}")
+            return source
 
     def _clean_html(self, text):
         """Simple HTML cleaning - production approach"""
