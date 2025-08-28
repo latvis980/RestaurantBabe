@@ -1,419 +1,430 @@
-# location/location_ai_description_editor.py
+# location/location_text_editor.py
 """
-AI Description Editor for Location Search Results
+Location Text Editor Agent
 
-This service takes filtered restaurants from the database and creates AI-edited
-descriptions that are contextual to the user's initial query and optimized for Telegram.
+Creates professional restaurant descriptions by combining:
+- Google Reviews analysis
+- Professional media content (when available)
+- AI-powered description generation in food editor style
+
+Final output format: name, address, distance, professional description
 """
 
 import logging
 import json
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
+from dataclasses import dataclass
+
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage
+from location.enhanced_media_verification import EnhancedVenueData
 
 logger = logging.getLogger(__name__)
 
-class LocationAIDescriptionEditor:
-    """
-    AI-powered description editor for location search results
+@dataclass
+class RestaurantResult:
+    """Final formatted restaurant result"""
+    name: str
+    address: str
+    distance_km: float
+    description: str
+    has_media_coverage: bool = False
+    media_sources: Optional[List[str]] = None
 
-    Creates concise, query-relevant descriptions for Telegram display
+class LocationTextEditor:
+    """
+    Creates professional restaurant descriptions combining Google reviews 
+    and professional media coverage in food editor style
     """
 
     def __init__(self, config):
         self.config = config
 
-        # Initialize AI for description editing
+        # Initialize AI model for description generation
         self.ai_model = ChatOpenAI(
             model=config.OPENAI_MODEL,
-            temperature=0.2,  # Slightly creative but consistent
-            api_key=config.OPENAI_API_KEY,
-            max_tokens=1024
+            temperature=0.3,  # Slightly higher for more creative descriptions
+            api_key=config.OPENAI_API_KEY
         )
 
-        # Description editing prompt
-        self.description_prompt = ChatPromptTemplate.from_template("""
-You are creating concise, engaging descriptions for restaurants near a user's location.
+        # Setup prompts
+        self._setup_prompts()
 
-USER'S ORIGINAL REQUEST: "{user_query}"
-LOCATION: {location_description}
+        logger.info("✅ Location Text Editor initialized")
 
-RESTAURANT DATA:
-{restaurants_data}
+    def _setup_prompts(self):
+        """Setup AI prompts for professional description generation"""
 
-TASK: Create brief, telegram-friendly descriptions (15-25 words each) that:
+        # Professional description prompt - using simple string format
+        self.description_prompt = """You are a professional food editor writing restaurant descriptions for a quality dining guide.
 
-1. RELATE TO USER'S QUERY: Highlight aspects that match what they asked for
-2. BE SPECIFIC: Use concrete details from raw_descriptions, not generic phrases  
-3. STAY CONCISE: Perfect for mobile/telegram reading
-4. INCLUDE APPEAL: Why this restaurant suits their request
+Create one concise, professional description that synthesizes all available information without mentioning sources.
 
-FORMATTING GUIDELINES:
-- Focus on cuisine, atmosphere, or standout features
-- Mention specific dishes/specialties when available
-- Include price range hints if mentioned in raw descriptions
-- Don't repeat the restaurant name in the description
-- Use active, engaging language
+STYLE GUIDELINES:
+- Write 2-3 concise, descriptive sentences maximum
+- Focus on specific details: cuisine style, standout dishes, atmosphere, unique features
+- Avoid generic phrases like "great place!" or "amazing food!"
+- Include specific menu items or specialties when available
+- Mention atmosphere, service style, or what makes this restaurant special
+- DO NOT mention "reviews," "Google," "sources," or "coverage"
+- Write as if you personally visited and are recommending it
 
-OUTPUT: Return ONLY valid JSON:
-{{
-    "edited_restaurants": [
-        {{
-            "id": "restaurant_id",
-            "name": "Restaurant Name",
-            "address": "Full Address",
-            "distance_km": 1.2,
-            "description": "Concise 15-25 word description relating to user's query",
-            "sources_domains": ["domain1.com", "domain2.com"],
-            "original_sources": ["full_url1", "full_url2"]
-        }}
-    ]
-}}
+TONE: 
+- Professional but warm and inviting
+- Specific and informative
+- Authoritative food editor/critic style
+- Confident recommendations
 
-Make each description unique and query-relevant. If raw description is minimal, focus on cuisine type and location relevance.
-""")
+MEDIA INTEGRATION:
+- If professional media sources are available, subtly integrate insights without attribution
+- Use phrases like "known for," "celebrated for," "standout," "notable"
+- Keep it natural - as if this is your professional assessment
 
-        logger.info("✅ Location AI Description Editor initialized")
+Restaurant: {name}
+Location: {address}
 
-    def edit_descriptions(
+Available Information:
+{combined_information}
+
+Write one concise professional description (2-3 sentences maximum):"""
+
+    async def create_professional_descriptions(
         self, 
-        filtered_restaurants: List[Dict[str, Any]], 
-        user_query: str,
-        location_description: str = "your location"
-    ) -> List[Dict[str, Any]]:
+        venues: List[EnhancedVenueData]
+    ) -> List[RestaurantResult]:
         """
-        Create AI-edited descriptions for filtered restaurants
-
-        Args:
-            filtered_restaurants: List of restaurants from filter_evaluator
-            user_query: User's original search query 
-            location_description: Description of the search location
-
-        Returns:
-            List of restaurants with AI-edited descriptions
+        Create professional descriptions for all venues
         """
         try:
-            if not filtered_restaurants:
-                logger.warning("No restaurants to edit descriptions for")
-                return []
+            logger.info(f"📝 Creating professional descriptions for {len(venues)} restaurants")
 
-            logger.info(f"🎨 Creating AI-edited descriptions for {len(filtered_restaurants)} restaurants")
-            logger.info(f"📝 User query: '{user_query}'")
+            results = []
 
-            # Prepare restaurant data for AI
-            restaurants_text = self._format_restaurants_for_ai(filtered_restaurants)
+            for venue in venues:
+                try:
+                    description = await self._generate_description(venue)
 
-            # Create the AI chain
-            chain = self.description_prompt | self.ai_model
+                    # Create final result
+                    result = RestaurantResult(
+                        name=venue.name,
+                        address=venue.address,
+                        distance_km=venue.distance_km,
+                        description=description,
+                        has_media_coverage=venue.has_professional_coverage,
+                        media_sources=[s.get('title', 'Unknown') for s in venue.professional_sources] if venue.professional_sources else None
+                    )
 
-            # Get AI response
-            response = chain.invoke({
-                "user_query": user_query,
-                "location_description": location_description,
-                "restaurants_data": restaurants_text
-            })
+                    results.append(result)
 
-            # Parse AI response
-            edited_restaurants = self._parse_ai_response(response.content, filtered_restaurants)
+                except Exception as e:
+                    logger.warning(f"Error generating description for {venue.name}: {e}")
+                    # Fallback simple description
+                    result = RestaurantResult(
+                        name=venue.name,
+                        address=venue.address,
+                        distance_km=venue.distance_km,
+                        description="Restaurant serving quality cuisine in the area.",
+                        has_media_coverage=False,
+                        media_sources=None
+                    )
+                    results.append(result)
 
-            logger.info(f"✅ Successfully created {len(edited_restaurants)} AI-edited descriptions")
-
-            return edited_restaurants
-
-        except Exception as e:
-            logger.error(f"❌ Error in AI description editing: {e}")
-            # Fallback: return restaurants with basic descriptions
-            return self._create_fallback_descriptions(filtered_restaurants, user_query)
-
-    def _format_restaurants_for_ai(self, restaurants: List[Dict[str, Any]]) -> str:
-        """
-        Format restaurant data for AI analysis
-
-        Include all relevant information: name, cuisine, description, sources
-        """
-        try:
-            formatted_entries = []
-
-            for restaurant in restaurants:
-                # Basic info
-                restaurant_id = restaurant.get('id', 'unknown')
-                name = restaurant.get('name', 'Unknown Restaurant')
-                address = restaurant.get('address', 'Address not available')
-                distance = restaurant.get('distance_km', 0)
-
-                # Description data
-                raw_description = restaurant.get('raw_description', '') or restaurant.get('description', '')
-                cuisine_tags = restaurant.get('cuisine_tags', [])
-
-                # Sources data
-                sources_domains = restaurant.get('sources_domains', [])
-                sources = restaurant.get('sources', [])
-
-                # Format entry
-                entry = f"""
-ID: {restaurant_id}
-NAME: {name}
-ADDRESS: {address}
-DISTANCE: {distance} km
-CUISINE_TAGS: {', '.join(cuisine_tags) if cuisine_tags else 'Not specified'}
-RAW_DESCRIPTION: {raw_description[:500] if raw_description else 'No description available'}
-SOURCES: {', '.join(sources_domains) if sources_domains else 'No sources'}
-""".strip()
-
-                formatted_entries.append(entry)
-
-            return "\n\n" + "="*50 + "\n\n".join(formatted_entries)
+            logger.info(f"✅ Generated {len(results)} professional descriptions")
+            return results
 
         except Exception as e:
-            logger.error(f"Error formatting restaurants for AI: {e}")
-            return "No restaurant data available"
-
-    def _parse_ai_response(self, ai_response: str, original_restaurants: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Parse AI response and merge with original restaurant data
-        """
-        try:
-            # Extract JSON from AI response
-            ai_response = ai_response.strip()
-
-            # Try to find JSON in the response
-            start_idx = ai_response.find('{')
-            end_idx = ai_response.rfind('}') + 1
-
-            if start_idx == -1 or end_idx == 0:
-                logger.error("No valid JSON found in AI response")
-                return self._create_fallback_descriptions(original_restaurants, "")
-
-            json_str = ai_response[start_idx:end_idx]
-            parsed_response = json.loads(json_str)
-
-            edited_restaurants_data = parsed_response.get('edited_restaurants', [])
-
-            if not edited_restaurants_data:
-                logger.error("No edited_restaurants found in AI response")
-                return self._create_fallback_descriptions(original_restaurants, "")
-
-            # Create lookup dictionary for original restaurants
-            original_lookup = {str(r.get('id')): r for r in original_restaurants}
-
-            # Merge AI-edited descriptions with original data
-            final_restaurants = []
-
-            for edited_restaurant in edited_restaurants_data:
-                restaurant_id = str(edited_restaurant.get('id', ''))
-
-                if restaurant_id in original_lookup:
-                    # Start with original restaurant data
-                    final_restaurant = original_lookup[restaurant_id].copy()
-
-                    # Override with AI-edited description
-                    final_restaurant['ai_description'] = edited_restaurant.get('description', '')
-                    final_restaurant['description'] = edited_restaurant.get('description', '')
-
-                    # Ensure we have sources data
-                    if 'sources_domains' not in final_restaurant:
-                        final_restaurant['sources_domains'] = final_restaurant.get('sources_domains', [])
-                    if 'sources' not in final_restaurant:
-                        final_restaurant['sources'] = final_restaurant.get('sources', [])
-
-                    # Add to final list
-                    final_restaurants.append(final_restaurant)
-                else:
-                    logger.warning(f"AI returned restaurant ID {restaurant_id} not found in original data")
-
-            logger.info(f"✅ Successfully parsed {len(final_restaurants)} restaurants with AI descriptions")
-            return final_restaurants
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse AI response as JSON: {e}")
-            logger.debug(f"AI response was: {ai_response[:200]}...")
-            return self._create_fallback_descriptions(original_restaurants, "")
-        except Exception as e:
-            logger.error(f"Error parsing AI response: {e}")
-            return self._create_fallback_descriptions(original_restaurants, "")
-
-    def _create_fallback_descriptions(self, restaurants: List[Dict[str, Any]], user_query: str) -> List[Dict[str, Any]]:
-        """
-        Create basic fallback descriptions when AI fails
-        """
-        try:
-            fallback_restaurants = []
-
-            for restaurant in restaurants:
-                fallback_restaurant = restaurant.copy()
-
-                # Create basic description
-                name = restaurant.get('name', 'Restaurant')
-                cuisine_tags = restaurant.get('cuisine_tags', [])
-                distance = restaurant.get('distance_km', 0)
-
-                if cuisine_tags:
-                    cuisine_text = f"{', '.join(cuisine_tags[:2])}"
-                    description = f"Popular {cuisine_text.lower()} restaurant {distance}km away"
-                else:
-                    description = f"Local restaurant {distance}km from your location"
-
-                fallback_restaurant['description'] = description
-                fallback_restaurant['ai_description'] = description
-
-                # Ensure sources data is available
-                if 'sources_domains' not in fallback_restaurant:
-                    fallback_restaurant['sources_domains'] = []
-                if 'sources' not in fallback_restaurant:
-                    fallback_restaurant['sources'] = []
-
-                fallback_restaurants.append(fallback_restaurant)
-
-            logger.info(f"✅ Created {len(fallback_restaurants)} fallback descriptions")
-            return fallback_restaurants
-
-        except Exception as e:
-            logger.error(f"Error creating fallback descriptions: {e}")
+            logger.error(f"❌ Error in description generation: {e}")
             return []
 
-    def create_telegram_formatted_results(
-        self, 
-        edited_restaurants: List[Dict[str, Any]], 
-        user_query: str,
-        location_description: str = "your location"
-    ) -> Dict[str, Any]:
+    async def _generate_description(self, venue: EnhancedVenueData) -> str:
         """
-        Format the final results for Telegram display using the original formatting approach
-
-        Args:
-            edited_restaurants: Restaurants with AI-edited descriptions
-            user_query: Original user query
-            location_description: Location context
-
-        Returns:
-            Dict with formatted message and metadata
+        Generate a professional description for a single venue
         """
         try:
-            if not edited_restaurants:
+            # Combine all available information into one coherent summary
+            combined_information = self._synthesize_all_information(venue)
+
+            # Create prompt variables
+            prompt_vars = {
+                'name': venue.name,
+                'address': venue.address,
+                'combined_information': combined_information
+            }
+
+            # Generate description using the AI model with formatted prompt
+            formatted_prompt = self.description_prompt.format(**prompt_vars)
+
+            response = await self.ai_model.ainvoke([HumanMessage(content=formatted_prompt)])
+
+            # Handle different response types safely
+            if hasattr(response, 'content') and response.content:
+                description = str(response.content).strip()
+            else:
+                description = str(response).strip()
+
+            # Ensure we have a valid description
+            if not description or description.lower().startswith('error'):
+                description = "Quality restaurant featuring carefully prepared cuisine."
+
+            # Clean up any formatting issues
+            description = self._clean_description(description)
+
+            logger.debug(f"Generated description for {venue.name}: {description[:50]}...")
+            return description
+
+        except Exception as e:
+            logger.error(f"Error generating description for {venue.name}: {e}")
+            return "Quality restaurant featuring carefully prepared cuisine."
+
+    def _synthesize_all_information(self, venue: EnhancedVenueData) -> str:
+        """
+        Synthesize all available information into one coherent summary for the AI
+        """
+        try:
+            info_parts = []
+
+            # Basic restaurant info
+            info_parts.append(f"Restaurant Type: {self._infer_cuisine_type(venue)}")
+
+            # Extract key details from Google reviews
+            review_insights = self._extract_review_insights(venue.google_reviews)
+            if review_insights:
+                info_parts.append(f"Notable Features: {review_insights}")
+
+            # Add professional media insights if available
+            if venue.has_professional_coverage and venue.scraped_content:
+                media_insights = self._extract_media_insights(venue.scraped_content)
+                if media_insights:
+                    info_parts.append(f"Professional Recognition: {media_insights}")
+
+            # Rating context (without mentioning source)
+            if venue.rating and venue.rating >= 4.3:
+                info_parts.append("Highly rated establishment")
+
+            return "\n".join(info_parts)
+
+        except Exception as e:
+            logger.warning(f"Error synthesizing information for {venue.name}: {e}")
+            return "Quality dining establishment"
+
+    def _extract_review_insights(self, reviews: List[Dict]) -> str:
+        """
+        Extract key insights from all review sources without mentioning the sources
+        """
+        try:
+            if not reviews:
+                return ""
+
+            # Extract key details from reviews
+            mentioned_dishes = set()
+            atmosphere_notes = set()
+            service_notes = set()
+
+            for review in reviews[:5]:  # Analyze up to 5 reviews
+                text = review.get('text', '').lower()
+                rating = review.get('rating', 0)
+
+                if rating < 4 or len(text) < 30:  # Skip low ratings or very short reviews
+                    continue
+
+                # Extract mentioned dishes/drinks (expanded list)
+                food_keywords = [
+                    # Italian
+                    'pasta', 'pizza', 'risotto', 'gnocchi', 'tiramisu', 'osso buco',
+                    'carbonara', 'bolognese', 'parmigiana', 'bruschetta',
+                    # French
+                    'coq au vin', 'bouillabaisse', 'ratatouille', 'cassoulet', 'escargot',
+                    # Drinks
+                    'wine', 'cocktail', 'negroni', 'aperol', 'prosecco', 'chianti',
+                    'martini', 'manhattan', 'old fashioned',
+                    # General
+                    'steak', 'salmon', 'chicken', 'burger', 'sandwich',
+                    'dessert', 'appetizer', 'salad', 'soup', 'seafood',
+                    # Cooking styles
+                    'grilled', 'roasted', 'braised', 'sautéed', 'wood-fired'
+                ]
+
+                for keyword in food_keywords:
+                    if keyword in text:
+                        mentioned_dishes.add(keyword)
+
+                # Extract atmosphere/ambiance notes
+                if any(word in text for word in ['cozy', 'intimate', 'romantic', 'charming']):
+                    atmosphere_notes.add('intimate atmosphere')
+                if any(word in text for word in ['lively', 'vibrant', 'energetic', 'bustling']):
+                    atmosphere_notes.add('vibrant atmosphere')
+                if any(word in text for word in ['elegant', 'upscale', 'sophisticated', 'refined']):
+                    atmosphere_notes.add('refined setting')
+                if any(word in text for word in ['casual', 'relaxed', 'laid-back', 'comfortable']):
+                    atmosphere_notes.add('relaxed setting')
+
+                # Extract service notes
+                if any(word in text for word in ['excellent service', 'attentive', 'friendly staff', 'professional']):
+                    service_notes.add('attentive service')
+                if any(word in text for word in ['knowledgeable', 'helpful', 'accommodating']):
+                    service_notes.add('knowledgeable staff')
+
+            # Build insights summary
+            insights = []
+
+            if mentioned_dishes:
+                unique_dishes = sorted(list(mentioned_dishes))[:4]  # Top 4 most mentioned
+                if len(unique_dishes) > 2:
+                    insights.append(f"specializes in {', '.join(unique_dishes[:2])} and {unique_dishes[2]}")
+                elif len(unique_dishes) == 2:
+                    insights.append(f"known for {' and '.join(unique_dishes)}")
+                elif len(unique_dishes) == 1:
+                    insights.append(f"noted for {unique_dishes[0]}")
+
+            if atmosphere_notes:
+                insights.append(list(atmosphere_notes)[0])  # Take first atmosphere note
+
+            if service_notes and len(insights) < 2:
+                insights.append(list(service_notes)[0])  # Add service note if we have space
+
+            return "; ".join(insights) if insights else ""
+
+        except Exception as e:
+            logger.warning(f"Error extracting review insights: {e}")
+            return ""
+
+    def _extract_media_insights(self, scraped_content: List[Dict]) -> str:
+        """
+        Extract insights from professional media coverage without attribution
+        """
+        try:
+            if not scraped_content:
+                return ""
+
+            insights = []
+
+            for content in scraped_content[:2]:  # Use top 2 sources
+                source_type = content.get('source_type', 'media')
+
+                # Create insights based on source type without mentioning the source
+                if source_type == 'food_magazine':
+                    insights.append("recognized for culinary excellence")
+                elif source_type == 'local_newspaper':
+                    insights.append("celebrated by local food scene")
+                elif source_type == 'tourism_guide':
+                    insights.append("featured destination for food enthusiasts")
+                elif source_type == 'food_critic':
+                    insights.append("acclaimed by culinary experts")
+                else:
+                    insights.append("notable dining destination")
+
+            return "; ".join(insights) if insights else ""
+
+        except Exception as e:
+            logger.warning(f"Error extracting media insights: {e}")
+            return ""
+
+    def _infer_cuisine_type(self, venue: EnhancedVenueData) -> str:
+        """
+        Infer cuisine type from venue name, address, and available information
+        """
+        try:
+            name_lower = venue.name.lower()
+            address_lower = venue.address.lower()
+
+            # Italian indicators
+            if any(word in name_lower for word in ['pizza', 'pasta', 'trattoria', 'osteria', 'ristorante']):
+                return "Italian cuisine"
+
+            # French indicators  
+            if any(word in name_lower for word in ['bistro', 'brasserie', 'café', 'chez']):
+                return "French cuisine"
+
+            # Asian indicators
+            if any(word in name_lower for word in ['sushi', 'ramen', 'thai', 'chinese', 'vietnamese']):
+                return "Asian cuisine"
+
+            # American/Contemporary
+            if any(word in name_lower for word in ['grill', 'steakhouse', 'tavern', 'gastropub']):
+                return "Contemporary American cuisine"
+
+            # Mediterranean
+            if any(word in name_lower for word in ['mediterranean', 'greek', 'mezze']):
+                return "Mediterranean cuisine"
+
+            # Default
+            return "Contemporary cuisine"
+
+        except Exception:
+            return "Restaurant cuisine"
+
+    def _clean_description(self, description: str) -> str:
+        """
+        Clean up the generated description
+        """
+        try:
+            # Remove any quotes that AI might add
+            description = description.strip('"\'')
+
+            # Ensure it ends with proper punctuation
+            if description and not description.endswith(('.', '!', '?')):
+                description += '.'
+
+            # Remove any duplicate periods
+            description = description.replace('..', '.')
+
+            # Capitalize first letter
+            if description:
+                description = description[0].upper() + description[1:]
+
+            return description
+
+        except Exception as e:
+            logger.warning(f"Error cleaning description: {e}")
+            return description
+
+    def format_final_results(
+        self, 
+        results: List[RestaurantResult],
+        user_coordinates: Optional[Tuple[float, float]] = None
+    ) -> Dict[str, Any]:
+        """
+        Format final results for user display
+        """
+        try:
+            if not results:
                 return {
                     "success": False,
-                    "message": "No restaurants found matching your criteria.",
-                    "restaurant_count": 0
+                    "message": "No restaurants found matching your criteria."
                 }
 
-            # Create header
-            header = f"🏠 From my personal restaurant notes:\n\n"
+            # Sort by distance
+            results.sort(key=lambda x: x.distance_km)
 
-            # Format each restaurant using original formatting
-            restaurant_entries = []
+            # Format for display
+            formatted_restaurants = []
 
-            for i, restaurant in enumerate(edited_restaurants, 1):
-                entry = self._format_single_restaurant_original(restaurant, i)
-                if entry:
-                    restaurant_entries.append(entry)
+            for result in results:
+                formatted_restaurants.append({
+                    'name': result.name,
+                    'address': result.address,
+                    'distance': f"{result.distance_km:.1f}km away",
+                    'description': result.description,
+                    'has_media_coverage': result.has_media_coverage
+                })
 
-            # Combine all entries
-            message = header + "\n\n".join(restaurant_entries)
-
-            # Add footer if needed
-            if len(edited_restaurants) > 1:
-                message += f"\n\n💡 These {len(edited_restaurants)} restaurants match your request for {location_description}."
+            # Create user message
+            if len(results) == 1:
+                message = "Found an excellent restaurant recommendation:"
+            else:
+                message = f"Found {len(results)} excellent restaurant recommendations:"
 
             return {
                 "success": True,
                 "message": message,
-                "restaurant_count": len(edited_restaurants),
-                "location_description": location_description,
-                "user_query": user_query
+                "restaurants": formatted_restaurants,
+                "count": len(results)
             }
 
         except Exception as e:
-            logger.error(f"Error formatting Telegram results: {e}")
+            logger.error(f"Error formatting final results: {e}")
             return {
                 "success": False,
-                "message": "Error formatting restaurant recommendations.",
-                "restaurant_count": 0
+                "message": "Error formatting restaurant recommendations."
             }
-
-    def _format_single_restaurant_original(self, restaurant: Dict[str, Any], index: int) -> str:
-        """
-        Format single restaurant using the ORIGINAL formatting approach
-
-        - Bold name (HTML, not markdown)
-        - Address as Google Maps link using canonical_id
-        - Distance rounded to 1 decimal place
-        - AI-edited description
-        - Sources as domains only
-        """
-        try:
-            # Name - HTML bold, not markdown
-            name = restaurant.get('name', 'Unknown Restaurant')
-            name_formatted = f"<b>{name}</b>"
-
-            # Address - Create Google Maps link using canonical_id (original approach)
-            address_link = self._create_address_link(restaurant)
-
-            # Distance - Round to 1 decimal place
-            distance = restaurant.get('distance_km', 0)
-            if distance > 0:
-                distance_formatted = f"🚶 {distance:.1f} km away"
-            else:
-                distance_formatted = "🚶 Distance unknown"
-
-            # AI-edited description
-            description = restaurant.get('description', 'Quality local restaurant')
-            description_formatted = f"💭 {description}"
-
-            # Sources - domains only (as before)
-            sources_formatted = self._format_sources_original(restaurant)
-
-            # Combine entry
-            entry = f"{index}. {name_formatted}\n"
-            entry += f"{address_link}\n"
-            entry += f"{distance_formatted}\n"
-            entry += f"{description_formatted}\n"
-            if sources_formatted:
-                entry += f"{sources_formatted}\n"
-
-            return entry.strip()
-
-        except Exception as e:
-            logger.error(f"Error formatting single restaurant: {e}")
-            return ""
-
-    def _create_address_link(self, restaurant: Dict[str, Any]) -> str:
-        """
-        Create Google Maps address link using canonical_id (original approach)
-        """
-        try:
-            address = restaurant.get('address', 'Address not available')
-            canonical_id = restaurant.get('canonical_id') or restaurant.get('place_id')
-
-            if canonical_id:
-                # Use canonical_id for Google Maps link (original approach)
-                maps_url = f"https://www.google.com/maps/place/?q=place_id:{canonical_id}"
-                return f"📍 <a href=\"{maps_url}\">{address}</a>"
-            else:
-                # Fallback: plain address if no canonical_id
-                return f"📍 {address}"
-
-        except Exception as e:
-            logger.error(f"Error creating address link: {e}")
-            return f"📍 {restaurant.get('address', 'Address not available')}"
-
-    def _format_sources_original(self, restaurant: Dict[str, Any]) -> str:
-        """
-        Format sources using original approach (domains only)
-        """
-        try:
-            sources_domains = restaurant.get('sources_domains', [])
-
-            if not sources_domains:
-                return ""
-
-            # Show up to 3 sources
-            sources_text = ', '.join(sources_domains[:3])
-            if len(sources_domains) > 3:
-                sources_text += f" (+{len(sources_domains) - 3} more)"
-
-            return f"📰 Sources: {sources_text}"
-
-        except Exception as e:
-            logger.error(f"Error formatting sources: {e}")
-            return ""

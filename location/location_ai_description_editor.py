@@ -1,6 +1,6 @@
 # location/location_ai_description_editor.py
 """
-AI Description Editor for Location DATABASE Results
+AI Description Editor for Location Search Results
 
 This service takes filtered restaurants from the database and creates AI-edited
 descriptions that are contextual to the user's initial query and optimized for Telegram.
@@ -155,7 +155,7 @@ Make each description unique and query-relevant. If raw description is minimal, 
 ID: {restaurant_id}
 NAME: {name}
 ADDRESS: {address}
-DISTANCE: {distance}km
+DISTANCE: {distance} km
 CUISINE_TAGS: {', '.join(cuisine_tags) if cuisine_tags else 'Not specified'}
 RAW_DESCRIPTION: {raw_description[:500] if raw_description else 'No description available'}
 SOURCES: {', '.join(sources_domains) if sources_domains else 'No sources'}
@@ -252,7 +252,7 @@ SOURCES: {', '.join(sources_domains) if sources_domains else 'No sources'}
                     cuisine_text = f"{', '.join(cuisine_tags[:2])}"
                     description = f"Popular {cuisine_text.lower()} restaurant {distance}km away"
                 else:
-                    description = f"Local restaurant {distance}km from your location"
+                    description = f"Local restaurant {distance} km from your location"
 
                 fallback_restaurant['description'] = description
                 fallback_restaurant['ai_description'] = description
@@ -279,7 +279,7 @@ SOURCES: {', '.join(sources_domains) if sources_domains else 'No sources'}
         location_description: str = "your location"
     ) -> Dict[str, Any]:
         """
-        Format the final results for Telegram display
+        Format the final results for Telegram display using the original formatting approach
 
         Args:
             edited_restaurants: Restaurants with AI-edited descriptions
@@ -300,30 +300,13 @@ SOURCES: {', '.join(sources_domains) if sources_domains else 'No sources'}
             # Create header
             header = f"🏠 From my personal restaurant notes:\n\n"
 
-            # Format each restaurant
+            # Format each restaurant using original formatting
             restaurant_entries = []
 
             for i, restaurant in enumerate(edited_restaurants, 1):
-                name = restaurant.get('name', 'Unknown Restaurant')
-                address = restaurant.get('address', 'Address not available')
-                distance = restaurant.get('distance_km', 0)
-                description = restaurant.get('description', 'Quality local restaurant')
-                sources_domains = restaurant.get('sources_domains', [])
-
-                # Create entry
-                entry = f"{i}. **{name}**\n"
-                entry += f"📍 {address}\n"
-                entry += f"🚶 {distance}km away\n"
-                entry += f"💭 {description}\n"
-
-                # Add sources if available
-                if sources_domains:
-                    sources_text = ', '.join(sources_domains[:3])  # Limit to 3 sources
-                    if len(sources_domains) > 3:
-                        sources_text += f" (+{len(sources_domains) - 3} more)"
-                    entry += f"📰 Sources: {sources_text}\n"
-
-                restaurant_entries.append(entry)
+                entry = self._format_single_restaurant_original(restaurant, i)
+                if entry:
+                    restaurant_entries.append(entry)
 
             # Combine all entries
             message = header + "\n\n".join(restaurant_entries)
@@ -347,3 +330,90 @@ SOURCES: {', '.join(sources_domains) if sources_domains else 'No sources'}
                 "message": "Error formatting restaurant recommendations.",
                 "restaurant_count": 0
             }
+
+    def _format_single_restaurant_original(self, restaurant: Dict[str, Any], index: int) -> str:
+        """
+        Format single restaurant using the ORIGINAL formatting approach
+
+        - Bold name (HTML, not markdown)
+        - Address as Google Maps link using canonical_id
+        - Distance rounded to 1 decimal place
+        - AI-edited description
+        - Sources as domains only
+        """
+        try:
+            # Name - HTML bold, not markdown
+            name = restaurant.get('name', 'Unknown Restaurant')
+            name_formatted = f"<b>{name}</b>"
+
+            # Address - Create Google Maps link using canonical_id (original approach)
+            address_link = self._create_address_link(restaurant)
+
+            # Distance - Round to 1 decimal place
+            distance = restaurant.get('distance_km', 0)
+            if distance > 0:
+                distance_formatted = f"🚶 {distance:.1f} km away"
+            else:
+                distance_formatted = "🚶 Distance unknown"
+
+            # AI-edited description
+            description = restaurant.get('description', 'Quality local restaurant')
+            description_formatted = f"💭 {description}"
+
+            # Sources - domains only (as before)
+            sources_formatted = self._format_sources_original(restaurant)
+
+            # Combine entry
+            entry = f"{index}. {name_formatted}\n"
+            entry += f"{address_link}\n"
+            entry += f"{distance_formatted}\n"
+            entry += f"{description_formatted}\n"
+            if sources_formatted:
+                entry += f"{sources_formatted}\n"
+
+            return entry.strip()
+
+        except Exception as e:
+            logger.error(f"Error formatting single restaurant: {e}")
+            return ""
+
+    def _create_address_link(self, restaurant: Dict[str, Any]) -> str:
+        """
+        Create Google Maps address link using canonical_id (original approach)
+        """
+        try:
+            address = restaurant.get('address', 'Address not available')
+            canonical_id = restaurant.get('canonical_id') or restaurant.get('place_id')
+
+            if canonical_id:
+                # Use canonical_id for Google Maps link (original approach)
+                maps_url = f"https://www.google.com/maps/place/?q=place_id:{canonical_id}"
+                return f"📍 <a href=\"{maps_url}\">{address}</a>"
+            else:
+                # Fallback: plain address if no canonical_id
+                return f"📍 {address}"
+
+        except Exception as e:
+            logger.error(f"Error creating address link: {e}")
+            return f"📍 {restaurant.get('address', 'Address not available')}"
+
+    def _format_sources_original(self, restaurant: Dict[str, Any]) -> str:
+        """
+        Format sources using original approach (domains only)
+        """
+        try:
+            sources_domains = restaurant.get('sources_domains', [])
+
+            if not sources_domains:
+                return ""
+
+            # Show up to 3 sources
+            sources_text = ', '.join(sources_domains[:3])
+            if len(sources_domains) > 3:
+                sources_text += f" (+{len(sources_domains) - 3} more)"
+
+            return f"📰 Sources: {sources_text}"
+
+        except Exception as e:
+            logger.error(f"Error formatting sources: {e}")
+            return ""
