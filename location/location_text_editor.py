@@ -379,6 +379,8 @@ Write one concise professional description (2-3 sentences maximum):"""
             logger.warning(f"Error cleaning description: {e}")
             return description
 
+    # In location/location_text_editor.py, replace the format_final_results method with this fixed version:
+
     def format_final_results(
         self, 
         results: List[RestaurantResult],
@@ -386,6 +388,7 @@ Write one concise professional description (2-3 sentences maximum):"""
     ) -> Dict[str, Any]:
         """
         Format final results for user display
+        FIXED: Now includes the actual restaurant details in the message!
         """
         try:
             if not results:
@@ -397,9 +400,55 @@ Write one concise professional description (2-3 sentences maximum):"""
             # Sort by distance
             results.sort(key=lambda x: x.distance_km)
 
-            # Format for display
-            formatted_restaurants = []
+            # Create header message
+            if len(results) == 1:
+                header = "Found an excellent restaurant recommendation:\n\n"
+            else:
+                header = f"Found {len(results)} excellent restaurant recommendations:\n\n"
 
+            # FIXED: Format each restaurant with details
+            restaurant_entries = []
+
+            for i, result in enumerate(results, 1):
+                try:
+                    # Format name with HTML bold
+                    name_formatted = f"<b>{result.name}</b>"
+
+                    # Format distance
+                    distance_formatted = f"🚶 {result.distance_km:.1f}km away"
+
+                    # Create address link using place_id if available
+                    # For now, just use the address as text since we don't have place_id in RestaurantResult
+                    address_formatted = f"📍 {result.address}"
+
+                    # Format description
+                    description_formatted = f"💭 {result.description}"
+
+                    # Add media coverage indicator if available
+                    media_indicator = ""
+                    if result.has_media_coverage and result.media_sources:
+                        media_sources = ", ".join(result.media_sources[:2])  # Show max 2 sources
+                        media_indicator = f"\n📰 Featured in: {media_sources}"
+
+                    # Combine entry
+                    entry = f"{i}. {name_formatted}\n{address_formatted}\n{distance_formatted}\n{description_formatted}{media_indicator}"
+                    restaurant_entries.append(entry)
+
+                except Exception as e:
+                    logger.warning(f"Error formatting restaurant {i}: {e}")
+                    # Fallback entry
+                    entry = f"{i}. <b>{result.name}</b>\n📍 {result.address}\n🚶 {result.distance_km:.1f}km away\n💭 {result.description}"
+                    restaurant_entries.append(entry)
+
+            # FIXED: Combine header with actual restaurant details
+            full_message = header + "\n\n".join(restaurant_entries)
+
+            # Add footer with note about verification
+            footer = "\n\n<i>Verified through professional reviews and local media sources.</i>"
+            full_message += footer
+
+            # Format restaurant data for other uses
+            formatted_restaurants = []
             for result in results:
                 formatted_restaurants.append({
                     'name': result.name,
@@ -409,15 +458,9 @@ Write one concise professional description (2-3 sentences maximum):"""
                     'has_media_coverage': result.has_media_coverage
                 })
 
-            # Create user message
-            if len(results) == 1:
-                message = "Found an excellent restaurant recommendation:"
-            else:
-                message = f"Found {len(results)} excellent restaurant recommendations:"
-
             return {
                 "success": True,
-                "message": message,
+                "message": full_message,  # FIXED: Now contains the full formatted message
                 "restaurants": formatted_restaurants,
                 "count": len(results)
             }
