@@ -335,19 +335,32 @@ class LocationMapSearchAgent:
             logger.error(f"❌ Error converting GoogleMaps result: {e}")
             return None
 
-    async def search_venues_ai_guided(
+    async def search_venues_with_ai_analysis(
         self, 
+        coordinates: Tuple[float, float], 
         query: str, 
-        coordinates: Tuple[float, float],
-        max_results: int = 20
+        cancel_check_fn=None
     ) -> List[VenueSearchResult]:
         """
         MAIN SEARCH METHOD: Uses Places API v1 with GoogleMaps fallback
+
+        Args:
+            coordinates: (latitude, longitude) tuple
+            query: User search query 
+            cancel_check_fn: Optional cancellation check function
+
+        Returns:
+            List of VenueSearchResult objects
         """
         try:
+            logger.info(f"🎯 Starting AI-guided search for '{query}'")
             latitude, longitude = coordinates
 
-            logger.info(f"🎯 Starting search for '{query}'")
+            # Check for cancellation
+            if cancel_check_fn and cancel_check_fn():
+                logger.info("🚫 Search cancelled by user")
+                return []
+
             self._log_coordinates(latitude, longitude, "INPUT coordinates")
 
             # Get place types for search
@@ -360,11 +373,15 @@ class LocationMapSearchAgent:
             # Try Places API v1 first
             if self.places_client:
                 venues = await self._places_api_search(latitude, longitude, place_types)
+                if cancel_check_fn and cancel_check_fn():
+                    return []
 
             # Fallback to GoogleMaps if needed
             if not venues and self.gmaps:
                 logger.info("🔄 Falling back to GoogleMaps library")
                 venues = await self._googlemaps_search(latitude, longitude, query)
+                if cancel_check_fn and cancel_check_fn():
+                    return []
 
             # Apply rating filter
             filtered_venues = [
@@ -374,7 +391,7 @@ class LocationMapSearchAgent:
 
             # Sort and limit
             filtered_venues.sort(key=lambda x: (x.rating or 0, -x.distance_km), reverse=True)
-            final_venues = filtered_venues[:max_results]
+            final_venues = filtered_venues[:self.max_venues_to_search]
 
             # Final logging
             logger.info(f"🎯 Search completed: {len(final_venues)} venues")
@@ -388,30 +405,180 @@ class LocationMapSearchAgent:
             logger.error(f"❌ Search failed: {e}")
             return []
 
+    # Comprehensive Google Places API place types for restaurants/food
+    RESTAURANT_PLACE_TYPES = [
+        # General food & dining
+        "restaurant",
+        "food", 
+        "meal_takeaway",
+        "meal_delivery",
+        "establishment",
+
+        # Specific restaurant types
+        "american_restaurant",
+        "bakery", 
+        "bar",
+        "barbecue_restaurant",
+        "brazilian_restaurant",
+        "breakfast_restaurant", 
+        "brunch_restaurant",
+        "cafe",
+        "chinese_restaurant",
+        "coffee_shop",
+        "fast_food_restaurant",
+        "french_restaurant",
+        "greek_restaurant",
+        "hamburger_restaurant",
+        "ice_cream_shop",
+        "indian_restaurant",
+        "indonesian_restaurant",
+        "italian_restaurant",
+        "japanese_restaurant",
+        "korean_restaurant",
+        "lebanese_restaurant",
+        "mediterranean_restaurant",
+        "mexican_restaurant",
+        "middle_eastern_restaurant",
+        "pizza_restaurant",
+        "ramen_restaurant",
+        "sandwich_shop",
+        "seafood_restaurant",
+        "spanish_restaurant",
+        "steak_house",
+        "sushi_restaurant",
+        "thai_restaurant",
+        "turkish_restaurant",
+        "vegan_restaurant",
+        "vegetarian_restaurant",
+        "vietnamese_restaurant",
+
+        # Drinking establishments
+        "night_club",
+        "pub",
+        "wine_bar",
+        "cocktail_bar",
+
+        # Food-related services
+        "grocery_store",
+        "supermarket",
+        "convenience_store",
+        "liquor_store",
+        "food_delivery",
+        "catering_service"
+    ]
+
     async def _analyze_query_for_place_types(self, query: str) -> List[str]:
-        """AI analysis for place types"""
+        """AI analysis for place types using comprehensive restaurant type list"""
         try:
             if not openai.api_key:
+                logger.info("🤖 No OpenAI key, using default place types")
                 return ["restaurant", "food", "meal_takeaway"]
 
+            # Create prompt with full place type list
+            place_types_str = ", ".join(self.RESTAURANT_PLACE_TYPES)
+
             prompt = f"""
+            Analyze this restaurant search query and return the 5 most relevant Google Places API place types.
+
             Query: "{query}"
-            Return 3 Google Places API place types as JSON array.
-            Choose from: restaurant, food, meal_takeaway, bakery, cafe, bar
-            Example: ["restaurant", "food", "cafe"]
+
+            Available place types: {place_types_str}
+
+            Instructions:
+            - Choose 5 most relevant types based on the query
+            - Order by relevance (most relevant first)  
+            - Always include "restaurant" unless query is very specific (like "coffee shop")
+            - Consider cuisine type, dining style, and service type
+            - Return ONLY a JSON array, no explanation
+
+            Examples:
+            - "Italian restaurants" → ["italian_restaurant", "restaurant", "food", "establishment", "meal_takeaway"]
+            - "coffee shops near me" → ["coffee_shop", "cafe", "bakery", "breakfast_restaurant", "food"]
+            - "sushi delivery" → ["sushi_restaurant", "japanese_restaurant", "meal_delivery", "restaurant", "food"]
+            - "best steakhouse" → ["steak_house", "american_restaurant", "restaurant", "food", "establishment"]
             """
 
             response = openai.ChatCompletion.create(
                 model=self.openai_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=50
+                max_tokens=100
             )
 
-            return json.loads(response.choices[0].message.content.strip())
+            result = response.choices[0].message.content.strip()
+            place_types = json.loads(result)
 
-        except Exception:
-            return ["restaurant", "food", "meal_takeaway"]
+            # Validate that returned types are in our list
+            valid_types = [t for t in place_types if t in self.RESTAURANT_PLACE_TYPES]
+
+            if len(valid_types) < 3:
+                # Add fallbacks if AI didn't return enough valid types
+                fallbacks = ["restaurant", "food", "meal_takeaway"]
+                for fallback in fallbacks:
+                    if fallback not in valid_types:
+                        valid_types.append(fallback)
+                    if len(valid_types) >= 5:
+                        break
+
+            logger.info(f"🤖 AI selected place types for '{query}': {valid_types[:5]}")
+            return valid_types[:5]
+
+        except Exception as e:
+            logger.warning(f"⚠️  AI query analysis failed: {e}")
+            # Return smart defaults based on common query patterns
+            return self._get_default_place_types(query)
+
+    def _get_default_place_types(self, query: str) -> List[str]:
+        """Get default place types based on simple query analysis"""
+        query_lower = query.lower()
+
+        # Cuisine-specific defaults
+        if any(word in query_lower for word in ["italian", "pizza", "pasta"]):
+            return ["italian_restaurant", "pizza_restaurant", "restaurant", "food", "meal_takeaway"]
+        elif any(word in query_lower for word in ["chinese", "asian"]):
+            return ["chinese_restaurant", "restaurant", "food", "meal_takeaway", "establishment"]
+        elif any(word in query_lower for word in ["japanese", "sushi", "ramen"]):
+            return ["japanese_restaurant", "sushi_restaurant", "ramen_restaurant", "restaurant", "food"]
+        elif any(word in query_lower for word in ["indian", "curry"]):
+            return ["indian_restaurant", "restaurant", "food", "meal_takeaway", "establishment"]
+        elif any(word in query_lower for word in ["mexican", "taco", "burrito"]):
+            return ["mexican_restaurant", "restaurant", "food", "meal_takeaway", "establishment"]
+        elif any(word in query_lower for word in ["french", "bistro"]):
+            return ["french_restaurant", "restaurant", "food", "establishment", "meal_takeaway"]
+        elif any(word in query_lower for word in ["thai"]):
+            return ["thai_restaurant", "restaurant", "food", "meal_takeaway", "establishment"]
+        elif any(word in query_lower for word in ["korean", "bbq", "barbecue"]):
+            return ["korean_restaurant", "barbecue_restaurant", "restaurant", "food", "establishment"]
+        elif any(word in query_lower for word in ["mediterranean", "greek"]):
+            return ["mediterranean_restaurant", "greek_restaurant", "restaurant", "food", "establishment"]
+        elif any(word in query_lower for word in ["vietnamese", "pho"]):
+            return ["vietnamese_restaurant", "restaurant", "food", "meal_takeaway", "establishment"]
+
+        # Service type defaults
+        elif any(word in query_lower for word in ["coffee", "cafe", "espresso"]):
+            return ["coffee_shop", "cafe", "bakery", "breakfast_restaurant", "food"]
+        elif any(word in query_lower for word in ["bakery", "bread", "pastry"]):
+            return ["bakery", "cafe", "breakfast_restaurant", "food", "establishment"]
+        elif any(word in query_lower for word in ["bar", "pub", "drinks"]):
+            return ["bar", "pub", "restaurant", "night_club", "establishment"]
+        elif any(word in query_lower for word in ["fast food", "quick", "drive"]):
+            return ["fast_food_restaurant", "hamburger_restaurant", "restaurant", "meal_takeaway", "food"]
+        elif any(word in query_lower for word in ["delivery", "takeaway", "takeout"]):
+            return ["meal_delivery", "meal_takeaway", "restaurant", "food", "establishment"]
+        elif any(word in query_lower for word in ["breakfast", "brunch"]):
+            return ["breakfast_restaurant", "brunch_restaurant", "cafe", "restaurant", "food"]
+        elif any(word in query_lower for word in ["steak", "steakhouse", "beef"]):
+            return ["steak_house", "american_restaurant", "restaurant", "food", "establishment"]
+        elif any(word in query_lower for word in ["seafood", "fish", "lobster"]):
+            return ["seafood_restaurant", "restaurant", "food", "establishment", "meal_takeaway"]
+        elif any(word in query_lower for word in ["vegetarian", "vegan", "plant"]):
+            return ["vegetarian_restaurant", "vegan_restaurant", "restaurant", "food", "establishment"]
+        elif any(word in query_lower for word in ["ice cream", "gelato", "dessert"]):
+            return ["ice_cream_shop", "bakery", "cafe", "restaurant", "food"]
+
+        # Default fallback
+        logger.info(f"🤖 Using default place types for query: '{query}'")
+        return ["restaurant", "food", "meal_takeaway", "establishment", "cafe"]
 
     def get_search_stats(self) -> Dict[str, Any]:
         """Get search statistics"""
