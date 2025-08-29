@@ -1,39 +1,45 @@
-# location/location_map_search.py - CORRECT Places API v1 imports for Replit
-
+# location/location_map_search.py
 """
-Google Maps/Places Search Agent - FIXED imports for Replit
+Google Maps/Places Search Agent - ALL TYPE ERRORS FIXED
 
-The issue was incorrect import paths. Places API v1 is stable in production,
-this fixes the Replit development environment import issues.
+Fixed all type checking errors by adding proper type guards,
+handling None cases, and using conditional imports correctly.
 """
 
 import logging
 import asyncio
 import json
 import os
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Union
 from dataclasses import dataclass, field
 import googlemaps
 from location.location_utils import LocationUtils
-import openai
 
 logger = logging.getLogger(__name__)
 
-# FIXED: Correct Places API v1 imports for Replit
+# FIXED: Proper conditional imports with type checking
 try:
     from google.oauth2 import service_account
-    # Correct import path based on the documentation
     from google.maps import places_v1
     from google.type import latlng_pb2
     HAS_PLACES_API = True
     logger.info("✅ Google Places API v1 imports successful")
 except ImportError as e:
     logger.warning(f"⚠️  Google Places API v1 not available: {e}")
-    logger.info("🔧 Try: pip install google-maps-places google-cloud-places")
+    # Create placeholder types to avoid None errors
+    service_account = None
     places_v1 = None
     latlng_pb2 = None
-    service_account = None
     HAS_PLACES_API = False
+
+# FIXED: OpenAI import with proper error handling
+try:
+    import openai
+    HAS_OPENAI = True
+except ImportError:
+    logger.warning("⚠️  OpenAI not available")
+    openai = None
+    HAS_OPENAI = False
 
 @dataclass
 class VenueSearchResult:
@@ -57,10 +63,9 @@ class VenueSearchResult:
 
 class LocationMapSearchAgent:
     """
-    Google Maps/Places search agent with FIXED imports
+    Google Maps/Places search agent with ALL TYPE ERRORS FIXED
 
-    This version uses the correct import paths and should work in both
-    Replit development and production environments.
+    Proper type guards and None handling for all imports and client operations.
     """
 
     def __init__(self, config):
@@ -71,27 +76,90 @@ class LocationMapSearchAgent:
         self.search_radius_km = float(getattr(config, 'SEARCH_RADIUS_KM', 2.0))
         self.max_venues_to_search = int(getattr(config, 'MAX_VENUES_TO_SEARCH', 20))
 
-        # OpenAI for query analysis
+        # OpenAI configuration - FIXED: proper None handling
         self.openai_model = getattr(config, 'OPENAI_MODEL', 'gpt-4o-mini')
-        openai_key = getattr(config, 'OPENAI_API_KEY', None)
-        if openai_key:
-            openai.api_key = openai_key
+        if HAS_OPENAI and openai is not None:
+            openai_key = getattr(config, 'OPENAI_API_KEY', None)
+            if openai_key:
+                openai.api_key = openai_key
 
-        # Initialize clients
-        self.places_client = None
-        self.gmaps = None
+        # Initialize clients - FIXED: proper typing
+        self.places_client: Optional[Any] = None
+        self.gmaps: Optional[googlemaps.Client] = None
         self.api_usage = {"places": 0, "gmaps": 0}
 
         self._initialize_clients()
 
-        logger.info(f"✅ LocationMapSearchAgent initialized:")
+        # Comprehensive Google Places API place types for restaurants/food
+        self.RESTAURANT_PLACE_TYPES = [
+            # General food & dining
+            "restaurant",
+            "food", 
+            "meal_takeaway",
+            "meal_delivery",
+            "establishment",
+
+            # Specific restaurant types
+            "american_restaurant",
+            "bakery", 
+            "bar",
+            "barbecue_restaurant",
+            "brazilian_restaurant",
+            "breakfast_restaurant", 
+            "brunch_restaurant",
+            "cafe",
+            "chinese_restaurant",
+            "coffee_shop",
+            "fast_food_restaurant",
+            "french_restaurant",
+            "greek_restaurant",
+            "hamburger_restaurant",
+            "ice_cream_shop",
+            "indian_restaurant",
+            "indonesian_restaurant",
+            "italian_restaurant",
+            "japanese_restaurant",
+            "korean_restaurant",
+            "lebanese_restaurant",
+            "mediterranean_restaurant",
+            "mexican_restaurant",
+            "middle_eastern_restaurant",
+            "pizza_restaurant",
+            "ramen_restaurant",
+            "sandwich_shop",
+            "seafood_restaurant",
+            "spanish_restaurant",
+            "steak_house",
+            "sushi_restaurant",
+            "thai_restaurant",
+            "turkish_restaurant",
+            "vegan_restaurant",
+            "vegetarian_restaurant",
+            "vietnamese_restaurant",
+
+            # Drinking establishments
+            "night_club",
+            "pub",
+            "wine_bar",
+            "cocktail_bar",
+
+            # Food-related services
+            "grocery_store",
+            "supermarket",
+            "convenience_store",
+            "liquor_store",
+            "food_delivery",
+            "catering_service"
+        ]
+
+        logger.info("✅ LocationMapSearchAgent initialized:")
         logger.info(f"   - Rating threshold: {self.rating_threshold}")
         logger.info(f"   - Search radius: {self.search_radius_km}km") 
         logger.info(f"   - Has Places API v1: {self.places_client is not None}")
         logger.info(f"   - Has GoogleMaps fallback: {self.gmaps is not None}")
 
     def _initialize_clients(self):
-        """Initialize Google Maps clients with correct approach"""
+        """Initialize Google Maps clients with FIXED type handling"""
         # GoogleMaps library (always reliable)
         api_key = getattr(self.config, 'GOOGLE_MAPS_API_KEY', None)
         if api_key:
@@ -101,10 +169,10 @@ class LocationMapSearchAgent:
             except Exception as e:
                 logger.error(f"❌ Failed to initialize GoogleMaps client: {e}")
 
-        # Places API v1 client (if available)
-        if HAS_PLACES_API:
+        # Places API v1 client (only if imports are available) - FIXED: type guards
+        if HAS_PLACES_API and service_account is not None and places_v1 is not None:
             try:
-                # FIXED: Use correct service account initialization
+                # FIXED: Check file path exists
                 creds_path = getattr(self.config, 'GOOGLE_APPLICATION_CREDENTIALS', None)
                 if creds_path and os.path.exists(creds_path):
                     credentials = service_account.Credentials.from_service_account_file(
@@ -112,26 +180,30 @@ class LocationMapSearchAgent:
                         scopes=['https://www.googleapis.com/auth/cloud-platform']
                     )
 
-                    # FIXED: Use correct client initialization
+                    # FIXED: Use correct client initialization with type guard
                     self.places_client = places_v1.PlacesClient(credentials=credentials)
                     logger.info("✅ Places API v1 client initialized")
 
                 elif hasattr(self.config, 'GOOGLE_APPLICATION_CREDENTIALS_JSON'):
-                    # Handle JSON credentials from environment
+                    # Handle JSON credentials from environment - FIXED: type guard
                     creds_json = getattr(self.config, 'GOOGLE_APPLICATION_CREDENTIALS_JSON', None)
                     if creds_json:
-                        import json
-                        creds_info = json.loads(creds_json)
-                        credentials = service_account.Credentials.from_service_account_info(
-                            creds_info,
-                            scopes=['https://www.googleapis.com/auth/cloud-platform']
-                        )
-                        self.places_client = places_v1.PlacesClient(credentials=credentials)
-                        logger.info("✅ Places API v1 client initialized from JSON")
+                        try:
+                            creds_info = json.loads(creds_json)
+                            credentials = service_account.Credentials.from_service_account_info(
+                                creds_info,
+                                scopes=['https://www.googleapis.com/auth/cloud-platform']
+                            )
+                            self.places_client = places_v1.PlacesClient(credentials=credentials)
+                            logger.info("✅ Places API v1 client initialized from JSON")
+                        except json.JSONDecodeError as e:
+                            logger.error(f"❌ Invalid JSON in credentials: {e}")
 
             except Exception as e:
                 logger.error(f"❌ Failed to initialize Places API v1: {e}")
                 logger.info("🔧 Will use GoogleMaps library as fallback")
+        else:
+            logger.info("⚠️  Places API v1 imports not available - using GoogleMaps only")
 
     def _log_coordinates(self, latitude: float, longitude: float, context: str):
         """Log coordinates for debugging"""
@@ -143,10 +215,14 @@ class LocationMapSearchAgent:
         longitude: float, 
         place_types: List[str]
     ) -> List[VenueSearchResult]:
-        """Execute Places API v1 search with FIXED implementation"""
+        """Execute Places API v1 search with FIXED type handling"""
         venues = []
 
-        if not self.places_client or not HAS_PLACES_API:
+        # FIXED: Type guards for all None checks
+        if (not self.places_client or 
+            not HAS_PLACES_API or 
+            places_v1 is None or 
+            latlng_pb2 is None):
             logger.info("⚠️  Places API v1 not available, skipping")
             return venues
 
@@ -154,11 +230,11 @@ class LocationMapSearchAgent:
             self._log_coordinates(latitude, longitude, "Places API v1 search")
             self.api_usage["places"] += 1
 
-            # FIXED: Create request using correct types
+            # FIXED: Create request using type guards
             center = latlng_pb2.LatLng(latitude=latitude, longitude=longitude)
             radius_m = int(self.search_radius_km * 1000)
 
-            # Create the search request
+            # FIXED: Create the search request with proper type handling
             request = places_v1.SearchNearbyRequest(
                 location_restriction=places_v1.SearchNearbyRequest.LocationRestriction(
                     circle=places_v1.Circle(
@@ -172,7 +248,7 @@ class LocationMapSearchAgent:
                 rank_preference=places_v1.SearchNearbyRequest.RankPreference.POPULARITY
             )
 
-            # FIXED: Execute with correct field mask
+            # FIXED: Execute with proper type handling
             response = self.places_client.search_nearby(
                 request=request,
                 metadata=[
@@ -182,7 +258,8 @@ class LocationMapSearchAgent:
                 ]
             )
 
-            if response.places:
+            # FIXED: Check response with proper type handling
+            if hasattr(response, 'places') and response.places:
                 logger.info(f"✅ Places API v1 returned {len(response.places)} results")
 
                 for place in response.places:
@@ -203,28 +280,33 @@ class LocationMapSearchAgent:
 
     def _convert_places_result(
         self, 
-        place, 
+        place: Any, 
         search_lat: float, 
         search_lng: float
     ) -> Optional[VenueSearchResult]:
-        """Convert Places API v1 result with safe attribute access"""
+        """Convert Places API v1 result with FIXED safe attribute access"""
         try:
-            # Safe attribute extraction
-            place_id = getattr(place, 'id', '')
+            # FIXED: Safe attribute extraction with proper None handling
+            place_id = getattr(place, 'id', '') or ''
 
             display_name = getattr(place, 'display_name', None)
-            name = display_name.text if display_name and hasattr(display_name, 'text') else "Unknown"
+            if display_name and hasattr(display_name, 'text'):
+                name = display_name.text or "Unknown"
+            else:
+                name = "Unknown"
 
-            address = getattr(place, 'formatted_address', '')
+            address = getattr(place, 'formatted_address', '') or ''
 
             location = getattr(place, 'location', None)
             if not location:
+                logger.warning(f"⚠️  No location for place: {name}")
                 return None
 
             venue_lat = getattr(location, 'latitude', None)
             venue_lng = getattr(location, 'longitude', None)
 
             if venue_lat is None or venue_lng is None:
+                logger.warning(f"⚠️  Invalid coordinates for place: {name}")
                 return None
 
             # Calculate distance
@@ -232,12 +314,15 @@ class LocationMapSearchAgent:
                 (search_lat, search_lng), (venue_lat, venue_lng)
             )
 
-            # Extract other fields safely
+            # FIXED: Extract other fields safely
             rating = getattr(place, 'rating', None)
             user_ratings_total = getattr(place, 'user_rating_count', None)
 
             business_status_obj = getattr(place, 'business_status', None)
-            business_status = business_status_obj.name if business_status_obj else "OPERATIONAL"
+            if business_status_obj and hasattr(business_status_obj, 'name'):
+                business_status = business_status_obj.name
+            else:
+                business_status = "OPERATIONAL"
 
             return VenueSearchResult(
                 place_id=place_id,
@@ -262,10 +347,12 @@ class LocationMapSearchAgent:
         longitude: float, 
         query: str
     ) -> List[VenueSearchResult]:
-        """GoogleMaps library search as fallback"""
+        """GoogleMaps library search with FIXED type handling"""
         venues = []
 
+        # FIXED: Type guard for gmaps client
         if not self.gmaps:
+            logger.warning("⚠️  GoogleMaps client not available")
             return venues
 
         try:
@@ -275,14 +362,14 @@ class LocationMapSearchAgent:
             location = f"{latitude},{longitude}"
             radius_m = int(self.search_radius_km * 1000)
 
-            # Text search
+            # FIXED: Text search with proper error handling
             response = self.gmaps.places(
                 query=f"{query} restaurant",
                 location=location,
                 radius=radius_m,
             )
 
-            results = response.get('results', [])
+            results = response.get('results', []) if response else []
             logger.info(f"✅ GoogleMaps returned {len(results)} results")
 
             for place in results:
@@ -301,17 +388,20 @@ class LocationMapSearchAgent:
 
     def _convert_gmaps_result(
         self, 
-        place: Dict, 
+        place: Dict[str, Any], 
         search_lat: float, 
         search_lng: float
     ) -> Optional[VenueSearchResult]:
-        """Convert GoogleMaps result"""
+        """Convert GoogleMaps result with FIXED type handling"""
         try:
-            location = place.get('geometry', {}).get('location', {})
-            venue_lat = location.get('lat')
-            venue_lng = location.get('lng')
+            # FIXED: Safe dictionary access
+            geometry = place.get('geometry', {})
+            location = geometry.get('location', {}) if geometry else {}
+            venue_lat = location.get('lat') if location else None
+            venue_lng = location.get('lng') if location else None
 
             if venue_lat is None or venue_lng is None:
+                logger.warning(f"⚠️  No location data for place: {place.get('name', 'Unknown')}")
                 return None
 
             distance_km = LocationUtils.calculate_distance(
@@ -403,76 +493,17 @@ class LocationMapSearchAgent:
 
         except Exception as e:
             logger.error(f"❌ Search failed: {e}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
             return []
 
-    # Comprehensive Google Places API place types for restaurants/food
-    RESTAURANT_PLACE_TYPES = [
-        # General food & dining
-        "restaurant",
-        "food", 
-        "meal_takeaway",
-        "meal_delivery",
-        "establishment",
-
-        # Specific restaurant types
-        "american_restaurant",
-        "bakery", 
-        "bar",
-        "barbecue_restaurant",
-        "brazilian_restaurant",
-        "breakfast_restaurant", 
-        "brunch_restaurant",
-        "cafe",
-        "chinese_restaurant",
-        "coffee_shop",
-        "fast_food_restaurant",
-        "french_restaurant",
-        "greek_restaurant",
-        "hamburger_restaurant",
-        "ice_cream_shop",
-        "indian_restaurant",
-        "indonesian_restaurant",
-        "italian_restaurant",
-        "japanese_restaurant",
-        "korean_restaurant",
-        "lebanese_restaurant",
-        "mediterranean_restaurant",
-        "mexican_restaurant",
-        "middle_eastern_restaurant",
-        "pizza_restaurant",
-        "ramen_restaurant",
-        "sandwich_shop",
-        "seafood_restaurant",
-        "spanish_restaurant",
-        "steak_house",
-        "sushi_restaurant",
-        "thai_restaurant",
-        "turkish_restaurant",
-        "vegan_restaurant",
-        "vegetarian_restaurant",
-        "vietnamese_restaurant",
-
-        # Drinking establishments
-        "night_club",
-        "pub",
-        "wine_bar",
-        "cocktail_bar",
-
-        # Food-related services
-        "grocery_store",
-        "supermarket",
-        "convenience_store",
-        "liquor_store",
-        "food_delivery",
-        "catering_service"
-    ]
-
     async def _analyze_query_for_place_types(self, query: str) -> List[str]:
-        """AI analysis for place types using comprehensive restaurant type list"""
+        """AI analysis for place types using comprehensive restaurant type list - FIXED"""
         try:
-            if not openai.api_key:
-                logger.info("🤖 No OpenAI key, using default place types")
-                return ["restaurant", "food", "meal_takeaway"]
+            # FIXED: Type guard for OpenAI
+            if not HAS_OPENAI or openai is None or not hasattr(openai, 'api_key') or not openai.api_key:
+                logger.info("🤖 No OpenAI available, using default place types")
+                return self._get_default_place_types(query)
 
             # Create prompt with full place type list
             place_types_str = ", ".join(self.RESTAURANT_PLACE_TYPES)
@@ -498,6 +529,7 @@ class LocationMapSearchAgent:
             - "best steakhouse" → ["steak_house", "american_restaurant", "restaurant", "food", "establishment"]
             """
 
+            # FIXED: OpenAI API call with proper error handling
             response = openai.ChatCompletion.create(
                 model=self.openai_model,
                 messages=[{"role": "user", "content": prompt}],
@@ -505,31 +537,34 @@ class LocationMapSearchAgent:
                 max_tokens=100
             )
 
-            result = response.choices[0].message.content.strip()
-            place_types = json.loads(result)
+            if response and response.choices and len(response.choices) > 0:
+                result = response.choices[0].message.content.strip()
+                place_types = json.loads(result)
 
-            # Validate that returned types are in our list
-            valid_types = [t for t in place_types if t in self.RESTAURANT_PLACE_TYPES]
+                # Validate that returned types are in our list
+                valid_types = [t for t in place_types if t in self.RESTAURANT_PLACE_TYPES]
 
-            if len(valid_types) < 3:
-                # Add fallbacks if AI didn't return enough valid types
-                fallbacks = ["restaurant", "food", "meal_takeaway"]
-                for fallback in fallbacks:
-                    if fallback not in valid_types:
-                        valid_types.append(fallback)
-                    if len(valid_types) >= 5:
-                        break
+                if len(valid_types) < 3:
+                    # Add fallbacks if AI didn't return enough valid types
+                    fallbacks = ["restaurant", "food", "meal_takeaway"]
+                    for fallback in fallbacks:
+                        if fallback not in valid_types:
+                            valid_types.append(fallback)
+                        if len(valid_types) >= 5:
+                            break
 
-            logger.info(f"🤖 AI selected place types for '{query}': {valid_types[:5]}")
-            return valid_types[:5]
+                logger.info(f"🤖 AI selected place types for '{query}': {valid_types[:5]}")
+                return valid_types[:5]
+            else:
+                logger.warning("⚠️  OpenAI returned empty response")
+                return self._get_default_place_types(query)
 
         except Exception as e:
             logger.warning(f"⚠️  AI query analysis failed: {e}")
-            # Return smart defaults based on common query patterns
             return self._get_default_place_types(query)
 
     def _get_default_place_types(self, query: str) -> List[str]:
-        """Get default place types based on simple query analysis"""
+        """Get default place types based on simple query analysis - FIXED"""
         query_lower = query.lower()
 
         # Cuisine-specific defaults
@@ -581,11 +616,12 @@ class LocationMapSearchAgent:
         return ["restaurant", "food", "meal_takeaway", "establishment", "cafe"]
 
     def get_search_stats(self) -> Dict[str, Any]:
-        """Get search statistics"""
+        """Get search statistics - FIXED return type"""
         return {
             'has_places_api_v1': self.places_client is not None,
             'has_googlemaps_fallback': self.gmaps is not None,
             'rating_threshold': self.rating_threshold,
             'search_radius_km': self.search_radius_km,
-            'api_usage': self.api_usage.copy()
+            'api_usage': self.api_usage.copy(),
+            'place_types_count': len(self.RESTAURANT_PLACE_TYPES)
         }
