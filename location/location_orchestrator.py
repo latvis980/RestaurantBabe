@@ -5,12 +5,6 @@ Location Search Orchestrator - FIXED IMPORT AND NAMING ISSUES
 Uses enhanced media verification system when database results < 2 restaurants.
 All legacy Google Maps search code removed to prevent VenueResult conflicts.
 
-FIXED ISSUES:
-- Changed import from 'enhanced_media_verification' to 'location_media_verification'
-- Removed references to non-existent 'enhanced_verifier' attribute
-- Fixed all import paths and class references
-- Cleaned up duplicate LocationAIEditor imports
-
 ENHANCED FLOW:
 1. Database search (extract raw_descriptions, sources)
 2. AI filter restaurants 
@@ -83,7 +77,7 @@ class LocationOrchestrator:
     ) -> Dict[str, Any]:
         """
         Process location query with dual flow architecture
-        FIXED: Geocode location_data BEFORE extracting coordinates
+        FIXED: Proper method signatures and geocoding integration
 
         Flow Logic:
         1. Geocode location if needed
@@ -123,12 +117,12 @@ class LocationOrchestrator:
 
             logger.info(f"Processing location query: '{query}' at {location_desc}")
 
-            # Step 2: Database proximity search
+            # Step 2: Database proximity search - FIXED: No max_results parameter
             logger.info(f"Step 2: Database search within {self.db_search_radius}km")
-            db_restaurants = await self.database_service.search_by_proximity(
+            db_restaurants = self.database_service.search_by_proximity(
                 coordinates=(latitude, longitude),
                 radius_km=self.db_search_radius,
-                max_results=self.max_venues_to_verify
+                extract_descriptions=True
             )
 
             if cancel_check_fn and cancel_check_fn():
@@ -137,43 +131,77 @@ class LocationOrchestrator:
             logger.info(f"Step 2: Found {len(db_restaurants)} restaurants in database")
 
             if db_restaurants:
-                # Step 3: AI filter and evaluate relevance
+                # Step 3: AI filter and evaluate relevance - FIXED: Method name
                 logger.info(f"Step 3: AI filtering {len(db_restaurants)} database results")
-                filtered_restaurants = await self.filter_evaluator.filter_restaurants(
+                filter_result = self.filter_evaluator.filter_and_evaluate(
                     restaurants=db_restaurants,
                     query=query,
-                    coordinates=(latitude, longitude)
+                    location_description=location_desc
                 )
 
                 if cancel_check_fn and cancel_check_fn():
                     return self._create_cancelled_response()
 
+                filtered_restaurants = filter_result.get("filtered_restaurants", [])
                 logger.info(f"Step 3: {len(filtered_restaurants)} restaurants passed AI filtering")
 
                 # Step 4: AI edit descriptions for database results
                 if filtered_restaurants and self.description_editor:
                     logger.info(f"Step 4: AI editing descriptions for {len(filtered_restaurants)} results")
-                    edited_restaurants = await self.description_editor.edit_restaurant_descriptions(
-                        restaurants=filtered_restaurants,
-                        query=query,
-                        coordinates=(latitude, longitude)
-                    )
+                    try:
+                        # Use the correct method name: create_professional_descriptions
+                        # Convert filtered_restaurants to the format expected by the AI editor
+                        edited_restaurants = await self.description_editor.create_professional_descriptions(
+                            map_search_results=filtered_restaurants,  # Reuse database results as "map search results"
+                            media_verification_results=None,  # No media verification for database results
+                            user_query=query,
+                            cancel_check_fn=cancel_check_fn
+                        )
 
-                    if cancel_check_fn and cancel_check_fn():
-                        return self._create_cancelled_response()
+                        if cancel_check_fn and cancel_check_fn():
+                            return self._create_cancelled_response()
 
-                    logger.info(f"Step 4: AI editing completed")
-                    filtered_restaurants = edited_restaurants
+                        logger.info(f"Step 4: AI editing completed")
+
+                        # Convert RestaurantDescription objects back to dictionary format if needed
+                        if edited_restaurants and hasattr(edited_restaurants[0], '__dict__'):
+                            # Convert dataclass objects to dictionaries
+                            filtered_restaurants = [
+                                {
+                                    'place_id': desc.place_id,
+                                    'name': desc.name,
+                                    'address': desc.address,
+                                    'distance_km': desc.distance_km,
+                                    'description': desc.description,
+                                    'has_media_coverage': desc.has_media_coverage,
+                                    'google_rating': desc.google_rating,
+                                    **{k: v for k, v in filtered_restaurants[i].items() if k not in ['description']}  # Preserve other original fields
+                                }
+                                for i, desc in enumerate(edited_restaurants) if i < len(filtered_restaurants)
+                            ]
+                        else:
+                            filtered_restaurants = edited_restaurants
+
+                    except Exception as e:
+                        logger.warning(f"AI description editing failed: {e}, continuing without editing")
+                        # Continue with original filtered_restaurants
+
 
                 # Step 5: Check if we have enough results
                 if len(filtered_restaurants) >= self.min_db_matches:
                     # Format and return database results
-                    formatted_results = self.formatter.format_for_telegram(
-                        restaurants=filtered_restaurants,
-                        query=query,
-                        location_desc=location_desc,
-                        source="database"
-                    )
+                    try:
+                        formatted_results = self.formatter.format_database_results(
+                            restaurants=filtered_restaurants,
+                            query=query,
+                            location_description=location_desc,
+                            offer_more_search=True
+                        )
+                        # Extract the message from the result
+                        formatted_message = formatted_results.get("message", f"Found {len(filtered_restaurants)} restaurants from my notes!")
+                    except Exception as e:
+                        logger.warning(f"Telegram formatting failed: {e}, using basic format")
+                        formatted_message = f"Found {len(filtered_restaurants)} restaurants from my notes!"
 
                     processing_time = round(time.time() - start_time, 2)
                     logger.info(f"✅ Database flow completed in {processing_time}s - {len(filtered_restaurants)} results")
@@ -181,11 +209,11 @@ class LocationOrchestrator:
                     return {
                         "success": True,
                         "results": filtered_restaurants,
-                        "location_formatted_results": formatted_results,
+                        "location_formatted_results": formatted_message,  # Use formatted_message here
                         "restaurant_count": len(filtered_restaurants),
                         "source": "database",
                         "processing_time": processing_time,
-                        "coordinates": (latitude, longitude)  # Include coordinates in response
+                        "coordinates": (latitude, longitude)
                     }
 
             # Step 6: Enhanced verification flow (< 2 database results)
@@ -380,7 +408,7 @@ class LocationOrchestrator:
     # ============ HELPER METHODS ============
 
     def _extract_coordinates(self, location_data: LocationData) -> Optional[Tuple[float, float]]:
-        """Extract coordinates from location data"""
+        """Extract coordinates from location data - SIMPLIFIED VERSION"""
         try:
             if hasattr(location_data, 'latitude') and hasattr(location_data, 'longitude'):
                 if location_data.latitude is not None and location_data.longitude is not None:
