@@ -231,188 +231,149 @@ def process_text_message(message_text: str,
             parse_mode='HTML')
 
 
-def execute_action(result: Dict[str, Any], user_id: int, chat_id: int):
-    """
-    Execute the action determined by the centralized AI handler
-    """
-    action = result.get("action")
-    action_data = result.get("action_data", {})
-    bot_response = result.get("bot_response", "")
+def execute_action(action: str, action_data: Dict[str, Any], user_id: int, chat_id: int):
+    """Execute parsed actions from conversation handler"""
+    try:
+        logger.info(f"Executing action: {action} for user {user_id}")
 
-    # Always send bot response if provided
-    if result.get("response_needed", True) and bot_response:
-        bot.send_message(chat_id, bot_response, parse_mode='HTML')
+        if action == "SEND_MESSAGE":
+            message_text = action_data.get("message", "")
+            bot.send_message(chat_id, message_text, parse_mode='HTML')
 
-    # Execute specific actions
-    if action == "LAUNCH_CITY_SEARCH":
-        # City-wide restaurant search using existing LangChain orchestrator
-        search_query = action_data.get("search_query")
-        threading.Thread(target=perform_city_search,
-                         args=(search_query, chat_id, user_id),
-                         daemon=True).start()
+        elif action == "REQUEST_LOCATION":
+            context = action_data.get("context", "restaurants")
+            request_user_location(user_id, chat_id, context)
 
-    elif action == "REQUEST_USER_LOCATION":
-        # Request user's physical location
-        request_user_location(user_id, chat_id,
-                              action_data.get("context", "restaurants"))
-
-    elif action == "LAUNCH_LOCATION_SEARCH":
-        # Geographic location search
-        search_query = action_data.get("search_query")
-        threading.Thread(target=perform_location_search,
-                         args=(search_query, user_id, chat_id),
-                         daemon=True).start()
-
-    elif action == "SEND_LOCATION_CLARIFICATION":
-        # Send clarification request (bot_response already sent above)
-        analysis_result = action_data.get("analysis_result", {})
-
-        # Store context for clarification
-        if conversation_handler:
-            conversation_handler.store_ambiguous_location_context(user_id, {
-                "query": analysis_result.get("original_message", ""),
-                "location_detected": analysis_result.get("location_detected", ""),
-                "ambiguity_reason": analysis_result.get("ambiguity_reason", "")
-            })
-
-    elif action == "PROCESS_LOCATION_CLARIFICATION":
-        # Process user's clarification
-        clarification_text = action_data.get("clarification_text", "")
-
-        if conversation_handler:
-            clarification_result = conversation_handler.handle_location_clarification(
-                user_id, clarification_text)
-
-            if clarification_result.get("action") == "SEARCH_LOCATION":
-                search_query = clarification_result.get("search_query", "")
+        elif action == "SEARCH_LOCATION":
+            search_query = action_data.get("search_query", "")
+            if search_query:
                 threading.Thread(target=perform_location_search,
                                args=(search_query, user_id, chat_id),
                                daemon=True).start()
+            else:
+                bot.send_message(chat_id, "😔 I need a location to search. Could you tell me where you'd like to find restaurants?", parse_mode='HTML')
 
-    elif action == "LAUNCH_GOOGLE_MAPS_SEARCH":
-    # FIXED: Google Maps search for more options in same location
-    search_type = action_data.get("search_type")
-    if search_type == "google_maps_more":
-        # Get stored location context
-        if conversation_handler is None:
-            bot.send_message(chat_id, "😔 I'm having trouble with the conversation system. Please try again.", parse_mode='HTML')
-            return
+        elif action == "REQUEST_CLARIFICATION":
+            clarification_text = action_data.get("clarification_text", "")
+            if clarification_text:
+                bot.send_message(chat_id, clarification_text, parse_mode='HTML')
 
-        location_context = conversation_handler.get_location_search_context(user_id)
-        if not location_context:
-            bot.send_message(chat_id, "😔 I don't have the location context. Please search again.", parse_mode='HTML')
-            return
+            if conversation_handler:
+                clarification_result = conversation_handler.handle_location_clarification(
+                    user_id, clarification_text)
 
-        # Use the dedicated "more results" method
-        original_query = location_context.get("query", "restaurants")
-        location_data = location_context.get("location_data")
-        location_description = location_context.get("location_description", "the area")
+                if clarification_result.get("action") == "SEARCH_LOCATION":
+                    search_query = clarification_result.get("search_query", "")
+                    threading.Thread(target=perform_location_search,
+                                   args=(search_query, user_id, chat_id),
+                                   daemon=True).start()
 
-        # CRITICAL FIX: Enhanced coordinate extraction with NO re-geocoding fallback
-        coordinates = None
-        coordinate_source = "unknown"
+        elif action == "LAUNCH_GOOGLE_MAPS_SEARCH":
+            # FIXED: Google Maps search for more options in same location
+            search_type = action_data.get("search_type")
+            if search_type == "google_maps_more":
+                # Get stored location context
+                if conversation_handler is None:
+                    bot.send_message(chat_id, "😔 I'm having trouble with the conversation system. Please try again.", parse_mode='HTML')
+                    return
 
-        # Method 1: Try to get from location_data (HIGHEST PRIORITY)
-        if location_data and hasattr(location_data, 'latitude') and hasattr(location_data, 'longitude'):
-            if location_data.latitude is not None and location_data.longitude is not None:
-                try:
-                    coordinates = (float(location_data.latitude), float(location_data.longitude))
-                    coordinate_source = "location_data"
-                    logger.info(f"✅ Method 1 - Extracted coordinates from location_data: {coordinates[0]:.6f}, {coordinates[1]:.6f}")
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"❌ Method 1 failed - Invalid coordinates in location_data: lat={location_data.latitude}, lng={location_data.longitude} - {e}")
+                location_context = conversation_handler.get_location_search_context(user_id)
+                if not location_context:
+                    bot.send_message(chat_id, "😔 I don't have the location context. Please search again.", parse_mode='HTML')
+                    return
 
-        # Method 2: Try to get from stored coordinates in context (BACKUP)
-        if not coordinates and 'coordinates' in location_context:
-            try:
-                stored_coords = location_context['coordinates']
-                if stored_coords and len(stored_coords) == 2:
-                    coordinates = (float(stored_coords[0]), float(stored_coords[1]))
-                    coordinate_source = "stored_context"
-                    logger.info(f"✅ Method 2 - Extracted coordinates from context: {coordinates[0]:.6f}, {coordinates[1]:.6f}")
-            except (ValueError, TypeError, IndexError) as e:
-                logger.warning(f"❌ Method 2 failed - Invalid coordinates in context: {stored_coords} - {e}")
+                # Use the dedicated "more results" method
+                original_query = location_context.get("query", "restaurants")
+                location_data = location_context.get("location_data")
+                location_description = location_context.get("location_description", "the area")
 
-        # REMOVED Method 3: DO NOT re-geocode the location description
-        # This was causing Amsterdam results for Lisbon queries!
+                # CRITICAL FIX: Enhanced coordinate extraction with NO re-geocoding fallback
+                coordinates = None
+                coordinate_source = "unknown"
 
-        # CRITICAL: Final validation without geocoding fallback
-        if not coordinates:
-            logger.error(f"❌ COORDINATE EXTRACTION FAILED - Cannot proceed with Google Maps search")
-            logger.error(f"📍 Debug info:")
-            logger.error(f"   Original query: {original_query}")
-            logger.error(f"   Location description: {location_description}")
-            logger.error(f"   Location data: {location_data}")
-            logger.error(f"   Context keys: {list(location_context.keys())}")
+                # Method 1: Try to get from location_data (HIGHEST PRIORITY)
+                if location_data and hasattr(location_data, 'latitude') and hasattr(location_data, 'longitude'):
+                    if location_data.latitude is not None and location_data.longitude is not None:
+                        try:
+                            coordinates = (float(location_data.latitude), float(location_data.longitude))
+                            coordinate_source = "location_data"
+                            logger.info(f"✅ Method 1 - Extracted coordinates from location_data: {coordinates[0]:.6f}, {coordinates[1]:.6f}")
+                        except (ValueError, TypeError) as e:
+                            logger.warning(f"❌ Method 1 failed - Invalid coordinates in location_data: lat={location_data.latitude}, lng={location_data.longitude} - {e}")
 
-            bot.send_message(
-                chat_id, 
-                "😔 I lost track of your location. Please search again with your location specified.",
-                parse_mode='HTML'
-            )
-            return
+                # Method 2: Try to get from stored coordinates in context (BACKUP)
+                if not coordinates and 'coordinates' in location_context:
+                    try:
+                        stored_coords = location_context['coordinates']
+                        if stored_coords and len(stored_coords) == 2:
+                            coordinates = (float(stored_coords[0]), float(stored_coords[1]))
+                            coordinate_source = "stored_context"
+                            logger.info(f"✅ Method 2 - Extracted coordinates from context: {coordinates[0]:.6f}, {coordinates[1]:.6f}")
+                    except (ValueError, TypeError, IndexError) as e:
+                        logger.warning(f"❌ Method 2 failed - Invalid coordinates in context: {stored_coords} - {e}")
 
-        # Validate coordinate ranges
-        try:
-            from location.location_utils import LocationUtils
-            if not LocationUtils.validate_coordinates(coordinates[0], coordinates[1]):
-                logger.error(f"❌ Coordinates out of valid range: {coordinates}")
-                bot.send_message(chat_id, "😔 Invalid coordinates detected. Please try again.", parse_mode='HTML')
-                return
-        except Exception as e:
-            logger.error(f"❌ Coordinate validation failed: {e}")
-            bot.send_message(chat_id, "😔 Coordinate validation failed. Please try again.", parse_mode='HTML')
-            return
+                # REMOVED Method 3: DO NOT re-geocode the location description
+                # This was causing Amsterdam results for Lisbon queries!
 
-        # SUCCESS: Log the coordinates we're using
-        logger.info(f"🎯 FINAL COORDINATES for Google Maps search: {coordinates[0]:.6f}, {coordinates[1]:.6f}")
-        logger.info(f"📍 Coordinate source: {coordinate_source}")
-        logger.info(f"🔍 Query: {original_query}")
-        logger.info(f"📍 Location: {location_description}")
-
-        # Validate coordinates are reasonable for the expected location
-        if coordinate_source in ["location_data", "stored_context"]:
-            # Quick sanity check - if location description mentions Portugal/Lisbon, 
-            # coordinates should be roughly in Portugal (36-42°N, -9.6 to -6.1°E)
-            lat, lng = coordinates
-            if any(keyword in location_description.lower() for keyword in ["lisbon", "lisboa", "portugal", "belem", "chiado", "alfama"]):
-                if not (36.0 <= lat <= 42.5 and -10.0 <= lng <= -6.0):
-               st     logger.error(f"🚨 COORDINATE SANITY CHECK FAILED!")
-                    logger.error(f"   Location mentions Portugal but coordinates are: {lat:.6f}, {lng:.6f}")
-                    logger.error(f"   Expected range: lat 36-42.5, lng -10 to -6")
-                    logger.error(f"   This suggests stored coordinates are wrong!")
+                # CRITICAL: Final validation without geocoding fallback
+                if not coordinates:
+                    logger.error(f"❌ COORDINATE EXTRACTION FAILED - Cannot proceed with Google Maps search")
+                    logger.error(f"📍 Debug info:")
+                    logger.error(f"   Original query: {original_query}")
+                    logger.error(f"   Location description: {location_description}")
+                    logger.error(f"   Location data: {location_data}")
+                    logger.error(f"   Context keys: {list(location_context.keys())}")
 
                     bot.send_message(
-                        chat_id,
-                        "😔 There seems to be a location mismatch. Please search again to refresh your location.",
+                        chat_id, 
+                        "😔 I lost track of your location. Please search again with your location specified.",
                         parse_mode='HTML'
                     )
                     return
 
-        # Call orchestrator's "more results" method directly with preserved coordinates
-        threading.Thread(target=call_orchestrator_more_results,
-                       args=(original_query, coordinates, location_description, user_id, chat_id),
-                       daemon=True).start()
-    else:
-        logger.warning(f"Unknown Google Maps search type: {search_type}")
+                # Validate coordinate ranges (GLOBAL - no destination-specific checks)
+                try:
+                    from location.location_utils import LocationUtils
+                    if not LocationUtils.validate_coordinates(coordinates[0], coordinates[1]):
+                        logger.error(f"❌ Coordinates out of valid range: {coordinates}")
+                        bot.send_message(chat_id, "😔 Invalid coordinates detected. Please try again.", parse_mode='HTML')
+                        return
+                except Exception as e:
+                    logger.error(f"❌ Coordinate validation failed: {e}")
+                    bot.send_message(chat_id, "😔 Coordinate validation failed. Please try again.", parse_mode='HTML')
+                    return
 
-    elif action == "LAUNCH_WEB_SEARCH":
-        # General question web search (planned feature)
-        search_query = action_data.get("search_query")
-        bot.send_message(
-            chat_id,
-            "🔍 Web search feature coming soon! For now, I specialize in restaurant recommendations.",
-            parse_mode='HTML')
+                # SUCCESS: Log the coordinates we're using
+                logger.info(f"🎯 FINAL COORDINATES for Google Maps search: {coordinates[0]:.6f}, {coordinates[1]:.6f}")
+                logger.info(f"📍 Coordinate source: {coordinate_source}")
+                logger.info(f"🔍 Query: {original_query}")
+                logger.info(f"📍 Location: {location_description}")
 
-    elif action in ["SEND_REDIRECT", "SEND_CLARIFICATION", "ERROR"]:
-        # Bot response already sent above
-        pass
+                # Call orchestrator's "more results" method directly with preserved coordinates
+                threading.Thread(target=call_orchestrator_more_results,
+                               args=(original_query, coordinates, location_description, user_id, chat_id),
+                               daemon=True).start()
+            else:
+                logger.warning(f"Unknown Google Maps search type: {search_type}")
 
-    else:
-        logger.warning(f"Unknown action: {action}")
+        elif action == "LAUNCH_WEB_SEARCH":
+            # General question web search (planned feature)
+            search_query = action_data.get("search_query")
+            bot.send_message(
+                chat_id,
+                "🔍 Web search feature coming soon! For now, I specialize in restaurant recommendations.",
+                parse_mode='HTML')
 
+        elif action in ["SEND_REDIRECT", "SEND_CLARIFICATION", "ERROR"]:
+            # Bot response already sent above
+            pass
 
-# In telegram_bot.py, replace the call_orchestrator_more_results function with this fixed version:
+        else:
+            logger.warning(f"Unknown action: {action}")
+
+    except Exception as e:
+        logger.error(f"Error executing action: {e}")
+        bot.send_message(chat_id, "😔 I encountered an error. Please try again.", parse_mode='HTML')
 
 def call_orchestrator_more_results(query: str, coordinates: tuple, location_desc: str, user_id: int, chat_id: int):
     """
