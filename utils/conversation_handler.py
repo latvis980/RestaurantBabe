@@ -1,22 +1,24 @@
-# utils/conversation_handler.py
+# utils/conversation_handler.py - UPDATED with AI-powered destination detection
 """
-Centralized AI Conversation Handler
+ENHANCED: Conversation Handler with AI-Powered Destination Change Detection
 
-Handles all conversational AI logic for the telegram bot with intelligent routing
-between different search flows and query types.
-
-FIXED: Corrected syntax errors, type issues, and brace problems from previous version.
+Key Enhancement:
+- Replaced regex-based destination detection with intelligent AI analysis
+- More accurate detection of when users change destinations
+- Better handling of edge cases and ambiguous queries
 """
 
-import logging
 import json
+import logging
 import time
-from typing import Dict, Any, Optional
 from enum import Enum
-from typing import Dict, Any, Optional, Tuple
-
-from langchain_openai import ChatOpenAI
+from typing import Dict, List, Any, Optional, Tuple
+from langchain.schema import BaseMessage
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+
+from location.location_analyzer import LocationAnalyzer
+from utils.ai_destination_detector import AIDestinationChangeDetector
 
 logger = logging.getLogger(__name__)
 
@@ -52,28 +54,32 @@ class CentralizedConversationHandler:
     """
 
     def __init__(self, config):
-        """Initialize with enhanced state tracking for location clarification"""
         self.config = config
-
-        # Initialize AI model
         self.conversation_ai = ChatOpenAI(
-            model=config.OPENAI_MODEL,
-            temperature=0.3,
+            model="gpt-4o-mini",
+            temperature=0.1,
             api_key=config.OPENAI_API_KEY
         )
 
-        # User state tracking with location context
-        self.user_states = {}  # user_id -> ConversationState
-        self.user_contexts = {}  # user_id -> context dict
-        self.location_search_context = {}  # user_id -> location search context
-        self.ambiguous_location_context = {}  # user_id -> clarification context
-        self.user_conversations = {}
+        # Initialize location analyzer for ambiguity detection
+        self.location_analyzer = LocationAnalyzer(config)
 
+        # ENHANCED: Initialize AI-powered destination change detector
+        self.destination_detector = AIDestinationChangeDetector(config)
 
-        # Create conversation analysis prompt
+        # State tracking
+        self.user_states: Dict[int, ConversationState] = {}
+        self.user_conversations: Dict[int, List[Dict[str, Any]]] = {}
+        self.user_contexts: Dict[int, Dict[str, Any]] = {}
+
+        # Location context storage with AI-powered change detection
+        self.location_search_context: Dict[int, Dict[str, Any]] = {}
+        self.ambiguous_location_context: Dict[int, Dict[str, Any]] = {}
+
+        # Build AI prompts
         self._build_prompts()
 
-        logger.info("✅ Centralized Conversation Handler initialized with ambiguity support")
+        logger.info("✅ Centralized Conversation Handler initialized with AI destination detection")
 
     def store_ambiguous_location_context(self, user_id: int, context: Dict[str, Any]):
         """Store context for ambiguous location clarification"""
@@ -167,6 +173,63 @@ class CentralizedConversationHandler:
                 "bot_response": "Could you be more specific about the location you're looking for?",
                 "needs_clarification": True
             }
+
+    async def _detect_destination_change_ai(self, user_id: int, new_message: str) -> bool:
+        """
+        ENHANCED: AI-powered detection of destination changes
+
+        Returns True if destination has changed and context should be cleared
+        """
+        try:
+            # Get current location context
+            current_context = self.location_search_context.get(user_id)
+            if not current_context:
+                logger.info(f"No location context found for user {user_id} - no change to detect")
+                return False
+
+            # Use AI to analyze destination change
+            detection_result = self.destination_detector.detect_destination_change(
+                current_message=new_message,
+                stored_context=current_context
+            )
+
+            destination_changed = detection_result.get("destination_changed", False)
+            confidence = detection_result.get("confidence", 0.0)
+            reasoning = detection_result.get("reasoning", "No reasoning provided")
+
+            if destination_changed:
+                old_location = detection_result.get("old_location", "unknown")
+                new_location = detection_result.get("new_location", "unknown")
+                logger.info(f"🤖 AI detected destination change for user {user_id}:")
+                logger.info(f"   From: {old_location} → To: {new_location}")
+                logger.info(f"   Confidence: {confidence:.2f}")
+                logger.info(f"   Reasoning: {reasoning}")
+            else:
+                logger.info(f"🤖 AI determined same destination for user {user_id}: {reasoning}")
+
+            return destination_changed
+
+        except Exception as e:
+            logger.error(f"❌ Error in AI destination change detection for user {user_id}: {e}")
+            # Conservative fallback: don't clear context if AI fails
+            return False
+
+    def _detect_destination_change(self, user_id: int, new_message: str) -> bool:
+        """
+        Synchronous wrapper for AI destination change detection
+        """
+        import asyncio
+        try:
+            # Try to run the async AI detection
+            loop = asyncio.get_event_loop()
+            return loop.run_until_complete(self._detect_destination_change_ai(user_id, new_message))
+        except RuntimeError:
+            # No event loop running, create a new one
+            return asyncio.run(self._detect_destination_change_ai(user_id, new_message))
+        except Exception as e:
+            logger.error(f"❌ Failed to run AI destination detection: {e}")
+            # Fallback to conservative behavior
+            return False
     
     def _build_prompts(self):
         """Build all AI prompts for different analysis stages"""
@@ -251,6 +314,14 @@ LOCATION CONTEXT: {location_context}
     User: "Massachusetts" (when user_state = "awaiting_location_clarification")
     → {{"query_type": "location_clarification", "action": "HANDLE_LOCATION_CLARIFICATION", "bot_response": "Perfect! Searching in Massachusetts...", "needs_clarification": false, "confidence": 0.9}}
 
+    "best steakhouses in Dubai" → {{"action": "SEARCH_CITY", "search_query": "best steakhouses in Dubai"}}
+    "restaurants in Paris" → {{"action": "SEARCH_CITY", "search_query": "restaurants in Paris"}}
+    "bars in London" → {{"action": "SEARCH_CITY", "search_query": "bars in London"}}
+
+    "restaurants in SoHo" → {{"action": "SEARCH_LOCATION", "search_query": "restaurants in SoHo"}}
+    "bars near me" → {{"action": "REQUEST_LOCATION", "search_query": "bars"}}
+    "restaurants in Chinatown" → {{"action": "SEARCH_LOCATION", "search_query": "restaurants in Chinatown"}}
+
     User: "show me more" (when user_state = "results_shown")
     → {{"query_type": "restaurant_request", "request_type": "follow_up", "action": "GOOGLE_MAPS_MORE", "bot_response": "Great! I'll find more restaurants in that area for you.", "needs_clarification": false, "confidence": 0.9}}
 
@@ -281,6 +352,10 @@ LOCATION CONTEXT: {location_context}
         """
         try:
             # Step 1: Add message to conversation history
+            if self._detect_destination_change(user_id, message_text):
+                logger.info(f"🤖 AI detected destination change - clearing location context for user {user_id}")
+                self.clear_location_search_context(user_id)
+            
             self._add_to_conversation(user_id, message_text, is_user=True)
 
             # Step 2: Get current state and context
@@ -513,7 +588,6 @@ LOCATION CONTEXT: {location_context}
 
         return f"Recent location search: '{context.get('query', '')}' at {context.get('location_description', 'unknown location')} ({int(time_ago/60)} minutes ago)"
 
-
     def store_location_search_context(
         self, 
         user_id: int, 
@@ -571,9 +645,6 @@ LOCATION CONTEXT: {location_context}
 
         except Exception as e:
             logger.error(f"❌ Error storing location context: {e}")
-
-    # FIX 2: Simplify coordinate retrieval in conversation_handler.py
-    # Replace the complex get_location_search_context method:
 
     def get_location_search_context(self, user_id: int) -> Optional[Dict[str, Any]]:
         """FIXED: Simplified coordinate retrieval"""
@@ -653,6 +724,13 @@ LOCATION CONTEXT: {location_context}
             "confidence": 0.0
         }
         return defaults.get(field, "")
+
+    def validate_ai_destination_detection(self) -> bool:
+        """
+        Validate the AI destination detection system
+        Returns True if validation passes
+        """
+        return self.destination_detector.validate_detection_logic()
 
     # State management methods
     def set_user_state(self, user_id: int, state: ConversationState):
