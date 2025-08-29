@@ -520,154 +520,82 @@ LOCATION CONTEXT: {location_context}
         query: str, 
         location_data: Any, 
         location_description: str,
-        coordinates: Optional[Tuple[float, float]] = None  # NEW: Explicit coordinate parameter
+        coordinates: Optional[Tuple[float, float]] = None
     ) -> None:
-        """
-        Store location search context for follow-up queries
-        FIXED: Enhanced coordinate storage to prevent loss
-        """
+        """FIXED: Simplified coordinate storage"""
         try:
-            # Extract coordinates from multiple sources with priority order
+            # Extract coordinates with single priority order
             final_coordinates = None
-            coordinate_source = "none"
 
-            # Priority 1: Explicit coordinates parameter (most reliable)
+            # Priority 1: Explicit coordinates parameter (from orchestrator result)
             if coordinates and len(coordinates) == 2:
                 try:
                     final_coordinates = (float(coordinates[0]), float(coordinates[1]))
-                    coordinate_source = "explicit_parameter"
-                    logger.info(f"✅ Using explicit coordinates: {final_coordinates[0]:.6f}, {final_coordinates[1]:.6f}")
+                    logger.info(f"✅ Using explicit coordinates: {final_coordinates}")
                 except (ValueError, TypeError) as e:
                     logger.warning(f"❌ Invalid explicit coordinates: {coordinates} - {e}")
 
-            # Priority 2: From location_data object
+            # Priority 2: From location_data object (from geocoding)
             if not final_coordinates and location_data:
                 if hasattr(location_data, 'latitude') and hasattr(location_data, 'longitude'):
                     if location_data.latitude is not None and location_data.longitude is not None:
                         try:
                             final_coordinates = (float(location_data.latitude), float(location_data.longitude))
-                            coordinate_source = "location_data_object"
-                            logger.info(f"✅ Extracted from location_data: {final_coordinates[0]:.6f}, {final_coordinates[1]:.6f}")
+                            logger.info(f"✅ Using location_data coordinates: {final_coordinates}")
                         except (ValueError, TypeError) as e:
-                            logger.warning(f"❌ Invalid location_data coordinates: lat={location_data.latitude}, lng={location_data.longitude} - {e}")
+                            logger.warning(f"❌ Invalid location_data coordinates: {e}")
 
-            # Validate extracted coordinates
+            # Validate coordinates
             if final_coordinates:
                 from location.location_utils import LocationUtils
                 if not LocationUtils.validate_coordinates(final_coordinates[0], final_coordinates[1]):
                     logger.error(f"❌ Coordinates failed validation: {final_coordinates}")
                     final_coordinates = None
-                    coordinate_source = "validation_failed"
 
-            # Store comprehensive context with redundant coordinate storage
+            # Store SIMPLE context - remove all the redundant storage
             context_data = {
                 "query": query,
                 "location_data": location_data,
                 "location_description": location_description,
-                "coordinates": final_coordinates,  # Primary coordinate storage
-                "coordinate_source": coordinate_source,
-                "last_search_time": time.time(),  # Keep existing field name
-
-                # REDUNDANT STORAGE: Multiple coordinate representations for reliability
-                "lat": final_coordinates[0] if final_coordinates else None,
-                "lng": final_coordinates[1] if final_coordinates else None,
-                "lat_lng_tuple": final_coordinates,
-                "coordinate_string": f"{final_coordinates[0]:.6f},{final_coordinates[1]:.6f}" if final_coordinates else None,
-
-                # Backup location information
-                "location_backup": {
-                    "description": location_description,
-                    "type": getattr(location_data, 'location_type', 'unknown') if location_data else 'unknown',
-                    "confidence": getattr(location_data, 'confidence', 0.0) if location_data else 0.0
-                }
+                "coordinates": final_coordinates,  # Single source of truth
+                "last_search_time": time.time()
             }
 
-            # FIXED: Use existing attribute name
             self.location_search_context[user_id] = context_data
 
-            # Log successful storage
-            logger.info(f"✅ LOCATION CONTEXT STORED for user {user_id}:")
-            logger.info(f"   Query: {query}")
-            logger.info(f"   Location: {location_description}")
+            # Log storage result
             if final_coordinates:
-                logger.info(f"   Coordinates: {final_coordinates[0]:.6f}, {final_coordinates[1]:.6f} (from {coordinate_source})")
+                logger.info(f"✅ Stored coordinates for user {user_id}: {final_coordinates}")
             else:
-                logger.warning(f"   No coordinates stored - source: {coordinate_source}")
-
-            # Additional validation log
-            logger.info(f"   Context keys stored: {list(context_data.keys())}")
+                logger.warning(f"⚠️ No coordinates stored for user {user_id}")
 
         except Exception as e:
             logger.error(f"❌ Error storing location context: {e}")
-            logger.error(f"   user_id: {user_id}, query: {query}")
-            logger.error(f"   location_data: {location_data}")
-            logger.error(f"   coordinates: {coordinates}")
+
+    # FIX 2: Simplify coordinate retrieval in conversation_handler.py
+    # Replace the complex get_location_search_context method:
 
     def get_location_search_context(self, user_id: int) -> Optional[Dict[str, Any]]:
-        """
-        Get stored location search context
-        FIXED: Enhanced coordinate retrieval with multiple fallbacks
-        """
+        """FIXED: Simplified coordinate retrieval"""
         try:
-            # FIXED: Use existing attribute name
             context = self.location_search_context.get(user_id)
             if not context:
                 logger.info(f"No location context found for user {user_id}")
                 return None
 
-            # Check if context is still valid (within 30 minutes) - KEEP EXISTING LOGIC
+            # Check if context is still valid (within 30 minutes)
             time_ago = time.time() - context.get("last_search_time", 0)
             if time_ago > 1800:  # 30 minutes
-                logger.info(f"Location context expired for user {user_id} ({int(time_ago/60)} minutes old)")
+                logger.info(f"Location context expired for user {user_id}")
                 del self.location_search_context[user_id]
                 return None
 
-            # Validate and repair coordinates if needed
+            # Log retrieval
             coordinates = context.get("coordinates")
-
-            # Try multiple coordinate sources if primary is missing
-            if not coordinates:
-                logger.warning(f"Primary coordinates missing, trying fallbacks for user {user_id}")
-
-                # Fallback 1: Individual lat/lng fields
-                lat = context.get("lat")
-                lng = context.get("lng")
-                if lat is not None and lng is not None:
-                    coordinates = (lat, lng)
-                    context["coordinates"] = coordinates  # Repair the context
-                    logger.info(f"✅ Repaired coordinates from lat/lng: {lat:.6f}, {lng:.6f}")
-
-                # Fallback 2: Tuple field
-                elif context.get("lat_lng_tuple"):
-                    coordinates = context["lat_lng_tuple"]
-                    context["coordinates"] = coordinates  # Repair the context
-                    logger.info(f"✅ Repaired coordinates from tuple: {coordinates[0]:.6f}, {coordinates[1]:.6f}")
-
-                # Fallback 3: Extract from location_data
-                elif context.get("location_data"):
-                    location_data = context["location_data"]
-                    if hasattr(location_data, 'latitude') and hasattr(location_data, 'longitude'):
-                        if location_data.latitude is not None and location_data.longitude is not None:
-                            coordinates = (location_data.latitude, location_data.longitude)
-                            context["coordinates"] = coordinates  # Repair the context
-                            logger.info(f"✅ Repaired coordinates from location_data: {coordinates[0]:.6f}, {coordinates[1]:.6f}")
-
-            # Final validation
             if coordinates:
-                from location.location_utils import LocationUtils
-                if not LocationUtils.validate_coordinates(coordinates[0], coordinates[1]):
-                    logger.error(f"❌ Stored coordinates are invalid: {coordinates}")
-                    context["coordinates"] = None
-                    coordinates = None
-
-            # Log context retrieval
-            logger.info(f"📍 LOCATION CONTEXT RETRIEVED for user {user_id}:")
-            logger.info(f"   Query: {context.get('query', 'unknown')}")
-            logger.info(f"   Location: {context.get('location_description', 'unknown')}")
-            if coordinates:
-                logger.info(f"   Coordinates: {coordinates[0]:.6f}, {coordinates[1]:.6f}")
+                logger.info(f"✅ Retrieved coordinates for user {user_id}: {coordinates}")
             else:
-                logger.warning("   No valid coordinates available")
+                logger.warning(f"⚠️ No coordinates in context for user {user_id}")
 
             return context
 

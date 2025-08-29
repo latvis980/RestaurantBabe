@@ -230,6 +230,21 @@ def process_text_message(message_text: str,
             "😔 I had trouble understanding that. Could you tell me what restaurants you're looking for?",
             parse_mode='HTML')
 
+def extract_coordinates_for_more_results(location_context):
+    """FIXED: Simple coordinate extraction"""
+    if not location_context:
+        return None
+
+    # Get coordinates from the single source of truth
+    coordinates = location_context.get("coordinates")
+
+    if coordinates and len(coordinates) == 2:
+        try:
+            return (float(coordinates[0]), float(coordinates[1]))
+        except (ValueError, TypeError) as e:
+            logger.error(f"Invalid coordinates in context: {coordinates} - {e}")
+
+    return None
 
 def execute_action(result: Dict[str, Any], user_id: int, chat_id: int):
     """
@@ -308,45 +323,11 @@ def execute_action(result: Dict[str, Any], user_id: int, chat_id: int):
             location_data = location_context.get("location_data")
             location_description = location_context.get("location_description", "the area")
 
-            # FIXED: Enhanced coordinate extraction with multiple fallbacks
-            coordinates = None
+            # FIXED: Simple coordinate extraction
+            coordinates = extract_coordinates_for_more_results(location_context)
 
-            # Method 1: Try to get from location_data
-            if location_data and hasattr(location_data, 'latitude') and hasattr(location_data, 'longitude'):
-                if location_data.latitude is not None and location_data.longitude is not None:
-                    try:
-                        coordinates = (float(location_data.latitude), float(location_data.longitude))
-                        logger.info(f"✅ Extracted coordinates from location_data: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
-                    except (ValueError, TypeError) as e:
-                        logger.warning(f"❌ Invalid coordinates in location_data: lat={location_data.latitude}, lng={location_data.longitude} - {e}")
-
-            # Method 2: Try to get from stored coordinates in context
-            if not coordinates and 'coordinates' in location_context:
-                stored_coords = location_context.get('coordinates')  # FIXED: Use .get() instead of direct access
-                if stored_coords and isinstance(stored_coords, (list, tuple)) and len(stored_coords) == 2:
-                    try:
-                        coordinates = (float(stored_coords[0]), float(stored_coords[1]))
-                        logger.info(f"✅ Extracted coordinates from context: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
-                    except (ValueError, TypeError, IndexError) as e:
-                        logger.warning(f"❌ Invalid coordinates in context: {stored_coords} - {e}")
-
-            # Method 3: Try to geocode the location description again
-            if not coordinates and location_data and hasattr(location_data, 'description') and location_data.description:
-                logger.info(f"🌍 Attempting to re-geocode location for more results: {location_data.description}")
-                try:
-                    from location.location_utils import LocationUtils
-                    geocoded = LocationUtils.geocode_location(location_data.description)
-                    if geocoded:
-                        coordinates = geocoded
-                        logger.info(f"✅ Re-geocoded coordinates: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
-                except Exception as e:
-                    logger.error(f"❌ Re-geocoding failed: {e}")
-
-            # Final validation
             if not coordinates:
-                logger.error("❌ Could not extract coordinates from location context. Available data:")
-                logger.error(f"  location_data: {location_data}")
-                logger.error(f"  location_context keys: {list(location_context.keys()) if location_context else 'None'}")
+                logger.error("❌ No coordinates available for more results")
                 bot.send_message(chat_id, "😔 Could not get coordinates. Please try again.", parse_mode='HTML')
                 return
 
