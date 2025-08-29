@@ -32,13 +32,14 @@ except ImportError as e:
     latlng_pb2 = None
     HAS_PLACES_API = False
 
-# FIXED: OpenAI import with proper error handling
+# FIXED: OpenAI import with proper v1.0+ syntax
 try:
-    import openai
+    from openai import OpenAI
     HAS_OPENAI = True
+    logger.info("✅ OpenAI v1.0+ imported successfully")
 except ImportError:
     logger.warning("⚠️  OpenAI not available")
-    openai = None
+    OpenAI = None
     HAS_OPENAI = False
 
 @dataclass
@@ -76,12 +77,19 @@ class LocationMapSearchAgent:
         self.search_radius_km = float(getattr(config, 'SEARCH_RADIUS_KM', 2.0))
         self.max_venues_to_search = int(getattr(config, 'MAX_VENUES_TO_SEARCH', 20))
 
-        # OpenAI configuration - FIXED: proper None handling
+        # OpenAI configuration - FIXED: proper v1.0+ client initialization
         self.openai_model = getattr(config, 'OPENAI_MODEL', 'gpt-4o-mini')
-        if HAS_OPENAI and openai is not None:
+        self.openai_client: Optional[Any] = None
+
+        if HAS_OPENAI and OpenAI is not None:
             openai_key = getattr(config, 'OPENAI_API_KEY', None)
             if openai_key:
-                openai.api_key = openai_key
+                try:
+                    self.openai_client = OpenAI(api_key=openai_key)
+                    logger.info("✅ OpenAI client initialized")
+                except Exception as e:
+                    logger.error(f"❌ Failed to initialize OpenAI client: {e}")
+                    self.openai_client = None
 
         # Initialize clients - FIXED: proper typing
         self.places_client: Optional[Any] = None
@@ -152,7 +160,7 @@ class LocationMapSearchAgent:
             "catering_service"
         ]
 
-        logger.info("✅ LocationMapSearchAgent initialized:")
+        logger.info(f"✅ LocationMapSearchAgent initialized:")
         logger.info(f"   - Rating threshold: {self.rating_threshold}")
         logger.info(f"   - Search radius: {self.search_radius_km}km") 
         logger.info(f"   - Has Places API v1: {self.places_client is not None}")
@@ -498,11 +506,11 @@ class LocationMapSearchAgent:
             return []
 
     async def _analyze_query_for_place_types(self, query: str) -> List[str]:
-        """AI analysis for place types using comprehensive restaurant type list - FIXED"""
+        """AI analysis for place types using comprehensive restaurant type list - FIXED v1.0+ API"""
         try:
-            # FIXED: Type guard for OpenAI
-            if not HAS_OPENAI or openai is None or not hasattr(openai, 'api_key') or not openai.api_key:
-                logger.info("🤖 No OpenAI available, using default place types")
+            # FIXED: Type guard for OpenAI v1.0+ client
+            if not self.openai_client:
+                logger.info("🤖 No OpenAI client available, using default place types")
                 return self._get_default_place_types(query)
 
             # Create prompt with full place type list
@@ -529,8 +537,8 @@ class LocationMapSearchAgent:
             - "best steakhouse" → ["steak_house", "american_restaurant", "restaurant", "food", "establishment"]
             """
 
-            # FIXED: OpenAI API call with proper error handling
-            response = openai.ChatCompletion.create(
+            # FIXED: OpenAI v1.0+ API call syntax
+            response = self.openai_client.chat.completions.create(
                 model=self.openai_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
@@ -559,6 +567,9 @@ class LocationMapSearchAgent:
                 logger.warning("⚠️  OpenAI returned empty response")
                 return self._get_default_place_types(query)
 
+        except json.JSONDecodeError as e:
+            logger.warning(f"⚠️  AI returned invalid JSON: {e}")
+            return self._get_default_place_types(query)
         except Exception as e:
             logger.warning(f"⚠️  AI query analysis failed: {e}")
             return self._get_default_place_types(query)
