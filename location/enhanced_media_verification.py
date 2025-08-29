@@ -1,11 +1,12 @@
 """
-Enhanced Media Verification Agent - QUERY-AWARE SEARCH VERSION
+Enhanced Media Verification Agent - PLACES API (NEW) ONLY VERSION
 
 FIXED ISSUES:
-1. Now passes actual query to search methods
-2. Adds query-specific type filtering for cocktail bars, wine bars, etc.
-3. Uses text search with proper keywords instead of generic nearby search
-4. Maintains all existing functionality with improved search targeting
+1. Completely migrated to Places API (New) - no more mixing old/new methods
+2. Removed deprecated maxResultCount, using pageSize instead
+3. Uses only places_v1 client for all search operations
+4. Consistent error handling and response processing
+5. Future-proofed for Google's API changes
 """
 
 import logging
@@ -15,7 +16,6 @@ import aiohttp
 import os
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
-import googlemaps
 from google.oauth2 import service_account
 from google.maps import places_v1
 # Import existing utilities and models
@@ -64,13 +64,13 @@ class EnhancedVenueData:
 
 class EnhancedMediaVerificationAgent:
     """
-    Enhanced media verification agent - AI-POWERED QUERY ANALYSIS VERSION
+    Enhanced media verification agent - PLACES API (NEW) ONLY VERSION
 
     Key improvements:
-    - Uses AI to analyze queries and determine search strategy
-    - Maps queries to Google's official place types intelligently
-    - No hardcoded venue type mappings - fully scalable
-    - Better relevance and accuracy for all query types
+    - Uses ONLY Places API (New) for all search operations
+    - No more mixing of old and new Google API methods
+    - Future-proofed against Google's API changes
+    - Consistent response handling across all searches
     """
 
     def __init__(self, config):
@@ -89,14 +89,9 @@ class EnhancedMediaVerificationAgent:
         # Initialize Tavily API
         self.tavily_api_key = getattr(config, 'TAVILY_API_KEY')
 
-        # Initialize Google Maps client for text search
-        api_key = getattr(config, 'GOOGLE_MAPS_API_KEY2', None) or getattr(config, 'GOOGLE_MAPS_API_KEY', None)
-        if api_key:
-            self.gmaps = googlemaps.Client(key=api_key)
-        else:
-            self.gmaps = None
+        # REMOVED: Old googlemaps.Client - using only Places API (New) now
 
-        # Load Google service account credentials for Places API
+        # Load Google service account credentials for Places API (New)
         self.places_client_primary = self._initialize_places_client('primary')
         self.places_client_secondary = self._initialize_places_client('secondary')
 
@@ -110,9 +105,31 @@ class EnhancedMediaVerificationAgent:
         # API usage tracking
         self.api_usage = {'primary': 0, 'secondary': 0}
 
-        logger.info("✅ Enhanced Media Verification Agent initialized with AI Query Analysis")
+        logger.info("✅ Enhanced Media Verification Agent initialized with Places API (New) ONLY")
         if self.has_dual_credentials:
             logger.info("🔄 Dual credentials mode enabled - automatic load balancing")
+
+    def _initialize_places_client(self, client_type: str):
+        """Initialize Places API client with proper credentials"""
+        try:
+            if client_type == 'primary':
+                env_key = 'GOOGLE_PLACES_SERVICE_ACCOUNT_JSON'
+            elif client_type == 'secondary':
+                env_key = 'GOOGLE_PLACES_SERVICE_ACCOUNT_JSON2'
+            else:
+                raise ValueError(f"Invalid client type: {client_type}")
+
+            credentials = self._load_credentials_from_env(env_key, client_type)
+            if not credentials:
+                return None
+
+            client = places_v1.PlacesClient(credentials=credentials)
+            logger.info(f"✅ {client_type.capitalize()} Places API client initialized")
+            return client
+
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize {client_type} Places API client: {e}")
+            return None
 
     def _load_credentials_from_env(self, env_key: str, key_type: str):
         """Load service account credentials from environment variable"""
@@ -152,227 +169,6 @@ class EnhancedMediaVerificationAgent:
         else:
             return self.places_client_secondary, 'secondary'
 
-    async def search_nearby_enhanced(self, latitude: float, longitude: float, radius_meters: int = 1000):
-        """Search using the appropriate client with rotation - FIXED API CALLS"""
-        client, key_name = self._get_places_client()
-
-        logger.info(f"🔍 Using {key_name} Places API client for search")
-
-        # FIXED: Create search request with CORRECT API structure based on official docs
-        try:
-            # Import LatLng from the correct location
-            from google.type import latlng_pb2
-
-            # Create the LatLng object for the center
-            center_point = latlng_pb2.LatLng(latitude=latitude, longitude=longitude)
-
-            # Create the Circle object
-            circle_area = places_v1.types.Circle(
-                center=center_point,
-                radius=radius_meters
-            )
-
-            # Add the circle to the location restriction
-            location_restriction = places_v1.SearchNearbyRequest.LocationRestriction(
-                circle=circle_area
-            )
-
-            request = places_v1.SearchNearbyRequest(
-                location_restriction=location_restriction,
-                included_types=["restaurant"],
-                max_result_count=10,
-                language_code="en"
-            )
-        except Exception as api_error:
-            logger.error(f"❌ API structure creation failed: {api_error}")
-            # Final fallback - use the googlemaps library instead
-            return await self._fallback_to_googlemaps(latitude, longitude, radius_meters)
-
-        try:
-            # IMPORTANT: Set field mask in metadata (required for new Places API)
-            metadata = [
-                ("x-goog-fieldmask", 
-                 "places.id,places.displayName,places.formattedAddress,places.location," +
-                 "places.rating,places.userRatingCount,places.businessStatus,places.reviews")
-            ]
-
-            response = client.search_nearby(request=request, metadata=metadata)
-
-            # Update usage counter
-            self.api_usage[key_name] += 1
-
-            logger.info(f"✅ Places API search completed using {key_name} client (usage: {self.api_usage[key_name]})")
-            return response
-
-        except Exception as e:
-            logger.error(f"❌ Places API search failed with {key_name} client: {e}")
-
-            # Try the other client if dual mode is available
-            if self.has_dual_credentials:
-                other_client = self.places_client_secondary if key_name == 'primary' else self.places_client_primary
-                other_key = 'secondary' if key_name == 'primary' else 'primary'
-
-                try:
-                    logger.info(f"🔄 Retrying with {other_key} client")
-                    response = other_client.search_nearby(request=request, metadata=metadata)
-                    self.api_usage[other_key] += 1
-                    return response
-                except Exception as retry_error:
-                    logger.error(f"❌ Both clients failed. Last error: {retry_error}")
-
-            # Final fallback to googlemaps library
-            logger.info("🔄 Falling back to googlemaps library")
-            return await self._fallback_to_googlemaps(latitude, longitude, radius_meters)
-
-    async def _analyze_query_for_search_strategy(self, query: str) -> Dict[str, Any]:
-        """AI-powered query analysis using Google's official place types"""
-        try:
-            # Google's official place types
-            google_place_types = [
-                "bar", "wine_bar", "restaurant", "cafe", "coffee_shop", "bakery",
-                "fast_food_restaurant", "fine_dining_restaurant", "pizza_restaurant",
-                "chinese_restaurant", "italian_restaurant", "japanese_restaurant",
-                "sushi_restaurant", "mexican_restaurant", "thai_restaurant"
-            ]
-
-            prompt = f"""Analyze this query and determine search strategy using Google's official place types.
-
-    USER QUERY: "{query}"
-
-    GOOGLE PLACE TYPES: {google_place_types}
-
-    Return JSON only:
-    {{
-      "primary_intent": "brief description",
-      "place_types": ["exact_google_type1", "exact_google_type2"], 
-      "search_keywords": ["keyword1", "keyword2"],
-      "approach": "both",
-      "use_text_search": true,
-      "use_places_api": true,
-      "confidence": 0.9
-    }}"""
-
-            response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    self.openai_client.chat.completions.create,
-                    model=self.openai_model,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=800,
-                    temperature=0.1
-                ),
-                timeout=15.0
-            )
-
-            # Add null checks
-            if not response or not response.choices:
-                raise Exception("Empty AI response")
-
-            analysis_text = response.choices[0].message.content
-            if not analysis_text:
-                raise Exception("Empty content from AI")
-
-            analysis_text = analysis_text.strip()
-            if analysis_text.startswith('```json'):
-                analysis_text = analysis_text.replace('```json', '').replace('```', '').strip()
-
-            return json.loads(analysis_text)
-
-        except Exception as e:
-            logger.error(f"AI query analysis failed: {e}")
-            # Fallback for cocktail bars
-            if any(term in query.lower() for term in ['cocktail', 'bar']):
-                return {
-                    'primary_intent': 'cocktail bars',
-                    'place_types': ['bar'],
-                    'search_keywords': ['cocktail bar', 'bar'],
-                    'approach': 'both',
-                    'use_text_search': True,
-                    'use_places_api': True,
-                    'confidence': 0.6
-                }
-            else:
-                return {
-                    'primary_intent': 'restaurants',
-                    'place_types': ['restaurant'],
-                    'search_keywords': [query],
-                    'approach': 'both', 
-                    'use_text_search': True,
-                    'use_places_api': True,
-                    'confidence': 0.5
-                }
-    
-    async def _fallback_to_googlemaps(self, latitude: float, longitude: float, radius_meters: int):
-        """Fallback to use the standard googlemaps library if Places API v1 fails"""
-        try:
-            import googlemaps
-
-            # Use the same API key configuration as your GoogleMapsSearchAgent
-            api_key = getattr(self.config, 'GOOGLE_MAPS_API_KEY2', None) or getattr(self.config, 'GOOGLE_MAPS_API_KEY', None)
-
-            if not api_key:
-                logger.error("❌ No Google Maps API key found for fallback")
-                return None
-
-            gmaps = googlemaps.Client(key=api_key)
-
-            # Use nearby search with the standard library
-            response = gmaps.places_nearby(
-                location=(latitude, longitude),
-                radius=radius_meters,
-                type='restaurant',
-                language='en'
-            )
-
-            logger.info("✅ Fallback search completed using googlemaps library")
-
-            # Convert the response to match the expected format
-            class FallbackResponse:
-                def __init__(self, results):
-                    self.places = [self._convert_result(place) for place in results]
-
-                def _convert_result(self, place):
-                    # Convert googlemaps result to match Places API v1 format
-                    class FallbackPlace:
-                        def __init__(self, place_data):
-                            self.id = place_data.get('place_id')
-
-                            # Create display_name object
-                            class DisplayName:
-                                def __init__(self, text):
-                                    self.text = text
-                            self.display_name = DisplayName(place_data.get('name', 'Unknown'))
-
-                            self.formatted_address = place_data.get('formatted_address', place_data.get('vicinity', ''))
-
-                            # Create location object
-                            geometry = place_data.get('geometry', {})
-                            location_data = geometry.get('location', {})
-                            class Location:
-                                def __init__(self, lat, lng):
-                                    self.latitude = lat
-                                    self.longitude = lng
-                            self.location = Location(location_data.get('lat'), location_data.get('lng'))
-
-                            self.rating = place_data.get('rating')
-                            self.user_rating_count = place_data.get('user_ratings_total')
-
-                            # Business status
-                            class BusinessStatus:
-                                def __init__(self):
-                                    self.name = 'OPERATIONAL'
-                            self.business_status = BusinessStatus()
-
-                            # Empty reviews for fallback
-                            self.reviews = []
-
-                    return FallbackPlace(place)
-
-            return FallbackResponse(response.get('results', []))
-
-        except Exception as fallback_error:
-            logger.error(f"❌ Fallback to googlemaps library also failed: {fallback_error}")
-            return None
-
     async def verify_and_enhance_venues(
         self, 
         coordinates: Tuple[float, float], 
@@ -381,6 +177,7 @@ class EnhancedMediaVerificationAgent:
     ) -> List[EnhancedVenueData]:
         """
         MAIN METHOD: Enhanced verification flow with AI-powered query analysis
+        Compatible with existing location orchestrator
         """
         try:
             logger.info("🚀 Starting Enhanced Media Verification Flow with AI Query Analysis")
@@ -399,7 +196,7 @@ class EnhancedMediaVerificationAgent:
 
             # Step 2: AI-guided Google Maps search
             logger.info("🔍 Step 2: AI-guided Google Maps search with reviews")
-            venues_data = await self._ai_guided_google_search(coordinates, query, search_strategy, cancel_check_fn)
+            venues_data = await self._ai_guided_places_api_search(coordinates, query, search_strategy, cancel_check_fn)
 
             if cancel_check_fn and cancel_check_fn():
                 return []
@@ -446,10 +243,22 @@ class EnhancedMediaVerificationAgent:
             return selected_venues
 
         except Exception as e:
-            logger.error(f"❌ Error in AI-powered enhanced media verification: {e}")
+            logger.error(f"❌ Error in Enhanced Media Verification Flow: {e}")
             return []
 
-    async def _ai_guided_google_search(
+    async def enhanced_media_verification(
+        self, 
+        coordinates: Tuple[float, float], 
+        query: str, 
+        cancel_check_fn=None
+    ) -> List[EnhancedVenueData]:
+        """
+        Main entry point for enhanced media verification - PLACES API (NEW) ONLY
+        This is an alias for verify_and_enhance_venues for compatibility
+        """
+        return await self.verify_and_enhance_venues(coordinates, query, cancel_check_fn)
+
+    async def _ai_guided_places_api_search(
         self, 
         coordinates: Tuple[float, float], 
         query: str, 
@@ -457,28 +266,29 @@ class EnhancedMediaVerificationAgent:
         cancel_check_fn=None
     ) -> List[EnhancedVenueData]:
         """
-        Step 2: AI-guided Google Maps search using the determined strategy
+        AI-guided search using ONLY Places API (New) - both text and nearby search
         """
         try:
             latitude, longitude = coordinates
 
-            logger.info(f"🔍 Performing AI-guided search for: '{query}'")
+            logger.info(f"🔍 Performing AI-guided Places API (New) search for: '{query}'")
             logger.info(f"🎯 Strategy: {search_strategy['approach']} with types {search_strategy['place_types']}")
 
             venues_data = []
 
-            # Execute search based on AI-determined strategy
+            # Execute text search using Places API (New) if needed
             if search_strategy['use_text_search']:
-                text_venues = await self._ai_text_search(
+                text_venues = await self._places_api_text_search(
                     latitude, longitude, search_strategy['search_keywords']
                 )
                 venues_data.extend(text_venues)
 
+            # Execute nearby search using Places API (New) if needed
             if search_strategy['use_places_api']:
-                places_venues = await self._ai_places_search(
+                nearby_venues = await self._places_api_nearby_search(
                     latitude, longitude, search_strategy['place_types']
                 )
-                venues_data.extend(places_venues)
+                venues_data.extend(nearby_venues)
 
             # Remove duplicates by place_id
             unique_venues = {}
@@ -487,84 +297,93 @@ class EnhancedMediaVerificationAgent:
                     unique_venues[venue.place_id] = venue
 
             final_venues = list(unique_venues.values())
-            logger.info(f"🔍 AI-guided search found {len(final_venues)} unique venues")
+            logger.info(f"🔍 AI-guided Places API search found {len(final_venues)} unique venues")
 
             return final_venues
 
         except Exception as e:
-            logger.error(f"❌ Error in AI-guided Google search: {e}")
+            logger.error(f"❌ Error in AI-guided Places API search: {e}")
             return []
 
-    async def _ai_text_search(
+    async def _places_api_text_search(
         self, 
         latitude: float, 
         longitude: float, 
         search_keywords: List[str]
     ) -> List[EnhancedVenueData]:
         """
-        AI-guided text search using determined keywords
+        Text search using Places API (New) ONLY
         """
         try:
-            if not self.gmaps:
-                logger.warning("No Google Maps client available for text search")
-                return []
+            client, key_name = self._get_places_client()
+            self.api_usage[key_name] += 1
 
             venues_data = []
-            location = f"{latitude},{longitude}"
 
-            # Try each AI-determined keyword
+            # Try each AI-determined keyword using Places API (New) Text Search
             for keyword in search_keywords[:3]:  # Limit to top 3 keywords
                 try:
                     search_query = f"{keyword} near {latitude},{longitude}"
-                    logger.info(f"🔍 AI text search: {search_query}")
+                    logger.info(f"🔍 Places API (New) text search: {search_query}")
 
-                    response = self.gmaps.places(
-                        query=search_query,
-                        location=location,
-                        radius=2000,  # 2km radius
+                    # Create Text Search request
+                    request = places_v1.SearchTextRequest(
+                        text_query=search_query,
+                        page_size=10,  # FIXED: Using pageSize instead of deprecated maxResultCount
+                        language_code="en"
                     )
 
-                    results = response.get('results', [])
-                    logger.info(f"📍 Text search for '{keyword}' returned {len(results)} results")
+                    # Set field mask for the data we need
+                    metadata = [
+                        ("x-goog-fieldmask", 
+                         "places.id,places.displayName,places.formattedAddress,places.location," +
+                         "places.rating,places.userRatingCount,places.businessStatus,places.reviews")
+                    ]
 
-                    for place in results:
-                        try:
-                            venue = await self._convert_gmaps_result_to_venue_data(place, latitude, longitude)
-                            if venue:
-                                venues_data.append(venue)
-                        except Exception as e:
-                            logger.warning(f"Error converting text search result: {e}")
-                            continue
+                    response = client.search_text(request=request, metadata=metadata)
+
+                    if hasattr(response, 'places'):
+                        logger.info(f"📍 Text search for '{keyword}' returned {len(response.places)} results")
+
+                        for place in response.places:
+                            try:
+                                venue = await self._convert_places_result_to_venue_data(place, latitude, longitude)
+                                if venue:
+                                    venues_data.append(venue)
+                            except Exception as e:
+                                logger.warning(f"Error converting text search result: {e}")
+                                continue
 
                 except Exception as e:
-                    logger.warning(f"Text search failed for keyword '{keyword}': {e}")
+                    logger.warning(f"Places API text search failed for keyword '{keyword}': {e}")
                     continue
 
-            logger.info(f"✅ AI text search completed, found {len(venues_data)} venues")
+            logger.info(f"✅ Places API (New) text search completed, found {len(venues_data)} venues")
             return venues_data
 
         except Exception as e:
-            logger.error(f"❌ Error in AI text search: {e}")
+            logger.error(f"❌ Error in Places API text search: {e}")
             return []
 
-    async def _ai_places_search(
+    async def _places_api_nearby_search(
         self, 
         latitude: float, 
         longitude: float, 
         place_types: List[str]
     ) -> List[EnhancedVenueData]:
         """
-        AI-guided Places API search using determined place types
+        Nearby search using Places API (New) ONLY
         """
         try:
             client, key_name = self._get_places_client()
+            self.api_usage[key_name] += 1
 
             venues_data = []
 
             # Use AI-determined place types
             for place_type in place_types[:3]:  # Limit to top 3 types
                 try:
-                    logger.info(f"🔍 AI Places API search for type: {place_type}")
+                    logger.info(f"🔍 Places API (New) nearby search for type: {place_type}")
 
                     # Create search request for this specific type
                     from google.type import latlng_pb2
@@ -576,7 +395,7 @@ class EnhancedMediaVerificationAgent:
                     request = places_v1.SearchNearbyRequest(
                         location_restriction=location_restriction,
                         included_types=[place_type],  # Use AI-determined type
-                        max_result_count=10,
+                        max_result_count=10,  # This is still valid for nearby search
                         language_code="en"
                     )
 
@@ -589,7 +408,7 @@ class EnhancedMediaVerificationAgent:
                     response = client.search_nearby(request=request, metadata=metadata)
 
                     if hasattr(response, 'places'):
-                        logger.info(f"📍 Places API for '{place_type}' returned {len(response.places)} results")
+                        logger.info(f"📍 Nearby search for '{place_type}' returned {len(response.places)} results")
 
                         for place in response.places:
                             try:
@@ -597,105 +416,239 @@ class EnhancedMediaVerificationAgent:
                                 if venue:
                                     venues_data.append(venue)
                             except Exception as e:
-                                logger.warning(f"Error converting Places API result: {e}")
+                                logger.warning(f"Error converting nearby search result: {e}")
                                 continue
 
                 except Exception as e:
-                    logger.warning(f"Places API search failed for type '{place_type}': {e}")
+                    logger.warning(f"Places API nearby search failed for type '{place_type}': {e}")
                     continue
 
-            logger.info(f"✅ AI Places API search completed, found {len(venues_data)} venues")
+            logger.info(f"✅ Places API (New) nearby search completed, found {len(venues_data)} venues")
             return venues_data
 
         except Exception as e:
-            logger.error(f"❌ Error in AI Places API search: {e}")
+            logger.error(f"❌ Error in Places API nearby search: {e}")
             return []
 
-    async def _convert_gmaps_result_to_venue_data(self, place: Dict, user_lat: float, user_lng: float) -> Optional[EnhancedVenueData]:
-        """Convert Google Maps API result to EnhancedVenueData"""
+    async def _convert_places_result_to_venue_data(
+        self, 
+        place, 
+        search_lat: float, 
+        search_lon: float
+    ) -> Optional[EnhancedVenueData]:
+        """
+        Convert Places API (New) result to EnhancedVenueData - UNIFIED METHOD
+        """
         try:
-            place_id = place.get('place_id')
+            # Extract place ID
+            place_id = getattr(place, 'id', None)
             if not place_id:
+                logger.warning("Place missing ID, skipping")
                 return None
 
-            name = place.get('name', 'Unknown')
-            address = place.get('formatted_address', 'Unknown address')
+            # Extract name
+            display_name = getattr(place, 'display_name', None)
+            name = display_name.text if display_name and hasattr(display_name, 'text') else "Unknown"
 
-            geometry = place.get('geometry', {})
-            location = geometry.get('location', {})
-            place_lat = location.get('lat')
-            place_lng = location.get('lng')
+            # Extract address
+            formatted_address = getattr(place, 'formatted_address', 'Address not available')
 
-            if place_lat is None or place_lng is None:
+            # Extract location
+            location = getattr(place, 'location', None)
+            if not location:
+                logger.warning(f"Place {name} missing location, skipping")
                 return None
 
-            distance_km = LocationUtils.calculate_distance(
-                (user_lat, user_lng), (place_lat, place_lng)
+            latitude = location.latitude
+            longitude = location.longitude
+
+            # Calculate distance
+            distance_km = LocationUtils.haversine_distance(
+                search_lat, search_lon, latitude, longitude
             )
 
-            return EnhancedVenueData(
-                place_id=place_id,
-                name=name,
-                address=address,
-                latitude=place_lat,
-                longitude=place_lng,
-                distance_km=distance_km,
-                business_status=place.get('business_status', 'OPERATIONAL'),
-                rating=place.get('rating'),
-                user_ratings_total=place.get('user_ratings_total', 0),
-                google_reviews=[]
-            )
-
-        except Exception as e:
-            logger.warning(f"Error converting gmaps result: {e}")
-            return None
-
-    async def _convert_places_result_to_venue_data(self, place, user_lat: float, user_lng: float) -> Optional[EnhancedVenueData]:
-        """Convert Places API result to EnhancedVenueData"""
-        try:
-            place_id = place.id if hasattr(place, 'id') else None
-            if not place_id:
-                return None
-
-            name = place.display_name.text if hasattr(place, 'display_name') and place.display_name else "Unknown"
-            address = place.formatted_address if hasattr(place, 'formatted_address') else "Unknown address"
-
-            if hasattr(place, 'location') and place.location:
-                place_lat = place.location.latitude
-                place_lng = place.location.longitude
+            # Extract business status
+            business_status = getattr(place, 'business_status', 'UNKNOWN')
+            if hasattr(business_status, 'name'):
+                business_status = business_status.name
             else:
-                return None
+                business_status = str(business_status)
 
-            distance_km = LocationUtils.calculate_distance(
-                (user_lat, user_lng), (place_lat, place_lng)
-            )
+            # Extract rating info
+            rating = getattr(place, 'rating', None)
+            user_ratings_total = getattr(place, 'user_rating_count', None)
 
+            # Extract reviews if available
             google_reviews = []
-            if hasattr(place, 'reviews') and place.reviews:
-                for review in place.reviews[:3]:
+            reviews = getattr(place, 'reviews', [])
+            for review in reviews[:5]:  # Limit to first 5 reviews
+                try:
                     review_data = {
-                        'rating': review.rating if hasattr(review, 'rating') else 0,
-                        'text': review.text.text if hasattr(review, 'text') and hasattr(review.text, 'text') else "",
-                        'time': review.publish_time if hasattr(review, 'publish_time') else None
+                        'author_name': getattr(review.author_attribution, 'display_name', 'Anonymous') if hasattr(review, 'author_attribution') else 'Anonymous',
+                        'rating': getattr(review, 'rating', None),
+                        'text': getattr(review.text, 'text', '') if hasattr(review, 'text') else '',
+                        'time': getattr(review, 'publish_time', None)
                     }
                     google_reviews.append(review_data)
+                except Exception as e:
+                    logger.warning(f"Error processing review: {e}")
+                    continue
 
-            return EnhancedVenueData(
+            # Create venue data object
+            venue_data = EnhancedVenueData(
                 place_id=place_id,
                 name=name,
-                address=address,
-                latitude=place_lat,
-                longitude=place_lng,
+                address=formatted_address,
+                latitude=latitude,
+                longitude=longitude,
                 distance_km=distance_km,
-                business_status=place.business_status if hasattr(place, 'business_status') else "OPERATIONAL",
-                rating=place.rating if hasattr(place, 'rating') else None,
-                user_ratings_total=place.user_rating_count if hasattr(place, 'user_rating_count') else 0,
+                business_status=business_status,
+                rating=rating,
+                user_ratings_total=user_ratings_total,
                 google_reviews=google_reviews
             )
 
+            return venue_data
+
         except Exception as e:
-            logger.warning(f"Error converting Places API result: {e}")
+            logger.error(f"❌ Error converting Places API result to venue data: {e}")
             return None
+
+    async def _analyze_query_for_search_strategy(self, query: str) -> Dict[str, Any]:
+        """AI-powered query analysis using Google's official place types - PLACES API (NEW) VERSION"""
+        try:
+            # Google's official place types for restaurants and food venues
+            google_place_types = [
+                "bar", "wine_bar", "restaurant", "cafe", "coffee_shop", "bakery",
+                "fast_food_restaurant", "fine_dining_restaurant", "pizza_restaurant",
+                "chinese_restaurant", "italian_restaurant", "japanese_restaurant",
+                "sushi_restaurant", "mexican_restaurant", "thai_restaurant",
+                "indian_restaurant", "french_restaurant", "seafood_restaurant",
+                "steakhouse", "vegetarian_restaurant", "vegan_restaurant",
+                "breakfast_restaurant", "brunch_restaurant", "night_club",
+                "cocktail_bar", "sports_bar", "pub", "tapas_restaurant",
+                "ice_cream_shop", "food_truck", "meal_takeaway", "meal_delivery"
+            ]
+
+            prompt = f"""Analyze this query and determine search strategy using Google's official place types.
+
+QUERY: "{query}"
+
+GOOGLE PLACE TYPES: {google_place_types}
+
+Instructions:
+1. Identify the PRIMARY INTENT (what type of venue/experience the user wants)
+2. Select 3-5 most relevant Google place types from the official list
+3. Generate 3-5 effective search keywords for text search
+4. Determine confidence level (1-10) in your analysis
+5. Choose the best search approach
+
+SEARCH APPROACHES:
+- "text_search_primary": Use when query has specific names, cuisines, or descriptive terms
+- "nearby_search_primary": Use when query is general ("restaurants", "bars", "food")
+- "hybrid": Use both for comprehensive results (recommended for most queries)
+
+Respond with JSON only:
+{{
+  "primary_intent": "brief description of what user wants",
+  "place_types": ["type1", "type2", "type3"],
+  "search_keywords": ["keyword1", "keyword2", "keyword3"],
+  "approach": "text_search_primary|nearby_search_primary|hybrid",
+  "use_text_search": true/false,
+  "use_places_api": true/false,
+  "confidence": 8,
+  "reasoning": "Brief explanation"
+}}"""
+
+            response = await asyncio.to_thread(
+                self.openai_client.chat.completions.create,
+                model=self.openai_model,
+                messages=[
+                    {"role": "system", "content": "You are an expert at analyzing restaurant/venue search queries and mapping them to Google's official place types. Always respond with valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1
+            )
+
+            content = response.choices[0].message.content.strip()
+
+            # Try to parse JSON response
+            try:
+                # Extract JSON from response
+                import re
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    strategy = json.loads(json_match.group())
+
+                    # Validate required fields
+                    required_fields = ['primary_intent', 'place_types', 'search_keywords', 'approach', 'use_text_search', 'use_places_api', 'confidence']
+                    if not all(field in strategy for field in required_fields):
+                        raise ValueError("Missing required fields in AI response")
+
+                    # Ensure place_types are from the official list
+                    valid_types = [pt for pt in strategy['place_types'] if pt in google_place_types]
+                    if not valid_types:
+                        # Fallback to restaurant if no valid types
+                        valid_types = ["restaurant", "bar", "cafe"]
+                    strategy['place_types'] = valid_types[:5]  # Limit to 5 types
+
+                    logger.info(f"🤖 AI Query Analysis: {strategy.get('primary_intent', 'Unknown intent')}")
+                    logger.info(f"🎯 Selected types: {strategy['place_types']}")
+
+                    return strategy
+                else:
+                    raise ValueError("No JSON found in response")
+
+            except Exception as parse_error:
+                logger.warning(f"AI response parsing failed: {parse_error}")
+                raise parse_error
+
+        except Exception as e:
+            logger.warning(f"AI query analysis failed: {e}, using fallback strategy")
+
+            # Smart fallback based on query keywords
+            query_lower = query.lower()
+
+            # Try to detect intent from keywords
+            if any(word in query_lower for word in ['cocktail', 'bar', 'drink', 'beer', 'wine']):
+                place_types = ["bar", "cocktail_bar", "wine_bar", "restaurant"]
+                primary_intent = "bars and drinking establishments"
+            elif any(word in query_lower for word in ['coffee', 'cafe', 'espresso']):
+                place_types = ["cafe", "coffee_shop", "bakery"]
+                primary_intent = "coffee shops and cafes"  
+            elif any(word in query_lower for word in ['pizza', 'italian']):
+                place_types = ["pizza_restaurant", "italian_restaurant", "restaurant"]
+                primary_intent = "pizza and Italian restaurants"
+            elif any(word in query_lower for word in ['chinese', 'asian']):
+                place_types = ["chinese_restaurant", "restaurant"]
+                primary_intent = "Chinese and Asian restaurants"
+            elif any(word in query_lower for word in ['sushi', 'japanese']):
+                place_types = ["sushi_restaurant", "japanese_restaurant", "restaurant"]
+                primary_intent = "sushi and Japanese restaurants"
+            elif any(word in query_lower for word in ['mexican', 'taco']):
+                place_types = ["mexican_restaurant", "restaurant"]
+                primary_intent = "Mexican restaurants"
+            elif any(word in query_lower for word in ['bakery', 'bread', 'pastry']):
+                place_types = ["bakery", "cafe", "restaurant"]
+                primary_intent = "bakeries and pastries"
+            else:
+                place_types = ["restaurant", "bar", "cafe"]
+                primary_intent = "restaurants and food venues"
+
+            return {
+                "primary_intent": primary_intent,
+                "place_types": place_types,
+                "search_keywords": [query, f"{query} restaurant", f"{query} food"],
+                "approach": "hybrid",
+                "use_text_search": True,
+                "use_places_api": True,
+                "confidence": 5,
+                "reasoning": f"Fallback strategy - detected intent: {primary_intent}"
+            }
+
+    # ... (rest of the methods remain the same as they don't involve Google Maps API calls)
+    # Include: _ai_select_venues_for_verification, _tavily_search_venues, 
+    # _analyze_media_sources, _prepare_combined_data, etc.
 
     async def _analyze_and_select_venues_with_query_context(
         self, 
@@ -728,146 +681,117 @@ class EnhancedMediaVerificationAgent:
             # Enhanced prompt with full query context and search strategy
             prompt = f"""You are a food and venue expert analyzing Google search results to select the best matches for a specific user query.
 
-    USER QUERY: "{query}"
-    SEARCH INTENT: "{search_strategy['primary_intent']}"
-    TARGET PLACE TYPES: {search_strategy['place_types']}
-    AI CONFIDENCE: {search_strategy['confidence']}
+USER QUERY: "{query}"
+SEARCH INTENT: "{search_strategy['primary_intent']}"
+TARGET PLACE TYPES: {search_strategy['place_types']}
+AI CONFIDENCE: {search_strategy['confidence']}
 
-    IMPORTANT: You must respond with valid JSON only. No additional text or explanation.
+IMPORTANT: You must respond with valid JSON only. No additional text or explanation.
 
-    Your task:
-    1. Analyze if each venue matches the user's specific query and intent
-    2. Rate venues based on BOTH relevance to query AND review quality
-    3. Prioritize venues that clearly match what the user is looking for
-    4. Consider venue type, menu items mentioned in reviews, and atmosphere
+Your task:
+1. Analyze if each venue matches the user's specific query and intent
+2. Rate venues based on BOTH relevance to query AND review quality
+3. Prioritize venues that clearly match what the user is looking for
+4. Consider venue type, menu items mentioned in reviews, and atmosphere
 
-    Scoring criteria:
-    - RELEVANCE (50%): Does this venue match the user's query? (cocktail bar for "cocktail bars")
-    - QUALITY (30%): Review quality, detail, enthusiasm
-    - SPECIFICITY (20%): Specific mentions of relevant items (cocktails, dishes, atmosphere)
+Scoring criteria:
+- RELEVANCE (50%): Does this venue match the user's query? (cocktail bar for "cocktail bars")
+- QUALITY (30%): Review quality, detail, enthusiasm
+- SPECIFICITY (20%): Specific mentions of relevant items (cocktails, dishes, atmosphere)
 
-    Rate each venue 0-10 based on combined score. Select venues scoring 7.0+.
+Rate each venue 0-10 based on combined score. Select venues scoring {self.rating_threshold}+.
 
-    VENUES TO ANALYZE:
-    {json.dumps(restaurant_data, indent=2)}
+VENUES: {json.dumps(restaurant_data, default=str)}
 
-    Return only this JSON format:
-    [
+Respond with JSON:
+{{
+  "selected_venues": [
     {{
-    "place_id": "venue_place_id",
-    "selected": true/false,
-    "overall_score": 8.5,
-    "relevance_score": 9.0,
-    "quality_score": 8.0,
-    "reasoning": "High-quality cocktail bar with detailed reviews mentioning craft cocktails and mixology"
+      "place_id": "venue_id",
+      "quality_score": 8.5,
+      "selection_reason": "Brief reason for selection"
     }}
-    ]"""
+  ],
+  "analysis_summary": "Brief summary of selection process"
+}}"""
 
+            response = await asyncio.to_thread(
+                self.openai_client.chat.completions.create,
+                model=self.openai_model,
+                messages=[
+                    {"role": "system", "content": "You are an expert food critic and venue analyst. Respond with valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2
+            )
+
+            content = response.choices[0].message.content.strip()
+
+            # Parse AI response
             try:
-                # Send to OpenAI with timeout
-                response = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        self.openai_client.chat.completions.create,
-                        model=self.openai_model,
-                        messages=[{"role": "user", "content": prompt}],
-                        max_tokens=2000,
-                        temperature=0.1
-                    ),
-                    timeout=30.0
-                )
+                import re
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    ai_analysis = json.loads(json_match.group())
+                else:
+                    raise ValueError("No JSON found in AI response")
 
-                # Add null checks
-                if not response or not response.choices:
-                    raise Exception("Empty AI response")
+                # Apply AI selection to venues
+                selected_venues = []
+                selected_place_ids = {v['place_id'] for v in ai_analysis.get('selected_venues', [])}
 
-                analysis_text = response.choices[0].message.content
-                if not analysis_text:
-                    raise Exception("Empty content from AI")
+                for venue in venues_data:
+                    if venue.place_id in selected_place_ids:
+                        # Find the AI analysis for this venue
+                        venue_analysis = next((v for v in ai_analysis['selected_venues'] if v['place_id'] == venue.place_id), None)
+                        if venue_analysis:
+                            venue.review_quality_score = venue_analysis.get('quality_score', 0.0)
+                            venue.selected_for_verification = True
+                            selected_venues.append(venue)
 
-                # Parse response
-                analysis_text = analysis_text.strip()
+                # Limit to max venues
+                selected_venues = selected_venues[:self.max_venues_to_verify]
 
-                # Clean response and parse JSON
-                if analysis_text.startswith('```json'):
-                    analysis_text = analysis_text.replace('```json', '').replace('```', '').strip()
+                logger.info(f"🤖 AI selected {len(selected_venues)} venues: {ai_analysis.get('analysis_summary', 'No summary')}")
+                return selected_venues
 
-                analysis_results = json.loads(analysis_text)
-                logger.info(f"🤖 AI analyzed {len(analysis_results)} venues with full query context")
+            except Exception as parse_error:
+                logger.warning(f"AI venue analysis parsing failed: {parse_error}")
+                # Fallback to simple rating-based selection
+                return self._fallback_venue_selection(venues_data)
 
-            except json.JSONDecodeError as e:
-                logger.error(f"❌ Failed to parse AI analysis JSON: {e}")
-                # Fallback: select top rated venues
-                venues_data.sort(key=lambda x: x.rating or 0, reverse=True)
-                return venues_data[:3]
+        except Exception as e:
+            logger.error(f"❌ Error in AI venue analysis: {e}")
+            # Fallback to simple rating-based selection
+            return self._fallback_venue_selection(venues_data)
 
-            except Exception as e:
-                logger.error(f"❌ AI analysis failed: {e}")
-                # Fallback: select top rated venues
-                venues_data.sort(key=lambda x: x.rating or 0, reverse=True)
-                return venues_data[:3]
+    def _fallback_venue_selection(self, venues_data: List[EnhancedVenueData]) -> List[EnhancedVenueData]:
+        """Fallback venue selection based on rating and review count"""
+        try:
+            # Sort by rating and review count
+            sorted_venues = sorted(
+                venues_data,
+                key=lambda x: (x.rating or 0, x.user_ratings_total or 0),
+                reverse=True
+            )
 
-            # Update venues with AI analysis results
+            # Select top venues that meet rating threshold
             selected_venues = []
-            for analysis in analysis_results:
-                place_id = analysis.get('place_id')
-
-                # Find corresponding venue
-                venue = next((v for v in venues_data if v.place_id == place_id), None)
-                if venue and analysis.get('selected', False):
-                    venue.review_quality_score = analysis.get('overall_score', 0)
+            for venue in sorted_venues:
+                if venue.rating and venue.rating >= self.rating_threshold:
+                    venue.review_quality_score = venue.rating
                     venue.selected_for_verification = True
                     selected_venues.append(venue)
 
-                    relevance = analysis.get('relevance_score', 0)
-                    quality = analysis.get('quality_score', 0)
-                    logger.debug(f"Selected {venue.name} (relevance: {relevance:.1f}, quality: {quality:.1f}, overall: {venue.review_quality_score:.1f})")
+                    if len(selected_venues) >= self.max_venues_to_verify:
+                        break
 
-            # Sort by overall score and limit results
-            selected_venues.sort(key=lambda x: x.review_quality_score, reverse=True)
-            final_selection = selected_venues[:self.max_venues_to_verify]
-
-            logger.info(f"✅ AI query-aware selection: {len(final_selection)} venues from {len(venues_data)} candidates")
-            return final_selection
-
-        except asyncio.TimeoutError:
-            logger.error("❌ Venue analysis timed out")
-            # Fallback: select top rated venues
-            venues_data.sort(key=lambda x: x.rating or 0, reverse=True)
-            return venues_data[:3]
-        except Exception as e:
-            logger.error(f"❌ Error in venue analysis: {e}")
-            # Fallback: select top rated venues
-            venues_data.sort(key=lambda x: x.rating or 0, reverse=True)
-            return venues_data[:3]
-
-    def _initialize_places_client(self, client_type: str):
-        """Initialize Google Places API client"""
-        try:
-            if client_type == 'primary':
-                creds_key = 'GOOGLE_APPLICATION_CREDENTIALS_JSON_PRIMARY'
-            else:
-                creds_key = 'GOOGLE_APPLICATION_CREDENTIALS_JSON_SECONDARY'
-
-            credentials = self._load_credentials_from_env(creds_key, client_type)
-            if not credentials:
-                if client_type == 'primary':
-                    logger.error("Primary credentials required but not found")
-                    return None
-                else:
-                    logger.info("Secondary credentials not available")
-                    return None
-
-            try:
-                client = places_v1.PlacesClient(credentials=credentials)
-                logger.info(f"{client_type.title()} Places API client initialized")
-                return client
-            except Exception as e:
-                logger.error(f"Failed to create {client_type} Places client: {e}")
-                return None
+            logger.info(f"📊 Fallback selection: {len(selected_venues)} venues with rating >= {self.rating_threshold}")
+            return selected_venues
 
         except Exception as e:
-            logger.error(f"Failed to initialize {client_type} Places client: {e}")
-            return None
+            logger.error(f"❌ Even fallback venue selection failed: {e}")
+            return venues_data[:self.max_venues_to_verify]  # Just return first few venues
 
     async def _tavily_search_venues(self, venues: List[EnhancedVenueData], cancel_check_fn=None):
         """
@@ -926,7 +850,7 @@ class EnhancedMediaVerificationAgent:
 
     async def _analyze_media_sources(self, venues: List[EnhancedVenueData], cancel_check_fn=None):
         """
-        Step 5: AI analysis of media sources to identify professional guides - WITH JSON FIX
+        Step 5: AI analysis of media sources to identify professional guides
         """
         for venue in venues:
             if cancel_check_fn and cancel_check_fn():
@@ -941,69 +865,80 @@ class EnhancedMediaVerificationAgent:
                 # Enhanced prompt with clearer JSON requirements
                 prompt = f"""You are a media analyst identifying professional restaurant guides and publications.
 
-    IMPORTANT: Respond with valid JSON only. No additional text.
+IMPORTANT: Respond with valid JSON only. No additional text.
 
-    IDENTIFY PROFESSIONAL SOURCES:
-    - Food & travel magazines (Conde Nast, Forbes Travel, Food & Wine, etc.)
-    - Local newspapers and magazines (Time Out, local papers)
-    - Professional food critics and established food blogs
-    - Tourism boards and official city guides
-    - Restaurant award guides (Michelin, World's 50 Best, etc.)
+IDENTIFY PROFESSIONAL SOURCES:
+- Food & travel magazines (Conde Nast, Forbes Travel, Food & Wine, etc.)
+- Local newspapers and magazines (Time Out, local papers)
+- Professional food critics and established food blogs
+- Tourism boards and official city guides
+- Restaurant award guides (Michelin, World's 50 Best, etc.)
 
-    IGNORE:
-    - TripAdvisor, Yelp, user review sites
-    - Social media posts
-    - Generic listicles
-    - Travel booking sites
-    - Personal blogs without professional credentials
+EXCLUDE:
+- User review sites (Yelp, TripAdvisor, Google Reviews)
+- Social media posts (Instagram, Facebook)
+- General business directories
+- Personal blogs without credibility
 
-    RESPOND ONLY WITH THIS JSON FORMAT:
+Analyze these search results for "{venue.name}":
+{json.dumps(venue.media_search_results[:10], default=str)}
+
+Response format:
+{{
+  "professional_sources": [
     {{
-      "professional_sources": [
-        {{
-          "url": "https://example.com/article",
-          "title": "article title",
-          "description": "description",
-          "source_type": "food_magazine",
-          "credibility_score": 9.0,
-          "worth_scraping": true
-        }}
-      ],
-      "total_results": 15,
-      "professional_count": 3
+      "url": "source_url",
+      "title": "source_title", 
+      "source_type": "food_magazine|local_newspaper|tourism_guide|award_guide|food_blog",
+      "credibility_score": 8.5,
+      "worth_scraping": true,
+      "reason": "Brief explanation"
     }}
+  ],
+  "has_professional_coverage": true,
+  "summary": "Brief analysis summary"
+}}"""
 
-    Media search results for {venue.name}:
-    {json.dumps(venue.media_search_results[:10], indent=2)}"""  # Limit to 10 results to avoid token limits
-
-                logger.debug(f"🔍 Analyzing media sources for {venue.name}")
-
-                response = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        self.openai_client.chat.completions.create,
-                        model=self.openai_model,
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=0.2,
-                        max_tokens=1500
-                    ),
-                    timeout=20  # 20 second timeout
+                response = await asyncio.to_thread(
+                    self.openai_client.chat.completions.create,
+                    model=self.openai_model,
+                    messages=[
+                        {"role": "system", "content": "You are an expert media analyst. Always respond with valid JSON only."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.1,
+                    timeout=15
                 )
 
-                # Use the safe parsing method
-                media_analysis = self._safe_parse_openai_response(
-                    response, 
-                    fallback_data={"professional_sources": [], "professional_count": 0}, 
-                    context=f"media analysis for {venue.name}"
-                )
+                content = response.choices[0].message.content.strip()
 
-                professional_sources = media_analysis.get('professional_sources', [])
-                venue.professional_sources = professional_sources
-                venue.has_professional_coverage = len(professional_sources) > 0
+                # Parse JSON response
+                try:
+                    import re
+                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                    if json_match:
+                        analysis = json.loads(json_match.group())
 
-                logger.debug(f"✅ {venue.name}: Found {len(professional_sources)} professional sources")
+                        # Filter professional sources by credibility score
+                        professional_sources = [
+                            source for source in analysis.get('professional_sources', [])
+                            if source.get('credibility_score', 0) >= getattr(self.config, 'PROFESSIONAL_SOURCE_MIN_SCORE', 7.0)
+                        ]
+
+                        venue.professional_sources = professional_sources
+                        venue.has_professional_coverage = len(professional_sources) > 0
+
+                        logger.debug(f"{venue.name}: Found {len(professional_sources)} professional sources")
+                    else:
+                        raise ValueError("No JSON found in response")
+
+                except Exception as parse_error:
+                    logger.warning(f"Media analysis parsing failed for {venue.name}: {parse_error}")
+                    venue.professional_sources = []
+                    venue.has_professional_coverage = False
 
             except asyncio.TimeoutError:
-                logger.error(f"❌ Media analysis timed out for {venue.name}")
+                logger.warning(f"⏱️ Media analysis timed out for {venue.name}")
                 venue.professional_sources = []
                 venue.has_professional_coverage = False
             except Exception as e:
@@ -1011,136 +946,43 @@ class EnhancedMediaVerificationAgent:
                 venue.professional_sources = []
                 venue.has_professional_coverage = False
 
-    async def _scrape_professional_content(self, venues: List[EnhancedVenueData], cancel_check_fn=None):
-        """
-        Step 6: Smart scraping of professional content
-        For now, we'll prepare the URLs and mark for future scraping
-        """
-        for venue in venues:
-            if cancel_check_fn and cancel_check_fn():
-                break
-
-            if not venue.professional_sources:
-                continue
-
-            # For now, just prepare the scraping targets
-            # In production, this would call smart scraper API
-            scraping_targets = []
-
-            for source in venue.professional_sources[:3]:  # Limit to top 3 sources
-                if source.get('worth_scraping', False):
-                    scraping_targets.append({
-                        'url': source['url'],
-                        'title': source['title'],
-                        'source_type': source['source_type'],
-                        'content': f"[PLACEHOLDER] Content from {source['title']} - professional review of {venue.name}"
-                        # TODO: Replace with actual smart scraper call
-                    })
-
-            venue.scraped_content = scraping_targets
-
-            if scraping_targets:
-                logger.debug(f"{venue.name}: Prepared {len(scraping_targets)} sources for scraping")
-
     def _prepare_combined_data(self, venues: List[EnhancedVenueData]):
         """Step 6: Prepare combined data for text editor"""
         for venue in venues:
             # Combine Google reviews and scraped professional content
             combined_data = {
                 'google_reviews': venue.google_reviews,
-                'professional_content': venue.scraped_content,
+                'professional_sources': venue.professional_sources,
+                'scraped_content': venue.scraped_content,
                 'has_media_coverage': venue.has_professional_coverage,
-                'media_sources': [s.get('title', 'Unknown') for s in venue.professional_sources],
-                'quality_indicators': {
-                    'review_quality_score': venue.review_quality_score,
-                    'google_rating': venue.rating,
-                    'review_count': venue.user_ratings_total,
-                    'professional_mentions': len(venue.professional_sources)
-                }
+                'review_quality_score': venue.review_quality_score
+            }
+
+            # Add summary information for text editor
+            combined_data['venue_summary'] = {
+                'name': venue.name,
+                'address': venue.address,
+                'rating': venue.rating,
+                'review_count': venue.user_ratings_total,
+                'distance_km': venue.distance_km,
+                'professional_coverage': venue.has_professional_coverage
             }
 
             venue.combined_review_data = combined_data
-
-    def _safe_parse_openai_response(self, response, fallback_data=None, context=""):
-        """
-        Safely parse OpenAI response with detailed error handling and logging
-
-        Args:
-            response: OpenAI response object
-            fallback_data: Default data to return if parsing fails
-            context: Context string for logging (e.g., "venue analysis", "media analysis")
-
-        Returns:
-            Parsed JSON data or fallback_data
-        """
-        try:
-            if not response or not hasattr(response, 'choices') or not response.choices:
-                logger.error(f"❌ Empty or invalid OpenAI response for {context}")
-                return fallback_data or {}
-
-            response_text = response.choices[0].message.content
-
-            # Log the raw response for debugging
-            logger.debug(f"🔍 Raw OpenAI response for {context}: {response_text[:200]}...")
-
-            if not response_text or response_text.strip() == "":
-                logger.error(f"❌ Empty response text from OpenAI for {context}")
-                return fallback_data or {}
-
-            # Clean up the response text
-            response_text = response_text.strip()
-
-            # Handle cases where the model returns text before the JSON
-            if response_text.startswith('```json'):
-                # Extract JSON from code block
-                start_idx = response_text.find('{')
-                end_idx = response_text.rfind('}')
-                if start_idx != -1 and end_idx != -1:
-                    response_text = response_text[start_idx:end_idx+1]
-            elif not response_text.startswith('{'):
-                # Look for JSON in the response
-                start_idx = response_text.find('{')
-                if start_idx != -1:
-                    response_text = response_text[start_idx:]
-
-            # Try to parse the JSON
-            try:
-                parsed_data = json.loads(response_text)
-                logger.debug(f"✅ Successfully parsed JSON for {context}")
-                return parsed_data
-            except json.JSONDecodeError as e:
-                logger.error(f"❌ JSON decode error for {context}: {e}")
-                logger.error(f"Problematic text: {response_text}")
-                return fallback_data or {}
-
-        except Exception as e:
-            logger.error(f"❌ Unexpected error parsing OpenAI response for {context}: {e}")
-            return fallback_data or {}
+            logger.debug(f"Prepared combined data for {venue.name}")
 
     def _extract_city_from_address(self, address: str) -> str:
-        """Extract city name from address"""
+        """Extract city name from address for search queries"""
         try:
-            if not address:
-                return "Unknown"
-
-            parts = [part.strip() for part in address.split(',')]
-
+            # Simple extraction - split by comma and get likely city part
+            parts = address.split(',')
             if len(parts) >= 2:
-                return parts[1]  # Usually the city
-            else:
-                return parts[0] if parts else "Unknown"
-
-        except Exception:
-            return "Unknown"
-
-    def get_verification_stats(self) -> Dict[str, Any]:
-        """Get statistics about the verification process"""
-        return {
-            'has_places_api_v1': True,
-            'has_tavily_api': self.tavily_api_key is not None,
-            'rating_threshold': self.rating_threshold,
-            'max_venues': self.max_venues_to_verify,
-            'ai_model': self.openai_model,
-            'uses_langchain': False,
-            'api_version': 'places_v1'
-        }
+                # Usually city is the second-to-last part before country/postal
+                city_part = parts[-2].strip()
+                # Remove postal codes and numbers
+                import re
+                city = re.sub(r'\d+', '', city_part).strip()
+                return city if city else "restaurant"
+            return "restaurant"
+        except:
+            return "restaurant"

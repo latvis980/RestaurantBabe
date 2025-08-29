@@ -271,14 +271,16 @@ ENHANCED_RATING_THRESHOLD = 4.3  # Only verify venues with rating >= this thresh
 MIN_DATABASE_RESULTS_TRIGGER = 2  # Trigger enhanced search when DB results < this number
 MAX_VENUES_TO_VERIFY = 5
 
-# Google Maps keys (prioritize GOOGLE_MAPS_KEY2 if available)
-GOOGLE_MAPS_API_KEY2 = os.environ.get("GOOGLE_MAPS_API_KEY2")
 
 # Google Places search configuration
 GOOGLE_PLACES_SEARCH_TYPES = [
     "restaurant", "bar", "cafe", "meal_takeaway", 
     "meal_delivery", "food", "bakery"
 ]
+
+# Keep only the service account credentials for Places API (New)
+GOOGLE_APPLICATION_CREDENTIALS_JSON_PRIMARY = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON_PRIMARY")
+GOOGLE_APPLICATION_CREDENTIALS_JSON_SECONDARY = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON_SECONDARY")  # Optional secondary
 
 # Location search timeout
 LOCATION_SEARCH_TIMEOUT = 30.0
