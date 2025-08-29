@@ -31,17 +31,9 @@ from location.telegram_location_handler import LocationData
 from location.database_search import LocationDatabaseService
 from location.filter_evaluator import LocationFilterEvaluator
 from location.location_telegram_formatter import LocationTelegramFormatter
-
-# AI Description Editor (NEW)
-from location.location_ai_description_editor import LocationAIDescriptionEditor
-
-# Enhanced verification system
-from location.enhanced_media_verification import EnhancedMediaVerificationAgent
-from location.location_text_editor import LocationTextEditor
-
-# AI components
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
+from location.location_ai_editor import LocationAIEditor
+from location.location_map_search import LocationMapSearchAgent
+from location.enhanced_media_verification import LocationMediaVerificationAgent
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +53,17 @@ class LocationOrchestrator:
         self.database_service = LocationDatabaseService(config)  # Step 1
         self.filter_evaluator = LocationFilterEvaluator(config)  # Step 2
 
-        # NEW: AI Description Editor (Step 3)
-        self.description_editor = LocationAIDescriptionEditor(config)
+        # AI Description Editor for database results
+        self.description_editor = LocationAIEditor(config)
 
-        # Enhanced verification system
-        self.enhanced_verifier = EnhancedMediaVerificationAgent(config)  # Steps 1-6
-        self.text_editor = LocationTextEditor(config)  # Description generation
+        # NEW: Separate agents for enhanced verification flow
+        from location.location_map_search import LocationMapSearchAgent
+        from location.enhanced_media_verification import LocationMediaVerificationAgent
+        from location.location_ai_editor import LocationAIEditor
+
+        self.map_search_agent = LocationMapSearchAgent(config)
+        self.media_verification_agent = LocationMediaVerificationAgent(config)
+        self.ai_editor = LocationAIEditor(config)
 
         self.formatter = LocationTelegramFormatter(config)  # Unified formatter
 
@@ -75,7 +72,8 @@ class LocationOrchestrator:
         self.min_db_matches = 2  # Trigger enhanced search when < 2 results
         self.max_venues_to_verify = getattr(config, 'MAX_LOCATION_RESULTS', 8)
 
-        logger.info("✅ Location Orchestrator initialized with Enhanced Media Verification and AI Description Editor")
+        logger.info("✅ Location Orchestrator initialized with Separate Agent Architecture")
+
 
     # ============ MAIN PROCESSING METHOD ============
 
@@ -86,19 +84,19 @@ class LocationOrchestrator:
         cancel_check_fn=None
     ) -> Dict[str, Any]:
         """
-        Process location query with AI description editing
+        Process location query with dual flow architecture
 
-        Enhanced Logic:
+        Flow Logic:
         1. Database search
         2. Filter evaluation  
-        3. AI description editing (NEW)
-        4. If < 2 relevant results → Enhanced verification flow
+        3. AI description editing
+        4. If < 2 relevant results → Enhanced verification flow (separate agents)
         5. Format for Telegram
         """
         start_time = time.time()
 
         try:
-            logger.info(f"🎯 Processing location query: '{query}'")
+            logger.info(f"Processing location query: '{query}'")
 
             # Step 1: Get coordinates from location data
             coordinates = self._extract_coordinates(location_data)
@@ -107,23 +105,23 @@ class LocationOrchestrator:
             if not coordinates:
                 return self._create_error_response("Unable to determine location coordinates")
 
-            # Step 2: Database search with raw descriptions and sources - FIXED METHOD NAME (not async)
-            logger.info("📊 Step 1: Database proximity search...")
+            # Step 2: Database search with raw descriptions and sources
+            logger.info("Step 1: Database proximity search...")
             db_restaurants = self.database_service.search_by_proximity(
                 coordinates=coordinates,
                 radius_km=self.db_search_radius,
-                extract_descriptions=True  # Get raw_descriptions, sources, and domains
+                extract_descriptions=True
             )
 
             if cancel_check_fn and cancel_check_fn():
                 return self._create_cancelled_response()
 
             db_restaurant_count = len(db_restaurants)
-            logger.info(f"📊 Database search found {db_restaurant_count} restaurants")
+            logger.info(f"Database search found {db_restaurant_count} restaurants")
 
             if db_restaurant_count > 0:
-                # Step 3: Filter database results - FIXED METHOD NAME (not async)
-                logger.info("🔍 Step 2: AI filtering evaluation...")
+                # Step 3: Filter database results
+                logger.info("Step 2: AI filtering evaluation...")
                 filter_result = self.filter_evaluator.filter_and_evaluate(
                     restaurants=db_restaurants,
                     query=query,
@@ -132,27 +130,27 @@ class LocationOrchestrator:
 
                 filtered_restaurants = filter_result.get("filtered_restaurants", [])
                 filtered_count = len(filtered_restaurants)
-                logger.info(f"🔍 After filtering: {filtered_count} relevant restaurants")
+                logger.info(f"After filtering: {filtered_count} relevant restaurants")
 
-                # Step 4: AI Description Editing (NEW STEP)
+                # Step 4: AI Description Editing for database results
                 if filtered_restaurants:
-                    logger.info("🎨 Step 3: AI description editing...")
+                    logger.info("Step 3: AI description editing...")
                     edited_restaurants = self.description_editor.edit_descriptions(
                         filtered_restaurants=filtered_restaurants,
                         user_query=query,
                         location_description=location_desc
                     )
 
-                    logger.info(f"✅ AI edited {len(edited_restaurants)} restaurant descriptions")
+                    logger.info(f"AI edited {len(edited_restaurants)} restaurant descriptions")
                 else:
                     edited_restaurants = []
 
-                # Check if we have enough results (>= 2)
+                # Check if we have enough results
                 if len(edited_restaurants) >= self.min_db_matches:
-                    # Traditional database flow - sufficient results with AI descriptions
-                    logger.info(f"✅ Sufficient database results ({len(edited_restaurants)}), using enhanced database flow")
+                    # Sufficient database results - use database flow
+                    logger.info(f"Sufficient database results ({len(edited_restaurants)}), using database flow")
 
-                    # Step 5: Format for Telegram using AI-edited descriptions
+                    # Format for Telegram using AI-edited descriptions
                     formatted_results = self.description_editor.create_telegram_formatted_results(
                         edited_restaurants=edited_restaurants,
                         user_query=query,
@@ -168,20 +166,20 @@ class LocationOrchestrator:
                         "coordinates": coordinates,
                         "location_description": location_desc,
                         "location_formatted_results": formatted_results.get("message", f"Found {len(edited_restaurants)} relevant restaurants!"),
-                        "ai_edited": True  # Flag to indicate AI enhancement
+                        "ai_edited": True
                     }
                 else:
-                    # Enhanced verification flow - insufficient database results
-                    logger.info(f"⚡ Insufficient database results ({len(edited_restaurants)} < {self.min_db_matches}), starting enhanced verification flow")
+                    # Insufficient database results - use enhanced flow
+                    logger.info(f"Insufficient database results ({len(edited_restaurants)} < {self.min_db_matches}), starting enhanced verification flow")
                     return await self._enhanced_verification_flow(query, coordinates, location_desc, cancel_check_fn, start_time)
 
             else:
-                # No database results - enhanced verification flow
-                logger.info("⚡ No database results - starting enhanced verification flow")
+                # No database results - use enhanced flow
+                logger.info("No database results - starting enhanced verification flow")
                 return await self._enhanced_verification_flow(query, coordinates, location_desc, cancel_check_fn, start_time)
 
         except Exception as e:
-            logger.error(f"❌ Error in location query processing: {e}")
+            logger.error(f"Error in location query processing: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             return self._create_error_response(f"Search failed: {str(e)}")
@@ -197,24 +195,23 @@ class LocationOrchestrator:
         start_time=None
     ) -> Dict[str, Any]:
         """
-        Enhanced verification flow using the new system
+        Enhanced verification flow using separate agent architecture
 
-        This replaces the old Google Maps + media verification with the new integrated system
+        New Flow:
+        1. LocationMapSearchAgent -> Google Maps/Places search with AI analysis
+        2. LocationMediaVerificationAgent -> Professional media coverage search
+        3. LocationAIEditor -> Combine results into professional descriptions
+        4. Format for Telegram display
         """
         if start_time is None:
             start_time = time.time()
 
         try:
-            logger.info("🚀 Starting Enhanced Verification Flow")
+            logger.info("Starting Enhanced Verification Flow with Separate Agents")
 
-            # Use enhanced media verification agent
-            # This handles Steps 1-6 of the new process:
-            # 1. Enhanced Google Maps search
-            # 2. AI review analysis
-            # 4. Tavily media search  
-            # 5. AI media source analysis
-            # 6. Professional content scraping
-            enhanced_venues = await self.enhanced_verifier.verify_and_enhance_venues(
+            # Step 1: Google Maps/Places search with AI-powered query analysis
+            logger.info("Step 1: AI-powered Google Maps search")
+            map_search_results = await self.map_search_agent.search_venues_with_ai_analysis(
                 coordinates=coordinates,
                 query=query,
                 cancel_check_fn=cancel_check_fn
@@ -223,66 +220,75 @@ class LocationOrchestrator:
             if cancel_check_fn and cancel_check_fn():
                 return self._create_cancelled_response()
 
-            if not enhanced_venues:
-                return self._create_error_response("No restaurants found matching your criteria after thorough search")
+            if not map_search_results:
+                return self._create_error_response("No restaurants found matching your criteria in Google Maps search")
 
-            logger.info(f"🔍 Enhanced verification found {len(enhanced_venues)} quality venues")
+            logger.info(f"Step 1: Found {len(map_search_results)} venues from Google Maps search")
 
-            # Use location text editor to create professional descriptions
-            restaurant_results = await self.text_editor.create_professional_descriptions(enhanced_venues)
+            # Step 2: Media verification for professional coverage
+            logger.info("Step 2: Professional media verification")
+            media_verification_results = await self.media_verification_agent.verify_venues_media_coverage(
+                venues=map_search_results,
+                query=query,
+                cancel_check_fn=cancel_check_fn
+            )
 
             if cancel_check_fn and cancel_check_fn():
                 return self._create_cancelled_response()
 
-            # Format final results
-            final_formatted = self.text_editor.format_final_results(
-                results=restaurant_results,
+            logger.info(f"Step 2: Completed media verification for {len(media_verification_results)} venues")
+
+            # Step 3: AI description generation combining both sources
+            logger.info("Step 3: AI-powered description generation")
+            restaurant_descriptions = await self.ai_editor.create_professional_descriptions(
+                map_search_results=map_search_results,
+                media_verification_results=media_verification_results,
+                user_query=query,
+                cancel_check_fn=cancel_check_fn
+            )
+
+            if cancel_check_fn and cancel_check_fn():
+                return self._create_cancelled_response()
+
+            if not restaurant_descriptions:
+                return self._create_error_response("Failed to generate restaurant descriptions")
+
+            logger.info(f"Step 3: Generated {len(restaurant_descriptions)} professional descriptions")
+
+            # Step 4: Format final results for Telegram
+            logger.info("Step 4: Formatting results for display")
+            final_formatted = self.ai_editor.format_final_results(
+                descriptions=restaurant_descriptions,
                 user_coordinates=coordinates
             )
 
             processing_time = time.time() - start_time
-            logger.info(f"✅ Enhanced verification flow completed in {processing_time:.1f}s")
+            logger.info(f"Enhanced verification flow completed in {processing_time:.1f}s")
 
+            # Return comprehensive results
             return {
                 "success": True,
-                "results": restaurant_results,
-                "source": "enhanced_verification",
+                "results": restaurant_descriptions,
+                "source": "enhanced_verification_separate_agents",
                 "processing_time": processing_time,
-                "restaurant_count": len(restaurant_results),
+                "restaurant_count": len(restaurant_descriptions),
                 "coordinates": coordinates,
                 "location_description": location_desc,
-                "location_formatted_results": final_formatted.get("message", f"Found {len(restaurant_results)} excellent restaurants!")
+                "location_formatted_results": final_formatted.get("message", f"Found {len(restaurant_descriptions)} excellent restaurants!"),
+                "has_media_coverage": final_formatted.get("has_media_coverage", False),
+                "search_stats": {
+                    "google_maps_results": len(map_search_results),
+                    "media_verified_venues": len(media_verification_results),
+                    "final_descriptions": len(restaurant_descriptions),
+                    "venues_with_media_coverage": sum(1 for desc in restaurant_descriptions if desc.has_media_coverage)
+                }
             }
 
         except Exception as e:
-            logger.error(f"❌ Error in enhanced verification flow: {e}")
+            logger.error(f"Error in enhanced verification flow: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return self._create_error_response(f"Enhanced verification failed: {str(e)}")
-
-    # ============ LEGACY COMPATIBILITY METHODS ============
-
-    async def complete_media_verification(
-        self,
-        venues: List[Any],  # Accept any venue type for compatibility
-        query: str,
-        coordinates: Tuple[float, float],
-        location_desc: str,
-        cancel_check_fn=None
-    ) -> Dict[str, Any]:
-        """
-        LEGACY METHOD: Maintained for backward compatibility with existing telegram bot code
-
-        This method is still called by the telegram bot for the old flow.
-        We redirect it to use the new enhanced system and ignore the venues parameter.
-        """
-        logger.info("🔄 Legacy complete_media_verification called - redirecting to enhanced flow")
-
-        # Convert to new enhanced flow (ignore the old venues parameter)
-        return await self._enhanced_verification_flow(
-            query=query,
-            coordinates=coordinates,
-            location_desc=location_desc,
-            cancel_check_fn=cancel_check_fn
-        )
 
     async def process_more_results_query(
         self,
@@ -292,13 +298,13 @@ class LocationOrchestrator:
         cancel_check_fn=None
     ) -> Dict[str, Any]:
         """
-        Process "more results" query - now uses enhanced verification
+        Process "more results" query - uses enhanced verification flow
         """
-        logger.info(f"🔍 Processing 'more results' query with enhanced system: '{query}' at {location_desc}")
+        logger.info(f"Processing 'more results' query with enhanced system: '{query}' at {location_desc}")
 
         # Validate coordinates
         if not coordinates or len(coordinates) != 2:
-            logger.error(f"❌ Invalid coordinates provided: {coordinates}")
+            logger.error(f"Invalid coordinates provided: {coordinates}")
             return self._create_error_response("Invalid coordinates for search")
 
         try:
@@ -315,15 +321,37 @@ class LocationOrchestrator:
             )
 
         except (ValueError, TypeError) as e:
-            logger.error(f"❌ Coordinate conversion error: {e}")
+            logger.error(f"Coordinate conversion error: {e}")
             return self._create_error_response("Invalid coordinate format")
+
+    # ============ LEGACY COMPATIBILITY METHODS ============
+
+    async def complete_media_verification(
+        self,
+        venues: List[Any],
+        query: str,
+        coordinates: Tuple[float, float],
+        location_desc: str,
+        cancel_check_fn=None
+    ) -> Dict[str, Any]:
+        """
+        LEGACY METHOD: Maintained for backward compatibility with existing telegram bot code
+        Redirects to enhanced verification flow using separate agents
+        """
+        logger.info("Legacy complete_media_verification called - redirecting to enhanced flow")
+
+        return await self._enhanced_verification_flow(
+            query=query,
+            coordinates=coordinates,
+            location_desc=location_desc,
+            cancel_check_fn=cancel_check_fn
+        )
 
     # ============ HELPER METHODS ============
 
     def _extract_coordinates(self, location_data: LocationData) -> Optional[Tuple[float, float]]:
-        """Extract coordinates from location data - FIXED ATTRIBUTE ACCESS"""
+        """Extract coordinates from location data"""
         try:
-            # FIXED: LocationData has .latitude and .longitude attributes, not .coordinates
             if hasattr(location_data, 'latitude') and hasattr(location_data, 'longitude'):
                 if location_data.latitude is not None and location_data.longitude is not None:
                     lat, lng = location_data.latitude, location_data.longitude
@@ -332,23 +360,22 @@ class LocationOrchestrator:
 
             # If location_data doesn't have coordinates, try to geocode description
             if hasattr(location_data, 'description') and location_data.description:
-                logger.info(f"🌍 Geocoding location: {location_data.description}")
+                logger.info(f"Geocoding location: {location_data.description}")
 
-                # Use database geocoding if available
                 try:
                     from utils.database import get_database
                     db = get_database()
                     if hasattr(db, 'geocode_address'):
                         coordinates = db.geocode_address(location_data.description)
                         if coordinates:
-                            logger.info(f"✅ Geocoded to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+                            logger.info(f"Geocoded to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
                             return coordinates
                         else:
-                            logger.warning(f"❌ Failed to geocode: {location_data.description}")
+                            logger.warning(f"Failed to geocode: {location_data.description}")
                     else:
-                        logger.warning("❌ Geocoding not available in database")
+                        logger.warning("Geocoding not available in database")
                 except Exception as e:
-                    logger.error(f"❌ Geocoding error: {e}")
+                    logger.error(f"Geocoding error: {e}")
 
             return None
         except Exception as e:
