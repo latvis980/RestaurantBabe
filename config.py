@@ -272,7 +272,7 @@ MIN_DATABASE_RESULTS_TRIGGER = 2  # Trigger enhanced search when DB results < th
 MAX_VENUES_TO_VERIFY = 5
 
 # Google Maps keys (prioritize GOOGLE_MAPS_KEY2 if available)
-GOOGLE_MAPS_KEY2 = os.environ.get("GOOGLE_MAPS_KEY2")
+GOOGLE_MAPS_API_KEY2 = os.environ.get("GOOGLE_MAPS_API_KEY2")
 
 # Google Places search configuration
 GOOGLE_PLACES_SEARCH_TYPES = [
