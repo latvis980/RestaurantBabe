@@ -13,6 +13,7 @@ import json
 import time
 from typing import Dict, Any, Optional
 from enum import Enum
+from typing import Dict, Any, Optional, Tuple
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -323,11 +324,17 @@ LOCATION CONTEXT: {location_context}
                 "new_state": ConversationState.IDLE
             }
 
-    def _parse_ai_response(self, response_content: str) -> Dict[str, Any]:
+    def _parse_ai_response(self, response_content) -> Dict[str, Any]:
         """Parse AI response from JSON"""
         try:
+            # Handle different response content types
+            if hasattr(response_content, 'content'):
+                content = response_content.content
+            else:
+                content = str(response_content)
+
             # Handle code block formatting
-            content = response_content.strip()
+            content = content.strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
@@ -506,9 +513,6 @@ LOCATION CONTEXT: {location_context}
 
         return f"Recent location search: '{context.get('query', '')}' at {context.get('location_description', 'unknown location')} ({int(time_ago/60)} minutes ago)"
 
-    # conversation_handler.py - COORDINATE STORAGE FIX
-
-    # Update the store_location_search_context method to ensure coordinates are properly preserved:
 
     def store_location_search_context(
         self, 
@@ -562,7 +566,7 @@ LOCATION CONTEXT: {location_context}
                 "location_description": location_description,
                 "coordinates": final_coordinates,  # Primary coordinate storage
                 "coordinate_source": coordinate_source,
-                "timestamp": time.time(),
+                "last_search_time": time.time(),  # Keep existing field name
 
                 # REDUNDANT STORAGE: Multiple coordinate representations for reliability
                 "lat": final_coordinates[0] if final_coordinates else None,
@@ -578,11 +582,8 @@ LOCATION CONTEXT: {location_context}
                 }
             }
 
-            # Store in user location context
-            if user_id not in self.user_location_context:
-                self.user_location_context[user_id] = {}
-
-            self.user_location_context[user_id].update(context_data)
+            # FIXED: Use existing attribute name
+            self.location_search_context[user_id] = context_data
 
             # Log successful storage
             logger.info(f"✅ LOCATION CONTEXT STORED for user {user_id}:")
@@ -608,9 +609,17 @@ LOCATION CONTEXT: {location_context}
         FIXED: Enhanced coordinate retrieval with multiple fallbacks
         """
         try:
-            context = self.user_location_context.get(user_id)
+            # FIXED: Use existing attribute name
+            context = self.location_search_context.get(user_id)
             if not context:
                 logger.info(f"No location context found for user {user_id}")
+                return None
+
+            # Check if context is still valid (within 30 minutes) - KEEP EXISTING LOGIC
+            time_ago = time.time() - context.get("last_search_time", 0)
+            if time_ago > 1800:  # 30 minutes
+                logger.info(f"Location context expired for user {user_id} ({int(time_ago/60)} minutes old)")
+                del self.location_search_context[user_id]
                 return None
 
             # Validate and repair coordinates if needed
@@ -658,7 +667,7 @@ LOCATION CONTEXT: {location_context}
             if coordinates:
                 logger.info(f"   Coordinates: {coordinates[0]:.6f}, {coordinates[1]:.6f}")
             else:
-                logger.warning(f"   No valid coordinates available")
+                logger.warning("   No valid coordinates available")
 
             return context
 
@@ -666,26 +675,25 @@ LOCATION CONTEXT: {location_context}
             logger.error(f"❌ Error retrieving location context for user {user_id}: {e}")
             return None
 
-    # ADDITIONAL METHOD: Clear location context when coordinates become unreliable
-    def clear_location_context(self, user_id: int) -> None:
-        """Clear stored location context for a user"""
+    def clear_location_search_context(self, user_id: int) -> None:
+        """Clear stored location context for a user - KEEP EXISTING METHOD"""
         try:
-            if user_id in self.user_location_context:
-                del self.user_location_context[user_id]
+            if user_id in self.location_search_context:
+                del self.location_search_context[user_id]
                 logger.info(f"✅ Cleared location context for user {user_id}")
             else:
                 logger.info(f"No location context to clear for user {user_id}")
         except Exception as e:
             logger.error(f"❌ Error clearing location context for user {user_id}: {e}")
 
-    # DIAGNOSTIC METHOD: Debug coordinate storage
     def debug_coordinate_storage(self, user_id: int) -> Dict[str, Any]:
         """Debug coordinate storage for a user"""
         try:
-            context = self.user_location_context.get(user_id, {})
+            # FIXED: Use existing attribute name
+            context = self.location_search_context.get(user_id, {})
 
             debug_info = {
-                "has_context": user_id in self.user_location_context,
+                "has_context": user_id in self.location_search_context,
                 "context_keys": list(context.keys()),
                 "coordinates": context.get("coordinates"),
                 "lat": context.get("lat"),
@@ -694,7 +702,7 @@ LOCATION CONTEXT: {location_context}
                 "coordinate_string": context.get("coordinate_string"),
                 "coordinate_source": context.get("coordinate_source"),
                 "location_data_type": type(context.get("location_data")).__name__ if context.get("location_data") else None,
-                "timestamp": context.get("timestamp")
+                "last_search_time": context.get("last_search_time")
             }
 
             logger.info(f"🔍 COORDINATE STORAGE DEBUG for user {user_id}:")
@@ -706,25 +714,7 @@ LOCATION CONTEXT: {location_context}
         except Exception as e:
             logger.error(f"❌ Error in coordinate debug for user {user_id}: {e}")
             return {"error": str(e)}
-
-    def get_location_search_context(self, user_id: int) -> Optional[Dict[str, Any]]:
-        """Get stored location search context for Google Maps follow-up"""
-        context = self.location_search_context.get(user_id)
-        if context:
-            # Check if context is still valid (within 30 minutes)
-            time_ago = time.time() - context.get("last_search_time", 0)
-            if time_ago <= 1800:  # 30 minutes
-                return context
-            else:
-                # Context expired, remove it
-                del self.location_search_context[user_id]
-        return None
-
-    def clear_location_search_context(self, user_id: int):
-        """Clear location search context for a user"""
-        if user_id in self.location_search_context:
-            del self.location_search_context[user_id]
-
+    
     def _get_default_value(self, field: str) -> Any:
         """Get default values for missing fields"""
         defaults = {
