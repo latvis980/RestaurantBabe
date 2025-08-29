@@ -83,18 +83,37 @@ class LocationOrchestrator:
     ) -> Dict[str, Any]:
         """
         Process location query with dual flow architecture
+        FIXED: Geocode location_data BEFORE extracting coordinates
 
         Flow Logic:
-        1. Database search
-        2. Filter evaluation  
-        3. AI description editing
-        4. If < 2 relevant results → Enhanced verification flow (separate agents)
-        5. Format for Telegram
+        1. Geocode location if needed
+        2. Database search
+        3. Filter evaluation  
+        4. AI description editing
+        5. If < 2 relevant results → Enhanced verification flow (separate agents)
+        6. Format for Telegram
         """
         start_time = time.time()
 
         try:
-            # Extract coordinates
+            # STEP 0: Geocode location_data if coordinates are missing
+            if (location_data.latitude is None or location_data.longitude is None) and location_data.description:
+                logger.info(f"🌍 Geocoding location description: {location_data.description}")
+
+                try:
+                    geocoded_coords = LocationUtils.geocode_location(location_data.description)
+                    if geocoded_coords:
+                        location_data.latitude = geocoded_coords[0]
+                        location_data.longitude = geocoded_coords[1]
+                        logger.info(f"✅ Successfully geocoded: {geocoded_coords[0]:.4f}, {geocoded_coords[1]:.4f}")
+                    else:
+                        logger.error(f"❌ Failed to geocode location: {location_data.description}")
+                        return self._create_error_response(f"Could not find location: {location_data.description}")
+                except Exception as e:
+                    logger.error(f"❌ Geocoding error: {e}")
+                    return self._create_error_response(f"Error finding location: {location_data.description}")
+
+            # STEP 1: Extract coordinates (should work now)
             coordinates = self._extract_coordinates(location_data)
             if not coordinates:
                 return self._create_error_response("Could not extract valid coordinates from location data")
@@ -104,8 +123,8 @@ class LocationOrchestrator:
 
             logger.info(f"Processing location query: '{query}' at {location_desc}")
 
-            # Step 1: Database proximity search
-            logger.info(f"Step 1: Database search within {self.db_search_radius}km")
+            # Step 2: Database proximity search
+            logger.info(f"Step 2: Database search within {self.db_search_radius}km")
             db_restaurants = await self.database_service.search_by_proximity(
                 coordinates=(latitude, longitude),
                 radius_km=self.db_search_radius,
@@ -115,78 +134,85 @@ class LocationOrchestrator:
             if cancel_check_fn and cancel_check_fn():
                 return self._create_cancelled_response()
 
-            logger.info(f"Step 1: Found {len(db_restaurants)} restaurants in database")
+            logger.info(f"Step 2: Found {len(db_restaurants)} restaurants in database")
 
             if db_restaurants:
-                # Step 2: AI filter and evaluate relevance
-                logger.info("Step 2: AI filtering and evaluation")
-                filtered_restaurants = await self.filter_evaluator.filter_and_evaluate(
+                # Step 3: AI filter and evaluate relevance
+                logger.info(f"Step 3: AI filtering {len(db_restaurants)} database results")
+                filtered_restaurants = await self.filter_evaluator.filter_restaurants(
                     restaurants=db_restaurants,
                     query=query,
-                    coordinates=coordinates
+                    coordinates=(latitude, longitude)
                 )
 
                 if cancel_check_fn and cancel_check_fn():
                     return self._create_cancelled_response()
 
-                logger.info(f"Step 2: Filtered to {len(filtered_restaurants)} relevant restaurants")
+                logger.info(f"Step 3: {len(filtered_restaurants)} restaurants passed AI filtering")
 
-                if filtered_restaurants:
-                    # Step 3: AI description editing for database results
-                    logger.info("Step 3: AI description editing")
+                # Step 4: AI edit descriptions for database results
+                if filtered_restaurants and self.description_editor:
+                    logger.info(f"Step 4: AI editing descriptions for {len(filtered_restaurants)} results")
                     edited_restaurants = await self.description_editor.edit_restaurant_descriptions(
                         restaurants=filtered_restaurants,
                         query=query,
-                        cancel_check_fn=cancel_check_fn
+                        coordinates=(latitude, longitude)
                     )
 
                     if cancel_check_fn and cancel_check_fn():
                         return self._create_cancelled_response()
 
-                    logger.info(f"Step 3: Generated AI descriptions for {len(edited_restaurants)} restaurants")
+                    logger.info(f"Step 4: AI editing completed")
+                    filtered_restaurants = edited_restaurants
 
-                    # Check if we have sufficient results
-                    if len(edited_restaurants) >= self.min_db_matches:
-                        # Sufficient database results - use database flow
-                        logger.info(f"Sufficient database results ({len(edited_restaurants)}), using database flow")
+                # Step 5: Check if we have enough results
+                if len(filtered_restaurants) >= self.min_db_matches:
+                    # Format and return database results
+                    formatted_results = self.formatter.format_for_telegram(
+                        restaurants=filtered_restaurants,
+                        query=query,
+                        location_desc=location_desc,
+                        source="database"
+                    )
 
-                        # Format for Telegram using AI-edited descriptions
-                        formatted_results = self.description_editor.create_telegram_formatted_results(
-                            edited_restaurants=edited_restaurants,
-                            user_query=query,
-                            location_description=location_desc
-                        )
+                    processing_time = round(time.time() - start_time, 2)
+                    logger.info(f"✅ Database flow completed in {processing_time}s - {len(filtered_restaurants)} results")
 
-                        return {
-                            "success": True,
-                            "results": edited_restaurants,
-                            "source": "database_ai_enhanced", 
-                            "processing_time": time.time() - start_time,
-                            "restaurant_count": len(edited_restaurants),
-                            "coordinates": coordinates,
-                            "location_description": location_desc,
-                            "location_formatted_results": formatted_results.get("message", f"Found {len(edited_restaurants)} relevant restaurants!"),
-                            "ai_edited": True
-                        }
-                    else:
-                        # Insufficient database results - use enhanced flow
-                        logger.info(f"Insufficient database results ({len(edited_restaurants)} < {self.min_db_matches}), starting enhanced verification flow")
-                        return await self._enhanced_verification_flow(query, coordinates, location_desc, cancel_check_fn, start_time)
+                    return {
+                        "success": True,
+                        "results": filtered_restaurants,
+                        "location_formatted_results": formatted_results,
+                        "restaurant_count": len(filtered_restaurants),
+                        "source": "database",
+                        "processing_time": processing_time,
+                        "coordinates": (latitude, longitude)  # Include coordinates in response
+                    }
 
-                else:
-                    # No filtered results - use enhanced flow
-                    logger.info("No filtered database results - starting enhanced verification flow")
-                    return await self._enhanced_verification_flow(query, coordinates, location_desc, cancel_check_fn, start_time)
-            else:
-                # No database results - use enhanced flow
-                logger.info("No database results - starting enhanced verification flow")
-                return await self._enhanced_verification_flow(query, coordinates, location_desc, cancel_check_fn, start_time)
+            # Step 6: Enhanced verification flow (< 2 database results)
+            logger.info(f"Step 6: Triggering enhanced verification flow (found {len(db_restaurants if db_restaurants else [])} database results)")
+
+            enhanced_result = await self._enhanced_verification_flow(
+                query=query,
+                coordinates=(latitude, longitude),
+                location_desc=location_desc,
+                cancel_check_fn=cancel_check_fn
+            )
+
+            # Add coordinates to the response
+            if enhanced_result.get("success"):
+                enhanced_result["coordinates"] = (latitude, longitude)
+
+            processing_time = round(time.time() - start_time, 2)
+            logger.info(f"✅ Enhanced flow completed in {processing_time}s")
+
+            if "processing_time" not in enhanced_result:
+                enhanced_result["processing_time"] = processing_time
+
+            return enhanced_result
 
         except Exception as e:
-            logger.error(f"Error in location query processing: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return self._create_error_response(f"Search failed: {str(e)}")
+            logger.error(f"❌ Error in process_location_query: {e}")
+            return self._create_error_response(f"Search error: {str(e)}")
 
     # ============ ENHANCED VERIFICATION FLOW ============
 
