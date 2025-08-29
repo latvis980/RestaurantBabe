@@ -207,7 +207,7 @@ def process_text_message(message_text: str,
         if conversation_handler and conversation_handler.get_user_state(user_id) == ConversationState.AWAITING_LOCATION_CLARIFICATION:
             # Handle clarification response directly
             result = conversation_handler.handle_location_clarification(user_id, message_text)
-            execute_action(result, user_id, chat_id)
+            execute_action(result.get("action", "CLARIFY"), result.get("action_data", {}), user_id, chat_id)
             return
 
         # Send typing indicator
@@ -221,7 +221,7 @@ def process_text_message(message_text: str,
             is_voice=is_voice)
 
         # Step 3: Execute the determined action
-        execute_action(result, user_id, chat_id)
+        execute_action(result.get("action", "CLARIFY"), result.get("action_data", {}), user_id, chat_id)
 
     except Exception as e:
         logger.error(f"Error processing message for user {user_id}: {e}")
@@ -302,6 +302,7 @@ def execute_action(action: str, action_data: Dict[str, Any], user_id: int, chat_
                             logger.warning(f"❌ Method 1 failed - Invalid coordinates in location_data: lat={location_data.latitude}, lng={location_data.longitude} - {e}")
 
                 # Method 2: Try to get from stored coordinates in context (BACKUP)
+                stored_coords = None  # Initialize here
                 if not coordinates and 'coordinates' in location_context:
                     try:
                         stored_coords = location_context['coordinates']
@@ -312,13 +313,10 @@ def execute_action(action: str, action_data: Dict[str, Any], user_id: int, chat_
                     except (ValueError, TypeError, IndexError) as e:
                         logger.warning(f"❌ Method 2 failed - Invalid coordinates in context: {stored_coords} - {e}")
 
-                # REMOVED Method 3: DO NOT re-geocode the location description
-                # This was causing Amsterdam results for Lisbon queries!
-
                 # CRITICAL: Final validation without geocoding fallback
                 if not coordinates:
-                    logger.error(f"❌ COORDINATE EXTRACTION FAILED - Cannot proceed with Google Maps search")
-                    logger.error(f"📍 Debug info:")
+                    logger.error("❌ COORDINATE EXTRACTION FAILED - Cannot proceed with Google Maps search")
+                    logger.error("📍 Debug info:")
                     logger.error(f"   Original query: {original_query}")
                     logger.error(f"   Location description: {location_description}")
                     logger.error(f"   Location data: {location_data}")
