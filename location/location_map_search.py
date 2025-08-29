@@ -216,8 +216,15 @@ class LocationMapSearchAgent:
             return []
 
     async def _analyze_query_for_search_strategy(self, query: str) -> Dict[str, Any]:
-        """AI-powered query analysis using Google's official place types"""
+        """AI-powered query analysis using Google's official place types with ENHANCED LOGGING"""
+        strategy_source = "unknown"
+
         try:
+            logger.info(f"🤖 AI QUERY ANALYSIS STARTING")
+            logger.info(f"   Query: '{query}'")
+            logger.info(f"   OpenAI client available: {self.openai_client is not None}")
+            logger.info(f"   OpenAI model: {self.openai_model}")
+
             # Google's official place types for food and drink establishments
             google_place_types = [
                 "bar", "wine_bar", "restaurant", "cafe", "coffee_shop", "bakery",
@@ -231,28 +238,31 @@ class LocationMapSearchAgent:
 
             prompt = f"""Analyze this query and determine the optimal Google Maps search strategy.
 
-USER QUERY: "{query}"
+    USER QUERY: "{query}"
 
-AVAILABLE GOOGLE PLACE TYPES: {google_place_types}
+    AVAILABLE GOOGLE PLACE TYPES: {google_place_types}
 
-Return JSON only with this exact structure:
-{{
-  "primary_intent": "brief description of what user wants",
-  "place_types": ["exact_google_type1", "exact_google_type2"], 
-  "search_keywords": ["keyword1", "keyword2"],
-  "approach": "both",
-  "use_text_search": true,
-  "use_places_api": true,
-  "confidence": 0.9
-}}
+    Return JSON only with this exact structure:
+    {{
+    "primary_intent": "brief description of what user wants",
+    "place_types": ["exact_google_type1", "exact_google_type2"], 
+    "search_keywords": ["keyword1", "keyword2"],
+    "approach": "both",
+    "use_text_search": true,
+    "use_places_api": true,
+    "confidence": 0.9
+    }}
 
-Rules:
-- Only use place_types from the provided list
-- Limit to max 3 place_types and 3 search_keywords
-- Set approach to "both" unless query is very specific
-- Higher confidence (0.8+) for clear queries like "cocktail bars"
-- Lower confidence (0.5-0.7) for vague queries like "good food"
-"""
+    Rules:
+    - Only use place_types from the provided list
+    - Limit to max 3 place_types and 3 search_keywords
+    - Set approach to "both" unless query is very specific
+    - Higher confidence (0.8+) for clear queries like "cocktail bars"
+    - Lower confidence (0.5-0.7) for vague queries like "good food"
+    """
+
+            logger.info(f"🤖 Sending request to OpenAI...")
+            logger.info(f"   Prompt length: {len(prompt)} characters")
 
             response = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -265,30 +275,71 @@ Rules:
                 timeout=15.0
             )
 
+            logger.info(f"🤖 OpenAI response received")
+            logger.info(f"   Response object: {response is not None}")
+            logger.info(f"   Has choices: {hasattr(response, 'choices') and len(response.choices) > 0 if response else False}")
+
             if not response or not response.choices:
                 raise Exception("Empty AI response")
 
             analysis_text = response.choices[0].message.content
+            logger.info(f"🤖 Raw AI response content:")
+            logger.info(f"   Length: {len(analysis_text) if analysis_text else 0} characters")
+            logger.info(f"   Content: {analysis_text}")
+
             if not analysis_text:
                 raise Exception("Empty content from AI")
 
             analysis_text = analysis_text.strip()
             if analysis_text.startswith('```json'):
+                logger.info(f"🤖 Removing JSON markdown formatting")
                 analysis_text = analysis_text.replace('```json', '').replace('```', '').strip()
+                logger.info(f"   Cleaned content: {analysis_text}")
 
-            return json.loads(analysis_text)
+            logger.info(f"🤖 Parsing JSON response...")
+            parsed_strategy = json.loads(analysis_text)
+            strategy_source = "openai_success"
 
+            logger.info(f"✅ AI ANALYSIS SUCCESSFUL")
+            logger.info(f"   Strategy: {parsed_strategy}")
+
+            return parsed_strategy
+
+        except asyncio.TimeoutError as e:
+            logger.error(f"❌ AI QUERY ANALYSIS TIMEOUT: {e}")
+            strategy_source = "timeout_fallback"
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ AI JSON PARSING ERROR: {e}")
+            logger.error(f"   Raw response: {analysis_text if 'analysis_text' in locals() else 'N/A'}")
+            strategy_source = "json_error_fallback"
         except Exception as e:
-            logger.error(f"AI query analysis failed: {e}")
-            # Intelligent fallback based on query content
-            return self._create_fallback_strategy(query)
+            logger.error(f"❌ AI QUERY ANALYSIS FAILED: {e}")
+            logger.error(f"   Error type: {type(e).__name__}")
+            strategy_source = "general_error_fallback"
+
+        # Fallback strategy
+        logger.warning(f"🔄 FALLING BACK TO RULE-BASED STRATEGY")
+        logger.warning(f"   Fallback reason: {strategy_source}")
+
+        fallback_strategy = self._create_fallback_strategy(query)
+        fallback_strategy["strategy_source"] = strategy_source  # Add debug info
+
+        logger.info(f"🔄 FALLBACK STRATEGY CREATED:")
+        logger.info(f"   Strategy: {fallback_strategy}")
+
+        return fallback_strategy
 
     def _create_fallback_strategy(self, query: str) -> Dict[str, Any]:
-        """Create fallback search strategy when AI analysis fails"""
+        """Create fallback search strategy when AI analysis fails with ENHANCED LOGGING"""
         query_lower = query.lower()
+
+        logger.info(f"🔄 CREATING FALLBACK STRATEGY")
+        logger.info(f"   Original query: '{query}'")
+        logger.info(f"   Lowercase query: '{query_lower}'")
 
         # Cocktail bars
         if any(term in query_lower for term in ['cocktail', 'bar', 'drinks']):
+            logger.info(f"🔄 Matched pattern: COCKTAIL BARS")
             return {
                 'primary_intent': 'cocktail bars and drinking establishments',
                 'place_types': ['bar', 'wine_bar'],
@@ -296,11 +347,13 @@ Rules:
                 'approach': 'both',
                 'use_text_search': True,
                 'use_places_api': True,
-                'confidence': 0.7
+                'confidence': 0.7,
+                'fallback_pattern': 'cocktail_bars'
             }
 
         # Coffee shops
         elif any(term in query_lower for term in ['coffee', 'cafe', 'espresso']):
+            logger.info(f"🔄 Matched pattern: COFFEE SHOPS")
             return {
                 'primary_intent': 'coffee shops and cafes',
                 'place_types': ['cafe', 'coffee_shop'],
@@ -308,11 +361,13 @@ Rules:
                 'approach': 'both',
                 'use_text_search': True,
                 'use_places_api': True,
-                'confidence': 0.8
+                'confidence': 0.8,
+                'fallback_pattern': 'coffee_shops'
             }
 
         # Sushi
         elif any(term in query_lower for term in ['sushi', 'japanese']):
+            logger.info(f"🔄 Matched pattern: SUSHI/JAPANESE")
             return {
                 'primary_intent': 'Japanese and sushi restaurants',
                 'place_types': ['sushi_restaurant', 'japanese_restaurant'],
@@ -320,11 +375,13 @@ Rules:
                 'approach': 'both',
                 'use_text_search': True,
                 'use_places_api': True,
-                'confidence': 0.8
+                'confidence': 0.8,
+                'fallback_pattern': 'sushi_japanese'
             }
 
         # Default restaurant search
         else:
+            logger.info(f"🔄 Using DEFAULT RESTAURANT pattern")
             return {
                 'primary_intent': 'general restaurants',
                 'place_types': ['restaurant'],
@@ -332,7 +389,8 @@ Rules:
                 'approach': 'both', 
                 'use_text_search': True,
                 'use_places_api': True,
-                'confidence': 0.5
+                'confidence': 0.5,
+                'fallback_pattern': 'default_restaurant'
             }
 
     async def _execute_ai_guided_search(
@@ -342,42 +400,94 @@ Rules:
         search_strategy: Dict[str, Any],
         cancel_check_fn=None
     ) -> List[VenueSearchResult]:
-        """Execute search based on AI-determined strategy"""
+        """Execute search based on AI-determined strategy with ENHANCED COORDINATE LOGGING"""
         try:
             latitude, longitude = coordinates
+
+            # CRITICAL: Log coordinates and strategy
+            logger.info(f"🎯 EXECUTING AI-GUIDED SEARCH")
+            logger.info(f"   Query: '{query}'")
+            logger.info(f"   Coordinates: {latitude:.6f}, {longitude:.6f}")
+            logger.info(f"   Strategy source: {search_strategy.get('strategy_source', 'unknown')}")
+            logger.info(f"   Strategy: {search_strategy}")
+
             venues = []
 
             # Execute searches based on AI strategy
             if search_strategy['use_text_search'] and self.gmaps:
+                logger.info(f"🔍 EXECUTING TEXT SEARCH")
+                logger.info(f"   Keywords: {search_strategy['search_keywords']}")
+                logger.info(f"   Coordinates for text search: {latitude:.6f}, {longitude:.6f}")
+
                 text_venues = await self._text_search_venues(
                     latitude, longitude, search_strategy['search_keywords']
                 )
                 venues.extend(text_venues)
 
+                logger.info(f"🔍 TEXT SEARCH COMPLETED: {len(text_venues)} venues")
+
             if cancel_check_fn and cancel_check_fn():
                 return []
 
             if search_strategy['use_places_api']:
+                logger.info(f"🔍 EXECUTING PLACES API SEARCH")
+                logger.info(f"   Place types: {search_strategy['place_types']}")
+                logger.info(f"   Coordinates for Places API: {latitude:.6f}, {longitude:.6f}")
+
                 places_venues = await self._places_api_search_venues(
                     latitude, longitude, search_strategy['place_types']
                 )
                 venues.extend(places_venues)
 
+                logger.info(f"🔍 PLACES API SEARCH COMPLETED: {len(places_venues)} venues")
+
             # Remove duplicates by place_id
             unique_venues = {}
+            duplicate_count = 0
+
             for venue in venues:
                 if venue.place_id not in unique_venues:
                     unique_venues[venue.place_id] = venue
+                else:
+                    duplicate_count += 1
 
             final_venues = list(unique_venues.values())
 
+            logger.info(f"🔍 VENUE DEDUPLICATION:")
+            logger.info(f"   Total venues found: {len(venues)}")
+            logger.info(f"   Duplicates removed: {duplicate_count}")
+            logger.info(f"   Unique venues: {len(final_venues)}")
+
             # Sort by rating and distance
             final_venues.sort(key=lambda x: (x.rating or 0, -x.distance_km), reverse=True)
+            final_venues = final_venues[:self.max_venues_to_search]
 
-            return final_venues[:self.max_venues_to_search]
+            # CRITICAL: Log final venue locations to detect coordinate issues
+            logger.info(f"🎯 FINAL VENUE ANALYSIS:")
+            logger.info(f"   Search center: {latitude:.6f}, {longitude:.6f}")
+            logger.info(f"   Final venue count: {len(final_venues)}")
+
+            for i, venue in enumerate(final_venues):
+                distance_km = LocationUtils.calculate_distance(
+                    (latitude, longitude), (venue.latitude, venue.longitude)
+                )
+                logger.info(f"   Venue {i+1}: {venue.name}")
+                logger.info(f"      Address: {venue.address}")
+                logger.info(f"      Coords: {venue.latitude:.6f}, {venue.longitude:.6f}")
+                logger.info(f"      Distance: {distance_km:.2f}km")
+                logger.info(f"      Source: {venue.search_source}")
+
+                # ALERT: Flag suspicious distances
+                if distance_km > 100:
+                    logger.error(f"🚨 SUSPICIOUS DISTANCE: Venue {i+1} is {distance_km:.1f}km from search center!")
+                    logger.error(f"🚨 This suggests wrong coordinates are being used in search!")
+
+            return final_venues
 
         except Exception as e:
-            logger.error(f"Error in AI-guided search execution: {e}")
+            logger.error(f"❌ Error in AI-guided search execution: {e}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
             return []
 
     async def _text_search_venues(
