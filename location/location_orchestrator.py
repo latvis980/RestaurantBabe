@@ -209,12 +209,14 @@ class LocationOrchestrator:
                     return {
                         "success": True,
                         "results": filtered_restaurants,
-                        "location_formatted_results": formatted_message,  # Use formatted_message here
+                        "location_formatted_results": formatted_message,
                         "restaurant_count": len(filtered_restaurants),
-                        "source": "database",
+                        "source": "database_with_choice",  # This triggers the choice flow in telegram_bot.py
+                        "offer_more_results": True,  # Enables the "Want more options?" message
                         "processing_time": processing_time,
                         "coordinates": (latitude, longitude)
                     }
+
 
             # Step 6: Enhanced verification flow (< 2 database results)
             logger.info(f"Step 6: Triggering enhanced verification flow (found {len(db_restaurants if db_restaurants else [])} database results)")
