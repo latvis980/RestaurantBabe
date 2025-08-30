@@ -392,8 +392,7 @@ INSTRUCTIONS:
 3. If media coverage exists, subtly incorporate the professional recognition
 4. Focus on specific details rather than generic praise
 5. Make it relevant to the user's query: "{user_query}"
-6. Write 2-3 sentences that would make someone want to visit
-7. NO character limits - write a complete, engaging description
+6. Write 2-3 sentences that would make someone want to visit.
 
 Write ONLY the description, no extra formatting or quotes."""
 
