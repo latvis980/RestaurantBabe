@@ -316,8 +316,7 @@ class LocationOrchestrator:
             # Step 4: Format final results for Telegram
             logger.info("Step 4: Formatting results for display")
             final_formatted = self.ai_editor.format_final_results(
-                descriptions=restaurant_descriptions,
-                user_coordinates=coordinates
+                descriptions=restaurant_descriptions
             )
 
             processing_time = time.time() - start_time
