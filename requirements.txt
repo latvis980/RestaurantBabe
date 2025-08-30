@@ -17,7 +17,7 @@ geopy>=2.4.1
 requests>=2.31.0
 httpx[http2]>=0.24.0
 readability-lxml>=0.8.1
-playwright==1.54.0
+playwright==1.55.0  # FIXED: Updated to match Docker image
 
 # Telegram bot
 pyTelegramBotAPI>=4.20.0

@@ -1,6 +1,6 @@
 # ───── Base image ────────────────────────────────────────────
-# Contains Playwright + browsers pre‑installed on Ubuntu 24.04 (glibc 2.38)
-FROM mcr.microsoft.com/playwright/python:v1.54.0-noble
+# FIXED: Updated to match Playwright 1.55.0
+FROM mcr.microsoft.com/playwright/python:v1.55.0-noble
 
 # ───── App setup ─────────────────────────────────────────────
 WORKDIR /app

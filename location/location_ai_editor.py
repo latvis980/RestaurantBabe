@@ -457,9 +457,15 @@ Focus on quality over quantity. Select restaurants that truly stand out as speci
                 # Restaurant name with HTML bold formatting
                 restaurant_line = f"<b>{i}. {self._clean_html(desc.name)}{media_indicator}{score_indicator}</b>\n"
 
-                # Address with Google Maps link (following app pattern)
+                # Address with Google Maps link (2025 universal format)
                 if desc.place_id:
-                    google_url = f"https://www.google.com/maps/place/?q=place_id:{desc.place_id}"
+                    from urllib.parse import quote
+                    # Use restaurant name for better mobile compatibility
+                    if desc.name:
+                        encoded_name = quote(desc.name.strip())
+                        google_url = f"https://www.google.com/maps/search/?api=1&query={encoded_name}&query_place_id={desc.place_id}"
+                    else:
+                        google_url = f"https://www.google.com/maps/search/?api=1&query=restaurant&query_place_id={desc.place_id}"
                     restaurant_line += f'📍 <a href="{google_url}">{self._clean_html(desc.address)}</a>'
                 else:
                     restaurant_line += f"📍 {self._clean_html(desc.address)}"
