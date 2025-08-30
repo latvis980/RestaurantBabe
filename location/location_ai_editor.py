@@ -258,10 +258,9 @@ RESTAURANT DATA:
 SELECTION CRITERIA:
 Select restaurants that show strong indicators of being atmospheric, special experiences:
 
-1. EMOTIONAL REVIEWS: Look for reviews with emotional language, detailed experiences
+1. EMOTIONAL REVIEWS: Look for reviews that outline how special this place is
 2. ATMOSPHERIC DETAILS: Reviews mentioning specific ambiance, decor, mood, setting details
 3. GOOD CONCEPT: mantions of interesting concepts, unique experiences
-4. PASSIONATE DESCRIPTIONS: Reviewers who clearly care about the place and write detailed, thoughtful reviews
 5. MEDIA COVERAGE BONUS: Professional coverage adds credibility
 
 AVOID restaurants with:
@@ -376,7 +375,7 @@ Focus on quality over quantity. Select restaurants that truly stand out as speci
                     media_context += f"- Featured in {source_name} ({source_type})\n"
 
             # AI description prompt - fully context-driven
-            description_prompt = f"""Create a professional restaurant description for "{venue.name}".
+            description_prompt = f"""Create a restaurant description for "{venue.name}".
 
 USER'S QUERY: "{user_query}"
 RESTAURANT RATING: {venue.rating}★ ({venue.user_ratings_total} reviews)
@@ -387,12 +386,22 @@ DISTANCE: {venue.distance_km:.1f}km
 {media_context}
 
 INSTRUCTIONS:
-1. Write a compelling, professional description that captures what makes this restaurant special
+1. Write a very brief description that captures what makes this restaurant special
 2. Use the review context to identify authentic details about food, atmosphere, and experience
 3. If media coverage exists, subtly incorporate the professional recognition
 4. Focus on specific details rather than generic praise
 5. Make it relevant to the user's query: "{user_query}"
-6. Write 2-3 sentences that would make someone want to visit.
+
+**Examples of descriptions:**
+
+Locals' favourite with a great selection of natural wines from Europe and small plates to go with them. Just next to Estrela park.
+
+The owner, Joao, changes the menu every day. GQ magazine wrote some good things about this place. 
+
+Cozy, whimsical, a true hidden jem in Bairro Alto. Crafted cocktails like "Bairro negroni" and "Mango smash". 
+
+Possibly best sourdough on this side of town and Sunday brunches with lush pastries and egg dishes. Featured in The Guardian. 
+
 
 Write ONLY the description, no extra formatting or quotes."""
 

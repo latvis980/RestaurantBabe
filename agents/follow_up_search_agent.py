@@ -7,6 +7,7 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 from utils.debug_utils import dump_chain_state, log_function_call
 import requests
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -339,10 +340,12 @@ class FollowUpSearchAgent:
                 updated_restaurant["google_maps_url"] = cid_url
             elif google_url:                         # fall back to whatever we got
                 updated_restaurant["google_maps_url"] = google_url
-            elif place_id:                           # ultimate fallback
-                updated_restaurant["google_maps_url"] = (
-                    f"https://www.google.com/maps/place/?q=place_id:{place_id}"
-                )
+            elif place_id:                           # ultimate fallback - use 2025 format
+                if restaurant_name and restaurant_name.strip():
+                    encoded_name = quote(restaurant_name.strip())
+                    updated_restaurant["google_maps_url"] = f"https://www.google.com/maps/search/?api=1&query={encoded_name}&query_place_id={place_id}"
+                else:
+                    updated_restaurant["google_maps_url"] = f"https://www.google.com/maps/search/?api=1&query=restaurant&query_place_id={place_id}"
 
             if address_component:
                 updated_restaurant["address_component"] = address_component
@@ -504,11 +507,9 @@ class FollowUpSearchAgent:
             logger.error(f"❌ Error auto-deleting closed restaurant {restaurant_name}: {e}")
             return False
 
-    def _search_google_maps(self, restaurant_name: str, city: str, restaurant_data: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
-
+    def _search_google_maps(self, restaurant_name: str, city: str, restaurant_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """
         Search Google Maps for restaurant info including address, rating, business status, and address component.
-
         NEW: Now uses intelligent venue type detection from restaurant data and API key rotation
         """
         try:
@@ -555,13 +556,22 @@ class FollowUpSearchAgent:
             business_status = result_data.get("business_status")
             address_component = result_data.get("address_component", [])
 
+            # Generate 2025 universal format URL
+            if restaurant_name and restaurant_name.strip():
+                # Use restaurant name with proper URL encoding
+                encoded_name = quote(restaurant_name.strip())
+                google_maps_url = f"https://www.google.com/maps/search/?api=1&query={encoded_name}&query_place_id={place_id}"
+            else:
+                # Fallback if no restaurant name
+                google_maps_url = f"https://www.google.com/maps/search/?api=1&query=restaurant&query_place_id={place_id}"
+
             return {
                 "formatted_address": formatted_address,
                 "rating": rating,
                 "user_ratings_total": user_ratings_total,
                 "business_status": business_status,
                 "place_id": place_id,
-                "url": result_data.get("url", f"https://www.google.com/maps/place/?q=place_id:{place_id}"),
+                "url": google_maps_url,
                 "geometry": result_data.get("geometry", {}),
                 "address_component": address_component
             }

@@ -11,6 +11,7 @@ from html import escape
 import urllib.parse
 import requests
 from urllib.parse import urlparse
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -78,17 +79,21 @@ class TelegramFormatter:
 
         return url or "#"
 
-    def _format_address_link(self, address, place_id):
-        """Create Google-Maps link with canonical URL."""
+    def _format_address_with_link(self, address: str, place_id: str, restaurant_name: str = "") -> str:
+        """Format address with universal Google Maps link"""
         if not address:
             return ""
 
         clean_address = self._extract_street(address)
 
-        if place_id:
-            google_url = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
+        if place_id and restaurant_name:
+            # Use 2025 universal format
+            encoded_name = quote(restaurant_name.strip(), safe='')
+            google_url = f"https://www.google.com/maps/search/?api=1&query={encoded_name}&query_place_id={place_id}"
+        elif place_id:
+            google_url = f"https://www.google.com/maps/search/?api=1&query=restaurant&query_place_id={place_id}"
         else:
-            google_url = self._canonical_google_url("")
+            google_url = "#"
 
         return f'📍 <a href="{google_url}">{clean_address}</a>\n'
 

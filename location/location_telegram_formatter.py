@@ -11,6 +11,7 @@ import re
 import requests
 from typing import Dict, List, Any, Optional
 from html import escape
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,7 @@ class LocationTelegramFormatter:
             message_parts = []
 
             # Header indicating results are from external search with verification
-            header = f"🔍 <b>Here's what I found in the area:</b>\n\n"
+            header = "🔍 <b>Here's what I found in the area:</b>\n\n"
 
             # Format each venue
             for i, venue in enumerate(venues[:8], 1):  # Limit to 8 results
@@ -181,8 +182,7 @@ class LocationTelegramFormatter:
     def _format_verified_venue(self, venue: Dict[str, Any], index: int) -> str:
         """
         Format a single verified venue from Google Maps with media verification
-
-        UPDATED: Handles both VenueResult objects and verified venue dicts
+        UPDATED: Uses 2025 universal format for address links
         """
         try:
             # Handle both VenueResult objects and dictionaries
@@ -196,7 +196,7 @@ class LocationTelegramFormatter:
                 description = getattr(venue, 'description', '')
                 sources = getattr(venue, 'sources', [])
                 media_verified = getattr(venue, 'media_verified', False)
-                google_maps_url = venue.google_maps_url
+                google_maps_url = getattr(venue, 'google_maps_url', '')
             else:
                 # Dictionary (verified venue)
                 name = venue.get('name', 'Unknown Restaurant')
@@ -212,10 +212,10 @@ class LocationTelegramFormatter:
             # Restaurant name with index
             formatted_name = f"<b>{index}. {self._clean_html(name)}</b>\n"
 
-            # Address with canonical Google Maps link (UPDATED)
-            canonical_url = self._get_canonical_google_maps_url(place_id, google_maps_url)
+            # Address with 2025 universal Google Maps link
+            universal_url = self._get_canonical_google_maps_url(place_id, name, google_maps_url)
             clean_address = self._extract_street_address(address)
-            address_line = f'📍 <a href="{escape(canonical_url, quote=True)}">{self._clean_html(clean_address)}</a>\n'
+            address_line = f'📍 <a href="{escape(universal_url, quote=True)}">{self._clean_html(clean_address)}</a>\n'
 
             # Distance from user
             distance_line = ""
@@ -253,39 +253,38 @@ class LocationTelegramFormatter:
             venue_name = venue.get('name', 'Unknown Restaurant') if isinstance(venue, dict) else getattr(venue, 'name', 'Unknown Restaurant')
             return f"<b>{index}. {venue_name}</b>\nInformation unavailable\n"
 
-    def _get_canonical_google_maps_url(self, place_id: str, existing_url: str = "") -> str:
+    def _get_canonical_google_maps_url(self, place_id: str, restaurant_name: str = "", existing_url: str = "") -> str:
         """
-        Get canonical Google Maps URL using place ID or CID (COPIED from location formatter)
+        Get universal Google Maps URL that works on both desktop and mobile (2025 format)
+        Uses Maps URLs with query and query_place_id parameters for best compatibility
         """
         try:
-            # Check for existing canonical URL with CID
-            if existing_url:
-                # Check if already canonical
-                if "cid=" in existing_url:
-                    return existing_url
+            from urllib.parse import quote
 
-                # Try to extract CID from existing URL
-                cid_match = re.search(r"[?&]cid=(\d+)", existing_url)
-                if cid_match:
-                    return f"https://maps.google.com/?cid={cid_match.group(1)}"
-
-            # Use place_id if available
-            if place_id:
-                return f"https://www.google.com/maps/place/?q=place_id:{place_id}"
-
-            # Fallback to existing URL or generic
-            return existing_url or "#"
-
+            # Use the 2025 recommended universal format
+            if place_id and restaurant_name:
+                # Primary recommended format with restaurant name
+                encoded_name = quote(restaurant_name.strip(), safe='')
+                return f"https://www.google.com/maps/search/?api=1&query={encoded_name}&query_place_id={place_id}"
+            elif place_id:
+                # Fallback with generic query
+                return f"https://www.google.com/maps/search/?api=1&query=restaurant&query_place_id={place_id}"
+            elif existing_url:
+                # Use existing URL if no place_id available
+                return existing_url
+            else:
+                return "#"
         except Exception:
-            return "#"
+            return existing_url or "#"
 
     def _format_address_link(self, restaurant: Dict[str, Any]) -> str:
         """
-        Format address with Google Maps link using canonical Place ID method
+        Format address with Google Maps link using 2025 universal format
         """
         try:
             address = restaurant.get('address', '').strip()
             place_id = restaurant.get('place_id') or restaurant.get('google_place_id')
+            restaurant_name = restaurant.get('name', '').strip()
 
             if not address or address.lower() in ['unknown', 'not available', '']:
                 address = "Address available on Google Maps"
@@ -294,8 +293,12 @@ class LocationTelegramFormatter:
             street_address = self._extract_street_address(address)
             clean_street = self._clean_html(street_address)
 
-            # Get canonical Google Maps URL
-            google_url = self._get_canonical_google_maps_url(place_id, restaurant.get('google_maps_url', ''))
+            # Get universal Google Maps URL (2025 format)
+            google_url = self._get_canonical_google_maps_url(
+                place_id, 
+                restaurant_name, 
+                restaurant.get('google_maps_url', '')
+            )
 
             return f'📍 <a href="{escape(google_url, quote=True)}">{clean_street}</a>\n'
 
