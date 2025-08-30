@@ -374,43 +374,51 @@ Focus on quality over quantity. Select restaurants that truly stand out as speci
                     source_type = source.get('source_type', 'media')
                     media_context += f"- Featured in {source_name} ({source_type})\n"
 
-            # AI description prompt - fully context-driven
-            description_prompt = f"""Create a restaurant description for "{venue.name}".
+            # IMPROVED AI description prompt with better formatting
+            description_prompt = f"""You are a rpofessional ffod journalist writing  SHORT restaurant description for "{venue.name}".
 
-USER'S QUERY: "{user_query}"
-RESTAURANT RATING: {venue.rating}★ ({venue.user_ratings_total} reviews)
-DISTANCE: {venue.distance_km:.1f}km
+    RESTAURANT INFO:
+    - User's Query: "{user_query}"
+    - Rating: {venue.rating}★ ({venue.user_ratings_total} reviews)
+    - Distance: {venue.distance_km:.1f}km
 
-{review_context}
+    {review_context}
 
-{media_context}
+    {media_context}
 
-INSTRUCTIONS:
-1. Write a very brief description that captures what makes this restaurant special
-2. Use the review context to identify authentic details about food, atmosphere, and experience
-3. If media coverage exists, subtly incorporate the professional recognition
-4. Focus on specific details rather than generic praise
-5. Make it relevant to the user's query: "{user_query}"
+    REQUIRED FORMAT - Study these examples carefully:
 
-**Examples of descriptions:**
+    EXAMPLE 1: "Locals' favourite with a great selection of natural wines from Europe and small plates to go with them. Just next to Estrela park."
 
-Locals' favourite with a great selection of natural wines from Europe and small plates to go with them. Just next to Estrela park.
+    EXAMPLE 2: "The owner, Joao, changes the menu every day. GQ magazine wrote some good things about this place."
 
-The owner, Joao, changes the menu every day. GQ magazine wrote some good things about this place. 
+    EXAMPLE 3: "Cozy, whimsical, a true hidden gem in Bairro Alto. Crafted cocktails like "Bairro negroni" and "Mango smash"."
 
-Cozy, whimsical, a true hidden jem in Bairro Alto. Crafted cocktails like "Bairro negroni" and "Mango smash". 
+    EXAMPLE 4: "Possibly best sourdough on this side of town and Sunday brunches with lush pastries and egg dishes. Featured in The Guardian."
 
-Possibly best sourdough on this side of town and Sunday brunches with lush pastries and egg dishes. Featured in The Guardian. 
+    WRITING RULES:
+    ✅ Write 1-2 complete sentences (similar length to examples above)
+    ✅ Use specific details from reviews (food, atmosphere, unique features)
+    ✅ Mention media coverage naturally if it exists (like "GQ magazine" or "Featured in The Guardian")
+    ✅ Make it relevant to the user's query: "{user_query}"
+    ✅ Use conversational, local insider tone
+    ✅ Include ONE specific detail that makes this place special
+    ✅ ALWAYS end with complete sentences - never cut off mid-sentence
 
+    ❌ Don't use generic phrases like "quality restaurant" or "carefully prepared"
+    ❌ Don't write more than 2 sentences
+    ❌ Don't use formal restaurant review language
+    ❌ Don't use quotes or formatting
+    ❌ Never end abruptly or mid-thought
 
-Write ONLY the description, no extra formatting or quotes."""
+    Write ONLY the description - no extra text, quotes, or formatting:"""
 
             # Generate description
             response = await self.openai_client.chat.completions.create(
                 model=self.openai_model,
                 messages=[{"role": "user", "content": description_prompt}],
                 temperature=self.description_temperature,
-                max_tokens=1024  # Increased for fuller descriptions
+                max_tokens=800  # Increased for fuller descriptions
             )
 
             description = response.choices[0].message.content.strip()
