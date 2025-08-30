@@ -71,7 +71,7 @@ class VenueSearchResult:
 
 class LocationMapSearchAgent:
     """
-    Google Maps/Places search agent with ALL TYPE ERRORS FIXED
+    Google Maps/Places search agent
 
     Proper type guards and None handling for all imports and client operations.
     """
@@ -167,15 +167,15 @@ class LocationMapSearchAgent:
             "catering_service"
         ]
 
-        logger.info(f"✅ LocationMapSearchAgent initialized:")
+        logger.info("✅ LocationMapSearchAgent initialized:")
         logger.info(f"   - Rating threshold: {self.rating_threshold}")
         logger.info(f"   - Search radius: {self.search_radius_km}km") 
         logger.info(f"   - Has Places API v1: {self.places_client is not None}")
         logger.info(f"   - Has GoogleMaps fallback: {self.gmaps is not None}")
 
     def _initialize_clients(self):
-        """Initialize Google Maps clients with FIXED type handling"""
-        # GoogleMaps library (always reliable)
+        """Initialize Google Maps clients with FIXED credential rotation support"""
+        # GoogleMaps library (always reliable) - uses regular API key
         api_key = getattr(self.config, 'GOOGLE_MAPS_API_KEY', None)
         if api_key:
             try:
@@ -184,53 +184,154 @@ class LocationMapSearchAgent:
             except Exception as e:
                 logger.error(f"❌ Failed to initialize GoogleMaps client: {e}")
 
-        # Places API v1 client (only if imports are available) - FIXED: type guards
-        if HAS_PLACES_API and service_account is not None and places_v1 is not None:
+        # NEW: Add secondary GoogleMaps client for rotation
+        api_key_2 = getattr(self.config, 'GOOGLE_MAPS_API_KEY2', None)
+        if api_key_2:
             try:
-                # FIXED: Check file path exists
-                creds_path = getattr(self.config, 'GOOGLE_APPLICATION_CREDENTIALS', None)
-                if creds_path and os.path.exists(creds_path):
-                    credentials = service_account.Credentials.from_service_account_file(
-                        creds_path,
-                        scopes=['https://www.googleapis.com/auth/cloud-platform']
-                    )
-
-                    # FIXED: Use correct client initialization with type guard
-                    self.places_client = places_v1.PlacesClient(credentials=credentials)
-                    logger.info("✅ Places API v1 client initialized")
-
-                elif hasattr(self.config, 'GOOGLE_APPLICATION_CREDENTIALS_JSON'):
-                    # Handle JSON credentials from environment - FIXED: type guard
-                    creds_json = getattr(self.config, 'GOOGLE_APPLICATION_CREDENTIALS_JSON', None)
-                    if creds_json:
-                        try:
-                            creds_info = json.loads(creds_json)
-                            credentials = service_account.Credentials.from_service_account_info(
-                                creds_info,
-                                scopes=['https://www.googleapis.com/auth/cloud-platform']
-                            )
-                            self.places_client = places_v1.PlacesClient(credentials=credentials)
-                            logger.info("✅ Places API v1 client initialized from JSON")
-                        except json.JSONDecodeError as e:
-                            logger.error(f"❌ Invalid JSON in credentials: {e}")
-
+                self.gmaps_secondary = googlemaps.Client(key=api_key_2)
+                self.has_secondary_gmaps = True
+                logger.info("✅ Secondary GoogleMaps client initialized")
             except Exception as e:
-                logger.error(f"❌ Failed to initialize Places API v1: {e}")
-                logger.info("🔧 Will use GoogleMaps library as fallback")
+                logger.error(f"❌ Failed to initialize secondary GoogleMaps client: {e}")
+                self.gmaps_secondary = None
+                self.has_secondary_gmaps = False
+        else:
+            self.gmaps_secondary = None
+            self.has_secondary_gmaps = False
+
+        # Places API v1 client with credential rotation - FIXED implementation
+        if HAS_PLACES_API and service_account is not None and places_v1 is not None:
+            self.places_client = self._initialize_places_client_with_rotation()
         else:
             logger.info("⚠️  Places API v1 imports not available - using GoogleMaps only")
 
-    def _log_coordinates(self, latitude: float, longitude: float, context: str):
-        """Log coordinates for debugging"""
-        logger.info(f"🌍 {context}: {latitude:.6f}, {longitude:.6f}")
+    def _initialize_places_client_with_rotation(self):
+        """Initialize Places API client with credential rotation support"""
 
-    async def _places_api_search(
+        # Try PRIMARY credentials first
+        primary_creds = getattr(self.config, 'GOOGLE_APPLICATION_CREDENTIALS_JSON_PRIMARY', None)
+        secondary_creds = getattr(self.config, 'GOOGLE_APPLICATION_CREDENTIALS_JSON_SECONDARY', None)
+
+        # Track which credentials we're using
+        self.active_places_credentials = 'primary'
+
+        for creds_name, creds_data in [('primary', primary_creds), ('secondary', secondary_creds)]:
+            if not creds_data:
+                logger.info(f"⚠️  No {creds_name} credentials found")
+                continue
+
+            try:
+                # Check if it's a file path or JSON string
+                if os.path.exists(creds_data):
+                    # File path
+                    credentials = service_account.Credentials.from_service_account_file(
+                        creds_data,
+                        scopes=['https://www.googleapis.com/auth/cloud-platform']
+                    )
+                    logger.info(f"✅ Loaded {creds_name} credentials from file")
+                else:
+                    # JSON string
+                    try:
+                        creds_info = json.loads(creds_data)
+                        credentials = service_account.Credentials.from_service_account_info(
+                            creds_info,
+                            scopes=['https://www.googleapis.com/auth/cloud-platform']
+                        )
+                        logger.info(f"✅ Loaded {creds_name} credentials from JSON")
+                    except json.JSONDecodeError as e:
+                        logger.error(f"❌ Invalid JSON in {creds_name} credentials: {e}")
+                        continue
+
+                # Try to create the client
+                client = places_v1.PlacesClient(credentials=credentials)
+
+                # Test the client with a simple request to verify it works
+                # (You could add a test request here if needed)
+
+                self.active_places_credentials = creds_name
+                logger.info(f"✅ Places API v1 client initialized with {creds_name} credentials")
+
+                # Store secondary credentials for rotation if this is primary
+                if creds_name == 'primary' and secondary_creds:
+                    self.secondary_places_credentials = secondary_creds
+
+                return client
+
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize Places API v1 with {creds_name} credentials: {e}")
+                continue
+
+        logger.error("❌ Failed to initialize Places API v1 with any available credentials")
+        return None
+
+    def _rotate_places_credentials(self):
+        """Rotate to secondary Places API credentials when primary fails"""
+        if not hasattr(self, 'secondary_places_credentials') or not self.secondary_places_credentials:
+            logger.warning("⚠️  No secondary Places API credentials available for rotation")
+            return False
+
+        try:
+            logger.info("🔄 Rotating to secondary Places API credentials...")
+
+            # Load secondary credentials
+            try:
+                if os.path.exists(self.secondary_places_credentials):
+                    credentials = service_account.Credentials.from_service_account_file(
+                        self.secondary_places_credentials,
+                        scopes=['https://www.googleapis.com/auth/cloud-platform']
+                    )
+                else:
+                    creds_info = json.loads(self.secondary_places_credentials)
+                    credentials = service_account.Credentials.from_service_account_info(
+                        creds_info,
+                        scopes=['https://www.googleapis.com/auth/cloud-platform']
+                    )
+            except Exception as e:
+                logger.error(f"❌ Failed to load secondary credentials: {e}")
+                return False
+
+            # Create new client with secondary credentials
+            self.places_client = places_v1.PlacesClient(credentials=credentials)
+            self.active_places_credentials = 'secondary'
+
+            logger.info("✅ Successfully rotated to secondary Places API credentials")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to rotate to secondary Places API credentials: {e}")
+            return False
+
+    async def _places_api_search_with_rotation(
         self, 
         latitude: float, 
         longitude: float, 
         place_types: List[str]
     ) -> List[VenueSearchResult]:
-        """Execute Places API v1 search with FIXED type handling"""
+        """Execute Places API v1 search with automatic credential rotation on failure"""
+
+        # Try the search with current credentials
+        venues = await self._places_api_search_internal(latitude, longitude, place_types)
+
+        # If search failed and we haven't tried secondary credentials yet
+        if (not venues and 
+            self.active_places_credentials == 'primary' and 
+            hasattr(self, 'secondary_places_credentials')):
+
+            logger.info("🔄 Primary credentials may be exhausted, trying secondary...")
+
+            if self._rotate_places_credentials():
+                # Retry search with secondary credentials
+                venues = await self._places_api_search_internal(latitude, longitude, place_types)
+
+        return venues
+
+    async def _places_api_search_internal(
+        self, 
+        latitude: float, 
+        longitude: float, 
+        place_types: List[str]
+    ) -> List[VenueSearchResult]:
+        """Internal Places API search method (original _places_api_search logic)"""
         venues = []
 
         # FIXED: Type guards for all None checks
@@ -242,7 +343,7 @@ class LocationMapSearchAgent:
             return venues
 
         try:
-            self._log_coordinates(latitude, longitude, "Places API v1 search")
+            self._log_coordinates(latitude, longitude, f"Places API v1 search ({self.active_places_credentials})")
             self.api_usage["places"] += 1
 
             # FIXED: Create request using type guards
@@ -275,7 +376,7 @@ class LocationMapSearchAgent:
 
             # FIXED: Check response with proper type handling
             if hasattr(response, 'places') and response.places:
-                logger.info(f"✅ Places API v1 returned {len(response.places)} results")
+                logger.info(f"✅ Places API v1 returned {len(response.places)} results ({self.active_places_credentials})")
 
                 for place in response.places:
                     try:
@@ -286,12 +387,16 @@ class LocationMapSearchAgent:
                         logger.warning(f"⚠️  Error converting Places result: {e}")
 
         except Exception as e:
-            logger.error(f"❌ Places API v1 search failed: {e}")
+            logger.error(f"❌ Places API v1 search failed ({self.active_places_credentials}): {e}")
             import traceback
             logger.debug(f"   Traceback: {traceback.format_exc()}")
 
-        logger.info(f"🎯 Places API v1 search completed: {len(venues)} venues")
+        logger.info(f"🎯 Places API v1 search completed: {len(venues)} venues ({self.active_places_credentials})")
         return venues
+
+    def _log_coordinates(self, latitude: float, longitude: float, context: str):
+        """Log coordinates for debugging"""
+        logger.info(f"🌍 {context}: {latitude:.6f}, {longitude:.6f}")
 
     def _convert_places_result(
         self, 
@@ -356,51 +461,6 @@ class LocationMapSearchAgent:
             logger.error(f"❌ Error converting Places result: {e}")
             return None
 
-    async def _googlemaps_search(
-        self, 
-        latitude: float, 
-        longitude: float, 
-        query: str
-    ) -> List[VenueSearchResult]:
-        """GoogleMaps library search with FIXED type handling"""
-        venues = []
-
-        # FIXED: Type guard for gmaps client
-        if not self.gmaps:
-            logger.warning("⚠️  GoogleMaps client not available")
-            return venues
-
-        try:
-            self._log_coordinates(latitude, longitude, "GoogleMaps library search")
-            self.api_usage["gmaps"] += 1
-
-            location = f"{latitude},{longitude}"
-            radius_m = int(self.search_radius_km * 1000)
-
-            # FIXED: Text search with proper error handling
-            response = self.gmaps.places(
-                query=f"{query} restaurant",
-                location=location,
-                radius=radius_m,
-            )
-
-            results = response.get('results', []) if response else []
-            logger.info(f"✅ GoogleMaps returned {len(results)} results")
-
-            for place in results:
-                try:
-                    venue = self._convert_gmaps_result(place, latitude, longitude)
-                    if venue:
-                        venues.append(venue)
-                except Exception as e:
-                    logger.warning(f"⚠️  Error converting GoogleMaps result: {e}")
-
-        except Exception as e:
-            logger.error(f"❌ GoogleMaps search failed: {e}")
-
-        logger.info(f"🎯 GoogleMaps search completed: {len(venues)} venues")
-        return venues
-
     def _convert_gmaps_result(
         self, 
         place: Dict[str, Any], 
@@ -447,7 +507,7 @@ class LocationMapSearchAgent:
         cancel_check_fn=None
     ) -> List[VenueSearchResult]:
         """
-        MAIN SEARCH METHOD: Uses Places API v1 with GoogleMaps fallback
+        MAIN SEARCH METHOD: Uses Places API v1 with credential rotation and GoogleMaps fallback
 
         Args:
             coordinates: (latitude, longitude) tuple
@@ -475,16 +535,16 @@ class LocationMapSearchAgent:
 
             venues = []
 
-            # Try Places API v1 first
+            # Try Places API v1 first with automatic credential rotation
             if self.places_client:
-                venues = await self._places_api_search(latitude, longitude, place_types)
+                venues = await self._places_api_search_with_rotation(latitude, longitude, place_types)
                 if cancel_check_fn and cancel_check_fn():
                     return []
 
-            # Fallback to GoogleMaps if needed
-            if not venues and self.gmaps:
+            # Fallback to GoogleMaps if needed (with rotation if available)
+            if not venues:
                 logger.info("🔄 Falling back to GoogleMaps library")
-                venues = await self._googlemaps_search(latitude, longitude, query)
+                venues = await self._googlemaps_search_with_rotation(latitude, longitude, query)
                 if cancel_check_fn and cancel_check_fn():
                     return []
 
@@ -511,6 +571,70 @@ class LocationMapSearchAgent:
             import traceback
             logger.error(f"   Traceback: {traceback.format_exc()}")
             return []
+
+    async def _googlemaps_search_with_rotation(
+        self, 
+        latitude: float, 
+        longitude: float, 
+        query: str
+    ) -> List[VenueSearchResult]:
+        """GoogleMaps library search with API key rotation support"""
+
+        # Try primary GoogleMaps client first
+        venues = await self._googlemaps_search_internal(latitude, longitude, query, self.gmaps, "primary")
+
+        # If no results and we have secondary client, try that
+        if not venues and self.has_secondary_gmaps and self.gmaps_secondary:
+            logger.info("🔄 Trying secondary GoogleMaps API key...")
+            venues = await self._googlemaps_search_internal(latitude, longitude, query, self.gmaps_secondary, "secondary")
+
+        return venues
+
+    async def _googlemaps_search_internal(
+        self, 
+        latitude: float, 
+        longitude: float, 
+        query: str,
+        gmaps_client,
+        key_name: str
+    ) -> List[VenueSearchResult]:
+        """Internal GoogleMaps search method with specific client"""
+        venues = []
+
+        if not gmaps_client:
+            logger.warning(f"⚠️  GoogleMaps {key_name} client not available")
+            return venues
+
+        try:
+            self._log_coordinates(latitude, longitude, f"GoogleMaps library search ({key_name})")
+            self.api_usage["gmaps"] += 1
+
+            location = f"{latitude},{longitude}"
+            radius_m = int(self.search_radius_km * 1000)
+
+            # FIXED: Text search with proper error handling
+            response = gmaps_client.places(
+                query=f"{query} restaurant",
+                location=location,
+                radius=radius_m,
+            )
+
+            results = response.get('results', []) if response else []
+            logger.info(f"✅ GoogleMaps ({key_name}) returned {len(results)} results")
+
+            for place in results:
+                try:
+                    venue = self._convert_gmaps_result(place, latitude, longitude)
+                    if venue:
+                        venues.append(venue)
+                except Exception as e:
+                    logger.warning(f"⚠️  Error converting GoogleMaps result: {e}")
+
+        except Exception as e:
+            logger.error(f"❌ GoogleMaps search failed ({key_name}): {e}")
+
+        logger.info(f"🎯 GoogleMaps search completed: {len(venues)} venues ({key_name})")
+        return venues
 
     async def _analyze_query_for_place_types(self, query: str) -> List[str]:
         """AI analysis for place types using comprehensive restaurant type list - FIXED v1.0+ API"""
