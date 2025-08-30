@@ -575,7 +575,7 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
 
         # Send processing message with video
         try:
-            with open('media/searching.mp4', 'rb') as video:
+            with open('media/vicinity_search.mp4', 'rb') as video:
                 processing_msg = bot.send_video(
                     chat_id,
                     video,
