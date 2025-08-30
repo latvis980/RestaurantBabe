@@ -55,45 +55,50 @@ class TelegramFormatter:
             logger.error(f"❌ Error in Telegram formatting: {e}")
             return self._no_results_message()
 
-    def _canonical_google_url(self, url: str, place_id: str = None) -> str:
-        """Return https://maps.google.com/?cid=… or a place_id URL."""
-        if not url:
-            url = ""
+    def _canonical_google_url(self, url: str, place_id: str = None, restaurant_name: str = "") -> str:
+        """
+        Return 2025 universal Google Maps URL format for mobile/desktop compatibility
+        """
+        try:
+            # If we have place_id and name, use 2025 universal format
+            if place_id and restaurant_name:
+                encoded_name = quote(restaurant_name.strip())
+                return f"https://www.google.com/maps/search/?api=1&query={encoded_name}&query_place_id={place_id}"
+            elif place_id:
+                return f"https://www.google.com/maps/search/?api=1&query=restaurant&query_place_id={place_id}"
 
-        m = re.search(r"[?&]cid=(\d+)", url)
-        if m:                                        # already long form
-            return f"https://maps.google.com/?cid={m.group(1)}"
+            # Legacy fallback for existing CID URLs
+            if not url:
+                return "#"
 
-        if "goo.gl/maps" in url or "maps.app.goo.gl" in url:  # short redirect
-            try:
-                r = requests.head(url, allow_redirects=True, timeout=3)
-                m = re.search(r"[?&]cid=(\d+)", r.url)
-                if m:
-                    return f"https://maps.google.com/?cid={m.group(1)}"
-            except requests.exceptions.RequestException:
-                pass   # fall through to place-id
+            m = re.search(r"[?&]cid=(\d+)", url)
+            if m:
+                return f"https://maps.google.com/?cid={m.group(1)}"
 
-        if place_id:                                   # last resort
-            return (f"https://www.google.com/maps/place/"
-                    f"?q=place_id:{place_id}")
+            # Handle redirects for short URLs
+            if "goo.gl/maps" in url or "maps.app.goo.gl" in url:
+                try:
+                    r = requests.head(url, allow_redirects=True, timeout=3)
+                    m = re.search(r"[?&]cid=(\d+)", r.url)
+                    if m:
+                        return f"https://maps.google.com/?cid={m.group(1)}"
+                except requests.exceptions.RequestException:
+                    pass
 
-        return url or "#"
+            return url or "#"
 
-    def _format_address_with_link(self, address: str, place_id: str, restaurant_name: str = "") -> str:
-        """Format address with universal Google Maps link"""
+        except Exception:
+            return url or "#"
+
+    def _format_address_link(self, address, place_id, restaurant_name=""):
+        """Create Google Maps link with 2025 universal URL format"""
         if not address:
             return ""
 
         clean_address = self._extract_street(address)
 
-        if place_id and restaurant_name:
-            # Use 2025 universal format
-            encoded_name = quote(restaurant_name.strip(), safe='')
-            google_url = f"https://www.google.com/maps/search/?api=1&query={encoded_name}&query_place_id={place_id}"
-        elif place_id:
-            google_url = f"https://www.google.com/maps/search/?api=1&query=restaurant&query_place_id={place_id}"
-        else:
-            google_url = "#"
+        # Use 2025 universal format for best mobile/desktop compatibility
+        google_url = self._canonical_google_url("", place_id, restaurant_name)
 
         return f'📍 <a href="{google_url}">{clean_address}</a>\n'
 
