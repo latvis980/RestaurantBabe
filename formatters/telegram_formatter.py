@@ -206,7 +206,7 @@ Address to clean: "{full_address}"
 Return only the cleaned address, nothing else."""
 
             response = client.chat.completions.create(
-                model="gpt-4o-mini",  # CHANGED: Use GPT-4o Mini instead of deepseek-chat
+                model="deepseek-chat",  # CHANGED: Use GPT-4o Mini instead of deepseek-chat
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=100,
                 temperature=0.1  # Low temperature for consistency
