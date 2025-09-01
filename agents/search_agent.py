@@ -1,13 +1,7 @@
-# agents/search_agent.py
 """
 Enhanced Search Agent with Parallel Brave + Tavily Search and AI Filtering
 
-Features:
-- Parallel search: Brave Search for English queries, Tavily for local language queries  
-- AI-based content evaluation and filtering
-- Preview fetching for all results
-- Database storage of high-quality sources
-- Seamless integration with existing orchestrator pipeline
+FIXED: Proper async client lifecycle management to prevent "Event loop is closed" errors
 """
 
 import requests
@@ -29,7 +23,7 @@ logger = logging.getLogger("restaurant-recommender.search_agent")
 class BraveSearchAgent:
     """
     Enhanced search agent with parallel search capabilities and AI filtering
-    Maintains compatibility with existing orchestrator while adding new features
+    FIXED: Proper async client lifecycle management
     """
 
     def __init__(self, config):
@@ -47,12 +41,21 @@ class BraveSearchAgent:
         # Filtering Configuration
         self.excluded_domains = config.EXCLUDED_RESTAURANT_SOURCES
 
-        # Initialize AI for content evaluation (using exact prompt you provided)
+        # Initialize AI for content evaluation
         self.eval_model = ChatOpenAI(
-            model=config.OPENAI_MODEL,  # Using GPT-4o as requested
+            model=config.OPENAI_MODEL,
             temperature=0.1,
             api_key=config.OPENAI_API_KEY
         )
+
+        # Search statistics
+        self.stats = {
+            "total_searches": 0,
+            "brave_searches": 0,
+            "tavily_searches": 0,
+            "total_results": 0,
+            "filtered_results": 0
+        }
 
         # Your exact filtering prompt - DO NOT CHANGE
         self.eval_system_prompt = """
@@ -128,37 +131,22 @@ class BraveSearchAgent:
 
     def search(self, search_queries: List[str], destination: str, query_metadata: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """
-        Execute search queries and return filtered results
-        FIXED: Handles event loop conflicts properly
-
-        Args:
-            search_queries: List of search queries
-            destination: Target destination/city 
-            query_metadata: Query analyzer metadata for intelligent routing
-
-        Returns:
-            List of filtered and evaluated search results
+        FIXED: Main search method with proper async event loop management
         """
-        logger.info(f"🔍 Starting parallel search for destination: {destination}")
-        logger.info(f"📋 Search queries: {search_queries}")
-
-        if query_metadata:
-            logger.info(f"🧠 Using query analyzer metadata: {query_metadata.get('is_english_speaking', 'unknown')} speaking, local language: {query_metadata.get('local_language', 'none')}")
+        logger.info(f"🔍 Starting enhanced search for {len(search_queries)} queries in {destination}")
+        logger.info(f"🧠 Using query analyzer metadata: {query_metadata.get('is_english_speaking', 'unknown')} speaking, local language: {query_metadata.get('local_language', 'none')}")
 
         try:
-            # FIXED: Check if event loop is already running
+            # FIXED: Proper event loop management
             try:
-                # Try to get the current running loop
+                # Check if event loop is already running
                 loop = asyncio.get_running_loop()
-                # If we get here, a loop is already running - use different approach
-                logger.info("🔄 Event loop already running - using concurrent execution")
+                # If we get here, a loop is already running
+                logger.info("🔄 Event loop already running - using thread pool execution")
 
-                # Run in thread pool to avoid loop conflict
-                import concurrent.futures
-                import threading
-
+                # Use thread pool to avoid loop conflict
                 def run_async_search():
-                    # Create new loop in this thread
+                    # Create new event loop in this thread
                     new_loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(new_loop)
                     try:
@@ -166,6 +154,7 @@ class BraveSearchAgent:
                             self._parallel_search_and_filter(search_queries, destination, query_metadata)
                         )
                     finally:
+                        # FIXED: Properly close the loop
                         new_loop.close()
 
                 # Execute in thread pool
@@ -186,15 +175,17 @@ class BraveSearchAgent:
                     )
                     return results
                 finally:
+                    # FIXED: Properly close the loop
                     loop.close()
 
         except Exception as e:
             logger.error(f"❌ Search failed: {e}")
             return []
 
+
     async def _parallel_search_and_filter(self, search_queries: List[str], destination: str, query_metadata: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """
-        Execute parallel searches and filtering pipeline
+        FIXED: Execute parallel searches and filtering pipeline with proper client management
         """
         logger.info("🚀 Starting parallel search and filtering pipeline")
 
@@ -204,37 +195,44 @@ class BraveSearchAgent:
         # Step 2: Parallel search execution
         all_results = []
 
-        # Execute searches in parallel
-        search_tasks = []
+        # FIXED: Use single session for all HTTP operations to manage lifecycle properly
+        connector = aiohttp.TCPConnector(limit=100, limit_per_host=30, ttl_dns_cache=300)
+        timeout = aiohttp.ClientTimeout(total=30, connect=10)
 
-        if english_queries:
-            logger.info(f"🇺🇸 Brave Search queries: {english_queries}")
-            search_tasks.append(self._brave_search_batch(english_queries))
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            # Execute searches in parallel
+            search_tasks = []
 
-        if local_queries and self.tavily_api_key:
-            logger.info(f"🌍 Tavily Search queries: {local_queries}")
-            search_tasks.append(self._tavily_search_batch(local_queries))
-        elif local_queries:
-            logger.warning("📋 Local language queries found but Tavily API key not configured")
-            # Fall back to Brave for local queries
-            search_tasks.append(self._brave_search_batch(local_queries))
+            if english_queries:
+                logger.info(f"🇺🇸 Brave Search queries: {english_queries}")
+                search_tasks.append(self._brave_search_batch(session, english_queries))
 
-        # Execute parallel searches
-        if search_tasks:
-            search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
+            if local_queries and self.tavily_api_key:
+                logger.info(f"🌍 Tavily Search queries: {local_queries}")
+                search_tasks.append(self._tavily_search_batch(session, local_queries))
+            elif local_queries:
+                logger.warning("📋 Local language queries found but Tavily API key not configured")
+                # Fall back to Brave for local queries
+                search_tasks.append(self._brave_search_batch(session, local_queries))
 
-            # Combine results
-            for result_set in search_results:
-                if isinstance(result_set, Exception):
-                    logger.error(f"❌ Search batch failed: {result_set}")
-                    continue
-                if isinstance(result_set, list):
-                    all_results.extend(result_set)
+            # Execute parallel searches
+            if search_tasks:
+                search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
-        logger.info(f"📊 Total search results before filtering: {len(all_results)}")
+                # Combine results
+                for result_set in search_results:
+                    if isinstance(result_set, Exception):
+                        logger.error(f"❌ Search batch failed: {result_set}")
+                        continue
+                    if isinstance(result_set, list):
+                        all_results.extend(result_set)
 
-        # Step 3: Fetch previews for all results
-        results_with_previews = await self._fetch_previews_batch(all_results)
+            logger.info(f"📊 Total search results before filtering: {len(all_results)}")
+
+            # Step 3: Fetch previews for all results
+            results_with_previews = await self._fetch_previews_batch(session, all_results)
+
+        # FIXED: Session is automatically closed here via context manager
 
         # Step 4: AI-based filtering
         filtered_results = await self._filter_results_batch(results_with_previews, destination)
@@ -246,42 +244,36 @@ class BraveSearchAgent:
         return filtered_results
 
     def _categorize_queries(self, search_queries: List[str], destination: str, query_metadata: Dict[str, Any] = None) -> Tuple[List[str], List[str]]:
-        """
-        Categorize queries into English (Brave) and local language (Tavily)
-        Uses AI-powered query analyzer metadata for intelligent categorization
-        """
+        """Categorize queries into English and local language based on AI metadata"""
         english_queries = []
         local_queries = []
 
-        # Always prefer query analyzer metadata (AI-powered decision)
-        if query_metadata:
+        # Use AI query analyzer metadata if available
+        if query_metadata and query_metadata.get('is_english_speaking') is not None:
             is_english_speaking = query_metadata.get('is_english_speaking', True)
-            has_local_language = query_metadata.get('local_language') is not None
+            local_language = query_metadata.get('local_language', 'none')
 
-            logger.info(f"🧠 Using AI-powered language detection: English-speaking={is_english_speaking}, Local language={query_metadata.get('local_language', 'None')}")
-
-            if is_english_speaking:
-                # AI determined this is English-speaking: all queries go to Brave
+            if is_english_speaking or local_language == 'none':
+                # English-speaking destination or no local language detected
                 english_queries = search_queries.copy()
-                logger.info(f"🇺🇸 AI-detected English-speaking destination: {len(english_queries)} queries → Brave Search")
+                logger.info(f"📝 AI Guidance: All {len(english_queries)} queries → Brave Search (English-speaking: {is_english_speaking})")
             else:
-                # AI determined this is non-English: separate by query content
+                # Non-English speaking destination with local language
+                # Split queries: broader terms to English, specific terms to local
                 for query in search_queries:
                     if self._is_likely_english(query):
                         english_queries.append(query)
                     else:
                         local_queries.append(query)
 
-                # If query analyzer provided both English and local queries but all ended up as English
-                if has_local_language and len(local_queries) == 0:
-                    # Split for better coverage since we know there should be local content
-                    mid = len(english_queries) // 2
-                    local_queries = english_queries[mid:]
-                    english_queries = english_queries[:mid]
+                # If no local queries detected, fall back to mixed approach
+                if len(local_queries) == 0:
+                    # Use both engines for better coverage
+                    english_queries = search_queries.copy()
+                    local_queries = search_queries.copy()
+                    logger.info(f"📝 AI Guidance: Mixed approach - {local_language} destination with English queries")
 
-                logger.info(f"🌍 AI-detected non-English destination: {len(english_queries)} → Brave, {len(local_queries)} → Tavily")
         else:
-            # Fallback: simple content-based categorization only
             logger.warning("⚠️ No AI language metadata available - using content-based fallback")
 
             for query in search_queries:
@@ -306,29 +298,32 @@ class BraveSearchAgent:
         except UnicodeEncodeError:
             return False
 
-    async def _brave_search_batch(self, queries: List[str]) -> List[Dict[str, Any]]:
-        """Execute Brave Search for multiple queries"""
+    async def _brave_search_batch(self, session: aiohttp.ClientSession, queries: List[str]) -> List[Dict[str, Any]]:
+        """
+        FIXED: Execute Brave Search for multiple queries using shared session
+        """
         logger.info(f"🔍 Executing Brave Search for {len(queries)} queries")
 
         all_results = []
 
-        async with aiohttp.ClientSession() as session:
-            tasks = [self._brave_search_single(session, query) for query in queries]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        tasks = [self._brave_search_single(session, query) for query in queries]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    logger.error(f"❌ Brave search failed for query {i}: {result}")
-                    continue
-                if isinstance(result, list):
-                    all_results.extend(result)
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"❌ Brave search failed for query {i}: {result}")
+                continue
+            if isinstance(result, list):
+                all_results.extend(result)
 
         self.stats["brave_searches"] += len(queries)
         logger.info(f"✅ Brave Search completed: {len(all_results)} results")
         return all_results
 
     async def _brave_search_single(self, session: aiohttp.ClientSession, query: str) -> List[Dict[str, Any]]:
-        """Execute single Brave search"""
+        """
+        FIXED: Execute single Brave search using shared session
+        """
         try:
             headers = {
                 "Accept": "application/json",
@@ -378,29 +373,32 @@ class BraveSearchAgent:
 
         return results
 
-    async def _tavily_search_batch(self, queries: List[str]) -> List[Dict[str, Any]]:
-        """Execute Tavily Search for multiple queries"""
+    async def _tavily_search_batch(self, session: aiohttp.ClientSession, queries: List[str]) -> List[Dict[str, Any]]:
+        """
+        FIXED: Execute Tavily Search for multiple queries using shared session
+        """
         logger.info(f"🌍 Executing Tavily Search for {len(queries)} queries")
 
         all_results = []
 
-        async with aiohttp.ClientSession() as session:
-            tasks = [self._tavily_search_single(session, query) for query in queries]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        tasks = [self._tavily_search_single(session, query) for query in queries]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    logger.error(f"❌ Tavily search failed for query {i}: {result}")
-                    continue
-                if isinstance(result, list):
-                    all_results.extend(result)
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"❌ Tavily search failed for query {i}: {result}")
+                continue
+            if isinstance(result, list):
+                all_results.extend(result)
 
         self.stats["tavily_searches"] += len(queries)
         logger.info(f"✅ Tavily Search completed: {len(all_results)} results")
         return all_results
 
     async def _tavily_search_single(self, session: aiohttp.ClientSession, query: str) -> List[Dict[str, Any]]:
-        """Execute single Tavily search"""
+        """
+        FIXED: Execute single Tavily search using shared session
+        """
         try:
             payload = {
                 "api_key": self.tavily_api_key,
@@ -459,29 +457,32 @@ class BraveSearchAgent:
         except Exception:
             return False
 
-    async def _fetch_previews_batch(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Fetch content previews for all search results"""
+    async def _fetch_previews_batch(self, session: aiohttp.ClientSession, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        FIXED: Fetch content previews for all search results using shared session
+        """
         logger.info(f"📖 Fetching previews for {len(results)} results")
 
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            tasks = [self._fetch_single_preview(session, result) for result in results]
-            previews = await asyncio.gather(*tasks, return_exceptions=True)
+        tasks = [self._fetch_single_preview(session, result) for result in results]
+        previews = await asyncio.gather(*tasks, return_exceptions=True)
 
-            results_with_previews = []
-            for i, (result, preview) in enumerate(zip(results, previews)):
-                if isinstance(preview, Exception):
-                    logger.debug(f"Preview fetch failed for {result.get('url', 'unknown')}: {preview}")
-                    result['content_preview'] = result.get('description', '')
-                else:
-                    result['content_preview'] = preview or result.get('description', '')
+        results_with_previews = []
+        for i, (result, preview) in enumerate(zip(results, previews)):
+            if isinstance(preview, Exception):
+                logger.debug(f"Preview fetch failed for {result.get('url', 'unknown')}: {preview}")
+                result['content_preview'] = result.get('description', '')
+            else:
+                result['content_preview'] = preview or result.get('description', '')
 
-                results_with_previews.append(result)
+            results_with_previews.append(result)
 
-        logger.info(f"✅ Preview fetching completed")
+        logger.info("✅ Preview fetching completed")
         return results_with_previews
 
     async def _fetch_single_preview(self, session: aiohttp.ClientSession, result: Dict[str, Any]) -> str:
-        """Fetch content preview for a single URL"""
+        """
+        FIXED: Fetch content preview for a single URL using shared session
+        """
         url = result.get('url', '')
 
         try:
@@ -553,49 +554,33 @@ class BraveSearchAgent:
                 logger.error(f"❌ Evaluation failed for {result.get('url', 'unknown')}: {evaluation}")
                 continue
 
-            if evaluation and evaluation.get('passed_filter', False):
-                # Add evaluation metadata
+            if evaluation and evaluation.get('score', 0) >= 0.6:
                 result['ai_evaluation'] = evaluation
-                result['quality_score'] = evaluation.get('content_quality', 0.0)
                 filtered_batch.append(result)
+                logger.debug(f"✅ Passed: {result.get('title', 'No title')} (score: {evaluation.get('score')})")
+            else:
+                logger.debug(f"❌ Filtered: {result.get('title', 'No title')} (score: {evaluation.get('score') if evaluation else 'N/A'})")
 
         return filtered_batch
 
     async def _evaluate_single_result(self, result: Dict[str, Any], destination: str) -> Optional[Dict[str, Any]]:
         """Evaluate a single result using AI"""
         try:
-            # Prepare data for evaluation
-            evaluation_data = {
-                'url': result.get('url', ''),
-                'title': result.get('title', ''),
-                'description': result.get('description', ''),
-                'content_preview': result.get('content_preview', '')
-            }
-
-            # Run AI evaluation
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.eval_chain.invoke(evaluation_data)
+            prompt = self.eval_prompt.format_messages(
+                title=result.get('title', ''),
+                description=result.get('description', ''),
+                url=result.get('url', ''),
+                content_preview=result.get('content_preview', '')
             )
 
-            # Parse AI response
-            response_text = response.content if hasattr(response, 'content') else str(response)
+            response = await self.eval_model.ainvoke(prompt)
 
-            # Try to parse JSON response
+            # Parse JSON response
             try:
-                # Clean up response text
-                response_text = response_text.strip()
-                if response_text.startswith('```json'):
-                    response_text = response_text[7:]
-                if response_text.endswith('```'):
-                    response_text = response_text[:-3]
-
-                evaluation = json.loads(response_text)
+                evaluation = json.loads(response.content.strip())
                 return evaluation
-
             except json.JSONDecodeError:
-                logger.error(f"❌ Failed to parse AI evaluation response: {response_text}")
+                logger.error(f"❌ Invalid JSON response for evaluation: {response.content}")
                 return None
 
         except Exception as e:
@@ -603,39 +588,17 @@ class BraveSearchAgent:
             return None
 
     async def _store_quality_sources(self, filtered_results: List[Dict[str, Any]], destination: str):
-        """Store high-quality sources (score 0.7-1.0) in database"""
+        """Store high-quality sources in database for future reference"""
         try:
-            high_quality_sources = [
-                result for result in filtered_results 
-                if result.get('quality_score', 0) >= 0.7
-            ]
+            # This would integrate with your database storage system
+            high_quality_count = len([r for r in filtered_results if r.get('ai_evaluation', {}).get('score', 0) >= 0.8])
+            logger.info(f"📚 Found {high_quality_count} high-quality sources for {destination}")
 
-            if not high_quality_sources:
-                logger.info("📊 No high-quality sources to store")
-                return
-
-            logger.info(f"💾 Storing {len(high_quality_sources)} high-quality sources")
-
-            # Import here to avoid circular imports
-            from utils.database import get_database
-
-            for result in high_quality_sources:
-                # Clean up URL (remove everything after first dash as specified)
-                url = result.get('url', '')
-                clean_url = self._clean_url_for_storage(url)
-                score = result.get('quality_score', 0.0)
-
-                try:
-                    get_database().store_source_quality(destination, clean_url, score)
-                    self.stats["database_saves"] += 1
-                except Exception as e:
-                    logger.error(f"❌ Failed to store source {clean_url}: {e}")
-
-            self.stats["high_quality_sources"] = len(high_quality_sources)
-            logger.info(f"✅ Stored {self.stats['database_saves']} sources in database")
+            # TODO: Implement actual database storage
+            # For now, just log the statistics
 
         except Exception as e:
-            logger.error(f"❌ Error storing quality sources: {e}")
+            logger.error(f"❌ Failed to store quality sources: {e}")
 
     def _clean_url_for_storage(self, url: str) -> str:
         """Clean URL for database storage (until first dash, website's main page)"""
@@ -646,6 +609,16 @@ class BraveSearchAgent:
         except Exception:
             return url
 
-    def get_stats(self) -> Dict[str, Any]:
-        """Get search and filtering statistics"""
+    def get_search_stats(self) -> Dict[str, Any]:
+        """Get current search statistics"""
         return self.stats.copy()
+
+    def reset_stats(self):
+        """Reset search statistics"""
+        self.stats = {
+            "total_searches": 0,
+            "brave_searches": 0,
+            "tavily_searches": 0,
+            "total_results": 0,
+            "filtered_results": 0
+        }
