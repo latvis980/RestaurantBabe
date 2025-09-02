@@ -22,11 +22,6 @@ logger = logging.getLogger(__name__)
 
 
 class SmartRestaurantScraper:
-    """
-    FIXED Smart Scraper with proper session management
-    Strategy: Human Mimic for everything (2.0 credits per URL)
-    """
-
     def __init__(self, config):
         self.config = config
         self.database = get_database()
@@ -36,13 +31,7 @@ class SmartRestaurantScraper:
         self.browser_type = "webkit"
         self.playwright = None
 
-        # FIXED SESSION MANAGEMENT - Added operation locks
-        self.session_timeout = 300  # 5 minutes of inactivity before closing
-        self.last_activity = None
-        self.cleanup_timer = None
-        self._cleanup_scheduled = False
-
-        # NEW: Operation locks to prevent cleanup during active operations
+        # Keep operation tracking for concurrency safety
         self._active_operations = 0
         self._operation_lock = asyncio.Lock()
         self._browser_lock = asyncio.Lock()
@@ -121,72 +110,22 @@ class SmartRestaurantScraper:
             self.last_activity = time.time()
             logger.debug(f"✅ Ended operation (active: {self._active_operations})")
 
-    def _schedule_cleanup(self):
-        """FIXED: Schedule browser cleanup after inactivity timeout"""
-        # Cancel existing timer
-        if self.cleanup_timer:
-            self.cleanup_timer.cancel()
-            self._cleanup_scheduled = False
-
-        def cleanup_check():
-            """FIXED: Check if cleanup is safe and needed"""
-            # Don't cleanup if there are active operations
-            if hasattr(self, '_active_operations') and self._active_operations > 0:
-                logger.info(f"🚫 Cleanup delayed - {self._active_operations} active operations")
-                # Reschedule cleanup
-                self._schedule_cleanup()
-                return
-
-            # Check timeout
-            if self.last_activity and (time.time() - self.last_activity) >= self.session_timeout:
-                self._cleanup_scheduled = True
-                logger.info(f"🧹 Cleanup scheduled - browser session inactive for {self.session_timeout}s")
-
-        # Schedule cleanup check
-        self.cleanup_timer = threading.Timer(self.session_timeout, cleanup_check)
-        self.cleanup_timer.daemon = True
-        self.cleanup_timer.start()
-            
-    async def _check_and_cleanup_if_needed(self):
-        """FIXED: Check if cleanup is scheduled and safe to execute"""
-        if self._cleanup_scheduled and self._active_operations == 0:
-            self._cleanup_scheduled = False
-            await self._cleanup_inactive_session()
-
-    async def _cleanup_inactive_session(self):
-        """FIXED: Clean up browser session only if no active operations"""
-        # Check if we have active operations
-        if hasattr(self, '_active_operations') and self._active_operations > 0:
-            logger.warning(f"⚠️ Cleanup aborted - {self._active_operations} active operations detected")
-            return
-
-        if self.last_activity and (time.time() - self.last_activity) >= self.session_timeout:
-            logger.info(f"🧹 Closing inactive browser session ({self.session_timeout}s timeout)")
-            await self._stop_browser_session()
-
     async def _ensure_browser_session(self):
-        """FIXED: Ensure browser session is active with proper locking"""
+        """SIMPLIFIED: Just ensure browser is running"""
         async with self._browser_lock:
-            # Check for scheduled cleanup first
-            await self._check_and_cleanup_if_needed()
-
             if not self.browser:
                 await self._start_browser_session()
 
-            # Update activity and reset cleanup timer
-            self.last_activity = time.time()
-            self._schedule_cleanup()
-
     async def start(self):
-        """Initialize Playwright and browser context"""
+        """Start browser once and keep it open"""
         await self._ensure_browser_session()
 
     async def _start_browser_session(self):
-        """FIXED: Start browser session with better error handling"""
+        """Start browser session - keep existing logic"""
         if self.browser:
             return  # Already running
 
-        logger.info("🚀 Starting FIXED browser session...")
+        logger.info("🚀 Starting browser session (will stay open)...")
         start_time = time.time()
 
         try:
@@ -195,15 +134,15 @@ class SmartRestaurantScraper:
                 timeout=10.0
             )
 
-            # Enhanced browser launch sequence with Railway detection
+            # Your existing browser launch logic
             if self.is_railway:
-                logger.info("🚂 Railway environment detected - using FIXED optimized settings")
+                logger.info("🚂 Railway environment detected")
                 await self._launch_railway_optimized_browser()
             else:
-                logger.info("💻 Local environment - using WebKit with fallbacks")
+                logger.info("💻 Local environment")
                 await self._launch_with_fallbacks()
 
-            # Create optimized context with timeout
+            # Create contexts
             await asyncio.wait_for(
                 self._create_optimized_context(), 
                 timeout=15.0
@@ -211,16 +150,12 @@ class SmartRestaurantScraper:
 
             self.stats["browser_starts"] += 1
             startup_time = time.time() - start_time
-            logger.info(f"🎭 FIXED browser session ready ({self.browser_type}, {startup_time:.1f}s)")
+            logger.info(f"✅ Browser session ready and will stay open ({self.browser_type}, {startup_time:.1f}s)")
 
-        except asyncio.TimeoutError:
-            logger.error("❌ Browser startup timeout - Railway resource issue")
-            self.stats["browser_launch_failures"] += 1
-            raise Exception("Browser startup timeout")
         except Exception as e:
             logger.error(f"❌ Failed to start browser: {e}")
             self.stats["browser_launch_failures"] += 1
-            raise
+            raiseraise
 
     async def _launch_railway_optimized_browser(self):
         """FIXED: Railway-specific browser launch with better resource management"""
@@ -406,8 +341,7 @@ class SmartRestaurantScraper:
             except Exception as e:
                 logger.error(f"❌ Failed to create context {i+1}: {e}")
                 raise
-
-
+                
     async def _configure_page_with_adblock(self, page: Page):
         """
         ENHANCED: Optimized resource blocking that preserves content extraction
@@ -1136,18 +1070,29 @@ class SmartRestaurantScraper:
 
         return cleaned
 
-    async def _stop_browser_session(self):
-        """FIXED: Stop browser session with proper cleanup"""
-        # FIXED: Don't stop if there are active operations
-        if self._active_operations > 0:
-            logger.warning(f"🚫 Browser shutdown blocked - {self._active_operations} active operations")
-            return
+    async def stop(self):
+        """ONLY place where browser gets closed"""
+        logger.info("🛑 Stopping scraper and closing browser...")
 
+        # Wait for any active operations
+        max_wait = 30
+        wait_start = time.time()
+
+        while self._active_operations > 0 and (time.time() - wait_start) < max_wait:
+            logger.info(f"⏳ Waiting for {self._active_operations} operations to complete...")
+            await asyncio.sleep(1)
+
+        # Close browser
+        await self._stop_browser_session()
+        logger.info("🛑 Browser closed and scraper stopped")
+
+    async def _stop_browser_session(self):
+        """Close browser and free resources"""
         if not self.browser:
             return
 
         try:
-            # Close contexts first
+            # Close contexts
             for context in self.context:
                 try:
                     await context.close()
@@ -1166,44 +1111,10 @@ class SmartRestaurantScraper:
                 self.playwright = None
 
             self.stats["browser_stops"] += 1
-            logger.info(f"🎭 FIXED browser session closed ({self.browser_type})")
+            logger.info(f"🎭 Browser session closed ({self.browser_type})")
 
         except Exception as e:
-            logger.error(f"Error stopping browser session: {e}")
-
-        finally:
-            # Cancel cleanup timer
-            if self.cleanup_timer:
-                self.cleanup_timer.cancel()
-                self.cleanup_timer = None
-                self._cleanup_scheduled = False
-
-    async def stop(self):
-        """FIXED: Clean up all resources with operation check"""
-        logger.info("🛑 Stopping FIXED Smart Restaurant Scraper...")
-
-        # Wait for active operations to complete (with timeout)
-        max_wait = 30  # 30 seconds max
-        wait_start = time.time()
-
-        while self._active_operations > 0 and (time.time() - wait_start) < max_wait:
-            logger.info(f"⏳ Waiting for {self._active_operations} operations to complete...")
-            await asyncio.sleep(1)
-
-        if self._active_operations > 0:
-            logger.warning(f"⚠️ Force stopping with {self._active_operations} operations still active")
-
-        # Cancel cleanup timer
-        if self.cleanup_timer:
-            self.cleanup_timer.cancel()
-            self.cleanup_timer = None
-
-        # Stop browser session
-        await self._stop_browser_session()
-
-        # Log final stats
-        self._log_enhanced_stats()
-        logger.info("🛑 FIXED Smart Restaurant Scraper stopped")
+            logger.error(f"Error stopping browser: {e}")
 
     async def force_cleanup(self):
         """Force immediate cleanup (for testing/debugging)"""
@@ -1227,65 +1138,48 @@ class SmartRestaurantScraper:
 
     async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Main entry point - Process search results with enhanced concurrent scraping
-        PRESERVED: Original interface with enhanced functionality
+        OPTIMAL STRATEGY: 
+        1. Start browser ONCE at the beginning
+        2. Keep it open for ALL URLs in the batch
+        3. Close only when done with entire batch
         """
         if not search_results:
             return []
 
-        # Ensure browser session is active
+        logger.info(f"🎯 Starting batch of {len(search_results)} URLs - browser will stay open")
+
+        # Ensure browser is ready ONCE
         await self._ensure_browser_session()
 
-        urls = [result.get('url') for result in search_results if result.get('url')]
-        logger.info(f"🎭 Enhanced scraping {len(urls)} URLs with {self.max_concurrent} concurrent context ({self.browser_type})")
+        # Process all URLs with the same browser session
+        urls = [result.get("url") for result in search_results if result.get("url")]
 
-        # Create semaphore for concurrency control
+        # Concurrent scraping with persistent browser
         semaphore = asyncio.Semaphore(self.max_concurrent)
-
-        # Scrape all URLs concurrently - filter None URLs properly
-        valid_urls = [(i, url) for i, url in enumerate(urls) if url is not None]
-        scrape_tasks = [
+        tasks = [
             self._scrape_url_with_semaphore(semaphore, url, i % len(self.context))
-            for i, url in valid_urls
+            for i, url in enumerate(urls)
         ]
 
-        scrape_results = await asyncio.gather(*scrape_tasks, return_exceptions=True)
+        # Wait for all scraping to complete
+        scraping_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Merge scraping results back with search results
+        # Process results
         enriched_results = []
-        for search_result, scrape_result in zip(search_results, scrape_results):
-            enriched = search_result.copy()
-
-            if isinstance(scrape_result, Exception):
-                logger.error(f"Exception scraping {enriched.get('url')}: {scrape_result}")
-                enriched.update({
+        for i, (original_result, scraping_result) in enumerate(zip(search_results, scraping_results)):
+            if isinstance(scraping_result, Exception):
+                logger.error(f"❌ Exception for URL {i}: {scraping_result}")
+                scraping_result = {
                     "success": False,
-                    "error": str(scrape_result),
-                    "content": "",
-                    "browser_used": self.browser_type,
-                    "strategy": "human_mimic"
-                })
-                self.stats["failed_scrapes"] += 1
-            elif isinstance(scrape_result, dict):
-                # Explicit type check: scrape_result is Dict[str, Any]
-                enriched.update(scrape_result)
-            else:
-                # Fallback for unexpected types
-                logger.error(f"Unexpected scrape result type: {type(scrape_result)}")
-                enriched.update({
-                    "success": False,
-                    "error": "Unexpected result type",
-                    "content": "",
-                    "browser_used": self.browser_type,
-                    "strategy": "human_mimic"
-                })
+                    "url": original_result.get("url"),
+                    "error": str(scraping_result)
+                }
 
-            self.stats["strategy_breakdown"]["human_mimic"] += 1
-            self.stats["total_cost_estimate"] += 2.0  # 2.0 credits per URL
-            enriched_results.append(enriched)
+            enriched_result = {**original_result, **scraping_result}
+            enriched_results.append(enriched_result)
 
-        successful = sum(1 for r in scrape_results if isinstance(r, dict) and r.get('success'))
-        logger.info(f"✅ Enhanced batch complete: {successful}/{len(urls)} successful ({self.browser_type})")
+        successful = sum(1 for r in scraping_results if isinstance(r, dict) and r.get('success'))
+        logger.info(f"✅ Batch complete: {successful}/{len(urls)} successful - browser staying open")
 
         return enriched_results
 
