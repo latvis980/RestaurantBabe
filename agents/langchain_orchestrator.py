@@ -727,7 +727,7 @@ class LangChainOrchestrator:
                                 'content_type': 'cleaned_restaurants_combined',
                                 'file_format': 'txt',
                                 'processing_method': 'individual_with_deduplication',
-                                'local_file': osc.path.basename(final_txt_file_path)
+                                'local_file': os.path.basename(final_txt_file_path)
                             },
                             file_type="txt"
                         )
