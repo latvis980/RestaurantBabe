@@ -98,13 +98,13 @@ class BraveSearchAgent:
         - Detailed professional descriptions of restaurants/cuisine
         FORMAT:
         Respond with a JSON object containing:
-        {
+        {{
           "is_restaurant_list": true/false,
           "restaurant_count": estimated number of restaurants mentioned,
           "content_quality": 0.0-1.0,
           "passed_filter": true/false,
           "reasoning": "brief explanation of your decision"
-        }
+        }}
         """
 
         # Initialize evaluation prompt template
