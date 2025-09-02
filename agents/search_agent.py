@@ -110,7 +110,7 @@ class BraveSearchAgent:
         # Initialize evaluation prompt template
         self.eval_prompt = ChatPromptTemplate.from_messages([
             ("system", self.eval_system_prompt),
-            ("user", "Title: {{title}}\nDescription: {{description}}\nURL: {{url}}\nContent Preview: {{content_preview}}")
+            ("user", "Title: {title}\nDescription: {description}\nURL: {url}\nContent Preview: {content_preview}")
         ])
 
     def search(self, search_queries: List[str], destination: str, query_metadata: Dict[str, Any] = None) -> List[Dict[str, Any]]:
