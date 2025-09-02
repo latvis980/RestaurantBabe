@@ -1,11 +1,10 @@
-# agents/smart_scraper.py
+# agents/smart_scraper.py - FIXED VERSION
 """
-ENHANCED: Smart Scraper with Multi-Strategy Content Extraction and Session Management
-- Combines Railway optimizations with robust content extraction
-- Keeps browser open with session management for better performance
-- Multi-fallback content extraction (keyboard + manual + smart)
-- Enhanced debugging and error handling
-- Preserves ALL existing functionality
+FIXED: Smart Scraper with Proper Session Management
+- Fixed race condition between cleanup and active operations  
+- Added operation locks to prevent premature browser closure
+- Improved Railway resource management
+- Fixed context lifecycle management
 """
 
 import asyncio
@@ -21,9 +20,10 @@ from utils.database import get_database
 
 logger = logging.getLogger(__name__)
 
+
 class SmartRestaurantScraper:
     """
-    Enhanced Smart Scraper with session management and multi-strategy content extraction
+    FIXED Smart Scraper with proper session management
     Strategy: Human Mimic for everything (2.0 credits per URL)
     """
 
@@ -33,14 +33,19 @@ class SmartRestaurantScraper:
         self.max_concurrent = 2  
         self.browser: Optional[Browser] = None
         self.context: List[BrowserContext] = []
-        self.browser_type = "webkit"  # Primary browser choice
+        self.browser_type = "webkit"
         self.playwright = None
 
-        # SESSION MANAGEMENT (from alternative implementation)
+        # FIXED SESSION MANAGEMENT - Added operation locks
         self.session_timeout = 300  # 5 minutes of inactivity before closing
         self.last_activity = None
         self.cleanup_timer = None
         self._cleanup_scheduled = False
+
+        # NEW: Operation locks to prevent cleanup during active operations
+        self._active_operations = 0
+        self._operation_lock = asyncio.Lock()
+        self._browser_lock = asyncio.Lock()
 
         # Railway environment detection
         self.is_railway = os.getenv('RAILWAY_ENVIRONMENT') is not None
@@ -63,7 +68,7 @@ class SmartRestaurantScraper:
         self.interaction_delay = 0.5   # Delay between actions
         self.retry_delay = 2.0         # Delay between retries
 
-        # Enhanced stats tracking with failure reasons
+        # Enhanced stats tracking
         self.stats = {
             "total_processed": 0,
             "successful_scrapes": 0,
@@ -86,25 +91,54 @@ class SmartRestaurantScraper:
             "browser_used": "webkit",
             "memory_optimized": True,
             "session_managed": True,
-            # Session management stats
             "browser_starts": 0,
             "browser_stops": 0,
         }
 
-        logger.info(f"✅ Enhanced Smart Restaurant Scraper initialized - Railway mode: {self.is_railway}")
+        logger.info(f"✅ FIXED Smart Restaurant Scraper initialized - Railway mode: {self.is_railway}")
+
+    async def _start_operation(self):
+        """Mark the start of an active operation - prevents cleanup"""
+        if not hasattr(self, '_active_operations'):
+            self._active_operations = 0
+        if not hasattr(self, '_operation_lock'):
+            self._operation_lock = asyncio.Lock()
+
+        async with self._operation_lock:
+            self._active_operations += 1
+            self.last_activity = time.time()
+            logger.debug(f"🔄 Started operation (active: {self._active_operations})")
+
+    async def _end_operation(self):
+        """Mark the end of an active operation"""
+        if not hasattr(self, '_active_operations'):
+            self._active_operations = 0
+        if not hasattr(self, '_operation_lock'):
+            self._operation_lock = asyncio.Lock()
+
+        async with self._operation_lock:
+            self._active_operations = max(0, self._active_operations - 1)
+            self.last_activity = time.time()
+            logger.debug(f"✅ Ended operation (active: {self._active_operations})")
 
     def _schedule_cleanup(self):
-        """Schedule browser cleanup after inactivity timeout"""
+        """FIXED: Schedule browser cleanup after inactivity timeout"""
         # Cancel existing timer
         if self.cleanup_timer:
             self.cleanup_timer.cancel()
             self._cleanup_scheduled = False
 
-        # Use background thread approach instead of mixing threading.Timer with asyncio
         def cleanup_check():
-            """Check if cleanup is needed and schedule it properly"""
+            """FIXED: Check if cleanup is safe and needed"""
+            # Don't cleanup if there are active operations
+            if hasattr(self, '_active_operations') and self._active_operations > 0:
+                logger.info(f"🚫 Cleanup delayed - {self._active_operations} active operations")
+                # Reschedule cleanup
+                self._schedule_cleanup()
+                return
+
+            # Check timeout
             if self.last_activity and (time.time() - self.last_activity) >= self.session_timeout:
-                # Set a flag that will be checked by the next async operation
                 self._cleanup_scheduled = True
                 logger.info(f"🧹 Cleanup scheduled - browser session inactive for {self.session_timeout}s")
 
@@ -112,41 +146,47 @@ class SmartRestaurantScraper:
         self.cleanup_timer = threading.Timer(self.session_timeout, cleanup_check)
         self.cleanup_timer.daemon = True
         self.cleanup_timer.start()
-
+            
     async def _check_and_cleanup_if_needed(self):
-        """Check if cleanup is scheduled and execute it in async context"""
-        if self._cleanup_scheduled:
+        """FIXED: Check if cleanup is scheduled and safe to execute"""
+        if self._cleanup_scheduled and self._active_operations == 0:
             self._cleanup_scheduled = False
             await self._cleanup_inactive_session()
 
     async def _cleanup_inactive_session(self):
-        """Clean up browser session if inactive"""
+        """FIXED: Clean up browser session only if no active operations"""
+        # Check if we have active operations
+        if hasattr(self, '_active_operations') and self._active_operations > 0:
+            logger.warning(f"⚠️ Cleanup aborted - {self._active_operations} active operations detected")
+            return
+
         if self.last_activity and (time.time() - self.last_activity) >= self.session_timeout:
             logger.info(f"🧹 Closing inactive browser session ({self.session_timeout}s timeout)")
             await self._stop_browser_session()
 
     async def _ensure_browser_session(self):
-        """Ensure browser session is active, start if needed"""
+        """FIXED: Ensure browser session is active with proper locking"""
+        async with self._browser_lock:
             # Check for scheduled cleanup first
-        await self._check_and_cleanup_if_needed()
+            await self._check_and_cleanup_if_needed()
 
-        if not self.browser:
-            await self._start_browser_session()
+            if not self.browser:
+                await self._start_browser_session()
 
             # Update activity and reset cleanup timer
-        self.last_activity = time.time()
-        self._schedule_cleanup()
+            self.last_activity = time.time()
+            self._schedule_cleanup()
 
     async def start(self):
-        """Initialize Playwright and browser context (with session management)"""
+        """Initialize Playwright and browser context"""
         await self._ensure_browser_session()
 
     async def _start_browser_session(self):
-        """Start browser session with enhanced optimizations"""
+        """FIXED: Start browser session with better error handling"""
         if self.browser:
             return  # Already running
 
-        logger.info("🚀 Starting enhanced browser session...")
+        logger.info("🚀 Starting FIXED browser session...")
         start_time = time.time()
 
         try:
@@ -157,7 +197,7 @@ class SmartRestaurantScraper:
 
             # Enhanced browser launch sequence with Railway detection
             if self.is_railway:
-                logger.info("🚂 Railway environment detected - using optimized settings")
+                logger.info("🚂 Railway environment detected - using FIXED optimized settings")
                 await self._launch_railway_optimized_browser()
             else:
                 logger.info("💻 Local environment - using WebKit with fallbacks")
@@ -171,10 +211,10 @@ class SmartRestaurantScraper:
 
             self.stats["browser_starts"] += 1
             startup_time = time.time() - start_time
-            logger.info(f"🎭 Enhanced browser session ready ({self.browser_type}, {startup_time:.1f}s)")
+            logger.info(f"🎭 FIXED browser session ready ({self.browser_type}, {startup_time:.1f}s)")
 
         except asyncio.TimeoutError:
-            logger.error("❌ Browser startup timeout - this might be a Railway resource issue")
+            logger.error("❌ Browser startup timeout - Railway resource issue")
             self.stats["browser_launch_failures"] += 1
             raise Exception("Browser startup timeout")
         except Exception as e:
@@ -183,13 +223,13 @@ class SmartRestaurantScraper:
             raise
 
     async def _launch_railway_optimized_browser(self):
-        """Railway-specific browser launch with aggressive optimizations"""
+        """FIXED: Railway-specific browser launch with better resource management"""
         if not self.playwright:
             raise RuntimeError("Playwright not initialized")
 
         try:
-            # Try Chromium first with Railway-optimized settings
-            logger.info("🎭 Launching Railway-optimized Chromium...")
+            # Try Chromium first with FIXED Railway-optimized settings
+            logger.info("🎭 Launching FIXED Railway-optimized Chromium...")
             self.browser = await self.playwright.chromium.launch(
                 headless=True,
                 args=[
@@ -207,9 +247,9 @@ class SmartRestaurantScraper:
                     '--disable-web-security',
                     '--disable-features=TranslateUI,BlinkGenPropertyTrees',
                     '--memory-pressure-off',
-                    '--max_old_space_size=200',  # Very conservative memory limit
+                    '--max_old_space_size=300',  # FIXED: Increased from 200MB to 300MB
                     '--single-process',
-                    '--no-zygote',  # Important for containers
+                    '--no-zygote',
                     '--disable-background-timer-throttling',
                     '--disable-renderer-backgrounding',
                     '--disable-backgrounding-occluded-windows',
@@ -222,17 +262,21 @@ class SmartRestaurantScraper:
                     '--run-all-compositor-stages-before-draw',
                     '--disable-threaded-compositing',
                     '--disable-checker-imaging',
+                    # FIXED: Added stability flags
+                    '--disable-crash-reporter',
+                    '--no-crash-upload',
+                    '--disable-logging',
                 ]
             )
             self.browser_type = "chromium_railway"
             self.stats["browser_used"] = "chromium_railway"
-            logger.info("✅ Railway-optimized Chromium launched")
+            logger.info("✅ FIXED Railway-optimized Chromium launched")
 
         except Exception as chromium_error:
             logger.warning(f"⚠️ Railway Chromium failed: {chromium_error}")
             # Fallback to Firefox for Railway
             try:
-                logger.info("🦊 Falling back to Railway-optimized Firefox...")
+                logger.info("🦊 Falling back to FIXED Railway-optimized Firefox...")
                 self.browser = await self.playwright.firefox.launch(
                     headless=True,
                     firefox_user_prefs={
@@ -253,14 +297,13 @@ class SmartRestaurantScraper:
                 )
                 self.browser_type = "firefox_railway"
                 self.stats["browser_used"] = "firefox_railway"
-                logger.info("✅ Railway-optimized Firefox launched")
+                logger.info("✅ FIXED Railway-optimized Firefox launched")
             except Exception as firefox_error:
                 logger.error(f"❌ All Railway browsers failed. Chromium: {chromium_error}, Firefox: {firefox_error}")
                 raise Exception(f"Browser launch failed on Railway: {firefox_error}")
 
     async def _launch_with_fallbacks(self):
         """Enhanced fallback sequence for local development"""
-        # Try WebKit first (lightest option)
         try:
             await self._launch_webkit()
             self.stats["browser_used"] = "webkit"
@@ -278,13 +321,10 @@ class SmartRestaurantScraper:
                 logger.info("✅ Minimal Chromium launched as last resort")
 
     async def _launch_webkit(self):
-        """WebKit launch with ONLY WebKit-compatible arguments (simplified)"""
+        """WebKit launch with ONLY WebKit-compatible arguments"""
         if not self.playwright:
             raise RuntimeError("Playwright not initialized")
-        self.browser = await self.playwright.webkit.launch(
-            headless=True
-            # NO ARGUMENTS - WebKit is very picky about args
-        )
+        self.browser = await self.playwright.webkit.launch(headless=True)
         self.browser_type = "webkit"
 
     async def _launch_firefox(self):
@@ -294,22 +334,16 @@ class SmartRestaurantScraper:
         self.browser = await self.playwright.firefox.launch(
             headless=True,
             firefox_user_prefs={
-                # DISABLE IMAGES AND MEDIA
-                'permissions.default.image': 2,          # Block images
-                'media.autoplay.enabled': False,         # No autoplay
-                # PERFORMANCE OPTIMIZATIONS  
-                'browser.cache.disk.enable': False,      # No disk cache
-                'browser.cache.memory.enable': True,     # Memory cache only
-                'network.dns.disableIPv6': True,         # IPv4 only (faster)
-                # PRIVACY (faster loading)
-                'privacy.trackingprotection.enabled': True,   # Block trackers
-                'dom.webnotifications.enabled': False,        # No notifications
-                'geo.enabled': False,                          # No geolocation
+                'permissions.default.image': 2,
+                'media.autoplay.enabled': False,
+                'browser.cache.disk.enable': False,
+                'browser.cache.memory.enable': True,
+                'network.dns.disableIPv6': True,
+                'privacy.trackingprotection.enabled': True,
+                'dom.webnotifications.enabled': False,
+                'geo.enabled': False,
             },
-            args=[
-                '--memory-pressure-off',
-                '--no-remote'
-            ]
+            args=['--memory-pressure-off', '--no-remote']
         )
         self.browser_type = "firefox"
 
@@ -320,7 +354,6 @@ class SmartRestaurantScraper:
         self.browser = await self.playwright.chromium.launch(
             headless=True,
             args=[
-                # EXISTING ARGS
                 '--no-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
@@ -329,60 +362,51 @@ class SmartRestaurantScraper:
                 '--disable-default-apps',
                 '--disable-extensions',
                 '--disable-plugins',
+                '--disable-sync',
+                '--disable-translate',
+                '--disable-web-security',
                 '--memory-pressure-off',
-                '--max_old_space_size=256',  # REDUCED: From 512 to 256MB
                 '--single-process',
-                '--disable-features=VizDisplayCompositor',
-
-                # NEW TEXT-ONLY OPTIMIZATIONS
-                '--blink-settings=imagesEnabled=false',      # Disable images at Blink level
-                '--disable-images',                          # Additional image blocking
                 '--disable-background-timer-throttling',
                 '--disable-renderer-backgrounding',
-                '--disable-features=TranslateUI,BlinkGenPropertyTrees',
-                '--disable-audio-output',                    # No audio needed
-                '--mute-audio',                              # Mute everything
-                '--disable-ipc-flooding-protection',        # Faster IPC
-                '--disable-domain-reliability',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-audio-output',
+                '--mute-audio',
+                '--blink-settings=imagesEnabled=false',
+                '--disable-images',
             ]
         )
         self.browser_type = "chromium_minimal"
 
     async def _create_optimized_context(self):
-        """Create browser context with enhanced optimizations"""
-        try:
-            for i in range(self.max_concurrent):
-                if not self.browser:
-                    raise RuntimeError("Browser not initialized")
+        """FIXED: Create browser contexts with better lifecycle management"""
+        if not self.browser:
+            raise RuntimeError("Browser not initialized")
+
+        # FIXED: Clear old contexts first
+        for context in self.context:
+            try:
+                await context.close()
+            except Exception as e:
+                logger.debug(f"Context cleanup error (non-critical): {e}")
+        self.context.clear()
+
+        # Create fresh contexts
+        for i in range(self.max_concurrent):
+            try:
                 context = await self.browser.new_context(
-                    viewport={'width': 1024, 'height': 600},  # Smaller viewport
-                    user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 TextExtractor/1.0',
+                    viewport={'width': 1920, 'height': 1080},
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                     ignore_https_errors=True,
-                    bypass_csp=True,
-                    # Enhanced optimizations
-                    java_script_enabled=True,  # Keep for dynamic content
-                    extra_http_headers={
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                        'Accept-Language': 'en-US,en;q=0.9',
-                        'Accept-Encoding': 'gzip, deflate',
-                        'Cache-Control': 'no-cache',
-                        'DNT': '1'  # Do Not Track
-                    },
-                    permissions=[],
-                    geolocation=None,
+                    java_script_enabled=True,
+                    bypass_csp=True
                 )
-
-                # Set optimized timeouts
-                context.set_default_timeout(self.default_timeout)
-                context.set_default_navigation_timeout(self.default_timeout)
-
                 self.context.append(context)
+                logger.debug(f"✅ Context {i+1} created")
+            except Exception as e:
+                logger.error(f"❌ Failed to create context {i+1}: {e}")
+                raise
 
-            logger.info(f"✅ {len(self.context)} enhanced contexts created ({self.browser_type})")
-
-        except Exception as e:
-            logger.error(f"❌ Failed to create browser context: {e}")
-            raise
 
     async def _configure_page_with_adblock(self, page: Page):
         """
@@ -526,146 +550,130 @@ class SmartRestaurantScraper:
             logger.debug(f"Scrolling error (non-critical): {e}")
 
     async def _scrape_single_url(self, url: str, context_index: int = 0) -> Dict[str, Any]:
-        """
-        ENHANCED: Single URL scraping with multi-strategy content extraction
-        """
-        await self._ensure_browser_session()  # Ensure session is active
-
-        domain = urlparse(url).netloc
-        start_time = time.time()
-        page: Optional[Page] = None
+        """FIXED: Single URL scraping with operation tracking"""
+        await self._start_operation()  # FIXED: Track active operation
 
         try:
-            logger.info(f"🎭 Enhanced scraping: {url} (timeout: {self.default_timeout/1000}s, browser: {self.browser_type})")
+            await self._ensure_browser_session()  # Ensure session is active
 
-            # Get context with error handling
-            if not self.context:
-                raise Exception("No browser context available")
+            domain = urlparse(url).netloc
+            start_time = time.time()
+            page: Optional[Page] = None
 
-            context = self.context[context_index % len(self.context)]
-            page = await context.new_page()
+            try:
+                logger.info(f"🎭 FIXED scraping: {url} (timeout: {self.default_timeout/1000}s, browser: {self.browser_type})")
 
-            # Configure page with timeout
-            await asyncio.wait_for(
-                self._configure_page_with_adblock(page), 
-                timeout=5.0
-            )
+                # FIXED: Better context validation
+                if not self.context:
+                    raise Exception("No browser context available")
 
-            # Smart timeout strategy
-            timeout_ms = self.domain_timeouts.get(domain, self.default_timeout)
-            page.set_default_timeout(timeout_ms)
-            page.set_default_navigation_timeout(timeout_ms)
+                context = self.context[context_index % len(self.context)]
 
-            # Navigate with retry logic
-            load_success = False
-            last_error = None
-
-            for attempt in range(2):  # Maximum 2 attempts
+                # FIXED: Validate context before creating page
                 try:
-                    logger.debug(f"🌐 Attempt {attempt + 1}: Loading {domain}")
+                    # Test if context is still valid
+                    context.pages
+                except Exception as context_error:
+                    logger.warning(f"⚠️ Context invalid, recreating: {context_error}")
+                    await self._create_optimized_context()
+                    context = self.context[context_index % len(self.context)]
 
-                    # Use domcontentloaded for faster loading
-                    await page.goto(url, wait_until='domcontentloaded', timeout=timeout_ms)
-                    load_success = True
-                    logger.debug(f"✅ Page loaded successfully on attempt {attempt + 1}")
-                    break
+                page = await context.new_page()
 
-                except PlaywrightTimeoutError as te:
-                    last_error = f"Timeout after {timeout_ms/1000}s"
-                    logger.warning(f"⏰ Attempt {attempt + 1} timed out: {te}")
-                    if attempt == 0:
-                        await asyncio.sleep(1.0)  # Brief pause before retry
-                except Exception as e:
-                    last_error = str(e)
-                    logger.warning(f"⚠️ Attempt {attempt + 1} failed: {e}")
-                    if attempt == 0:
-                        await asyncio.sleep(1.0)
+                # Configure page with timeout
+                await asyncio.wait_for(
+                    self._configure_page_with_adblock(page), 
+                    timeout=10.0
+                )
 
-            if not load_success:
-                self.stats["timeout_failures"] += 1
-                raise Exception(f"Failed to load after 2 attempts: {last_error}")
+                # Navigate with domain-specific timeout
+                timeout = self.domain_timeouts.get(domain, self.default_timeout)
+                logger.debug(f"🌐 Navigating to {url} with {timeout/1000}s timeout")
 
-            # Human-like behavior: wait and read the page
-            await asyncio.sleep(self.load_wait_time)
+                await page.goto(
+                    url, 
+                    wait_until='domcontentloaded',
+                    timeout=timeout
+                )
 
-            # Dismiss overlays
-            await self._dismiss_overlays(page)
+                # Human-like behavior
+                await asyncio.sleep(self.load_wait_time)
+                await self._dismiss_overlays(page)
+                await self._light_scroll(page)
 
-            # Light scrolling to trigger lazy content
-            await self._light_scroll(page)
+                # FIXED: Better content extraction with validation
+                content = await self._extract_content_enhanced_multiStrategy(page)
 
-            # ENHANCED: Multi-strategy content extraction with detailed logging
-            logger.info("🎯 Starting enhanced multi-strategy content extraction")
-            content = await self._extract_content_enhanced_multiStrategy(page)
-            logger.info(f"🎯 Content extraction completed: {len(content)} characters")
 
-            if not content or len(content.strip()) < 100:
-                self.stats["content_failures"] += 1
-                logger.warning(f"⚠️ Insufficient content extracted from {url} ({len(content)} chars)")
+                if not content or len(content.strip()) < 100:
+                    self.stats["content_failures"] += 1
+                    logger.warning(f"⚠️ Insufficient content from {url} ({len(content)} chars)")
+                    return {
+                        "success": False,
+                        "url": url,
+                        "error": "Insufficient content extracted",
+                        "content_length": len(content) if content else 0,
+                        "browser_used": self.browser_type,
+                        "strategy": "human_mimic"
+                    }
+
+                # Get page title
+                try:
+                    title = await page.title()
+                except:
+                    title = ""
+
+                processing_time = time.time() - start_time
+                self.stats["total_load_time"] += processing_time
+                self.stats["successful_scrapes"] += 1
+                self.stats["total_processed"] += 1
+
+                logger.info(f"✅ FIXED scraping success: {url} ({len(content)} chars, {processing_time:.2f}s)")
+
                 return {
-                    "success": False,
+                    "success": True,
                     "url": url,
-                    "error": "Insufficient content extracted",
-                    "content_length": len(content) if content else 0,
+                    "title": title,
+                    "content": content,
+                    "processing_time": processing_time,
+                    "content_length": len(content),
                     "browser_used": self.browser_type,
                     "strategy": "human_mimic"
                 }
 
-            # Get page title
-            try:
-                title = await page.title()
-            except:
-                title = ""
+            except Exception as e:
+                processing_time = time.time() - start_time
+                self.stats["failed_scrapes"] += 1
+                self.stats["total_processed"] += 1
 
-            processing_time = time.time() - start_time
-            self.stats["total_load_time"] += processing_time
-            self.stats["successful_scrapes"] += 1
-            self.stats["total_processed"] += 1
+                error_type = type(e).__name__
+                logger.error(f"❌ FIXED scraping failed: {url}")
+                logger.error(f"   Error: {e}")
+                logger.error(f"   Type: {error_type}")
+                logger.error(f"   Time: {processing_time:.2f}s")
+                logger.error(f"   Browser: {self.browser_type}")
 
-            logger.info(f"✅ Enhanced scraping success: {url} ({len(content)} chars, {processing_time:.2f}s)")
+                return {
+                    "success": False,
+                    "url": url,
+                    "error": str(e),
+                    "error_type": error_type,
+                    "processing_time": processing_time,
+                    "browser_used": self.browser_type,
+                    "strategy": "human_mimic"
+                }
 
-            return {
-                "success": True,
-                "url": url,
-                "title": title,
-                "content": content,
-                "processing_time": processing_time,
-                "content_length": len(content),
-                "browser_used": self.browser_type,
-                "strategy": "human_mimic"
-            }
-
-        except Exception as e:
-            processing_time = time.time() - start_time
-            self.stats["failed_scrapes"] += 1
-            self.stats["total_processed"] += 1
-
-            # Enhanced error logging
-            error_type = type(e).__name__
-            logger.error(f"❌ Enhanced scraping failed: {url}")
-            logger.error(f"   Error: {e}")
-            logger.error(f"   Type: {error_type}")
-            logger.error(f"   Time: {processing_time:.2f}s")
-            logger.error(f"   Browser: {self.browser_type}")
-
-            return {
-                "success": False,
-                "url": url,
-                "error": str(e),
-                "error_type": error_type,
-                "processing_time": processing_time,
-                "browser_used": self.browser_type,
-                "strategy": "human_mimic"
-            }
+            finally:
+                # FIXED: Proper page cleanup
+                if page:
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass  # Page might already be closed
 
         finally:
-            # Critical: Always close page to free memory
-            if page:
-                try:
-                    await page.close()
-                    logger.debug(f"🗑️ Page closed for {url}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Error closing page: {e}")
+            await self._end_operation()  # FIXED: Always end operation tracking
+
 
     async def _extract_content_enhanced_multiStrategy(self, page: Page) -> str:
         """
@@ -933,95 +941,6 @@ class SmartRestaurantScraper:
             logger.error(f"     Page URL: {page.url if page else 'unknown'}")
             return ""
 
-    async def _try_keyboard_selection(self, page: Page) -> str:
-        """
-        Enhanced keyboard selection with detailed debugging
-        """
-        try:
-            # Wait for page to be fully ready for selection
-            await asyncio.sleep(self.interaction_delay)
-
-            # Browser info for debugging
-            browser_info = await page.evaluate("navigator.userAgent")
-            logger.debug(f"🔍 Browser: {browser_info[:100]}...")
-
-            # Try different keyboard selection strategies with proper debugging
-            selection_strategies = [
-                ("Meta+a", "Mac/WebKit-style (Cmd+A)"),
-                ("Control+a", "Windows/Linux-style (Ctrl+A)"),
-            ]
-
-            for key_combination, description in selection_strategies:
-                try:
-                    logger.debug(f"🔤 Attempting {description}: {key_combination}")
-
-                    # Clear any existing selection first
-                    await page.evaluate("window.getSelection().removeAllRanges()")
-                    await asyncio.sleep(0.1)
-
-                    # Focus on the body to ensure keyboard events work
-                    await page.evaluate("document.body.focus()")
-                    await asyncio.sleep(0.1)
-
-                    # Perform keyboard selection
-                    await page.keyboard.press(key_combination)
-                    await asyncio.sleep(self.interaction_delay)
-
-                    # Debug: Check what was actually selected
-                    selection_info = await page.evaluate("""
-                        () => {
-                            const selection = window.getSelection();
-                            return {
-                                rangeCount: selection.rangeCount,
-                                selectedText: selection.toString().substring(0, 200) + '...',
-                                selectedLength: selection.toString().length,
-                                anchorNode: selection.anchorNode ? selection.anchorNode.nodeName : 'none',
-                                focusNode: selection.focusNode ? selection.focusNode.nodeName : 'none'
-                            };
-                        }
-                    """)
-
-                    logger.debug(f"🔍 Selection debug: {selection_info}")
-
-                    # Extract the selected content
-                    content = await page.evaluate("""
-                        () => {
-                            const selection = window.getSelection();
-                            if (selection.rangeCount > 0 && selection.toString().length > 0) {
-                                const range = selection.getRangeAt(0);
-                                const div = document.createElement('div');
-                                div.appendChild(range.cloneContents());
-
-                                // Remove non-content elements but keep the content structure
-                                const elementsToRemove = div.querySelectorAll(
-                                    'script, style, noscript'
-                                );
-                                elementsToRemove.forEach(el => el.remove());
-
-                                const text = div.textContent || div.innerText || '';
-                                return text;
-                            }
-                            return null;
-                        }
-                    """)
-
-                    # Validate that we got actual content
-                    if content and len(content.strip()) > 100:
-                        logger.debug(f"✅ {description} selection successful: {len(content)} chars")
-                        return content
-                    else:
-                        logger.debug(f"❌ {description} selection returned insufficient content: {len(content) if content else 0} chars")
-
-                except Exception as e:
-                    logger.debug(f"❌ {description} selection error: {e}")
-                    continue
-
-            return ""
-
-        except Exception as e:
-            logger.debug(f"Keyboard selection error: {e}")
-            return ""
-
     async def _try_manual_selection(self, page: Page) -> str:
         """
         Manual selection approach when keyboard selection fails
@@ -1218,12 +1137,17 @@ class SmartRestaurantScraper:
         return cleaned
 
     async def _stop_browser_session(self):
-        """Stop browser session and free memory"""
+        """FIXED: Stop browser session with proper cleanup"""
+        # FIXED: Don't stop if there are active operations
+        if self._active_operations > 0:
+            logger.warning(f"🚫 Browser shutdown blocked - {self._active_operations} active operations")
+            return
+
         if not self.browser:
             return
 
         try:
-            # Close context first
+            # Close contexts first
             for context in self.context:
                 try:
                     await context.close()
@@ -1242,7 +1166,7 @@ class SmartRestaurantScraper:
                 self.playwright = None
 
             self.stats["browser_stops"] += 1
-            logger.info(f"🎭 Enhanced browser session closed ({self.browser_type})")
+            logger.info(f"🎭 FIXED browser session closed ({self.browser_type})")
 
         except Exception as e:
             logger.error(f"Error stopping browser session: {e}")
@@ -1254,13 +1178,20 @@ class SmartRestaurantScraper:
                 self.cleanup_timer = None
                 self._cleanup_scheduled = False
 
-    async def force_cleanup(self):
-        """Force immediate cleanup (for testing/debugging)"""
-        await self._stop_browser_session()
-
     async def stop(self):
-        """Clean up all resources"""
-        logger.info("🛑 Stopping Enhanced Smart Restaurant Scraper...")
+        """FIXED: Clean up all resources with operation check"""
+        logger.info("🛑 Stopping FIXED Smart Restaurant Scraper...")
+
+        # Wait for active operations to complete (with timeout)
+        max_wait = 30  # 30 seconds max
+        wait_start = time.time()
+
+        while self._active_operations > 0 and (time.time() - wait_start) < max_wait:
+            logger.info(f"⏳ Waiting for {self._active_operations} operations to complete...")
+            await asyncio.sleep(1)
+
+        if self._active_operations > 0:
+            logger.warning(f"⚠️ Force stopping with {self._active_operations} operations still active")
 
         # Cancel cleanup timer
         if self.cleanup_timer:
@@ -1272,8 +1203,12 @@ class SmartRestaurantScraper:
 
         # Log final stats
         self._log_enhanced_stats()
-        logger.info("🛑 Enhanced Smart Restaurant Scraper stopped")
+        logger.info("🛑 FIXED Smart Restaurant Scraper stopped")
 
+    async def force_cleanup(self):
+        """Force immediate cleanup (for testing/debugging)"""
+        await self._stop_browser_session()
+        
     def _log_enhanced_stats(self):
         """Enhanced stats logging with detailed breakdown"""
         if self.stats["total_processed"] > 0:
@@ -1290,7 +1225,6 @@ class SmartRestaurantScraper:
             logger.info(f"   ⚡ Avg Load Time: {(self.stats['total_load_time']/max(self.stats['total_processed'], 1)):.2f}s")
             logger.info(f"   🧠 Session Managed: {self.stats['session_managed']}")
 
-    # PRESERVED: Keep all original methods for compatibility
     async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Main entry point - Process search results with enhanced concurrent scraping
