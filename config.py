@@ -13,28 +13,17 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# API KEYS - Environment Variables
-# ============================================================================
-
-# Required APIs
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY")
-BRAVE_MEDIA_API_KEY = os.environ.get("BRAVE_MEDIA_API_KEY")  # Separate key for media searches
+BRAVE_MEDIA_API_KEY = os.environ.get("BRAVE_MEDIA_API_KEY")
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
+GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
+GOOGLE_MAPS_API_KEY2 = os.environ.get("GOOGLE_MAPS_API_KEY2")
+LANGSMITH_API_KEY = os.environ.get("LANGSMITH_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-
-# AI Model APIs
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-
-# Search APIs - FIXED: Added missing TAVILY_API_KEY
-TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
-
-# Optional APIs
-GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
-LANGSMITH_API_KEY = os.environ.get("LANGSMITH_API_KEY")
 
 # ============================================================================
 # AI MODEL CONFIGURATION
