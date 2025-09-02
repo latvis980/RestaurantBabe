@@ -254,6 +254,10 @@ class FollowUpSearchAgent:
             google_url = maps_info.get("url")
             address_component = maps_info.get("address_component", [])
 
+            if place_id:
+                updated_restaurant["place_id"] = place_id
+                logger.debug(f"✅ Stored place_id: {place_id} for {restaurant_name}")
+
             # Check if restaurant is closed first
             business_status = maps_info.get("business_status")
 
