@@ -1,3 +1,4 @@
+# agents/search_agent.py
 """
 Enhanced Search Agent with Parallel Brave + Tavily Search and AI Filtering
 
@@ -71,63 +72,27 @@ class BraveSearchAgent:
         - Restaurant guides and gastronomic awards (Michelin, The World's 50 Best, World of Mouth)
         VALID CONTENT (score 0.6-0.8):
         - Curated lists of multiple restaurants (e.g., "Top 10 restaurants in Paris", "Best artisanal pizza in Rome", etc.)
-        - Food critic reviews of a single restaurant, but ONLY in professional media
-        - Articles in reputable local media discussing various dining options in an area
-        - Food blog articles with restaurant recommendations
-        - Travel articles mentioning multiple dining options
-        
-        NOT VALID CONTENT (score < 0.3):
-        - Official website of a single restaurant
-        - ANYTHING on Tripadvisor, Yelp, OpenTable, RestaurantGuru and other UGC sites
-        - Wikipedia
-        - Collections of restaurants on booking and delivery websites like Uber Eats, The Fork, Glovo, Bolt, Wolt, Mesa24, etc.
-        - Social media content on Facebook and Instagram without professional curation
-        - ANY Wanderlog content
-        - Single restaurant reviews (with exception of professional media)
-        - Social media posts about individual dining experiences
-        - Forum/Reddit discussions without professional curation
-        - Hotel booking sites like Booking.com, Agoda, Expedia, Jalan, etc.
-        - Websites of irrelevant businesses: real estate agencies, rental companies, tour booking sites, etc.
-        - Video content (YouTube, TikTok, etc.)
-        
-        SCORING CRITERIA:
-        - Multiple restaurants mentioned (essential, with the only exception of single restaurant reviews in professional media)
-        - Professional curation or expertise evident
-        - Local expertise and knowledge
-        - Detailed professional descriptions of restaurants/cuisine
-        FORMAT:
-        Respond with a JSON object containing:
-        {{
-          "is_restaurant_list": true/false,
-          "restaurant_count": estimated number of restaurants mentioned,
-          "content_quality": 0.0-1.0,
-          "passed_filter": true/false,
-          "reasoning": "brief explanation of your decision"
-        }}
+        - Local dining guides with clear restaurant listings
+        - Review aggregators with multiple restaurant options
+        - Food-focused travel blogs with clear recommendations
+        REJECT THESE SOURCES (score 0.0-0.4):  
+        - Individual restaurant websites (we want articles ABOUT restaurants, not FROM restaurants)
+        - Booking platforms (OpenTable, Resy, etc.) unless they have editorial content
+        - General business directories or listings (Yelp business pages, Google business pages) 
+        - Generic travel content without specific restaurant focus
+        - Social media posts or content
+        - Personal blogs without clear expertise or local knowledge
+        - Heavily commercial or promotional content
+
+        Return ONLY a JSON object with: {"score": 0.X, "reasoning": "brief explanation"}
+        Do not wrap your response in markdown code blocks.
         """
 
-        # Set up evaluation prompt
+        # Initialize evaluation prompt template
         self.eval_prompt = ChatPromptTemplate.from_messages([
             ("system", self.eval_system_prompt),
-            ("human", "URL: {url}\nTitle: {title}\nDescription: {description}\nContent Preview: {content_preview}")
+            ("user", "Title: {{title}}\nDescription: {{description}}\nURL: {{url}}\nContent Preview: {{content_preview}}")
         ])
-
-        # Create evaluation chain
-        self.eval_chain = self.eval_prompt | self.eval_model
-
-        # Statistics tracking
-        self.stats = {
-            "brave_searches": 0,
-            "tavily_searches": 0,
-            "total_results": 0,
-            "filtered_results": 0,
-            "high_quality_sources": 0,
-            "database_saves": 0
-        }
-
-        logger.info("✅ Enhanced Search Agent initialized with parallel search and AI filtering")
-
-    # Replace the search method in your agents/search_agent.py with this fixed version
 
     def search(self, search_queries: List[str], destination: str, query_metadata: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """
@@ -182,8 +147,7 @@ class BraveSearchAgent:
             logger.error(f"❌ Search failed: {e}")
             return []
 
-
-    async def _parallel_search_and_filter(self, search_queries: List[str], destination: str, query_metadata: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+    async def _parallel_search_and_filter(self, search_queries: List[str], destination: str, query_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         FIXED: Execute parallel searches and filtering pipeline with proper client management
         """
@@ -243,7 +207,7 @@ class BraveSearchAgent:
         logger.info(f"✅ Final filtered results: {len(filtered_results)}")
         return filtered_results
 
-    def _categorize_queries(self, search_queries: List[str], destination: str, query_metadata: Dict[str, Any] = None) -> Tuple[List[str], List[str]]:
+    def _categorize_queries(self, search_queries: List[str], destination: str, query_metadata: Dict[str, Any]) -> Tuple[List[str], List[str]]:
         """Categorize queries into English and local language based on AI metadata"""
         english_queries = []
         local_queries = []
@@ -476,7 +440,7 @@ class BraveSearchAgent:
 
             results_with_previews.append(result)
 
-        logger.info("✅ Preview fetching completed")
+        logger.info(f"✅ Preview fetching completed")
         return results_with_previews
 
     async def _fetch_single_preview(self, session: aiohttp.ClientSession, result: Dict[str, Any]) -> str:
@@ -554,12 +518,14 @@ class BraveSearchAgent:
                 logger.error(f"❌ Evaluation failed for {result.get('url', 'unknown')}: {evaluation}")
                 continue
 
-            if evaluation and evaluation.get('score', 0) >= 0.6:
+            # Check if evaluation is valid and has required score
+            if evaluation and isinstance(evaluation, dict) and evaluation.get('score', 0) >= 0.6:
                 result['ai_evaluation'] = evaluation
                 filtered_batch.append(result)
                 logger.debug(f"✅ Passed: {result.get('title', 'No title')} (score: {evaluation.get('score')})")
             else:
-                logger.debug(f"❌ Filtered: {result.get('title', 'No title')} (score: {evaluation.get('score') if evaluation else 'N/A'})")
+                score = evaluation.get('score') if evaluation and isinstance(evaluation, dict) else 'N/A'
+                logger.debug(f"❌ Filtered: {result.get('title', 'No title')} (score: {score})")
 
         return filtered_batch
 
@@ -577,10 +543,32 @@ class BraveSearchAgent:
 
             # Parse JSON response
             try:
-                evaluation = json.loads(response.content.strip())
+                # Handle both string and list responses from the model
+                content = response.content
+                if isinstance(content, list):
+                    # If content is a list, join it to a string
+                    content_str = ''.join(str(item) for item in content)
+                else:
+                    content_str = str(content)
+
+                # FIXED: Remove markdown code blocks if present
+                content_str = content_str.strip()
+                if content_str.startswith('```json'):
+                    # Remove ```json at start and ``` at end
+                    content_str = content_str[7:]  # Remove ```json
+                    if content_str.endswith('```'):
+                        content_str = content_str[:-3]  # Remove trailing ```
+                elif content_str.startswith('```'):
+                    # Remove generic ``` blocks
+                    content_str = content_str[3:]  # Remove ```
+                    if content_str.endswith('```'):
+                        content_str = content_str[:-3]  # Remove trailing ```
+
+                content_str = content_str.strip()
+                evaluation = json.loads(content_str)
                 return evaluation
-            except json.JSONDecodeError:
-                logger.error(f"❌ Invalid JSON response for evaluation: {response.content}")
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ Invalid JSON response for evaluation: {content_str[:200]}... Error: {e}")
                 return None
 
         except Exception as e:
@@ -599,15 +587,6 @@ class BraveSearchAgent:
 
         except Exception as e:
             logger.error(f"❌ Failed to store quality sources: {e}")
-
-    def _clean_url_for_storage(self, url: str) -> str:
-        """Clean URL for database storage (until first dash, website's main page)"""
-        try:
-            parsed = urlparse(url)
-            # Return scheme + netloc (main domain)
-            return f"{parsed.scheme}://{parsed.netloc}"
-        except Exception:
-            return url
 
     def get_search_stats(self) -> Dict[str, Any]:
         """Get current search statistics"""
