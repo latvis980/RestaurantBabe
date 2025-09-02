@@ -1195,8 +1195,8 @@ class SmartRestaurantScraper:
             "success_rate": (self.stats["successful_scrapes"] / max(self.stats["total_processed"], 1)) * 100,
             "concurrent_context": len(self.context),
             "session_active": self.browser is not None,
-            "session_timeout_seconds": self.session_timeout,
-            "last_activity": self.last_activity,
+            "session_timeout_seconds": 0,  # FIXED: No longer using session timeout
+            "last_activity": None,  # FIXED: No longer tracking last activity
             "extraction_method_breakdown": self.stats["selection_method_stats"]
         }
 
@@ -1205,12 +1205,12 @@ class SmartRestaurantScraper:
         return {
             'browser_active': self.browser is not None,
             'browser_type': self.browser_type if self.browser else None,
-            'session_timeout': self.session_timeout,
+            'session_timeout': 0,  # FIXED: No session timeout
             'memory_optimized': True,
-            'session_managed': True,
+            'session_managed': False,  # FIXED: Session management disabled
             'resource_blocking_enabled': True,
-            'css_blocking_disabled': True,  # New: CSS is allowed for content detection
-            'estimated_memory_idle': "~0MB (browser closed after timeout)",
+            'css_blocking_disabled': True,
+            'estimated_memory_idle': "~0MB (browser closed on stop)",
             'estimated_memory_active': f"~150-200MB ({self.browser_type})",
             'browser_lifecycle': {
                 'starts': self.stats['browser_starts'],
