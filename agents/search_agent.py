@@ -58,7 +58,7 @@ class BraveSearchAgent:
             "filtered_results": 0
         }
 
-        # Your exact filtering prompt - DO NOT CHANGE
+        # Restored working prompt - DO NOT CHANGE
         self.eval_system_prompt = """
         You are an expert at evaluating web content about restaurants.
         Your task is to analyze a web page's content and rate it using the criteria below.
@@ -72,20 +72,39 @@ class BraveSearchAgent:
         - Restaurant guides and gastronomic awards (Michelin, The World's 50 Best, World of Mouth)
         VALID CONTENT (score 0.6-0.8):
         - Curated lists of multiple restaurants (e.g., "Top 10 restaurants in Paris", "Best artisanal pizza in Rome", etc.)
-        - Local dining guides with clear restaurant listings
-        - Review aggregators with multiple restaurant options
-        - Food-focused travel blogs with clear recommendations
-        REJECT THESE SOURCES (score 0.0-0.4):  
-        - Individual restaurant websites (we want articles ABOUT restaurants, not FROM restaurants)
-        - Booking platforms (OpenTable, Resy, etc.) unless they have editorial content
-        - General business directories or listings (Yelp business pages, Google business pages) 
-        - Generic travel content without specific restaurant focus
-        - Social media posts or content
-        - Personal blogs without clear expertise or local knowledge
-        - Heavily commercial or promotional content
+        - Food critic reviews of a single restaurant, but ONLY in professional media
+        - Articles in reputable local media discussing various dining options in an area
+        - Food blog articles with restaurant recommendations
+        - Travel articles mentioning multiple dining options
 
-        Return ONLY a JSON object with: {"score": 0.X, "reasoning": "brief explanation"}
-        Do not wrap your response in markdown code blocks.
+        NOT VALID CONTENT (score < 0.3):
+        - Official website of a single restaurant
+        - ANYTHING on Tripadvisor, Yelp, OpenTable, RestaurantGuru and other UGC sites
+        - Wikipedia
+        - Collections of restaurants on booking and delivery websites like Uber Eats, The Fork, Glovo, Bolt, Wolt, Mesa24, etc.
+        - Social media content on Facebook and Instagram without professional curation
+        - ANY Wanderlog content
+        - Single restaurant reviews (with exception of professional media)
+        - Social media posts about individual dining experiences
+        - Forum/Reddit discussions without professional curation
+        - Hotel booking sites like Booking.com, Agoda, Expedia, Jalan, etc.
+        - Websites of irrelevant businesses: real estate agencies, rental companies, tour booking sites, etc.
+        - Video content (YouTube, TikTok, etc.)
+
+        SCORING CRITERIA:
+        - Multiple restaurants mentioned (essential, with the only exception of single restaurant reviews in professional media)
+        - Professional curation or expertise evident
+        - Local expertise and knowledge
+        - Detailed professional descriptions of restaurants/cuisine
+        FORMAT:
+        Respond with a JSON object containing:
+        {
+          "is_restaurant_list": true/false,
+          "restaurant_count": estimated number of restaurants mentioned,
+          "content_quality": 0.0-1.0,
+          "passed_filter": true/false,
+          "reasoning": "brief explanation of your decision"
+        }
         """
 
         # Initialize evaluation prompt template
@@ -518,14 +537,15 @@ class BraveSearchAgent:
                 logger.error(f"❌ Evaluation failed for {result.get('url', 'unknown')}: {evaluation}")
                 continue
 
-            # Check if evaluation is valid and has required score
-            if evaluation and isinstance(evaluation, dict) and evaluation.get('score', 0) >= 0.6:
+            # Check if evaluation is valid and passed the filter
+            if evaluation and isinstance(evaluation, dict) and evaluation.get('passed_filter', False):
                 result['ai_evaluation'] = evaluation
+                result['quality_score'] = evaluation.get('content_quality', 0.0)
                 filtered_batch.append(result)
-                logger.debug(f"✅ Passed: {result.get('title', 'No title')} (score: {evaluation.get('score')})")
+                logger.debug(f"✅ Passed: {result.get('title', 'No title')} (quality: {evaluation.get('content_quality', 0)})")
             else:
-                score = evaluation.get('score') if evaluation and isinstance(evaluation, dict) else 'N/A'
-                logger.debug(f"❌ Filtered: {result.get('title', 'No title')} (score: {score})")
+                quality = evaluation.get('content_quality') if evaluation and isinstance(evaluation, dict) else 'N/A'
+                logger.debug(f"❌ Filtered: {result.get('title', 'No title')} (quality: {quality})")
 
         return filtered_batch
 
@@ -553,6 +573,10 @@ class BraveSearchAgent:
 
                 # FIXED: Remove markdown code blocks if present
                 content_str = content_str.strip()
+
+                # Debug logging to see what we're getting
+                logger.debug(f"🔍 Raw AI response: {content_str[:200]}...")
+
                 if content_str.startswith('```json'):
                     # Remove ```json at start and ``` at end
                     content_str = content_str[7:]  # Remove ```json
@@ -565,14 +589,50 @@ class BraveSearchAgent:
                         content_str = content_str[:-3]  # Remove trailing ```
 
                 content_str = content_str.strip()
+
+                # Additional debug logging after cleaning
+                logger.debug(f"🧹 Cleaned content for parsing: {content_str}")
+
+                # Validate that we have content to parse
+                if not content_str:
+                    logger.error("❌ Empty content after cleaning markdown")
+                    return None
+
+                # Attempt to parse JSON
                 evaluation = json.loads(content_str)
+
+                # Validate the expected structure
+                if not isinstance(evaluation, dict):
+                    logger.error(f"❌ Expected dict, got {type(evaluation)}: {evaluation}")
+                    return None
+
+                # Check for required fields from working format
+                required_fields = ['is_restaurant_list', 'content_quality', 'passed_filter', 'reasoning']
+                missing_fields = [field for field in required_fields if field not in evaluation]
+
+                if missing_fields:
+                    logger.error(f"❌ Missing required fields: {missing_fields}. Got: {list(evaluation.keys())}")
+                    return None
+
+                # Ensure content_quality is numeric
+                try:
+                    quality = float(evaluation['content_quality'])
+                    evaluation['content_quality'] = quality
+                except (ValueError, TypeError):
+                    logger.error(f"❌ Invalid content_quality value: {evaluation.get('content_quality')}")
+                    return None
+
                 return evaluation
+
             except json.JSONDecodeError as e:
-                logger.error(f"❌ Invalid JSON response for evaluation: {content_str[:200]}... Error: {e}")
+                logger.error(f"❌ JSON parsing failed: {e}")
+                logger.error(f"❌ Content that failed to parse: {content_str}")
                 return None
 
         except Exception as e:
             logger.error(f"❌ AI evaluation error: {e}")
+            import traceback
+            logger.error(f"❌ Full traceback: {traceback.format_exc()}")
             return None
 
     async def _store_quality_sources(self, filtered_results: List[Dict[str, Any]], destination: str):
