@@ -155,7 +155,7 @@ class SmartRestaurantScraper:
         except Exception as e:
             logger.error(f"❌ Failed to start browser: {e}")
             self.stats["browser_launch_failures"] += 1
-            raiseraise
+            raise
 
     async def _launch_railway_optimized_browser(self):
         """FIXED: Railway-specific browser launch with better resource management"""
@@ -617,7 +617,7 @@ class SmartRestaurantScraper:
         page_url = page.url
         strategy_start_time = time.time()
 
-        logger.info(f"🎯 STARTING MULTI-STRATEGY CONTENT EXTRACTION")
+        logger.info("🎯 STARTING MULTI-STRATEGY CONTENT EXTRACTION")
         logger.info(f"🎯 Target URL: {page_url}")
         logger.info(f"🎯 Browser: {self.browser_type}")
 
@@ -1128,7 +1128,7 @@ class SmartRestaurantScraper:
             logger.info(f"   ✅ Success: {self.stats['successful_scrapes']}/{self.stats['total_processed']} ({(self.stats['successful_scrapes']/self.stats['total_processed']*100):.1f}%)")
             logger.info(f"   ❌ Failures: {self.stats['failed_scrapes']} ({self.stats['timeout_failures']} timeouts, {self.stats['content_failures']} content)")
             logger.info(f"   🚀 Browser Sessions: {self.stats['browser_starts']} starts, {self.stats['browser_stops']} stops")
-            logger.info(f"   🎯 Content Extraction Methods:")
+            logger.info("   🎯 Content Extraction Methods:")
             for method, count in self.stats["selection_method_stats"].items():
                 if count > 0:
                     logger.info(f"      {method}: {count}")
@@ -1138,10 +1138,7 @@ class SmartRestaurantScraper:
 
     async def scrape_search_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        OPTIMAL STRATEGY: 
-        1. Start browser ONCE at the beginning
-        2. Keep it open for ALL URLs in the batch
-        3. Close only when done with entire batch
+        FIXED: Process search results with proper URL validation
         """
         if not search_results:
             return []
@@ -1151,35 +1148,77 @@ class SmartRestaurantScraper:
         # Ensure browser is ready ONCE
         await self._ensure_browser_session()
 
-        # Process all URLs with the same browser session
-        urls = [result.get("url") for result in search_results if result.get("url")]
+        # FIXED: Filter out results without valid URLs
+        valid_urls = []
+        valid_results = []
+
+        for result in search_results:
+            url = result.get("url")
+            if url and isinstance(url, str) and url.strip():  # FIXED: Proper URL validation
+                valid_urls.append(url.strip())
+                valid_results.append(result)
+            else:
+                logger.warning(f"⚠️ Skipping result with invalid URL: {url}")
+
+        if not valid_urls:
+            logger.warning("⚠️ No valid URLs found in search results")
+            return search_results  # Return original results with no scraping data
+
+        logger.info(f"📊 Processing {len(valid_urls)} valid URLs out of {len(search_results)} total")
 
         # Concurrent scraping with persistent browser
         semaphore = asyncio.Semaphore(self.max_concurrent)
         tasks = [
             self._scrape_url_with_semaphore(semaphore, url, i % len(self.context))
-            for i, url in enumerate(urls)
+            for i, url in enumerate(valid_urls)
         ]
 
         # Wait for all scraping to complete
         scraping_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Process results
+        # FIXED: Process results with proper mapping
         enriched_results = []
-        for i, (original_result, scraping_result) in enumerate(zip(search_results, scraping_results)):
-            if isinstance(scraping_result, Exception):
-                logger.error(f"❌ Exception for URL {i}: {scraping_result}")
+        scraping_index = 0
+
+        for original_result in search_results:
+            url = original_result.get("url")
+
+            if url and isinstance(url, str) and url.strip():
+                # This result had a valid URL, so it was scraped
+                scraping_result = scraping_results[scraping_index]
+                scraping_index += 1
+
+                # FIXED: Always convert Exception to dict
+                if isinstance(scraping_result, Exception):
+                    logger.error(f"❌ Exception for URL {url}: {scraping_result}")
+                    scraping_result = {
+                        "success": False,
+                        "url": url,
+                        "error": str(scraping_result)
+                    }
+            else:
+                # This result had no valid URL, create a failure result
                 scraping_result = {
                     "success": False,
-                    "url": original_result.get("url"),
-                    "error": str(scraping_result)
+                    "url": url if url else "no_url_provided",
+                    "error": "No valid URL provided"
                 }
 
-            enriched_result = {**original_result, **scraping_result}
+            # FIXED: Now scraping_result is guaranteed to be a dict
+            if isinstance(scraping_result, dict):  # Extra safety check
+                enriched_result = {**original_result, **scraping_result}
+            else:
+                # Fallback if something unexpected happens
+                enriched_result = {
+                    **original_result,
+                    "success": False,
+                    "error": "Unexpected scraping result type"
+                }
+
             enriched_results.append(enriched_result)
 
         successful = sum(1 for r in scraping_results if isinstance(r, dict) and r.get('success'))
-        logger.info(f"✅ Batch complete: {successful}/{len(urls)} successful - browser staying open")
+        logger.info(f"✅ Batch complete: {successful}/{len(valid_urls)} successful - browser staying open")
 
         return enriched_results
 
