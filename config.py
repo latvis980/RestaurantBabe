@@ -4,6 +4,9 @@ Complete Configuration for Restaurant Recommendation System
 Updated for current architecture with all required settings
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 from enum import Enum
 import logging
