@@ -518,7 +518,6 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
     """Execute city-wide restaurant search using existing orchestrator"""
     processing_msg = None
     try:
-        add_run_log("INFO", f"Starting city search: {search_query}")
         create_cancel_event(user_id, chat_id)
 
         # Send processing message with video
@@ -530,108 +529,18 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
                     caption="🔍 <b>Searching for the best restaurants...</b>\n\n⏱ This might take a minute while I check with my sources.",
                     parse_mode='HTML'
                 )
-            add_run_log("INFO", "Sent processing video message")
         except Exception as e:
             logger.warning(f"Could not send video: {e}")
-            add_run_log("WARNING", f"Could not send video: {e}")
-            # Fallback to text message
             processing_msg = bot.send_message(
                 chat_id,
                 "🔍 <b>Searching for the best restaurants...</b>\n\n⏱ This might take a minute while I check with my sources.",
-                parse_mode='HTML'
-            )
-            add_run_log("INFO", "Sent processing text message")
+                parse_mode='HTML')
 
-        # Check for early cancellation
-        if is_search_cancelled(user_id):
-            add_run_log("INFO", "Search cancelled before orchestrator call")
-            finish_run_log(success=False, error_message="Search cancelled by user")
-            return
-
-        # Get orchestrator
+        # Get orchestrator instance
         orchestrator = get_orchestrator()
-        if not orchestrator:
-            error_msg = "Orchestrator not available"
-            add_run_log("ERROR", error_msg)
 
-            # Clean up processing message
-            if processing_msg:
-                try:
-                    bot.delete_message(chat_id, processing_msg.message_id)
-                except Exception:
-                    pass
-
-            bot.send_message(
-                chat_id,
-                "😔 I'm having trouble with my search system. Please try again in a moment.",
-                parse_mode='HTML'
-            )
-            finish_run_log(success=False, error_message=error_msg)
-            return
-
-        add_run_log("INFO", "Got orchestrator, starting search process")
-
-        # Create cancel check function
-        def cancel_check():
-            return is_search_cancelled(user_id)
-
-        # Process query with orchestrator
-        start_time = time.time()
-        add_run_log("INFO", "Calling orchestrator.process_query")
-
-        result = orchestrator.process_query(
-            user_query=search_query
-        )
-
-        processing_time = time.time() - start_time
-        add_run_log("INFO", f"Orchestrator completed in {processing_time:.2f}s")
-
-        # Clean up processing message
-        if processing_msg:
-            try:
-                bot.delete_message(chat_id, processing_msg.message_id)
-                add_run_log("INFO", "Deleted processing message")
-            except Exception as e:
-                add_run_log("WARNING", f"Failed to delete processing message: {e}")
-
-        if is_search_cancelled(user_id):
-            add_run_log("INFO", "Search cancelled after orchestrator call")
-            finish_run_log(success=False, error_message="Search cancelled by user")
-            return
-
-        # Handle results
-        if result and result.get('recommendations'):
-            recommendations_count = len(result['recommendations'])
-            add_run_log("INFO", f"Got {recommendations_count} recommendations")
-
-            response_text = result.get('formatted_response', 'Found some great restaurants!')
-
-            bot.send_message(
-                chat_id,
-                response_text,
-                parse_mode='HTML',
-                disable_web_page_preview=True
-            )
-
-            add_run_log("INFO", f"Successfully sent {recommendations_count} recommendations to user")
-            # 🟢 FINISH RUN LOGGING WITH SUCCESS
-            finish_run_log(success=True)
-
-        else:
-            error_msg = "No recommendations found"
-            add_run_log("WARNING", error_msg)
-            bot.send_message(
-                chat_id,
-                "😔 I couldn't find good recommendations for your search. Try a different query?",
-                parse_mode='HTML'
-            )
-            # 🟡 FINISH RUN LOGGING WITH LIMITED SUCCESS
-            finish_run_log(success=False, error_message=error_msg)
-
-    except Exception as e:
-        error_msg = f"Exception in city search: {str(e)}"
-        add_run_log("ERROR", error_msg)
-        logger.error(f"Error in city search: {e}")
+        # Use the orchestrator.process_query() method
+        result = orchestrator.process_query(search_query)
 
         # Clean up processing message
         if processing_msg:
@@ -640,17 +549,57 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
             except Exception:
                 pass
 
+        if is_search_cancelled(user_id):
+            return
+
+        # ENHANCED DEBUG LOGGING
+        logger.info(f"🔍 RESULT TYPE: {type(result)}")
+        logger.info(f"🔍 RESULT IS NONE: {result is None}")
+        if result:
+            logger.info(f"🔍 RESULT KEYS: {list(result.keys())}")
+            logger.info(f"🔍 HAS langchain_formatted_results: {'langchain_formatted_results' in result}")
+            if 'langchain_formatted_results' in result:
+                formatted_message = result["langchain_formatted_results"]
+                logger.info(f"🔍 FORMATTED MESSAGE TYPE: {type(formatted_message)}")
+                logger.info(f"🔍 FORMATTED MESSAGE LENGTH: {len(formatted_message) if formatted_message else 0}")
+
+        # FIXED: Better result checking
+        if result is not None and isinstance(result, dict) and result.get("langchain_formatted_results"):
+            formatted_message = result["langchain_formatted_results"]
+
+            bot.send_message(
+                chat_id,
+                fix_telegram_html(formatted_message),
+                parse_mode='HTML',
+                disable_web_page_preview=True)
+
+            logger.info(f"✅ City search results sent for user {user_id}")
+        else:
+            # Enhanced error logging
+            logger.error("❌ RESULT PROCESSING FAILED")
+            logger.error(f"❌ result is None: {result is None}")
+            logger.error(f"❌ result type: {type(result)}")
+            if result:
+                logger.error(f"❌ result keys: {list(result.keys())}")
+                logger.error(f"❌ langchain_formatted_results value: {result.get('langchain_formatted_results', 'KEY_NOT_FOUND')}")
+
+            bot.send_message(
+                chat_id,
+                "😔 I couldn't find good recommendations for your search. Try a different query?",
+                parse_mode='HTML')
+
+    except Exception as e:
+        logger.error(f"Error in city search: {e}")
+        if processing_msg:
+            try:
+                bot.delete_message(chat_id, processing_msg.message_id)
+            except Exception:
+                pass
         bot.send_message(
             chat_id,
-            "😔 I encountered an error while searching. Please try again.",
-            parse_mode='HTML'
-        )
-
-        # 🔴 FINISH RUN LOGGING WITH ERROR
-        finish_run_log(success=False, error_message=error_msg)
-
+            "😔 I encountered an error while searching. Please try again!",
+            parse_mode='HTML')
     finally:
-        # Always clean up search tracking
         cleanup_search(user_id)
 
 def perform_location_search(search_query: str, user_id: int, chat_id: int):
