@@ -580,8 +580,7 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
         add_run_log("INFO", "Calling orchestrator.process_query")
 
         result = orchestrator.process_query(
-            user_query=search_query,
-            cancel_check_fn=cancel_check
+            user_query=search_query
         )
 
         processing_time = time.time() - start_time
