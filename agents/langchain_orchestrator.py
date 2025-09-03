@@ -705,14 +705,19 @@ class LangChainOrchestrator:
             enhanced_results = x.get("enhanced_results", {})
             main_list = enhanced_results.get("main_list", [])
 
-            # ADD THIS DEBUG LOGGING:
+            # DETAILED DEBUG LOGGING:
             logger.info(f"🔍 FORMATTER INPUT - Processing {len(main_list)} restaurants")
-            for i, restaurant in enumerate(main_list):
-                name = restaurant.get('name', 'Unknown')
-                sources = restaurant.get('sources', [])
-                logger.info(f"🔍 FORMATTER INPUT - Restaurant {i+1}: {name}")
-                logger.info(f"🔍 FORMATTER INPUT - Sources type: {type(sources)}")
-                logger.info(f"🔍 FORMATTER INPUT - Sources content: {sources}")
+            logger.info(f"🔍 FORMATTER INPUT - Enhanced results keys: {list(enhanced_results.keys())}")
+
+            # Debug first restaurant structure in detail
+            if main_list:
+                first_restaurant = main_list[0]
+                logger.info(f"🔍 FORMATTER INPUT - First restaurant keys: {list(first_restaurant.keys())}")
+                logger.info(f"🔍 FORMATTER INPUT - First restaurant name: {first_restaurant.get('name', 'MISSING')}")
+                logger.info(f"🔍 FORMATTER INPUT - First restaurant address: {first_restaurant.get('address', 'MISSING')}")
+                logger.info(f"🔍 FORMATTER INPUT - First restaurant description: {first_restaurant.get('description', 'MISSING')[:100]}...")
+                logger.info(f"🔍 FORMATTER INPUT - First restaurant place_id: {first_restaurant.get('place_id', 'MISSING')}")
+                logger.info(f"🔍 FORMATTER INPUT - First restaurant sources: {first_restaurant.get('sources', 'MISSING')}")
 
             if not main_list:
                 logger.warning("⚠️ No restaurants to format for Telegram")
@@ -721,21 +726,71 @@ class LangChainOrchestrator:
                     "langchain_formatted_results": "Sorry, no restaurant recommendations found for your query."
                 }
 
-            logger.info(f"📱 Formatting {len(main_list)} restaurants for Telegram")
+            logger.info(f"📱 Calling TelegramFormatter.format_recommendations() for {len(main_list)} restaurants")
 
             # Format for Telegram using the formatter
-            telegram_text = self.telegram_formatter.format_recommendations(
-                enhanced_results  # Pass the entire enhanced_results dict
-            )
+            telegram_text = None
+            try:
+                telegram_text = self.telegram_formatter.format_recommendations(enhanced_results)
+                logger.info(f"✅ TelegramFormatter returned: {type(telegram_text)}")
+                if telegram_text:
+                    logger.info(f"✅ TelegramFormatter text length: {len(telegram_text)}")
+                    logger.info(f"✅ TelegramFormatter first 200 chars: {telegram_text[:200]}...")
+                else:
+                    logger.error(f"❌ TelegramFormatter returned empty/None: '{telegram_text}'")
+            except Exception as formatter_error:
+                logger.error(f"❌ TelegramFormatter threw exception: {formatter_error}")
+                telegram_text = None
 
-            logger.info("✅ Telegram formatting complete")
+            # FIXED: Handle empty formatter results properly
+            if not telegram_text or len(telegram_text.strip()) == 0:
+                logger.error("❌ TelegramFormatter failed - investigating restaurant data structure")
 
-            # ADD THIS DEBUG LOGGING:
-            logger.info(f"🔍 FORMATTER OUTPUT - Final telegram text length: {len(telegram_text)}")
-            if "tripadvisor" in telegram_text.lower():
+                # Debug what the formatter received
+                logger.error(f"❌ Restaurant data structure analysis:")
+                for i, restaurant in enumerate(main_list[:3], 1):
+                    logger.error(f"❌ Restaurant {i} full data: {restaurant}")
+
+                # Create manual format as emergency fallback
+                logger.info("🚨 Creating emergency manual format")
+
+                fallback_parts = [f"🍴 <b>Found {len(main_list)} restaurants:</b>\n\n"]
+
+                for i, restaurant in enumerate(main_list[:6], 1):
+                    name = restaurant.get('name', 'Unknown Restaurant')
+                    address = restaurant.get('address', '')
+                    description = restaurant.get('description', '') or restaurant.get('raw_description', '')
+
+                    if not name or name == 'Unknown Restaurant':
+                        # Try alternative name fields
+                        name = restaurant.get('restaurant_name', '') or restaurant.get('title', '') or f"Restaurant {i}"
+
+                    fallback_parts.append(f"<b>{i}. {name}</b>\n")
+
+                    if address:
+                        clean_address = address.split(',')[0] if ',' in address else address
+                        fallback_parts.append(f"📍 {clean_address}\n")
+
+                    if description and len(description.strip()) > 10:
+                        desc_truncated = description[:150] + "..." if len(description) > 150 else description
+                        fallback_parts.append(f"{desc_truncated}\n")
+
+                    fallback_parts.append("\n")
+
+                # Add debug footer
+                fallback_parts.append("<i>Manual formatting due to formatter issue - results may be incomplete</i>")
+
+                telegram_text = ''.join(fallback_parts)
+                logger.info(f"✅ Created emergency manual format, length: {len(telegram_text)}")
+
+            # Existing debug checks
+            if telegram_text and "tripadvisor" in telegram_text.lower():
                 logger.warning("🚨 TRIPADVISOR DETECTED in final output!")
-            if "timeout.com" in telegram_text.lower():
+
+            if telegram_text and "timeout.com" in telegram_text.lower():
                 logger.info("✅ timeout.com found in final output")
+
+            logger.info("✅ Format step completed successfully")
 
             return {
                 **x,
@@ -745,11 +800,23 @@ class LangChainOrchestrator:
             }
 
         except Exception as e:
-            logger.error(f"❌ Error in format step: {e}")
+            logger.error(f"❌ Critical error in format step: {e}")
+            logger.error(f"❌ Pipeline data keys: {list(x.keys()) if x else 'None'}")
+
+            # Emergency fallback
+            try:
+                main_list = x.get("enhanced_results", {}).get("main_list", []) if x else []
+                if main_list:
+                    emergency_text = f"🍴 Found {len(main_list)} restaurants but encountered formatting errors. Please try again."
+                else:
+                    emergency_text = "😔 No restaurants found for your search."
+            except:
+                emergency_text = "😔 Encountered errors processing your search. Please try again."
+
             return {
-                **x,
-                "raw_query": x.get("raw_query", x.get("query", "")),
-                "langchain_formatted_results": "Sorry, there was an error formatting your restaurant recommendations.",
+                **x if x else {},
+                "raw_query": x.get("raw_query", x.get("query", "")) if x else "",
+                "langchain_formatted_results": emergency_text,
                 "final_results": {"main_list": []}
             }
 
