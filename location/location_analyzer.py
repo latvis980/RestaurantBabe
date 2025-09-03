@@ -46,7 +46,7 @@ class LocationAnalyzer:
         return """
     You are a location request analyzer for a restaurant recommendation system with ambiguity detection.
 
-    Your job is to determine if a user message is requesting location-based (GPS/proximity) search vs general city-wide search, 
+    Your job is to determine if a user message is requesting location-based (GPS/proximity/neighbourhood/street/landmark) search vs. general city-wide search, 
     AND detect if the location mentioned is ambiguous.
 
     CRITICAL DISTINCTION:
@@ -55,15 +55,16 @@ class LocationAnalyzer:
 
     LOCATION-BASED REQUEST INDICATORS (GPS/proximity search):
     - "near me", "nearby", "around here", "close to", "walking distance"
-    - Neighborhoods/districts: "in SoHo", "in Chinatown", "in the Mission"
+    - Neighborhoods/districts: "in SoHo", "in Chinatown", "in the Mission", "Palermo, Buenos Aires", "Le Marais", "Kreuzberg", etc.
     - Street names: "on Broadway", "near Times Square"
+    - landmarks: "near the Eiffel Tower", "next to the Colosseum", "around St Paul's Cathedral"
     - "where I am", "local", "in this area", "in the neighborhood"
     - GPS coordinates or specific addresses
 
     GENERAL SEARCH INDICATORS (city-wide search):
     - City names: "in Paris", "in London", "in Newcastle", "in Tokyo"
     - Countries: "in France", "in Italy"
-    - Large areas, though not formally cities: "in Manhattan", "in Barcelona", "in Tuscany", "around Lake Como
+    - Vast areas, though not formally cities: "in Manhattan", "in Barcelona", "in Tuscany", "around Lake Como"
 
     AMBIGUITY DETECTION:
     Detect if the location mentioned could refer to multiple places:
