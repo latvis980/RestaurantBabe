@@ -814,7 +814,7 @@ class LangChainOrchestrator:
                 emergency_text = "😔 Encountered errors processing your search. Please try again."
 
             return {
-                **x if x else {},
+                **(x if x else {}),
                 "raw_query": x.get("raw_query", x.get("query", "")) if x else "",
                 "langchain_formatted_results": emergency_text,
                 "final_results": {"main_list": []}
