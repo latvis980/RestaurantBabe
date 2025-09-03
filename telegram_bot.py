@@ -27,6 +27,7 @@ import config
 from utils.orchestrator_manager import get_orchestrator
 from location.telegram_location_handler import TelegramLocationHandler, LocationData
 from location.location_analyzer import LocationAnalyzer
+from utils.run_logger import get_run_logger, start_run_log, finish_run_log, add_run_log
 
 # Configure logging
 logging.basicConfig(
@@ -173,6 +174,7 @@ def handle_location_cancel(message):
 # ============ CORE MESSAGE PROCESSING ============
 
 
+
 def process_text_message(message_text: str,
                          user_id: int,
                          chat_id: int,
@@ -181,54 +183,84 @@ def process_text_message(message_text: str,
     Step 1: Process any text message (original text or transcribed voice)
     This is the single entry point for all conversation processing
     """
+    # 🚀 START RUN LOGGING
+    run_id = start_run_log(
+        user_query=message_text, 
+        user_id=str(user_id), 
+        chat_id=str(chat_id)
+    )
     try:
+        add_run_log("INFO", f"Processing {'voice' if is_voice else 'text'} message from user {user_id}: {message_text}")
+
         # Check if conversation handler is initialized
         if conversation_handler is None:
-            logger.error("Conversation handler not initialized")
+            error_msg = "Conversation handler not initialized"
+            add_run_log("ERROR", error_msg)
+            logger.error(error_msg)
             bot.send_message(
                 chat_id,
                 "😔 I'm having trouble initializing. Please try again in a moment.",
                 parse_mode='HTML')
+            finish_run_log(success=False, error_message=error_msg)
             return
 
         # Check if user has active search
         if user_id in active_searches:
+            add_run_log("INFO", "User has active search - rejecting new request")
             bot.send_message(
                 chat_id,
                 "⏳ I'm currently searching for restaurants for you. Please wait or type /cancel to stop the search.",
                 parse_mode='HTML')
+            finish_run_log(success=False, error_message="User has active search")
             return
 
         # Check if user was awaiting location
         if user_id in users_awaiting_location:
+            add_run_log("INFO", "Handling location input")
             handle_location_input(message_text, user_id, chat_id)
+            # Location handling will manage its own logging
+            finish_run_log(success=True)
             return
 
         if conversation_handler and conversation_handler.get_user_state(user_id) == ConversationState.AWAITING_LOCATION_CLARIFICATION:
+            add_run_log("INFO", "Handling location clarification")
             # Handle clarification response directly
             result = conversation_handler.handle_location_clarification(user_id, message_text)
             execute_action(result, user_id, chat_id)
+            finish_run_log(success=True)
             return
 
         # Send typing indicator
         bot.send_chat_action(chat_id, 'typing')
+        add_run_log("INFO", "Sent typing indicator")
 
         # Step 2: Process with centralized AI handler
+        add_run_log("INFO", "Processing with centralized AI handler")
         result = conversation_handler.process_message(
             message_text=message_text,
             user_id=user_id,
             chat_id=chat_id,
             is_voice=is_voice)
 
+        add_run_log("INFO", f"AI handler result: action={result.get('action')}")
+
         # Step 3: Execute the determined action
         execute_action(result, user_id, chat_id)
 
+        # 🟢 SUCCESS - Run logging will be finished by the search functions
+        # We don't finish here because search functions run in background threads
+
     except Exception as e:
+        error_msg = f"Error processing message: {str(e)}"
+        add_run_log("ERROR", error_msg)
         logger.error(f"Error processing message for user {user_id}: {e}")
         bot.send_message(
             chat_id,
             "😔 I had trouble understanding that. Could you tell me what restaurants you're looking for?",
             parse_mode='HTML')
+
+        # 🔴 FINISH RUN LOGGING WITH ERROR
+        finish_run_log(success=False, error_message=error_msg)
 
 def extract_coordinates_for_more_results(location_context):
     """FIXED: Simple coordinate extraction"""
@@ -368,8 +400,6 @@ def execute_action(result: Dict[str, Any], user_id: int, chat_id: int):
         logger.warning(f"Unknown action: {action}")
 
 
-# In telegram_bot.py, replace the call_orchestrator_more_results function with this fixed version:
-
 def call_orchestrator_more_results(query: str, coordinates: tuple, location_desc: str, user_id: int, chat_id: int):
     """
     Call orchestrator's more results method for Google Maps search
@@ -488,6 +518,7 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
     """Execute city-wide restaurant search using existing orchestrator"""
     processing_msg = None
     try:
+        add_run_log("INFO", f"Starting city search: {search_query}")
         create_cancel_event(user_id, chat_id)
 
         # Send processing message with video
@@ -499,220 +530,265 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
                     caption="🔍 <b>Searching for the best restaurants...</b>\n\n⏱ This might take a minute while I check with my sources.",
                     parse_mode='HTML'
                 )
+            add_run_log("INFO", "Sent processing video message")
         except Exception as e:
             logger.warning(f"Could not send video: {e}")
+            add_run_log("WARNING", f"Could not send video: {e}")
             # Fallback to text message
             processing_msg = bot.send_message(
                 chat_id,
                 "🔍 <b>Searching for the best restaurants...</b>\n\n⏱ This might take a minute while I check with my sources.",
-                parse_mode='HTML')
+                parse_mode='HTML'
+            )
+            add_run_log("INFO", "Sent processing text message")
 
-        # Get orchestrator instance
-        orchestrator = get_orchestrator()
-
-        # Use the orchestrator.search() method
-        result = orchestrator.process_query(search_query)
-
-        # Clean up processing message
-        if processing_msg:
-            try:
-                bot.delete_message(chat_id, processing_msg.message_id)
-            except Exception:
-                pass
-
+        # Check for early cancellation
         if is_search_cancelled(user_id):
+            add_run_log("INFO", "Search cancelled before orchestrator call")
+            finish_run_log(success=False, error_message="Search cancelled by user")
             return
 
-        # Send results using the correct key name
-        if result and result.get("langchain_formatted_results"):
-            formatted_message = result["langchain_formatted_results"]
+        # Get orchestrator
+        orchestrator = get_orchestrator()
+        if not orchestrator:
+            error_msg = "Orchestrator not available"
+            add_run_log("ERROR", error_msg)
 
-            # Debug logging to see what we got
-            logger.info(f"🔍 Result keys: {list(result.keys())}")
-            logger.info(f"📱 Message length: {len(formatted_message)} characters")
-
-            bot.send_message(
-                chat_id,
-                fix_telegram_html(formatted_message),
-                parse_mode='HTML',
-                disable_web_page_preview=True)
-
-            logger.info(f"✅ City search results sent for user {user_id}")
-        else:
-            # Log the actual result structure for debugging
-            logger.warning(f"❌ Search failed or no langchain_formatted_results. Result keys: {list(result.keys()) if result else 'None'}")
-            logger.warning(f"❌ Result content: {result}")
-
-            bot.send_message(
-                chat_id,
-                "😔 I couldn't find any restaurants matching your criteria. Could you try a different search?",
-                parse_mode='HTML')
-
-    except Exception as e:
-        logger.error(f"Error in city search: {e}")
-        # Clean up processing message
-        if processing_msg:
-            try:
-                bot.delete_message(chat_id, processing_msg.message_id)
-            except Exception:
-                pass
-        bot.send_message(
-            chat_id,
-            "😔 I encountered an error while searching. Please try again!",
-            parse_mode='HTML')
-    finally:
-        cleanup_search(user_id)
-
-def perform_location_search(search_query: str, user_id: int, chat_id: int):
-    """
-    Execute location-based search using the actual location orchestrator
-    CLEAN VERSION: Orchestrator handles ALL verification internally
-    FIXED: Now properly stores coordinates for follow-up searches
-    """
-    processing_msg = None
-    try:
-        create_cancel_event(user_id, chat_id)
-
-        # Send processing message with video
-        try:
-            with open('media/vicinity_search.mp4', 'rb') as video:
-                processing_msg = bot.send_video(
-                    chat_id,
-                    video,
-                    caption="📍 <b>Searching for restaurants in that area...</b>\n\n⏱ Checking my curated collection and finding the best places nearby.",
-                    parse_mode='HTML'
-                )
-        except Exception as e:
-            logger.warning(f"Could not send video: {e}")
-            processing_msg = bot.send_message(
-                chat_id,
-                "📍 <b>Searching for restaurants in that area...</b>\n\n⏱ Checking my curated collection and finding the best places nearby.",
-                parse_mode='HTML')
-
-        # Extract location from search query
-        location_data = location_handler.extract_location_from_text(search_query)
-
-        if location_data.confidence < 0.3:
+            # Clean up processing message
             if processing_msg:
                 try:
                     bot.delete_message(chat_id, processing_msg.message_id)
                 except Exception:
                     pass
-            bot.send_message(chat_id, "😔 I couldn't understand the location. Could you be more specific about where you want to search?", parse_mode='HTML')
+
+            bot.send_message(
+                chat_id,
+                "😔 I'm having trouble with my search system. Please try again in a moment.",
+                parse_mode='HTML'
+            )
+            finish_run_log(success=False, error_message=error_msg)
             return
 
-        # Create location orchestrator and cancel check function
+        add_run_log("INFO", "Got orchestrator, starting search process")
+
+        # Create cancel check function
+        def cancel_check():
+            return is_search_cancelled(user_id)
+
+        # Process query with orchestrator
+        start_time = time.time()
+        add_run_log("INFO", "Calling orchestrator.process_query")
+
+        result = orchestrator.process_query(
+            query=search_query,
+            cancel_check_fn=cancel_check
+        )
+
+        processing_time = time.time() - start_time
+        add_run_log("INFO", f"Orchestrator completed in {processing_time:.2f}s")
+
+        # Clean up processing message
+        if processing_msg:
+            try:
+                bot.delete_message(chat_id, processing_msg.message_id)
+                add_run_log("INFO", "Deleted processing message")
+            except Exception as e:
+                add_run_log("WARNING", f"Failed to delete processing message: {e}")
+
+        if is_search_cancelled(user_id):
+            add_run_log("INFO", "Search cancelled after orchestrator call")
+            finish_run_log(success=False, error_message="Search cancelled by user")
+            return
+
+        # Handle results
+        if result and result.get('recommendations'):
+            recommendations_count = len(result['recommendations'])
+            add_run_log("INFO", f"Got {recommendations_count} recommendations")
+
+            response_text = result.get('formatted_response', 'Found some great restaurants!')
+
+            bot.send_message(
+                chat_id,
+                response_text,
+                parse_mode='HTML',
+                disable_web_page_preview=True
+            )
+
+            add_run_log("INFO", f"Successfully sent {recommendations_count} recommendations to user")
+            # 🟢 FINISH RUN LOGGING WITH SUCCESS
+            finish_run_log(success=True)
+
+        else:
+            error_msg = "No recommendations found"
+            add_run_log("WARNING", error_msg)
+            bot.send_message(
+                chat_id,
+                "😔 I couldn't find good recommendations for your search. Try a different query?",
+                parse_mode='HTML'
+            )
+            # 🟡 FINISH RUN LOGGING WITH LIMITED SUCCESS
+            finish_run_log(success=False, error_message=error_msg)
+
+    except Exception as e:
+        error_msg = f"Exception in city search: {str(e)}"
+        add_run_log("ERROR", error_msg)
+        logger.error(f"Error in city search: {e}")
+
+        # Clean up processing message
+        if processing_msg:
+            try:
+                bot.delete_message(chat_id, processing_msg.message_id)
+            except Exception:
+                pass
+
+        bot.send_message(
+            chat_id,
+            "😔 I encountered an error while searching. Please try again.",
+            parse_mode='HTML'
+        )
+
+        # 🔴 FINISH RUN LOGGING WITH ERROR
+        finish_run_log(success=False, error_message=error_msg)
+
+    finally:
+        # Always clean up search tracking
+        cleanup_search(user_id)
+
+def perform_location_search(search_query: str, user_id: int, chat_id: int):
+    """Execute location-based restaurant search"""
+    processing_msg = None
+    try:
+        add_run_log("INFO", f"Starting location search: {search_query}")
+        create_cancel_event(user_id, chat_id)
+
+        # Send processing message
+        processing_msg = bot.send_message(
+            chat_id,
+            "🔍 <b>Searching for restaurants near you...</b>",
+            parse_mode='HTML'
+        )
+        add_run_log("INFO", "Sent location search processing message")
+
+        # Check for early cancellation
+        if is_search_cancelled(user_id):
+            add_run_log("INFO", "Location search cancelled before processing")
+            finish_run_log(success=False, error_message="Search cancelled by user")
+            return
+
+        # Get location orchestrator
         from location.location_orchestrator import LocationOrchestrator
         location_orchestrator = LocationOrchestrator(config)
+        add_run_log("INFO", "Created location orchestrator")
 
         def cancel_check():
             return is_search_cancelled(user_id)
 
-        # Create async loop for location processing
+        # Process query with location orchestrator
+        start_time = time.time()
+        add_run_log("INFO", "Calling location orchestrator")
+
+        # Create async loop
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        # Process location query with orchestrator
         result = loop.run_until_complete(
-            location_orchestrator.process_location_query(
+            location_orchestrator.process_query(
                 query=search_query,
-                location_data=location_data,
                 cancel_check_fn=cancel_check
             )
         )
 
         loop.close()
-
-        # If search was successful, update location_data with coordinates from result
-        if result.get("success") and result.get("coordinates"):
-            coordinates = result.get("coordinates")
-            # Validate coordinates before accessing
-            if coordinates and isinstance(coordinates, (list, tuple)) and len(coordinates) >= 2:
-                # Update the location_data with the successfully geocoded coordinates
-                location_data.latitude = coordinates[0]
-                location_data.longitude = coordinates[1]
-                logger.info(f"✅ Updated location_data with geocoded coordinates: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
-            else:
-                logger.warning(f"❌ Invalid coordinates format in result: {coordinates}")
-
-        # Store location context for follow-up searches with UPDATED location_data
-        if conversation_handler is not None:
-            # Store both location_data (with coordinates) and coordinates separately for reliability
-            conversation_handler.store_location_search_context(
-                user_id=user_id,
-                query=search_query,
-                location_data=location_data,  # Now contains coordinates!
-                location_description=location_data.description or "the area"
-            )
-
-            # Also store coordinates separately in the context for extra reliability
-            if result.get("coordinates"):
-                context = conversation_handler.get_location_search_context(user_id)
-                if context:
-                    context['coordinates'] = result.get("coordinates")
-                    logger.info(f"✅ Stored backup coordinates in context: {result.get('coordinates')}")
+        processing_time = time.time() - start_time
+        add_run_log("INFO", f"Location orchestrator completed in {processing_time:.2f}s")
 
         # Clean up processing message
         if processing_msg:
             try:
                 bot.delete_message(chat_id, processing_msg.message_id)
+                add_run_log("INFO", "Deleted location processing message")
             except Exception:
                 pass
 
         if is_search_cancelled(user_id):
+            add_run_log("INFO", "Location search cancelled after processing")
+            finish_run_log(success=False, error_message="Search cancelled by user")
             return
 
-        # Handle ALL result types the same way - no special verification logic
+        # Handle results
         if result.get("success"):
-            formatted_message = result.get("location_formatted_results", 
-                f"Found {result.get('restaurant_count', 0)} restaurants!")
+            if result.get("requires_verification"):
+                add_run_log("INFO", "Location search requires verification")
+                # Handle verification flow
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
 
-            # Handle database choice option
-            if result.get("source") == "database_with_choice" and result.get("offer_more_results"):
-                if conversation_handler is not None:
-                    conversation_handler.set_user_state(user_id, ConversationState.RESULTS_SHOWN)
-                location_desc = location_data.description or "the area"
-                formatted_message += f"\n\n💬 <b>Want more options?</b> Just ask me to find more restaurants in {location_desc}!"
+                loop.run_until_complete(
+                    handle_google_maps_with_verification(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        orchestrator_result=result,
+                        original_query=search_query,
+                        location_description=result.get("location_description", "")
+                    )
+                )
 
-            bot.send_message(
-                chat_id,
-                fix_telegram_html(formatted_message),
-                parse_mode='HTML',
-                disable_web_page_preview=True
-            )
-
-            logger.info(f"✅ Location search results sent for user {user_id}: {result.get('restaurant_count', 0)} restaurants")
-
-        elif result.get("is_ambiguous"):
-            # Handle ambiguous location result
-            analysis_result = result.get("analysis_result", {})
-            if conversation_handler is not None:
-                ambiguity_response = conversation_handler.handle_ambiguous_location(user_id, analysis_result)
-                bot.send_message(chat_id, ambiguity_response.get("bot_response", "Could you be more specific about the location?"), parse_mode='HTML')
+                loop.close()
+                add_run_log("INFO", "Completed verification flow")
+                # 🟢 FINISH RUN LOGGING WITH SUCCESS
+                finish_run_log(success=True)
             else:
-                bot.send_message(chat_id, "Could you be more specific about the location?", parse_mode='HTML')
+                # Direct results
+                restaurant_count = result.get("restaurant_count", 0)
+                add_run_log("INFO", f"Got {restaurant_count} location-based results")
 
+                formatted_message = result.get("location_formatted_results", "Found restaurants near you!")
+
+                bot.send_message(
+                    chat_id,
+                    fix_telegram_html(formatted_message),
+                    parse_mode='HTML',
+                    disable_web_page_preview=True
+                )
+
+                add_run_log("INFO", f"Successfully sent {restaurant_count} location results to user")
+                # 🟢 FINISH RUN LOGGING WITH SUCCESS
+                finish_run_log(success=True)
         else:
-            # Search failed
-            error_message = result.get("error_message", "No restaurants found in that area.")
+            error_msg = result.get("error_message", "No restaurants found in that location")
+            add_run_log("WARNING", f"Location search failed: {error_msg}")
+
             bot.send_message(
                 chat_id,
-                f"😔 {error_message} Could you try a different search?",
-                parse_mode='HTML')
+                f"😔 {error_msg}",
+                parse_mode='HTML'
+            )
+            # 🟡 FINISH RUN LOGGING WITH LIMITED SUCCESS
+            finish_run_log(success=False, error_message=error_msg)
 
     except Exception as e:
+        error_msg = f"Exception in location search: {str(e)}"
+        add_run_log("ERROR", error_msg)
         logger.error(f"Error in location search: {e}")
+
         # Clean up processing message
         if processing_msg:
             try:
                 bot.delete_message(chat_id, processing_msg.message_id)
             except Exception:
                 pass
+
         bot.send_message(
             chat_id,
-            "😔 I encountered an error while searching. Please try again!",
-            parse_mode='HTML')
+            "😔 I encountered an error while searching for restaurants. Please try again.",
+            parse_mode='HTML'
+        )
+
+        # 🔴 FINISH RUN LOGGING WITH ERROR
+        finish_run_log(success=False, error_message=error_msg)
+
     finally:
+        # Always clean up search tracking
         cleanup_search(user_id)
 
 def request_user_location(user_id: int, chat_id: int, context: str):
@@ -945,7 +1021,6 @@ def send_welcome(message):
 
     bot.reply_to(message, WELCOME_MESSAGE, parse_mode='HTML')
 
-
 @bot.message_handler(commands=['cancel'])
 def handle_cancel(message):
     """Handle /cancel command to stop current search"""
@@ -1129,53 +1204,75 @@ def handle_voice_message(message):
             parse_mode='HTML')
 
 
-def process_voice_in_background(message, user_id: int, chat_id: int,
-                                processing_msg_id: int):
+def process_voice_in_background(message, user_id: int, chat_id: int, processing_msg_id: int):
     """Background processing of voice message"""
+    # Start run logging for voice processing
+    run_id = start_run_log(
+        user_query="[Voice Message Processing]", 
+        user_id=str(user_id), 
+        chat_id=str(chat_id)
+    )
+
     try:
+        add_run_log("INFO", "Processing voice message")
+
         # Check if voice handler is available
         if voice_handler is None:
+            add_run_log("ERROR", "Voice handler not available")
             bot.send_message(
                 chat_id,
                 "😔 Voice processing is not available right now. Please send a text message.",
                 parse_mode='HTML')
+            finish_run_log(success=False, error_message="Voice handler not available")
             return
 
         # Step 1: Transcribe voice message
-        transcribed_text = voice_handler.process_voice_message(
-            bot, message.voice)
+        add_run_log("INFO", "Starting voice transcription")
+        transcribed_text = voice_handler.process_voice_message(bot, message.voice)
 
         # Clean up processing message
         try:
             bot.delete_message(chat_id, processing_msg_id)
+            add_run_log("INFO", "Deleted voice processing message")
         except Exception:
             pass
 
         if not transcribed_text:
+            add_run_log("ERROR", "Voice transcription failed")
             bot.send_message(
                 chat_id,
                 "😔 I couldn't understand your voice message. Could you try again or send a text message?",
                 parse_mode='HTML')
+            finish_run_log(success=False, error_message="Voice transcription failed")
             return
 
-        logger.info(
-            f"✅ Voice transcribed for user {user_id}: '{transcribed_text[:100]}...'"
-        )
+        add_run_log("INFO", f"Voice transcribed: {transcribed_text}")
+        logger.info(f"✅ Voice transcribed for user {user_id}: '{transcribed_text[:100]}...'")
+
+        # Finish voice processing log
+        finish_run_log(success=True)
 
         # Step 2: Process transcribed text using the same pipeline as text messages
+        # This will start its own run log
         process_text_message(transcribed_text, user_id, chat_id, is_voice=True)
 
     except Exception as e:
-        logger.error(f"Error processing voice message: {e}")
+        error_msg = f"Error processing voice message: {str(e)}"
+        add_run_log("ERROR", error_msg)
+        logger.error(error_msg)
+
         # Clean up processing message
         try:
             bot.delete_message(chat_id, processing_msg_id)
         except Exception:
             pass
+
         bot.send_message(
             chat_id,
             "😔 Sorry, I encountered an error processing your voice message.",
             parse_mode='HTML')
+
+        finish_run_log(success=False, error_message=error_msg)
 
 
 @bot.message_handler(func=lambda message: True)
