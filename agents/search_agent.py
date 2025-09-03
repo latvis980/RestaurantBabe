@@ -182,6 +182,48 @@ class BraveSearchAgent:
         connector = aiohttp.TCPConnector(limit=100, limit_per_host=30, ttl_dns_cache=300)
         timeout = aiohttp.ClientTimeout(total=30, connect=10)
 
+        def _deduplicate_search_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            """
+            Remove duplicate URLs from search results, keeping the best result for each URL
+            """
+            seen_urls = {}
+            deduplicated = []
+
+            for result in results:
+                url = result.get('url', '').strip()
+                if not url:
+                    continue
+
+                # Normalize URL (remove trailing slash, convert to lowercase)
+                normalized_url = url.lower().rstrip('/')
+
+                if normalized_url not in seen_urls:
+                    seen_urls[normalized_url] = result
+                    deduplicated.append(result)
+                else:
+                    # Keep the result with more complete information
+                    existing = seen_urls[normalized_url]
+                    current = result
+
+                    # Prefer results with more content (longer description)
+                    existing_desc_len = len(existing.get('description', ''))
+                    current_desc_len = len(current.get('description', ''))
+
+                    if current_desc_len > existing_desc_len:
+                        # Replace existing with current (better description)
+                        seen_urls[normalized_url] = current
+                        # Find and replace in deduplicated list
+                        for i, item in enumerate(deduplicated):
+                            if item.get('url', '').lower().rstrip('/') == normalized_url:
+                                deduplicated[i] = current
+                                break
+
+            removed_count = len(results) - len(deduplicated)
+            if removed_count > 0:
+                logger.info(f"🔗 Removed {removed_count} duplicate URLs from search results")
+
+            return deduplicated
+
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
             # Execute searches in parallel
             search_tasks = []
@@ -210,12 +252,13 @@ class BraveSearchAgent:
                     if isinstance(result_set, list):
                         all_results.extend(result_set)
 
-            logger.info(f"📊 Total search results before filtering: {len(all_results)}")
+            # NEW: Deduplicate URLs before filtering
+            all_results = self._deduplicate_search_results(all_results)
+
+            logger.info(f"📊 Total search results after deduplication: {len(all_results)}")
 
             # Step 3: Fetch previews for all results
             results_with_previews = await self._fetch_previews_batch(session, all_results)
-
-        # FIXED: Session is automatically closed here via context manager
 
         # Step 4: AI-based filtering
         filtered_results = await self._filter_results_batch(results_with_previews, destination)
