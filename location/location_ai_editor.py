@@ -399,10 +399,10 @@ Focus on quality over quantity. Select restaurants that truly stand out as speci
     WRITING RULES:
     ✅ Write 1-2 complete sentences (similar length to examples above)
     ✅ Use specific details from reviews (food, atmosphere, unique features)
-    ✅ Mention media coverage naturally if it exists (like "GQ magazine" or "Featured in The Guardian")
+    ✅ Mention media coverage naturally ONLY if it exists (like "GQ magazine" or "Featured in The Guardian"). If there's no media coverage, don't mention it.
     ✅ Make it relevant to the user's query: "{user_query}"
     ✅ Use conversational, local insider tone
-    ✅ Include ONE specific detail that makes this place special
+    ✅ Include ONE specific detail that maktes this place special
     ✅ ALWAYS end with complete sentences - never cut off mid-sentence
 
     ❌ Don't use generic phrases like "quality restaurant" or "carefully prepared"
@@ -418,7 +418,7 @@ Focus on quality over quantity. Select restaurants that truly stand out as speci
                 model=self.openai_model,
                 messages=[{"role": "user", "content": description_prompt}],
                 temperature=self.description_temperature,
-                max_tokens=800  # Increased for fuller descriptions
+                max_tokens=800  # Medium-size description
             )
 
             description = response.choices[0].message.content.strip()
