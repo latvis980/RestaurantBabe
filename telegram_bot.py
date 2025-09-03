@@ -580,7 +580,7 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
         add_run_log("INFO", "Calling orchestrator.process_query")
 
         result = orchestrator.process_query(
-            query=search_query,
+            user_query=search_query,
             cancel_check_fn=cancel_check
         )
 
@@ -680,6 +680,10 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
         location_orchestrator = LocationOrchestrator(config)
         add_run_log("INFO", "Created location orchestrator")
 
+        # Extract location data from search query
+        add_run_log("INFO", "Extracting location data from search query")
+        location_data = location_handler.extract_location_from_text(search_query)
+
         def cancel_check():
             return is_search_cancelled(user_id)
 
@@ -692,8 +696,9 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
         asyncio.set_event_loop(loop)
 
         result = loop.run_until_complete(
-            location_orchestrator.process_query(
+            location_orchestrator.process_location_query(
                 query=search_query,
+                location_data=location_data,
                 cancel_check_fn=cancel_check
             )
         )
