@@ -79,9 +79,8 @@ class LangChainOrchestrator:
         self._build_pipeline()
 
     def _build_pipeline(self):
-        """Build pipeline with ContentEvaluationAgent integration"""
+        """Build pipeline with TextCleanerAgent step added"""
 
-        # Step 1: Analyze Query
         # Step 1: Analyze Query
         self.analyze_query = RunnableLambda(
             lambda x: {
@@ -98,13 +97,13 @@ class LangChainOrchestrator:
             name="check_database"
         )
 
-        # Step 3: Content Evaluation (NEW STEP)
+        # Step 3: Content Evaluation 
         self.evaluate_content = RunnableLambda(
             self._evaluate_content_routing,
             name="evaluate_content"  
         )
 
-        # Step 4: Search (conditional - now only if content evaluation says so)
+        # Step 4: Search (conditional - only if content evaluation says so)
         self.search = RunnableLambda(
             self._search_step,
             name="search"
@@ -116,32 +115,39 @@ class LangChainOrchestrator:
             name="scrape"
         )
 
-        # Step 6: Edit (receives optimized content from evaluation agent)
+        # Step 6: Clean (NEW STEP - conditional, only if scraping happened)
+        self.clean = RunnableLambda(
+            self._clean_step,
+            name="clean"
+        )
+
+        # Step 7: Edit (receives cleaned content from step 6)
         self.edit = RunnableLambda(
             self._edit_step,
             name="edit"
         )
 
-        # Step 7: Follow-up Search
+        # Step 8: Follow-up Search
         self.follow_up_search = RunnableLambda(
             self._follow_up_step,
             name="follow_up_search"
         )
 
-        # Step 8: Format for Telegram
+        # Step 9: Format for Telegram
         self.format_output = RunnableLambda(
             self._format_step,
             name="format_output"
         )
 
-        # Create the complete chain
+        # Create the complete chain with NEW CLEAN STEP
         self.chain = RunnableSequence(
             first=self.analyze_query,
             middle=[
                 self.check_database,
-                self.evaluate_content,  # NEW STEP
+                self.evaluate_content,  
                 self.search,
                 self.scrape,
+                self.clean,  # NEW STEP HERE
                 self.edit,
                 self.follow_up_search,
                 self.format_output,
@@ -198,8 +204,7 @@ class LangChainOrchestrator:
                     "details": {"error": str(e)}
                 }
             }
-
-
+            
     def _evaluate_content_routing(self, x):
         try:
             logger.info("🧠 ROUTING TO CONTENT EVALUATION AGENT")
@@ -331,8 +336,6 @@ class LangChainOrchestrator:
             logger.error(f"Traceback: {traceback.format_exc()}")
             return {**x, "search_results": []}
 
-    # REPLACE the _scrape_step method in orchestrator - REMOVE individual text cleaning:
-
     def _scrape_step(self, x):
         """
         ENHANCED: Updated scrape step - text cleaning moved to save method
@@ -410,21 +413,97 @@ class LangChainOrchestrator:
             logger.error(f"❌ Error in enhanced scraping step: {e}")
             return {**x, "scraped_results": []}
 
+    # SUPER SIMPLE _clean_step - No changes needed to TextCleanerAgent
+    def _clean_step(self, x):
+        """
+        SIMPLE: Process scraped content through TextCleanerAgent and read the result file
+
+        This step:
+        1. Takes scraped_results from scraper 
+        2. Processes through TextCleanerAgent (unchanged - uses existing method)
+        3. Reads the created file and adds cleaned_content to scraped_results
+        4. EditorAgent gets the cleaned_content it expects
+        """
+        try:
+            logger.info("🧹 CLEAN STEP - Processing scraped content through TextCleanerAgent")
+
+            content_source = x.get("content_source", "unknown")
+
+            # Skip cleaning for database-only content
+            if content_source == "database":
+                logger.info("⏭️ SKIPPING CLEANING - database-only content")
+                return x
+
+            scraped_results = x.get("scraped_results", [])
+
+            if not scraped_results:
+                logger.info("⏭️ SKIPPING CLEANING - no scraped results to clean")
+                return x
+
+            logger.info(f"🧹 Processing {len(scraped_results)} scraped results through TextCleanerAgent")
+
+            # Get query for TextCleanerAgent
+            query = x.get("raw_query", x.get("query", ""))
+
+            # Process through TextCleanerAgent (existing method - no changes needed)
+            def run_text_cleaner():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    return loop.run_until_complete(
+                        self._text_cleaner.process_scraped_results_individually(scraped_results, query)
+                    )
+                finally:
+                    loop.close()
+
+            # Get the final combined file path (TextCleanerAgent unchanged)
+            final_txt_file_path = run_text_cleaner()
+
+            if not final_txt_file_path or not os.path.exists(final_txt_file_path):
+                logger.error("❌ TextCleanerAgent failed to create final file")
+                # Return original scraped_results - EditorAgent will use raw content
+                return x
+
+            # Read the combined file that TextCleanerAgent created
+            with open(final_txt_file_path, 'r', encoding='utf-8') as f:
+                combined_cleaned_content = f.read()
+
+            logger.info(f"✅ CLEAN STEP COMPLETE: Read {len(combined_cleaned_content)} characters from cleaned file")
+
+            # Add cleaned_content to EACH scraped_result for EditorAgent
+            # EditorAgent expects cleaned_content per URL, but we have one combined file
+            # So we'll add the combined content to each result - EditorAgent will handle deduplication
+            updated_scraped_results = []
+            for result in scraped_results:
+                updated_result = result.copy()
+                # Add the cleaned content that EditorAgent expects
+                updated_result['cleaned_content'] = combined_cleaned_content
+                updated_scraped_results.append(updated_result)
+
+            return {
+                **x,
+                "scraped_results": updated_scraped_results,  # Now includes cleaned_content
+                "cleaned_file_path": final_txt_file_path  # For reference
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error in clean step: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            # Return original scraped_results - EditorAgent will use raw content as fallback
+            return x
+
     def _edit_step(self, x):
         """
-        ENHANCED: Updated to handle new restaurant field names and hybrid mode
-
-        Now handles:
-        - database_restaurants_final: 4+ sufficient restaurants (database-only)
-        - database_restaurants_hybrid: 1-3 restaurants for hybrid mode
-        - scraped_results: web search results
-        - Hybrid mode: combines database_restaurants_hybrid + scraped_results
+        FIXED: Updated to handle cleaned_file_path and consistent parameter names
         """
         try:
             logger.info("✏️ ENHANCED ROUTING TO EDITOR AGENT")
 
             content_source = x.get("content_source", "unknown")
             raw_query = x.get("raw_query", x.get("query", ""))
+            cleaned_file_path = x.get("cleaned_file_path")  # GET the cleaned file path from clean step
+
             # FIXED: Robust destination extraction from multiple sources
             destination = None
 
@@ -455,6 +534,7 @@ class LangChainOrchestrator:
             logger.info(f"   database_restaurants_final: {len(database_restaurants_final)}")
             logger.info(f"   database_restaurants_hybrid: {len(database_restaurants_hybrid)}")
             logger.info(f"   scraped_results: {len(scraped_results)}")
+            logger.info(f"   cleaned_file_path: {cleaned_file_path}")
             logger.info(f"   content_source: {content_source}")
 
             if content_source == "database":
@@ -473,9 +553,12 @@ class LangChainOrchestrator:
                 # Use database_restaurants_final for database-only route
                 edit_output = self.editor_agent.edit(
                     scraped_results=None,
-                    database_restaurants=database_restaurants_final,  # Use final results
+                    database_restaurants=database_restaurants_final,
                     raw_query=raw_query, 
-                    destination=destination
+                    destination=destination,
+                    processing_mode="database_only",
+                    content_source=content_source
+                    # No cleaned_file_path for database-only
                 )
 
                 logger.info(f"✅ Formatted {len(edit_output.get('edited_results', {}).get('main_list', []))} final database restaurants")
@@ -493,12 +576,15 @@ class LangChainOrchestrator:
                         "follow_up_queries": []
                     }
 
-                # Pass both database hybrid results AND scraped results
+                # FIXED: Pass both database hybrid results AND scraped results AND cleaned_file_path
                 edit_output = self.editor_agent.edit(
                     scraped_results=scraped_results,
-                    database_restaurants=database_restaurants_hybrid,  # Use hybrid results
+                    database_restaurants=database_restaurants_hybrid,
                     raw_query=raw_query,
-                    destination=destination
+                    destination=destination,
+                    processing_mode="hybrid",
+                    content_source=content_source,
+                    cleaned_file_path=cleaned_file_path  # FIXED: Added this parameter
                 )
 
                 logger.info(f"✅ Processed hybrid content: {len(database_restaurants_hybrid)} database + {len(scraped_results)} scraped")
@@ -516,12 +602,15 @@ class LangChainOrchestrator:
                         "follow_up_queries": []
                     }
 
-                # Use only scraped results for web-only route
+                # FIXED: Use only scraped results for web-only route AND pass cleaned_file_path
                 edit_output = self.editor_agent.edit(
                     scraped_results=scraped_results,
-                    database_restaurants=None,  # No database content
+                    database_restaurants=None,
                     raw_query=raw_query,
-                    destination=destination
+                    destination=destination,
+                    processing_mode="web_only",
+                    content_source=content_source,
+                    cleaned_file_path=cleaned_file_path  # FIXED: Added this parameter
                 )
 
                 logger.info(f"✅ Processed {len(edit_output.get('edited_results', {}).get('main_list', []))} restaurants from web content")
@@ -546,7 +635,10 @@ class LangChainOrchestrator:
                     scraped_results=scraped_results if scraped_results else None,
                     database_restaurants=database_content,
                     raw_query=raw_query,
-                    destination=destination
+                    destination=destination,
+                    processing_mode="fallback",
+                    content_source=content_source,
+                    cleaned_file_path=cleaned_file_path  # FIXED: Added this parameter
                 )
 
                 logger.info("✅ Fallback processing completed")

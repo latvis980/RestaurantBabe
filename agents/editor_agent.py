@@ -289,12 +289,12 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
     @log_function_call
     def edit(self, scraped_results=None, database_restaurants=None, raw_query="", destination="Unknown", 
-             content_source=None, processing_mode=None, evaluation_context=None, **kwargs):
+         content_source=None, processing_mode=None, cleaned_file_path=None, **kwargs):
         """
-        Main editing method with chunking support and AI-driven selection
+        CORRECTED: Main editing method with chunking support and AI-driven selection
 
         Flow:
-        1. Receive results (database, hybrid, or scraped)
+        1. Receive results (database, hybrid, or cleaned)
         2. Chunk large content if needed
         3. Process with AI (which includes selection via prompt)
         4. Generate follow-up searches
@@ -303,7 +303,7 @@ Extract restaurants using the diplomatic concierge approach. Include good option
             # Use raw_query consistently
             query = raw_query or kwargs.get('original_query', '') or ""
 
-            # Determine processing mode
+            # Determine processing mode FIRST (before routing)
             if processing_mode:
                 mode = processing_mode
             else:
@@ -336,13 +336,29 @@ Extract restaurants using the diplomatic concierge approach. Include good option
             logger.info(f"🎯 Query: {query}")
             logger.info(f"📍 Destination: {destination}")
 
-            # Route to appropriate processing method
+            # Route to appropriate processing method (CORRECTED - use internal methods)
             if mode == "hybrid":
-                result = self._process_hybrid_content(database_restaurants, scraped_results, query, destination)
+                result = self._process_hybrid_content(
+                    database_restaurants, 
+                    scraped_results, 
+                    raw_query,
+                    destination, 
+                    cleaned_file_path  # Now this will work
+                )
             elif mode == "database_only":
-                result = self._process_database_restaurants(database_restaurants, query, destination)
+                result = self._process_database_restaurants(
+                    database_restaurants, 
+                    raw_query,
+                    destination
+                    # No cleaned_file_path needed for database-only
+                )
             elif mode == "web_only":
-                result = self._process_scraped_content(scraped_results, query, destination)
+                result = self._process_scraped_content(
+                    scraped_results, 
+                    raw_query,
+                    destination, 
+                    cleaned_file_path  # This already works
+                )
             else:
                 logger.warning(f"⚠️ Unknown processing mode: {mode}")
                 return self._fallback_response()
@@ -366,11 +382,12 @@ Extract restaurants using the diplomatic concierge approach. Include good option
             dump_chain_state("editor_error", locals(), error=e)
             return self._fallback_response()
 
-    def _process_hybrid_content(self, database_restaurants, scraped_results, raw_query, destination):
+    def _process_hybrid_content(self, database_restaurants, scraped_results, raw_query, destination, cleaned_file_path=None):
         """Process both database and scraped content - with chunking support"""
         logger.info(f"🔄 Processing hybrid content for {destination}")
         logger.info(f"📊 Database restaurants: {len(database_restaurants) if database_restaurants else 0}")
         logger.info(f"📊 Scraped results: {len(scraped_results) if scraped_results else 0}")
+        logger.info(f"📊 Cleaned file: {cleaned_file_path}")  # NEW LOG
 
         try:
             all_restaurants = []
@@ -391,7 +408,13 @@ Extract restaurants using the diplomatic concierge approach. Include good option
             # Then process scraped content (additional search results) - WITH CHUNKING
             if scraped_results:
                 logger.info("🌐 Processing additional web search results with chunking support")
-                scraped_result = self._process_scraped_content(scraped_results, raw_query, destination)
+                # UPDATED: Pass cleaned_file_path to _process_scraped_content
+                scraped_result = self._process_scraped_content(
+                    scraped_results, 
+                    raw_query, 
+                    destination, 
+                    cleaned_file_path  # PASS IT ALONG
+                )
                 web_restaurants = scraped_result.get('edited_results', {}).get('main_list', [])
 
                 # Mark web restaurants as additional
@@ -400,6 +423,8 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
                 all_restaurants.extend(web_restaurants)
                 logger.info(f"✅ Added {len(web_restaurants)} web search restaurants")
+
+            # [Rest of the method remains the same...]
 
             # Remove duplicates based on restaurant name with preference for database
             seen_names = set()
@@ -439,7 +464,7 @@ Extract restaurants using the diplomatic concierge approach. Include good option
         except Exception as e:
             logger.error(f"Error processing hybrid content: {e}")
             return self._fallback_response()
-
+    
     def _process_database_restaurants(self, database_restaurants, raw_query, destination):
         """Process restaurants from AI-matched database - FIXED to preserve sources"""
         try:
@@ -500,19 +525,150 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
             return self._fallback_response()
 
-    def _process_scraped_content(self, scraped_results, raw_query, destination):
-        """Process scraped web content with chunking support"""
-        try:
-            logger.info(f"🌐 Processing {len(scraped_results)} scraped articles for {destination}")
+    def _process_cleaned_file_content(self, cleaned_content, raw_query, destination):
+        """
+        NEW: Process the well-structured cleaned file from TextCleanerAgent
 
-            # Prepare scraped content
-            scraped_content = self._prepare_scraped_content(scraped_results)
+        This handles the high-quality, structured content that TextCleanerAgent produces
+        """
+        try:
+            logger.info(f"🧹 Processing well-structured cleaned file ({len(cleaned_content)} chars)")
+
+            # Add header for context (similar to existing scraped content)
+            header = f"""WELL-STRUCTURED RESTAURANT CONTENT
+    Generated by: TextCleanerAgent (individual processing + deduplication)
+    Query: {raw_query}
+    Destination: {destination}
+    Content Quality: High (AI-processed and structured)
+
+    Instructions: Extract restaurant information from this well-structured content.
+    This content has been pre-processed for quality and duplicates have been removed.
+
+    {'═' * 80}
+    """
+
+            full_content = header + cleaned_content
+
+            # Check if content needs chunking (reuse existing chunking logic)
+            if self._needs_chunking(full_content):
+                logger.info("📚 Large cleaned file detected - using chunking approach")
+                return self._process_cleaned_content_with_chunks(full_content, raw_query, destination)
+            else:
+                logger.info("📄 Small cleaned file - processing as single chunk")
+
+                # Use scraped content chain (works fine for cleaned content too)
+                response = self.scraped_chain.invoke({
+                    "raw_query": raw_query,
+                    "destination": destination,
+                    "scraped_content": full_content  # Chain parameter name stays same
+                })
+
+                result = self._post_process_results(response, "cleaned_file", destination)
+                logger.info(f"✅ Successfully extracted {len(result['edited_results']['main_list'])} restaurants from cleaned file")
+                return result
+
+        except Exception as e:
+            logger.error(f"❌ Error processing cleaned file: {e}")
+            # Fallback to empty response
+            return self._fallback_response()
+
+    def _process_cleaned_content_with_chunks(self, cleaned_content, raw_query, destination):
+        """
+        NEW: Process large cleaned file content by breaking it into chunks
+
+        Similar to existing _process_scraped_content_with_chunks but for cleaned files
+        """
+        try:
+            # Break content into chunks (reuse existing chunking logic)
+            chunks = self._chunk_content(cleaned_content)
+            logger.info(f"📚 Processing {len(chunks)} chunks from cleaned file")
+
+            # Process each chunk (reuse existing chunk processing logic)
+            chunk_results = []
+            for i, chunk in enumerate(chunks, 1):
+                logger.info(f"📄 Processing chunk {i}/{len(chunks)}")
+
+                try:
+                    response = self.scraped_chain.invoke({
+                        "raw_query": raw_query,
+                        "destination": destination,
+                        "scraped_content": chunk  # Chain parameter name stays same
+                    })
+
+                    chunk_result = self._post_process_results(response, f"cleaned_file_chunk_{i}", destination)
+
+                    if chunk_result.get('edited_results', {}).get('main_list'):
+                        chunk_results.append(chunk_result)
+                        restaurant_count = len(chunk_result['edited_results']['main_list'])
+                        logger.info(f"✅ Chunk {i} processed: {restaurant_count} restaurants found")
+                    else:
+                        logger.info(f"⚠️ Chunk {i} processed: no restaurants found")
+
+                except Exception as e:
+                    logger.error(f"❌ Error processing chunk {i}: {e}")
+                    continue
+
+            if not chunk_results:
+                logger.warning("❌ No successful chunk results from cleaned file")
+                return self._fallback_response()
+
+            # Merge results from all chunks (reuse existing merge logic)
+            logger.info(f"🔗 Merging results from {len(chunk_results)} successful chunks")
+            merged_restaurants = self._merge_chunked_results(chunk_results)
+
+            result = {
+                "edited_results": {
+                    "main_list": merged_restaurants
+                },
+                "follow_up_queries": []  # Will be generated later
+            }
+
+            logger.info(f"✅ Successfully processed cleaned file chunks: {len(merged_restaurants)} restaurants")
+            return result
+
+        except Exception as e:
+            logger.error(f"❌ Error processing cleaned file chunks: {e}")
+            return self._fallback_response()
+
+    def _process_scraped_content(self, scraped_results, raw_query, destination, cleaned_file_path=None):
+        """
+        CORRECTED: Process scraped web content with priority for one well-structured cleaned file
+
+        New Priority Order:
+        1. One combined cleaned file from TextCleanerAgent (highest quality)
+        2. Multiple scraped files as fallback (raw content per URL)
+        """
+        try:
+            logger.info(f"🌐 Processing scraped content for {destination}")
+
+            # PRIORITY 1: Use the well-structured cleaned file from TextCleanerAgent
+            if cleaned_file_path and os.path.exists(cleaned_file_path):
+                logger.info("🧹 Using well-structured cleaned file from TextCleanerAgent")
+
+                with open(cleaned_file_path, 'r', encoding='utf-8') as f:
+                    cleaned_file_content = f.read()
+
+                if cleaned_file_content.strip():
+                    logger.info(f"✅ Loaded {len(cleaned_file_content)} characters from cleaned file")
+
+                    # Process the cleaned file (with chunking if needed)
+                    return self._process_cleaned_file_content(cleaned_file_content, raw_query, destination)
+                else:
+                    logger.warning("⚠️ Cleaned file is empty, falling back to individual scraped files")
+            else:
+                logger.info("🔄 No cleaned file available, using individual scraped files as fallback")
+
+            # FALLBACK: Use individual scraped files (current logic)
+            logger.info(f"📄 Falling back to processing {len(scraped_results)} individual scraped articles")
+
+            # Prepare content from individual scraped results (existing logic)
+            scraped_content = self._prepare_scraped_content_from_individual_files(scraped_results)
 
             if not scraped_content.strip():
                 logger.warning("No substantial scraped content to process")
                 return self._fallback_response()
 
-            # Check if content needs chunking
+            # Check if content needs chunking (existing logic)
             if self._needs_chunking(scraped_content):
                 logger.info("📚 Large scraped content detected - using chunking approach")
                 return self._process_scraped_content_with_chunks(scraped_content, raw_query, destination)
@@ -526,21 +682,11 @@ Extract restaurants using the diplomatic concierge approach. Include good option
                 })
 
                 result = self._post_process_results(response, "scraped", destination)
-
                 logger.info(f"✅ Successfully extracted {len(result['edited_results']['main_list'])} restaurants from scraped content")
-
                 return result
 
         except Exception as e:
             logger.error(f"❌ Error processing scraped content: {e}")
-            # Import dump_chain_state if available, otherwise just log the error
-            try:
-                from utils.debug_utils import dump_chain_state
-                dump_chain_state("scraped_processing_error", locals(), error=e)
-            except ImportError:
-                import traceback
-                logger.error(f"Traceback: {traceback.format_exc()}")
-
             return self._fallback_response()
 
     def _process_scraped_content_with_chunks(self, scraped_content, raw_query, destination):
@@ -646,53 +792,38 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
         return "\n\n".join(content_parts)
 
-    def _prepare_scraped_content(self, scraped_results):
+    def _prepare_scraped_content_from_individual_files(self, scraped_results):
         """
-        FIXED: Prepare cleaned scraped content for processing
+        RENAMED: Prepare content from individual scraped files (fallback method)
 
-        Now prioritizes cleaned_content from text cleaner over raw scraped_content
+        This is the existing _prepare_scraped_content logic, renamed for clarity.
+        Used as fallback when no cleaned file is available.
         """
         try:
-            logger.info(f"📝 Preparing scraped content from {len(scraped_results)} results")
+            logger.info(f"📝 Preparing content from {len(scraped_results)} individual scraped files (fallback)")
 
             content_pieces = []
-            cleaned_count = 0
-            raw_fallback_count = 0
+            raw_content_count = 0
 
             for i, result in enumerate(scraped_results, 1):
                 url = result.get('url', f'Unknown URL {i}')
                 title = result.get('title', 'No title')
 
-                # FIXED: Priority order for content selection
-                # 1st priority: cleaned_content from text cleaner
-                content = result.get('cleaned_content', '')
-                content_source = "CLEANED"
-
-                # 2nd priority: raw scraped_content (fallback)
-                if not content:
-                    content = result.get('scraped_content', '')
-                    content_source = "RAW"
-                    raw_fallback_count += 1
-                    logger.warning(f"⚠️ No cleaned content for {url} - using raw content as fallback")
-                else:
-                    cleaned_count += 1
-
-                # 3rd priority: legacy content field (rare fallback)
-                if not content:
-                    content = result.get('content', '')
-                    content_source = "LEGACY"
-                    logger.warning(f"⚠️ Using legacy content field for {url}")
+                # Get raw scraped content (no cleaned_content expected in fallback mode)
+                content = result.get('scraped_content', '') or result.get('content', '')
 
                 # Skip if no content at all
                 if not content or len(content.strip()) < 50:
                     logger.warning(f"⚠️ Skipping {url} - insufficient content")
                     continue
 
+                raw_content_count += 1
+
                 # Format content piece with source information
                 content_piece = f"""
     SOURCE {i}: {url}
     TITLE: {title}
-    CONTENT_TYPE: {content_source}
+    CONTENT_TYPE: RAW_FALLBACK
     DOMAIN: {self._extract_domain(url)}
     ───────────────────────────────────────
     {content.strip()}
@@ -701,16 +832,12 @@ Extract restaurants using the diplomatic concierge approach. Include good option
                 content_pieces.append(content_piece)
 
             # Log content statistics
-            total_processed = len(content_pieces)
-            logger.info(f"📊 Content preparation stats:")
-            logger.info(f"   ✅ Total articles processed: {total_processed}")
-            logger.info(f"   🧹 Cleaned content used: {cleaned_count}")
-            logger.info(f"   ⚠️ Raw content fallbacks: {raw_fallback_count}")
+            logger.info(f"📊 Fallback content stats:")
+            logger.info(f"   ⚠️ Raw content sources used: {raw_content_count}")
+            logger.info(f"   📄 Total pieces prepared: {len(content_pieces)}")
 
-            if cleaned_count == 0 and raw_fallback_count > 0:
-                logger.warning("⚠️ WARNING: No cleaned content available - all content is raw/unprocessed")
-            elif cleaned_count > 0:
-                logger.info(f"✅ Successfully using cleaned content for {cleaned_count}/{total_processed} articles")
+            if raw_content_count > 0:
+                logger.warning("⚠️ WARNING: Using raw scraped content as fallback - no cleaned file available")
 
             # Combine all content pieces
             combined_content = "\n".join(content_pieces)
@@ -720,11 +847,10 @@ Extract restaurants using the diplomatic concierge approach. Include good option
                 return ""
 
             # Add header with processing information
-            header = f"""RESTAURANT CONTENT FOR PROCESSING
+            header = f"""RESTAURANT CONTENT FOR PROCESSING (FALLBACK MODE)
     Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-    Total Sources: {total_processed}
-    Cleaned Sources: {cleaned_count}
-    Raw Fallback Sources: {raw_fallback_count}
+    Total Sources: {len(content_pieces)}
+    Content Quality: Raw (no TextCleanerAgent processing available)
 
     Instructions: Extract restaurant information from the following content.
     Focus on restaurant names, locations, cuisines, descriptions, and key details.
@@ -734,11 +860,11 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
             final_content = header + combined_content
 
-            logger.info(f"✅ Prepared {len(final_content)} characters of content for editor processing")
+            logger.info(f"✅ Prepared {len(final_content)} characters of fallback content")
             return final_content
 
         except Exception as e:
-            logger.error(f"❌ Error preparing scraped content: {e}")
+            logger.error(f"❌ Error preparing fallback scraped content: {e}")
             return ""
 
     def _post_process_results(self, ai_output, source_type, destination):
@@ -843,7 +969,8 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse AI output as JSON: {e}")
-            logger.error(f"Raw AI output: {content[:500] if 'content' in locals() else 'Unable to extract content'}...")
+            content_preview = content[:500] if 'content' in locals() and content else 'Unable to extract content'
+            logger.error(f"Raw AI output: {content_preview}...")
             return self._fallback_response()
         except Exception as e:
             logger.error(f"Error in post-processing: {e}")
