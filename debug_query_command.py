@@ -27,11 +27,11 @@ class DebugQueryCommand:
         # Initialize components for manual pipeline execution
         from agents.query_analyzer import QueryAnalyzer
         from agents.search_agent import BraveSearchAgent
-        from agents.optimized_scraper import WebScraper  # Updated import
+        from agents.browserless_scraper import BrowserlessRestaurantScraper  # Updated import
 
         self.query_analyzer = QueryAnalyzer(config)
         self.search_agent = BraveSearchAgent(config)
-        self.scraper = WebScraper(config)  # Now uses intelligent scraper
+        self.scraper = BrowserlessRestaurantScraper(config)  # Now uses intelligent scraper
 
     async def debug_query_pipeline(self, user_query: str, bot=None) -> str:
         """

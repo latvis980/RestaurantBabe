@@ -35,7 +35,7 @@ class LangChainOrchestrator:
         from agents.database_search_agent import DatabaseSearchAgent
         from agents.dbcontent_evaluation_agent import ContentEvaluationAgent
         from agents.search_agent import BraveSearchAgent
-        from agents.smart_scraper import SmartRestaurantScraper  # DIRECT IMPORT
+        from agents.browserless_scraper import BrowserlessRestaurantScraper
         from agents.editor_agent import EditorAgent
         from agents.follow_up_search_agent import FollowUpSearchAgent
         from agents.text_cleaner_agent import TextCleanerAgent
@@ -45,7 +45,7 @@ class LangChainOrchestrator:
         self.database_search_agent = DatabaseSearchAgent(config)
         self.dbcontent_evaluation_agent = ContentEvaluationAgent(config)
         self.search_agent = BraveSearchAgent(config)
-        self.scraper = SmartRestaurantScraper(config) 
+        self.scraper = BrowserlessRestaurantScraper(config) 
         self._text_cleaner = TextCleanerAgent(config)
         self.editor_agent = EditorAgent(config)
         self.follow_up_search_agent = FollowUpSearchAgent(config)
