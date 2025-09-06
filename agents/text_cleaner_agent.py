@@ -235,7 +235,7 @@ RESTAURANTS:
 Name: [Restaurant Name]
 City: [Specific city for this restaurant]
 Country: [Country for this restaurant] 
-Description: [Comprehensive description including cuisine, atmosphere, specialties, chef info, etc.]
+Description: [Comprehensive description including cuisine, atmosphere, specialties, chef info, etc. If only name is available, use "Recommended by [source name]" or "Included in the list of...]
 Address: [Full address if available, or "Not specified"]
 Source: [Source URL from content header]
 

@@ -12,6 +12,7 @@ Key improvements:
 - Added AI-driven restaurant selection filtering
 - Both review context and media context are fully utilized by AI
 - No character limits (messages won't be cut off)
+- FIXED: Generate all descriptions in single API call for variety
 """
 
 import logging
@@ -83,6 +84,7 @@ class LocationAIEditor:
     - Restaurant filtering based on emotional, detailed reviews
     - Combined review and media context analysis
     - Professional description generation
+    - FIXED: Single API call for all descriptions to ensure variety
     """
 
     def __init__(self, config):
@@ -114,7 +116,7 @@ class LocationAIEditor:
         Steps:
         1. Combine data from map search and media verification
         2. AI-powered restaurant filtering (select truly atmospheric, special places)
-        3. Generate professional descriptions for selected restaurants
+        3. Generate ALL professional descriptions in SINGLE API call for variety
         """
         try:
             logger.info(f"Creating professional descriptions for {len(map_search_results)} venues")
@@ -137,32 +139,12 @@ class LocationAIEditor:
 
             logger.info(f"Step 2: Selected {len(selected_venues)} truly atmospheric restaurants")
 
-            # Step 3: Generate descriptions using AI
-            descriptions = []
-            for venue in selected_venues:
-                if cancel_check_fn and cancel_check_fn():
-                    break
+            # Step 3: Generate ALL descriptions in SINGLE API call for variety
+            logger.info("Step 3: Generating varied descriptions for all restaurants in single call")
+            descriptions = await self._generate_all_venue_descriptions(selected_venues, user_query)
 
-                try:
-                    description_text = await self._generate_venue_description(venue, user_query)
-
-                    restaurant_desc = RestaurantDescription(
-                        place_id=venue.place_id,
-                        name=venue.name,
-                        address=venue.address,
-                        distance_km=venue.distance_km,
-                        description=description_text,
-                        has_media_coverage=venue.has_professional_coverage,
-                        media_sources=[s.get('source_name', '') for s in venue.professional_sources[:3]],
-                        google_rating=venue.rating,
-                        selection_score=getattr(venue, 'selection_score', None)
-                    )
-
-                    descriptions.append(restaurant_desc)
-
-                except Exception as e:
-                    logger.error(f"Error creating description for {venue.name}: {e}")
-                    continue
+            if cancel_check_fn and cancel_check_fn():
+                return []
 
             logger.info(f"Generated {len(descriptions)} professional descriptions")
             return descriptions
@@ -260,8 +242,8 @@ Select restaurants that show strong indicators of being atmospheric, special exp
 
 1. EMOTIONAL REVIEWS: Look for reviews that outline how special this place is
 2. ATMOSPHERIC DETAILS: Reviews mentioning specific ambiance, decor, mood, setting details
-3. GOOD CONCEPT: mantions of interesting concepts, unique experiences
-5. MEDIA COVERAGE BONUS: Professional coverage adds credibility
+3. GOOD CONCEPT: mentions of interesting concepts, unique experiences
+4. MEDIA COVERAGE BONUS: Professional coverage adds credibility
 
 AVOID restaurants with:
 - Generic, short reviews
@@ -350,12 +332,210 @@ Focus on quality over quantity. Select restaurants that truly stand out as speci
 
         return formatted
 
-    async def _generate_venue_description(
+    async def _generate_all_venue_descriptions(
+        self,
+        venues: List[CombinedVenueData],
+        user_query: str
+    ) -> List[RestaurantDescription]:
+        """
+        FIXED: Generate ALL descriptions in a single API call to ensure variety and avoid templates
+        """
+        try:
+            if not venues:
+                return []
+
+            # Create combined prompt with all restaurants
+            all_restaurants_data = []
+
+            for i, venue in enumerate(venues):
+                # Prepare context for each restaurant
+                review_context = ""
+                if venue.google_reviews:
+                    review_context = "\nREVIEW CONTEXT:\n"
+                    for review in venue.google_reviews[:5]:
+                        rating = review.get('rating', 'N/A')
+                        text = review.get('text', '')
+                        review_context += f"- ({rating}★) {text}\n"
+
+                media_context = ""
+                if venue.has_professional_coverage and venue.professional_sources:
+                    media_context = "\nMEDIA COVERAGE CONTEXT:\n"
+                    for source in venue.professional_sources[:3]:
+                        source_name = source.get('source_name', 'Unknown source')
+                        source_type = source.get('source_type', 'media')
+                        media_context += f"- Featured in {source_name} ({source_type})\n"
+
+                restaurant_data = {
+                    'index': i,
+                    'name': venue.name,
+                    'rating': venue.rating,
+                    'user_ratings_total': venue.user_ratings_total,
+                    'distance_km': venue.distance_km,
+                    'review_context': review_context,
+                    'media_context': media_context,
+                    'has_media_coverage': venue.has_professional_coverage
+                }
+                all_restaurants_data.append(restaurant_data)
+
+            # Single combined prompt for all restaurants
+            combined_prompt = f"""You are a professional food journalist writing SHORT restaurant descriptions for a user query: "{user_query}".
+
+CRITICAL: Write VARIED, UNIQUE descriptions for each restaurant. Avoid repetitive phrases and templates.
+
+RESTAURANTS TO DESCRIBE:
+{self._format_all_restaurants_for_description(all_restaurants_data)}
+
+WRITING RULES FOR EACH DESCRIPTION:
+✅ Write 1-2 complete sentences per restaurant (30-50 words each)
+✅ Use specific details from reviews (food, atmosphere, unique features)
+✅ Mention media coverage naturally ONLY if it exists
+✅ Make each description DIFFERENT from the others - vary your language and approach
+✅ Use conversational, local insider tone
+✅ Include ONE specific detail that makes each place special
+✅ ALWAYS end with complete sentences - never cut off mid-sentence
+
+❌ Don't use generic phrases like "quality restaurant" or "carefully prepared"
+❌ Don't use the same sentence structures for multiple restaurants
+❌ Don't write more than 2 sentences per restaurant
+❌ Don't use formal restaurant review language
+❌ Don't use quotes or formatting
+❌ Never repeat similar openings like "A must-visit" or "A local favorite"
+
+VARIETY REQUIREMENTS:
+- Each description must sound different
+- Use different sentence structures
+- Vary your vocabulary and approach
+- Focus on different aspects for each restaurant (ambiance, food, concept, location, etc.)
+
+OUTPUT FORMAT:
+Return ONLY valid JSON:
+{{
+    "restaurant_descriptions": [
+        {{
+            "index": 0,
+            "description": "Unique description for restaurant 1"
+        }},
+        {{
+            "index": 1,
+            "description": "Different style description for restaurant 2"
+        }}
+    ]
+}}
+
+Focus on making each description distinctive and engaging."""
+
+            # Generate all descriptions in single call
+            response = await self.openai_client.chat.completions.create(
+                model=self.openai_model,
+                messages=[{"role": "user", "content": combined_prompt}],
+                temperature=self.description_temperature,
+                max_tokens=2000  # Enough for multiple descriptions
+            )
+
+            # Parse response
+            content = response.choices[0].message.content.strip()
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].strip()
+
+            try:
+                import json
+                descriptions_result = json.loads(content)
+                generated_descriptions = descriptions_result.get("restaurant_descriptions", [])
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse AI descriptions response: {content}")
+                # Fallback: use individual generation
+                return await self._fallback_individual_descriptions(venues, user_query)
+
+            # Create RestaurantDescription objects
+            descriptions = []
+            for desc_data in generated_descriptions:
+                index = desc_data.get('index')
+                description_text = desc_data.get('description', 'Quality restaurant featuring carefully prepared cuisine.')
+
+                if index is not None and 0 <= index < len(venues):
+                    venue = venues[index]
+
+                    restaurant_desc = RestaurantDescription(
+                        place_id=venue.place_id,
+                        name=venue.name,
+                        address=venue.address,
+                        distance_km=venue.distance_km,
+                        description=description_text,
+                        has_media_coverage=venue.has_professional_coverage,
+                        media_sources=[s.get('source_name', '') for s in venue.professional_sources[:3]],
+                        google_rating=venue.rating,
+                        selection_score=getattr(venue, 'selection_score', None)
+                    )
+                    descriptions.append(restaurant_desc)
+
+            logger.info(f"Generated {len(descriptions)} varied descriptions in single API call")
+            return descriptions
+
+        except Exception as e:
+            logger.error(f"Error generating all venue descriptions: {e}")
+            return await self._fallback_individual_descriptions(venues, user_query)
+
+    def _format_all_restaurants_for_description(self, restaurants_data: List[Dict]) -> str:
+        """Format all restaurant data for the combined description prompt"""
+        formatted = ""
+
+        for restaurant in restaurants_data:
+            formatted += f"\n{'='*60}\n"
+            formatted += f"RESTAURANT {restaurant['index']}: {restaurant['name']}\n"
+            formatted += f"RATING: {restaurant['rating']}★ ({restaurant['user_ratings_total']} reviews)\n"
+            formatted += f"DISTANCE: {restaurant['distance_km']:.1f}km\n"
+
+            if restaurant['has_media_coverage']:
+                formatted += "HAS MEDIA COVERAGE: Yes\n"
+            else:
+                formatted += "HAS MEDIA COVERAGE: No\n"
+
+            formatted += restaurant['review_context']
+            formatted += restaurant['media_context']
+            formatted += "\n"
+
+        return formatted
+
+    async def _fallback_individual_descriptions(
+        self,
+        venues: List[CombinedVenueData],
+        user_query: str
+    ) -> List[RestaurantDescription]:
+        """Fallback method: generate descriptions individually if combined approach fails"""
+        logger.info("Using fallback individual description generation")
+
+        descriptions = []
+        for venue in venues:
+            try:
+                description_text = await self._generate_single_venue_description(venue, user_query)
+
+                restaurant_desc = RestaurantDescription(
+                    place_id=venue.place_id,
+                    name=venue.name,
+                    address=venue.address,
+                    distance_km=venue.distance_km,
+                    description=description_text,
+                    has_media_coverage=venue.has_professional_coverage,
+                    media_sources=[s.get('source_name', '') for s in venue.professional_sources[:3]],
+                    google_rating=venue.rating,
+                    selection_score=getattr(venue, 'selection_score', None)
+                )
+                descriptions.append(restaurant_desc)
+
+            except Exception as e:
+                logger.error(f"Error creating fallback description for {venue.name}: {e}")
+                continue
+
+        return descriptions
+
+    async def _generate_single_venue_description(
         self,
         venue: CombinedVenueData,
         user_query: str
     ) -> str:
-        """Generate AI description using both review context and media context"""
+        """Generate AI description for a single venue (fallback method)"""
         try:
             # Prepare context for AI
             review_context = ""
@@ -374,10 +554,10 @@ Focus on quality over quantity. Select restaurants that truly stand out as speci
                     source_type = source.get('source_type', 'media')
                     media_context += f"- Featured in {source_name} ({source_type})\n"
 
-            # IMPROVED AI description prompt with better formatting
-            description_prompt = f"""You are a rpofessional ffod journalist writing  SHORT restaurant description for "{venue.name}".
+            # Single venue description prompt (same as original)
+            description_prompt = f"""You are a professional food journalist writing a SHORT restaurant description for "{venue.name}".
 
-    RESTAURANT INFO:
+RESTAURANT INFO:
     - User's Query: "{user_query}"
     - Rating: {venue.rating}★ ({venue.user_ratings_total} reviews)
     - Distance: {venue.distance_km:.1f}km
@@ -392,19 +572,21 @@ Focus on quality over quantity. Select restaurants that truly stand out as speci
 
     EXAMPLE 2: "The owner, Joao, changes the menu every day. GQ magazine wrote some good things about this place."
 
-    EXAMPLE 3: "Cozy, whimsical, a true hidden gem in Bairro Alto. Crafted cocktails like "Bairro negroni" and "Mango smash"."
+    EXAMPLE 3: "Cozy, whimsical, a true hidden gem in Bairro Alto. Try crafted cocktails like "Bairro negroni" and "Mango smash"."
 
     EXAMPLE 4: "Possibly best sourdough on this side of town and Sunday brunches with lush pastries and egg dishes. Featured in The Guardian."
 
     WRITING RULES:
-    ✅ Write 1-2 complete sentences (similar length to examples above)
-    ✅ Use specific details from reviews (food, atmosphere, unique features)
-    ✅ Mention media coverage naturally ONLY if it exists (like "GQ magazine" or "Featured in The Guardian"). If there's no media coverage, don't mention it.
-    ✅ Make it relevant to the user's query: "{user_query}"
-    ✅ Use conversational, local insider tone
-    ✅ Include ONE specific detail that maktes this place special
-    ✅ ALWAYS end with complete sentences - never cut off mid-sentence
+    1. Write 1-2 complete sentences (similar length to examples above)
+    2. Use specific details from reviews (food, atmosphere, unique features)
+    3. Avoid generic phrases like "quality restaurant" or "carefully prepared"
+    4. Don't assume details not mentioned in reviews and media sources
+    5. Mention media coverage and Michelin recommendations naturally ONLY if it exists (like "GQ magazine" or "Featured in The Guardian"). If there's no media coverage, don't mention it.
+    6 Make it relevant to the user's query: "{user_query}"
+    7. Use conversational, local insider tone, don't praise the restaurant too much
+    8. ALWAYS end with complete sentences - never cut off mid-sentence
 
+    DON'T:
     ❌ Don't use generic phrases like "quality restaurant" or "carefully prepared"
     ❌ Don't write more than 2 sentences
     ❌ Don't use formal restaurant review language
@@ -435,27 +617,25 @@ Focus on quality over quantity. Select restaurants that truly stand out as speci
                 return {
                     "success": False,
                     "message": "No exceptional restaurants found in this area.",
-                    "count": 0
+                    "count": 0,
+                    "has_media_coverage": False,
+                    "avg_selection_score": 0
                 }
 
-            # Create formatted message using HTML like the rest of the app
-            message_parts = [f"<b>Found {len(descriptions)} exceptional restaurants:</b>\n\n"]
+            # Build message parts
+            message_parts = []
 
-            for i, desc in enumerate(descriptions, 1):
-                # Format distance and rating
-                distance_str = f"{desc.distance_km:.1f}km" if desc.distance_km > 0 else ""
-                rating_str = f"({desc.google_rating:.1f}★)" if desc.google_rating else ""
-
-                # Media coverage indicator
+            for desc in descriptions:
+                # Prepare indicators
                 media_indicator = " 📰" if desc.has_media_coverage else ""
+                score_indicator = f" ⭐" if hasattr(desc, 'selection_score') and desc.selection_score and desc.selection_score >= 8.0 else ""
 
-                # Selection score indicator for highly rated selections
-                score_indicator = ""
-                if desc.selection_score and desc.selection_score >= 8.0:
-                    score_indicator = " ⭐"
+                # Distance and rating strings
+                distance_str = f"{desc.distance_km:.1f}km" if desc.distance_km else ""
+                rating_str = f"({desc.google_rating}★)" if desc.google_rating else ""
 
-                # Restaurant name with HTML bold formatting
-                restaurant_line = f"<b>{i}. {self._clean_html(desc.name)}{media_indicator}{score_indicator}</b>\n"
+                # Restaurant line with name and indicators
+                restaurant_line = f"<b>{self._clean_html(desc.name)}{media_indicator}{score_indicator}</b>\n"
 
                 # Address with Google Maps link (2025 universal format)
                 if desc.place_id:
@@ -501,36 +681,21 @@ Focus on quality over quantity. Select restaurants that truly stand out as speci
             return {
                 "success": False,
                 "message": "Error formatting results.",
-                "count": 0
+                "count": 0,
+                "has_media_coverage": False,
+                "avg_selection_score": 0
             }
 
     def _clean_html(self, text: str) -> str:
-        """Clean text for HTML display (matching app pattern)"""
-        try:
-            if not text:
-                return ""
+        """Clean text for HTML display"""
+        if not text:
+            return ""
 
-            from html import escape
-            import re
+        # Remove or escape HTML characters
+        text = text.replace("&", "&amp;")
+        text = text.replace("<", "&lt;")
+        text = text.replace(">", "&gt;")
+        text = text.replace('"', "&quot;")
+        text = text.replace("'", "&#x27;")
 
-            # Escape HTML characters
-            cleaned = escape(str(text))
-
-            # Remove extra whitespace
-            cleaned = ' '.join(cleaned.split())
-
-            return cleaned
-
-        except Exception:
-            return str(text) if text else ""
-
-    def get_editor_stats(self) -> Dict[str, Any]:
-        """Get editor configuration statistics"""
-        return {
-            'ai_model': self.openai_model,
-            'description_temperature': self.description_temperature,
-            'enable_media_mention': self.enable_media_mention,
-            'hardcoded_methods': False,  # Now removed
-            'ai_driven_selection': True,  # New feature
-            'character_limits': False    # Removed limits
-        }
+        return text
