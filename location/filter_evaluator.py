@@ -1,9 +1,8 @@
 # location/filter_evaluator.py
 """
-Location-based database filtering and evaluation
+Location-based database filtering and evaluation - FIXED WITH LANGCHAIN CHAINS
 
-Isolated copy of database_search and content_evaluation logic for location flow.
-Key difference: sends ANY results immediately with "personal notes" message.
+Converted direct AI invokes to proper LangChain chain composition for tracing.
 """
 
 import logging
@@ -11,12 +10,14 @@ import json
 from typing import Dict, List, Any, Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
+from langchain_core.runnables import RunnableSequence, RunnableLambda
 
 logger = logging.getLogger(__name__)
 
 class LocationFilterEvaluator:
     """
-    Filter and evaluate database results for location-based searches
+    Filter and evaluate database results for location-based searches with LangChain chains
 
     Logic: If ANY relevant results found → send immediately 
     """
@@ -28,8 +29,7 @@ class LocationFilterEvaluator:
         self.ai_model = ChatOpenAI(
             model=config.OPENAI_MODEL,
             temperature=0.1,
-            api_key=config.OPENAI_API_KEY,
-            max_tokens=2048
+            api_key=config.OPENAI_API_KEY
         )
 
         # Filtering prompt (based on database_search_agent)
@@ -92,7 +92,64 @@ Return ONLY JSON:
 For location searches, be generous - even 1-2 good matches should be sent.
 """)
 
-        logger.info("✅ Location Filter Evaluator initialized")
+        # BUILD LANGCHAIN CHAINS - FIXED VERSION
+        self._build_chains()
+
+        logger.info("✅ Location Filter Evaluator initialized with LangChain chains")
+
+    def _build_chains(self):
+        """Build LangChain chains for filtering and evaluation"""
+
+        # CHAIN 1: Restaurant filtering chain
+        self.filter_chain = (
+            self.filter_prompt 
+            | self.ai_model.with_config(run_name="filter_restaurants")
+            | StrOutputParser()
+            | RunnableLambda(self._parse_filter_response, name="parse_filter_json")
+        )
+
+        # CHAIN 2: Results evaluation chain  
+        self.evaluation_chain = (
+            self.eval_prompt
+            | self.ai_model.with_config(run_name="evaluate_results") 
+            | StrOutputParser()
+            | RunnableLambda(self._parse_evaluation_response, name="parse_evaluation_json")
+        )
+
+        logger.info("✅ LangChain chains built for filtering and evaluation")
+
+    def _parse_filter_response(self, response_content: str) -> Dict[str, Any]:
+        """Parse AI filter response to extract JSON"""
+        try:
+            content = response_content.strip()
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+
+            return json.loads(content)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse AI filtering response: {e}")
+            return {"selected_restaurants": []}
+
+    def _parse_evaluation_response(self, response_content: str) -> Dict[str, Any]:
+        """Parse AI evaluation response to extract JSON"""
+        try:
+            content = response_content.strip()
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+
+            return json.loads(content)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse AI evaluation response: {e}")
+            return {
+                "database_sufficient": False,
+                "reasoning": "Failed to parse evaluation",
+                "quality_score": 0.0,
+                "send_immediately": False
+            }
 
     def filter_and_evaluate(
         self, 
@@ -112,16 +169,16 @@ For location searches, be generous - even 1-2 good matches should be sent.
             if not restaurants:
                 return self._create_empty_result("No restaurants found in database")
 
-            # STEP 1: AI filtering to select relevant restaurants
-            filtered_restaurants = self._filter_restaurants(restaurants, query, location_description)
+            # STEP 1: AI filtering to select relevant restaurants (using LangChain chain)
+            filtered_restaurants = self._filter_restaurants_with_chain(restaurants, query, location_description)
 
             if not filtered_restaurants:
                 return self._create_empty_result("No relevant matches found")
 
             logger.info(f"🎯 AI selected {len(filtered_restaurants)} relevant restaurants")
 
-            # STEP 2: Evaluate if sufficient for immediate sending (location logic)
-            evaluation = self._evaluate_for_location_search(filtered_restaurants, query, location_description)
+            # STEP 2: Evaluate if sufficient for immediate sending (using LangChain chain)
+            evaluation = self._evaluate_with_chain(filtered_restaurants, query, location_description)
 
             # STEP 3: Combine results
             return {
@@ -138,13 +195,13 @@ For location searches, be generous - even 1-2 good matches should be sent.
             logger.error(f"❌ Error in filter and evaluate: {e}")
             return self._create_empty_result(f"Error during filtering: {str(e)}")
 
-    def _filter_restaurants(
+    def _filter_restaurants_with_chain(
         self, 
         restaurants: List[Dict[str, Any]], 
         query: str,
         location_description: str
     ) -> List[Dict[str, Any]]:
-        """Filter restaurants using AI (based on database_search_agent logic)"""
+        """Filter restaurants using LangChain chain (FIXED VERSION)"""
         try:
             # Create restaurant text for AI analysis
             restaurants_text = ""
@@ -159,28 +216,14 @@ For location searches, be generous - even 1-2 good matches should be sent.
                 restaurants_text += f"   Cuisine: {cuisine_str}\n"
                 restaurants_text += f"   Description: {description}...\n\n"
 
-            # Run AI filtering
-            response = self.ai_model.invoke(
-                self.filter_prompt.format(
-                    query=query,
-                    location_description=location_description,
-                    restaurants_text=restaurants_text
-                )
-            )
+            # FIXED: Use LangChain chain instead of direct invoke
+            ai_result = self.filter_chain.invoke({
+                "query": query,
+                "location_description": location_description,
+                "restaurants_text": restaurants_text
+            })
 
-            # Parse AI response
-            content = response.content.strip()
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
-
-            try:
-                ai_result = json.loads(content)
-                selected_data = ai_result.get("selected_restaurants", [])
-            except json.JSONDecodeError:
-                logger.error(f"Failed to parse AI filtering response: {content}")
-                return []
+            selected_data = ai_result.get("selected_restaurants", [])
 
             # Map selected IDs back to full restaurant objects
             restaurant_lookup = {str(r.get('id')): r for r in restaurants}
@@ -197,16 +240,16 @@ For location searches, be generous - even 1-2 good matches should be sent.
             return selected_restaurants
 
         except Exception as e:
-            logger.error(f"❌ Error in AI filtering: {e}")
+            logger.error(f"❌ Error in AI filtering chain: {e}")
             return []
 
-    def _evaluate_for_location_search(
+    def _evaluate_with_chain(
         self, 
         filtered_restaurants: List[Dict[str, Any]], 
         query: str,
         location_description: str
     ) -> Dict[str, Any]:
-        """Evaluate if results are sufficient for location search"""
+        """Evaluate if results are sufficient using LangChain chain"""
         try:
             count = len(filtered_restaurants)
 
@@ -215,83 +258,47 @@ For location searches, be generous - even 1-2 good matches should be sent.
                 quality_scores = [r.get('_relevance_score', 0.5) for r in filtered_restaurants]
                 avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0.5
 
-                return {
-                    "database_sufficient": True,
-                    "send_immediately": True,
-                    "reasoning": f"Found {count} relevant restaurants from personal notes",
-                    "quality_score": round(avg_quality, 2)
-                }
+                # FIXED: Use LangChain chain for evaluation
+                evaluation_result = self.evaluation_chain.invoke({
+                    "query": query,
+                    "location_description": location_description,
+                    "count": count
+                })
+
+                # Enhance with calculated quality score
+                evaluation_result["quality_score"] = round(avg_quality, 2)
+                return evaluation_result
+
             else:
                 return {
                     "database_sufficient": False,
                     "send_immediately": False,
-                    "reasoning": "No relevant matches found in database",
+                    "reasoning": "No relevant restaurants found",
                     "quality_score": 0.0
                 }
 
         except Exception as e:
-            logger.error(f"❌ Error in location search evaluation: {e}")
+            logger.error(f"❌ Error in evaluation chain: {e}")
             return {
                 "database_sufficient": False,
                 "send_immediately": False,
-                "reasoning": f"Error during evaluation: {str(e)}",
+                "reasoning": f"Evaluation failed: {str(e)}",
                 "quality_score": 0.0
             }
 
-    def _create_empty_result(self, message: str) -> Dict[str, Any]:
-        """Create empty result with standard format"""
+    def _create_empty_result(self, reason: str) -> Dict[str, Any]:
+        """Create empty result structure"""
         return {
             "filtered_restaurants": [],
             "evaluation": {
                 "database_sufficient": False,
                 "send_immediately": False,
-                "reasoning": message,
+                "reasoning": reason,
                 "quality_score": 0.0
             },
             "database_sufficient": False,
             "send_immediately": False,
             "total_found": 0,
             "selected_count": 0,
-            "reasoning": message
+            "reasoning": reason
         }
-
-    def format_personal_notes_message(
-        self, 
-        restaurants: List[Dict[str, Any]],
-        query: str,
-        location_description: str = "your location"
-    ) -> str:
-        """Format the 'personal notes' message for immediate sending"""
-        try:
-            if not restaurants:
-                return "🤔 I don't have any restaurants from my notes for this location."
-
-            count = len(restaurants)
-
-            # Header message
-            header = f"📝 <b>Here are {count} restaurants from my notes near {location_description}:</b>\n\n"
-
-            # List restaurants
-            restaurant_list = ""
-            for i, restaurant in enumerate(restaurants[:8]):  # Limit to 8 for readability
-                name = restaurant.get('name', 'Unknown')
-                distance = restaurant.get('distance_km', '?')
-                cuisine = restaurant.get('cuisine_tags', [])
-                cuisine_str = ', '.join(cuisine[:2]) if cuisine else ''  # Max 2 cuisine tags
-
-                restaurant_list += f"🍽 <b>{name}</b> ({distance}km)"
-                if cuisine_str:
-                    restaurant_list += f" - <i>{cuisine_str}</i>"
-                restaurant_list += "\n"
-
-            # Footer message
-            footer = (
-                f"\n💡 <b>These are from my personal notes.</b> "
-                f"Let me know if you want me to make some calls and search for more good addresses!"
-            )
-
-            return header + restaurant_list + footer
-
-        except Exception as e:
-            logger.error(f"❌ Error formatting message: {e}")
-            return "📝 Found some restaurants from my notes, but had trouble formatting the list."
