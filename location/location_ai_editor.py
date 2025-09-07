@@ -377,12 +377,12 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
         user_query: str
     ) -> List[RestaurantDescription]:
         """
-        Generate descriptions for DATABASE RESULTS
+        FIXED: Generate descriptions for DATABASE RESULTS with proper sources transfer
 
-        Key differences:
-        - Use existing database descriptions as foundation
-        - Preserve separate sources field from database
-        - No media verification data (not available for database results)
+        Key fixes:
+        - Ensure sources from database are properly extracted and preserved
+        - Handle both parsed and unparsed sources formats
+        - Transfer sources to RestaurantDescription objects correctly
         """
         try:
             if not venues:
@@ -396,7 +396,9 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
 
                 # Extract existing description and sources from database
                 existing_description = original_restaurant.get('description', '') or original_restaurant.get('raw_description', '')
-                existing_sources = original_restaurant.get('sources', []) or []
+
+                # FIXED: Properly extract sources from database (handle different formats)
+                existing_sources = self._extract_sources_from_database_restaurant(original_restaurant)
 
                 restaurant_data = {
                     'index': i,
@@ -412,21 +414,21 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
             # DATABASE specific prompt
             combined_prompt = f"""You are a professional food journalist writing SHORT restaurant descriptions for DATABASE RESULTS.
 
-USER QUERY: "{user_query}"
+    USER QUERY: "{user_query}"
 
-Write a professional, engaging description for EACH restaurant below. For DATABASE results:
-- 1-2 complete sentences capturing the restaurant's unique character
-- Use existing descriptions as foundation but make them more engaging and professional
-- Focus on cuisine type, atmosphere, and unique features
-- Professional yet warm tone
-- Each description should feel DIFFERENT (vary sentence structure, focus areas)
-- DO NOT mention specific media sources - sources are handled separately
+    Write a professional, engaging description for EACH restaurant below. For DATABASE results:
+    - 1-2 complete sentences capturing the restaurant's unique character
+    - Use existing descriptions as foundation but make them more engaging and professional
+    - Focus on cuisine type, atmosphere, and unique features
+    - Professional yet warm tone
+    - Each description should feel DIFFERENT (vary sentence structure, focus areas)
+    - DO NOT mention specific media sources - sources are handled separately
 
-RESTAURANT DATA:
-{self._format_database_restaurants_for_description(all_restaurants_data)}
+    RESTAURANT DATA:
+    {self._format_database_restaurants_for_description(all_restaurants_data)}
 
-Return JSON format with descriptions for ALL venues:
-{{{{
+    Return JSON format with descriptions for ALL venues:
+    {{{{
     "descriptions": [
         {{{{
             "index": 0,
@@ -439,9 +441,9 @@ Return JSON format with descriptions for ALL venues:
             "description": "Different style description..."
         }}}}
     ]
-}}}}
+    }}}}
 
-Write ALL descriptions with variety and uniqueness. Focus on cuisine and atmosphere."""
+    Write ALL descriptions with variety and uniqueness. Focus on cuisine and atmosphere."""
 
             response = await self.openai_client.chat.completions.create(
                 model=self.openai_model,
@@ -453,58 +455,134 @@ Write ALL descriptions with variety and uniqueness. Focus on cuisine and atmosph
                 max_tokens=2000
             )
 
-            # Parse response and create RestaurantDescription objects
-            descriptions = []
-            try:
-                response_text = response.choices[0].message.content.strip()
-
-                # Clean JSON markers
-                if response_text.startswith('```json'):
-                    response_text = response_text.replace('```json', '').replace('```', '').strip()
-
-                import json
-                result_data = json.loads(response_text)
-
-                for desc_data in result_data.get('descriptions', []):
-                    venue_index = desc_data.get('index', 0)
-                    description_text = desc_data.get('description', '')
-
-                    if venue_index < len(venues):
-                        venue = venues[venue_index]
-                        original_restaurant = original_database_restaurants[venue_index] if venue_index < len(original_database_restaurants) else {}
-
-                        # Preserve original sources from database
-                        original_sources = original_restaurant.get('sources', []) or []
-
-                        restaurant_desc = RestaurantDescription(
-                            place_id=getattr(venue, 'place_id', str(original_restaurant.get('id', ''))),
-                            name=venue.name,
-                            address=venue.address,
-                            distance_km=venue.distance_km,
-                            description=description_text,
-                            has_media_coverage=False,  # Database results don't have media verification
-                            media_sources=[],  # Not used for database results
-                            google_rating=venue.rating,
-                            selection_score=getattr(venue, 'selection_score', None),
-                            sources=original_sources  # Preserve database sources
-                        )
-
-                        descriptions.append(restaurant_desc)
-
-            except (json.JSONDecodeError, KeyError) as e:
-                logger.error(f"Error parsing database descriptions response: {e}")
+            result_text = response.choices[0].message.content
+            if not result_text:
+                logger.warning("AI returned empty response for database description generation")
                 return self._create_fallback_descriptions(venues, result_type="database")
+
+            # Parse JSON response
+            try:
+                result_text = result_text.strip()
+                start_idx = result_text.find('{')
+                end_idx = result_text.rfind('}')
+
+                if start_idx == -1 or end_idx == -1:
+                    logger.warning("No JSON found in database description generation response")
+                    return self._create_fallback_descriptions(venues, result_type="database")
+
+                json_str = result_text[start_idx:end_idx + 1]
+                import json
+                descriptions_result = json.loads(json_str)
+
+            except (json.JSONDecodeError, ValueError) as json_error:
+                logger.warning(f"JSON parsing error in database description generation: {json_error}")
+                logger.debug(f"Raw response: '{result_text}'")
+                return self._create_fallback_descriptions(venues, result_type="database")
+
+            # Build final results with PROPER SOURCES TRANSFER
+            descriptions = []
+
+            if isinstance(descriptions_result, dict) and 'descriptions' in descriptions_result:
+                # Create a lookup by index
+                description_lookup = {}
+                for desc in descriptions_result['descriptions']:
+                    if isinstance(desc, dict) and 'index' in desc:
+                        description_lookup[desc['index']] = desc
+
+                # Create RestaurantDescription objects with SOURCES
+                for i, venue in enumerate(venues):
+                    desc_data = description_lookup.get(i, {})
+
+                    # Get description from AI
+                    description_text = desc_data.get('description', f"A quality restaurant in {venue.address.split(',')[0] if venue.address else 'a great location'}.")
+
+                    # FIXED: Get original sources and place_id from database restaurant
+                    original_restaurant = original_database_restaurants[i] if i < len(original_database_restaurants) else {}
+                    original_sources = self._extract_sources_from_database_restaurant(original_restaurant)
+                    original_place_id = original_restaurant.get('place_id', '') or original_restaurant.get('google_place_id', '')
+
+                    # FIXED: Properly transfer sources and place_id to RestaurantDescription
+                    restaurant_desc = RestaurantDescription(
+                        place_id=original_place_id or venue.place_id,  # Use database place_id if available, fallback to venue
+                        name=venue.name,
+                        address=venue.address,
+                        distance_km=venue.distance_km,
+                        description=description_text,
+                        has_media_coverage=False,  # Database results don't have media verification
+                        media_sources=[],  # Empty for database results
+                        google_rating=venue.rating,
+                        selection_score=getattr(venue, 'selection_score', None),
+                        sources=original_sources  # FIXED: Preserve database sources HERE
+                    )
+
+                    descriptions.append(restaurant_desc)
 
             if not descriptions:
                 logger.warning("No database descriptions generated, creating fallback")
                 return self._create_fallback_descriptions(venues, result_type="database")
 
-            logger.info(f"Generated {len(descriptions)} database descriptions")
+            logger.info(f"Generated {len(descriptions)} database descriptions WITH SOURCES")
             return descriptions
 
         except Exception as e:
             logger.error(f"Error generating database descriptions: {e}")
             return self._create_fallback_descriptions(venues, result_type="database")
+
+    def _extract_sources_from_database_restaurant(self, restaurant: Dict[str, Any]) -> List[str]:
+        """
+        FIXED: Extract and parse sources from database restaurant with robust handling
+
+        Database sources can be stored in various formats:
+        - Already parsed list: ['source1', 'source2']
+        - JSON string: '["source1", "source2"]'
+        - Comma-separated string: 'source1,source2'
+        - Single string: 'source1'
+        """
+        try:
+            sources = restaurant.get('sources', [])
+
+            # If already a list, return as-is
+            if isinstance(sources, list):
+                return [str(s).strip() for s in sources if s and str(s).strip()]
+
+            # If string, try to parse
+            if isinstance(sources, str) and sources.strip():
+                sources = sources.strip()
+
+                # Try JSON parsing first
+                try:
+                    import json
+                    parsed_sources = json.loads(sources)
+                    if isinstance(parsed_sources, list):
+                        return [str(s).strip() for s in parsed_sources if s and str(s).strip()]
+                    else:
+                        return [str(parsed_sources).strip()] if str(parsed_sources).strip() else []
+                except json.JSONDecodeError:
+                    pass
+
+                # Try ast.literal_eval
+                try:
+                    import ast
+                    parsed_sources = ast.literal_eval(sources)
+                    if isinstance(parsed_sources, list):
+                        return [str(s).strip() for s in parsed_sources if s and str(s).strip()]
+                    else:
+                        return [str(parsed_sources).strip()] if str(parsed_sources).strip() else []
+                except (ValueError, SyntaxError):
+                    pass
+
+                # Fall back to comma-separated or single string
+                if ',' in sources:
+                    return [s.strip() for s in sources.split(',') if s.strip()]
+                else:
+                    return [sources] if sources else []
+
+            # Empty or None
+            return []
+
+        except Exception as e:
+            logger.debug(f"Error extracting sources from database restaurant: {e}")
+            return []
 
     def _format_map_search_restaurants_for_description(self, restaurants_data: List[Dict[str, Any]]) -> str:
         """Format MAP SEARCH restaurant data for description prompt"""
@@ -670,33 +748,44 @@ Write ALL descriptions with variety and uniqueness. Focus on cuisine and atmosph
             return []
 
     def _convert_database_to_venue_format(self, database_restaurants: List[Dict[str, Any]]) -> List[CombinedVenueData]:
-        """Convert database restaurant format to CombinedVenueData format"""
+        """
+        UPDATED: Convert database restaurant format to CombinedVenueData format with place_id extraction
+        """
         try:
             combined_venues = []
 
             for restaurant in database_restaurants:
                 # Extract basic info
-                place_id = str(restaurant.get('id', ''))
+                restaurant_id = str(restaurant.get('id', ''))
                 name = restaurant.get('name', 'Unknown')
                 address = restaurant.get('address', '')
                 latitude = float(restaurant.get('latitude', 0.0))
                 longitude = float(restaurant.get('longitude', 0.0))
                 distance_km = float(restaurant.get('distance_km', 0.0))
 
-                # Database restaurants don't have Google data or media verification
+                # ADDED: Extract place_id from database (check multiple possible field names)
+                place_id = (
+                    restaurant.get('place_id') or 
+                    restaurant.get('google_place_id') or 
+                    restaurant.get('google_maps_place_id') or
+                    restaurant_id  # Fallback to restaurant ID if no place_id
+                )
+                place_id = str(place_id) if place_id else restaurant_id
+
+                # Database restaurants don't have Google data or media verification  
                 combined_venue = CombinedVenueData(
-                    place_id=place_id,
+                    place_id=place_id,  # UPDATED: Use extracted place_id
                     name=name,
                     address=address,
                     latitude=latitude,
                     longitude=longitude,
                     distance_km=distance_km,
-                    business_status='OPERATIONAL',
-                    rating=None,
+                    business_status="OPERATIONAL",  # Assume operational for database restaurants
+                    rating=None,  # Database restaurants don't have Google ratings
                     user_ratings_total=None,
                     google_reviews=[],
-                    google_maps_url='',
-                    has_professional_coverage=False,
+                    google_maps_url="",  # Will be generated by formatter if needed
+                    has_professional_coverage=False,  # No media verification for database
                     media_coverage_score=0.0,
                     professional_sources=[],
                     scraped_content=[],
@@ -705,7 +794,7 @@ Write ALL descriptions with variety and uniqueness. Focus on cuisine and atmosph
 
                 combined_venues.append(combined_venue)
 
-            logger.info(f"Converted {len(combined_venues)} database restaurants to venue format")
+            logger.info(f"Converted {len(combined_venues)} database restaurants to venue format with place_id")
             return combined_venues
 
         except Exception as e:
