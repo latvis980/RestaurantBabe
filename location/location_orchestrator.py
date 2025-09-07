@@ -487,8 +487,8 @@ class LocationOrchestrator:
             if not verified_venues:
                 return {"restaurants": [], "error": "No venues passed media verification"}
 
-            # Step 3: AI editing (correct method name)
-            final_restaurants = await self.ai_editor.create_professional_descriptions(
+            # Step 3: AI editing - FIXED: Use the correct method name
+            final_restaurants = await self.ai_editor.create_descriptions_for_map_search_results(
                 map_search_results=venues,
                 media_verification_results=verified_venues,
                 user_query=query,
