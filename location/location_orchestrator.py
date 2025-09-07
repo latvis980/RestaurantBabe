@@ -326,7 +326,7 @@ class LocationOrchestrator:
             raise ValueError(f"AI filtering failed: {str(e)}")
 
     async def _description_editing_step(self, pipeline_input: Dict[str, Any]) -> Dict[str, Any]:
-        """LangChain Step 4: AI edit descriptions for database results"""
+        """LangChain Step 4: AI edit descriptions for database results - CORRECTED"""
         try:
             filtered_restaurants = pipeline_input.get("filtered_restaurants", [])
             query = pipeline_input["query"]
@@ -339,17 +339,17 @@ class LocationOrchestrator:
                     "description_editing_success": True
                 }
 
-            logger.info(f"✏️ AI editing descriptions for {len(filtered_restaurants)} restaurants")
+            logger.info(f"✏️ AI editing descriptions for {len(filtered_restaurants)} database restaurants")
 
-            # Use existing description editor (correct method name)
-            edited_restaurants = await self.description_editor.create_professional_descriptions(
-                map_search_results=filtered_restaurants,
-                media_verification_results=[],  # Empty since this is DB-only flow
+            # FIXED: Use the new method specifically for database results
+            # This skips the atmospheric filtering that's meant for map search results
+            edited_restaurants = await self.description_editor.create_descriptions_for_database_results(
+                database_restaurants=filtered_restaurants,  # These are already filtered by filter_evaluator
                 user_query=query,
                 cancel_check_fn=pipeline_input.get("cancel_check_fn")
             )
 
-            logger.info(f"✏️ Descriptions edited for {len(edited_restaurants)} restaurants")
+            logger.info(f"✏️ Descriptions edited for {len(edited_restaurants)} database restaurants")
 
             return {
                 **pipeline_input,

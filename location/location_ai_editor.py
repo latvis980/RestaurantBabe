@@ -330,6 +330,130 @@ Focus on quality over quantity. Select restaurants that truly stand out as speci
             logger.error(f"Error in AI restaurant filtering: {e}")
             return venues  # Return all venues if filtering fails
 
+    async def create_descriptions_for_database_results(
+        self,
+        database_restaurants: List[Any],
+        user_query: str = "",
+        cancel_check_fn=None
+    ) -> List[RestaurantDescription]:
+        """
+        Create professional descriptions for DATABASE RESULTS - SKIP atmospheric filtering
+
+        Database results have already been filtered by filter_evaluator, so we skip
+        the atmospheric filtering step and go directly to description generation.
+
+        Steps:
+        1. Convert database results to combined venue format
+        2. SKIP atmospheric filtering (unlike map search results)
+        3. Generate descriptions directly
+        """
+        try:
+            logger.info(f"Creating descriptions for {len(database_restaurants)} database restaurants")
+
+            if not database_restaurants:
+                return []
+
+            # Step 1: Convert database results to CombinedVenueData format
+            combined_venues = self._convert_database_to_venue_format(database_restaurants)
+
+            # LOG COMBINED DATA FOR DEBUGGING
+            self.data_logger.log_combined_data(
+                map_search_results=database_restaurants,
+                media_verification_results=[],  # No media for database results
+                combined_venues=combined_venues,
+                user_query=user_query
+            )
+
+            if cancel_check_fn and cancel_check_fn():
+                return []
+
+            # Step 2: SKIP atmospheric filtering - database results are pre-filtered
+            logger.info("Step 2: SKIPPING atmospheric filtering for database results")
+
+            # LOG: Show that we skipped filtering
+            self.data_logger.log_ai_selection_data(
+                venues_before_selection=combined_venues,
+                venues_after_selection=combined_venues,  # Same - no filtering
+                user_query=user_query
+            )
+
+            if cancel_check_fn and cancel_check_fn():
+                return []
+
+            # Step 3: Generate descriptions directly (same as map search flow)
+            logger.info("Step 3: Generating descriptions for database restaurants")
+            descriptions = await self._generate_all_venue_descriptions(combined_venues, user_query)
+
+            # LOG DESCRIPTION GENERATION DATA
+            self.data_logger.log_description_generation_data(
+                selected_venues=combined_venues,
+                generated_descriptions=descriptions,
+                user_query=user_query
+            )
+
+            if cancel_check_fn and cancel_check_fn():
+                return []
+
+            logger.info(f"Generated {len(descriptions)} professional descriptions for database results")
+            return descriptions
+
+        except Exception as e:
+            logger.error(f"Error in create_descriptions_for_database_results: {e}")
+            return []
+
+    def _convert_database_to_venue_format(self, database_restaurants: List[Dict[str, Any]]) -> List[CombinedVenueData]:
+        """
+        Convert database restaurant format to CombinedVenueData format
+
+        Database restaurants have different structure than map search results,
+        so we need to convert them to the expected format.
+        """
+        try:
+            from location.location_data_models import CombinedVenueData
+
+            combined_venues = []
+
+            for restaurant in database_restaurants:
+                # Create CombinedVenueData from database restaurant
+                combined_venue = CombinedVenueData(
+                    # Basic info
+                    name=restaurant.get('name', ''),
+                    place_id=restaurant.get('id', ''),  # Use database ID as place_id
+
+                    # Location (if available)
+                    lat=restaurant.get('latitude'),
+                    lng=restaurant.get('longitude'),
+
+                    # Rating info (default values if not available)
+                    rating=restaurant.get('rating', 4.0),
+                    user_ratings_total=restaurant.get('review_count', 0),
+
+                    # Database-specific fields
+                    raw_description=restaurant.get('raw_description', ''),
+                    cuisine_tags=restaurant.get('cuisine_tags', []),
+                    sources=restaurant.get('sources', []),
+
+                    # Google data (empty for database results)
+                    google_reviews=[],
+                    google_photos=[],
+
+                    # Media coverage (empty for database results) 
+                    has_professional_coverage=False,
+                    professional_sources=[],
+
+                    # Distance if available
+                    distance_km=restaurant.get('distance_km')
+                )
+
+                combined_venues.append(combined_venue)
+
+            logger.info(f"Converted {len(combined_venues)} database restaurants to venue format")
+            return combined_venues
+
+        except Exception as e:
+            logger.error(f"Error converting database restaurants to venue format: {e}")
+            return []
+
     def _format_restaurants_for_selection(self, restaurants_data: List[Dict]) -> str:
         """Format restaurant data for AI selection prompt"""
         formatted = ""
@@ -343,7 +467,7 @@ Focus on quality over quantity. Select restaurants that truly stand out as speci
             if restaurant['has_media_coverage']:
                 formatted += f"MEDIA COVERAGE: Yes - {', '.join(restaurant['media_sources'])}\n"
             else:
-                formatted += f"MEDIA COVERAGE: No\n"
+                formatted += "MEDIA COVERAGE: No\n"
 
             formatted += "\nRECENT REVIEWS:\n"
             for i, review in enumerate(restaurant['reviews'][:3], 1):
@@ -652,7 +776,7 @@ RESTAURANT INFO:
             for desc in descriptions:
                 # Prepare indicators
                 media_indicator = " 📰" if desc.has_media_coverage else ""
-                score_indicator = f" ⭐" if hasattr(desc, 'selection_score') and desc.selection_score and desc.selection_score >= 8.0 else ""
+                score_indicator = " ⭐" if hasattr(desc, 'selection_score') and desc.selection_score and desc.selection_score >= 8.0 else ""
 
                 # Distance and rating strings
                 distance_str = f"{desc.distance_km:.1f}km" if desc.distance_km else ""
