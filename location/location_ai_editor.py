@@ -386,26 +386,28 @@ RESTAURANTS TO DESCRIBE:
 {self._format_all_restaurants_for_description(all_restaurants_data)}
 
 WRITING RULES FOR EACH DESCRIPTION:
-✅ Write 1-2 complete sentences per restaurant (30-50 words each)
-✅ Use specific details from reviews (food, atmosphere, unique features)
-✅ Mention media coverage naturally ONLY if it exists
-✅ Make each description DIFFERENT from the others - vary your language and approach
-✅ Use conversational, local insider tone
-✅ Include ONE specific detail that makes each place special
-✅ ALWAYS end with complete sentences - never cut off mid-sentence
-
-❌ Don't use generic phrases like "quality restaurant" or "carefully prepared"
-❌ Don't use the same sentence structures for multiple restaurants
-❌ Don't write more than 2 sentences per restaurant
-❌ Don't use formal restaurant review language
-❌ Don't use quotes or formatting
-❌ Never repeat similar openings like "A must-visit" or "A local favorite"
+1. Write 1-2 complete sentences (similar length to examples above)
+2. Use specific details from reviews (food, atmosphere, unique features)
+3. Avoid generic phrases like "quality restaurant" or "carefully prepared"
+4. Don't assume details not mentioned in reviews and media sources
+5. Mention media coverage and Michelin recommendations naturally ONLY if it exists (like "GQ magazine" or "Featured in The Guardian"). If there's no media coverage, don't mention it.
+6 Make it relevant to the user's query: "{user_query}"
+7. Use conversational, local insider tone, don't praise the restaurant too much
+8. ALWAYS end with complete sentences - never cut off mid-sentence
 
 VARIETY REQUIREMENTS:
 - Each description must sound different
 - Use different sentence structures
 - Vary your vocabulary and approach
-- Focus on different aspects for each restaurant (ambiance, food, concept, location, etc.)
+
+NEGATIVE RULES:
+1. Don't use generic phrases like "quality restaurant" or "carefully prepared"
+2. Don't use the same sentence structures for multiple restaurants
+3. Don't write more than 2 sentences per restaurant
+4 Don't use formal restaurant review language
+5. Don't use quotes or formatting
+6. Don't use similar openings and structure for all restaurants
+
 
 OUTPUT FORMAT:
 Return ONLY valid JSON:
@@ -572,21 +574,19 @@ RESTAURANT INFO:
 
     EXAMPLE 2: "The owner, Joao, changes the menu every day. GQ magazine wrote some good things about this place."
 
-    EXAMPLE 3: "Cozy, whimsical, a true hidden gem in Bairro Alto. Try crafted cocktails like "Bairro negroni" and "Mango smash"."
+    EXAMPLE 3: "Cozy, whimsical, a true hidden gem in Bairro Alto. Crafted cocktails like "Bairro negroni" and "Mango smash"."
 
     EXAMPLE 4: "Possibly best sourdough on this side of town and Sunday brunches with lush pastries and egg dishes. Featured in The Guardian."
 
     WRITING RULES:
-    1. Write 1-2 complete sentences (similar length to examples above)
-    2. Use specific details from reviews (food, atmosphere, unique features)
-    3. Avoid generic phrases like "quality restaurant" or "carefully prepared"
-    4. Don't assume details not mentioned in reviews and media sources
-    5. Mention media coverage and Michelin recommendations naturally ONLY if it exists (like "GQ magazine" or "Featured in The Guardian"). If there's no media coverage, don't mention it.
-    6 Make it relevant to the user's query: "{user_query}"
-    7. Use conversational, local insider tone, don't praise the restaurant too much
-    8. ALWAYS end with complete sentences - never cut off mid-sentence
+    ✅ Write 1-2 complete sentences (similar length to examples above)
+    ✅ Use specific details from reviews (food, atmosphere, unique features)
+    ✅ Mention media coverage naturally ONLY if it exists (like "GQ magazine" or "Featured in The Guardian"). If there's no media coverage, don't mention it.
+    ✅ Make it relevant to the user's query: "{user_query}"
+    ✅ Use conversational, local insider tone
+    ✅ Include ONE specific detail that makes this place special
+    ✅ ALWAYS end with complete sentences - never cut off mid-sentence
 
-    DON'T:
     ❌ Don't use generic phrases like "quality restaurant" or "carefully prepared"
     ❌ Don't write more than 2 sentences
     ❌ Don't use formal restaurant review language

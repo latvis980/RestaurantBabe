@@ -356,6 +356,20 @@ ENHANCED_VERIFICATION_RATE_LIMITS = {
 BUCKET_NAME = "scraped-content"
 
 # ============================================================================
+# DEBUG AND LOGGING CONFIGURATION
+# ============================================================================
+
+# Location Editor Debug Logging
+ENABLE_LOCATION_DEBUG_LOGGING = True  # Set to False in production
+LOCATION_DEBUG_LOG_DIRECTORY = "/tmp/location_debug"  # Directory for debug files
+LOCATION_DEBUG_CLEANUP_DAYS = 3  # Days to keep debug files
+
+# Detailed logging switches
+LOG_COMBINED_DATA = True  # Log map + media verification combined data
+LOG_AI_SELECTION = True   # Log AI restaurant selection process  
+LOG_DESCRIPTION_GENERATION = True  # Log description generation input/output
+
+# ============================================================================
 # VALIDATION
 # ============================================================================
 
