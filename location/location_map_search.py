@@ -508,6 +508,7 @@ class LocationMapSearchAgent:
     ) -> List[VenueSearchResult]:
         """
         MAIN SEARCH METHOD: Uses Places API v1 with credential rotation and GoogleMaps fallback
+        UPDATED: Now uses AI-generated text search queries for better specificity
 
         Args:
             coordinates: (latitude, longitude) tuple
@@ -528,10 +529,12 @@ class LocationMapSearchAgent:
 
             self._log_coordinates(latitude, longitude, "INPUT coordinates")
 
-            # Get place types for search
-            place_types = await self._analyze_query_for_place_types(query)
-            if not place_types:
-                place_types = ["restaurant", "food", "meal_takeaway"]
+            # NEW: Get both text search query and place types from AI analysis
+            search_analysis = await self._analyze_query_for_search(query)
+            place_types = search_analysis["place_types"]
+            text_search_query = search_analysis["text_search_query"]
+
+            logger.info(f"🤖 Search strategy: text='{text_search_query}', types={place_types}")
 
             venues = []
 
@@ -541,10 +544,10 @@ class LocationMapSearchAgent:
                 if cancel_check_fn and cancel_check_fn():
                     return []
 
-            # Fallback to GoogleMaps if needed (with rotation if available)
+            # UPDATED: Fallback to GoogleMaps using optimized text search query
             if not venues:
-                logger.info("🔄 Falling back to GoogleMaps library")
-                venues = await self._googlemaps_search_with_rotation(latitude, longitude, query)
+                logger.info(f"🔄 Falling back to GoogleMaps with text query: '{text_search_query}'")
+                venues = await self._googlemaps_search_with_rotation(latitude, longitude, text_search_query)
                 if cancel_check_fn and cancel_check_fn():
                     return []
 
@@ -562,7 +565,7 @@ class LocationMapSearchAgent:
             logger.info(f"🎯 Search completed: {len(final_venues)} venues")
             if final_venues:
                 for i, venue in enumerate(final_venues[:5], 1):
-                    logger.info(f"   {i}. {venue.name}: {venue.latitude:.6f}, {venue.longitude:.6f}")
+                    logger.info(f"   {i}. {venue.name}: {venue.rating}⭐ ({venue.distance_km:.1f}km)")
 
             return final_venues
 
@@ -598,7 +601,10 @@ class LocationMapSearchAgent:
         gmaps_client,
         key_name: str
     ) -> List[VenueSearchResult]:
-        """Internal GoogleMaps search method with specific client"""
+        """
+        Internal GoogleMaps search method with specific client
+        UPDATED: Better handling of AI-generated text search queries
+        """
         venues = []
 
         if not gmaps_client:
@@ -612,15 +618,31 @@ class LocationMapSearchAgent:
             location = f"{latitude},{longitude}"
             radius_m = int(self.search_radius_km * 1000)
 
+            # UPDATED: Smarter query construction
+            # If the query already contains "restaurant", "bar", "cafe", etc., use it as-is
+            # Otherwise, add "restaurant" for better results
+            search_terms = query.lower()
+            has_venue_type = any(term in search_terms for term in [
+                'restaurant', 'bar', 'cafe', 'coffee', 'bakery', 'bistro', 
+                'steakhouse', 'pizzeria', 'sushi', 'pub', 'tavern'
+            ])
+
+            if has_venue_type:
+                final_query = query
+            else:
+                final_query = f"{query} restaurant"
+
+            logger.debug(f"🔍 GoogleMaps search query ({key_name}): '{final_query}'")
+
             # FIXED: Text search with proper error handling
             response = gmaps_client.places(
-                query=f"{query} restaurant",
+                query=final_query,
                 location=location,
                 radius=radius_m,
             )
 
             results = response.get('results', []) if response else []
-            logger.info(f"✅ GoogleMaps ({key_name}) returned {len(results)} results")
+            logger.info(f"✅ GoogleMaps ({key_name}) returned {len(results)} results for '{final_query}'")
 
             for place in results:
                 try:
@@ -636,36 +658,59 @@ class LocationMapSearchAgent:
         logger.info(f"🎯 GoogleMaps search completed: {len(venues)} venues ({key_name})")
         return venues
 
-    async def _analyze_query_for_place_types(self, query: str) -> List[str]:
-        """AI analysis for place types using comprehensive restaurant type list - FIXED v1.0+ API"""
+    async def _analyze_query_for_search(self, query: str) -> Dict[str, Any]:
+        """
+        NEW: AI analysis that converts user query to effective text search query + place types
+
+        Returns both optimized text search query and relevant place types for hybrid approach
+        """
         try:
             # FIXED: Type guard for OpenAI v1.0+ client
             if not self.openai_client:
-                logger.info("🤖 No OpenAI client available, using default place types")
-                return self._get_default_place_types(query)
+                logger.info("🤖 No OpenAI client available, using default analysis")
+                return self._get_default_search_analysis(query)
 
-            # Create prompt with full place type list
+            # Create prompt for comprehensive query analysis
             place_types_str = ", ".join(self.RESTAURANT_PLACE_TYPES)
 
             prompt = f"""
-            Analyze this restaurant search query and return the 5 most relevant Google Places API place types.
+            Convert this user restaurant query into an optimized Google Maps text search query and relevant place types.
 
-            Query: "{query}"
+            User Query: "{query}"
+
+            Your task:
+            1. Create an optimized text search query that will find relevant restaurants
+            2. Select 3-5 most relevant Google Places API place types as backup filters
+
+            TEXT SEARCH QUERY GUIDELINES:
+            - Extract the key intent and convert to effective search terms
+            - For dishes/food: include the dish name + cuisine type if relevant
+            - For atmosphere/features: include descriptive terms
+            - For specific needs: focus on the main requirement
+            - Keep it concise but specific (2-4 words typically)
+
+            EXAMPLES:
+            - "my kids want pasta, where to go" → "pasta italian restaurant"
+            - "I'm looking for some fancy cocktails" → "mixology cocktails bar"
+            - "somewhere romantic for anniversary" → "romantic restaurant"
+            - "best ramen in the area" → "ramen japanese"
+            - "vegan options near me" → "vegan restaurant"
+            - "place with good wine list" → "wine restaurant"
+            - "italian restaurants" → "italian restaurant"
+            - "coffee and breakfast" → "coffee breakfast cafe"
+            - "late night food" → "late night restaurant"
+            - "outdoor seating" → "outdoor dining restaurant"
 
             Available place types: {place_types_str}
 
-            Instructions:
-            - Choose 5 most relevant types based on the query
-            - Order by relevance (most relevant first)  
-            - Always include "restaurant" unless query is very specific (like "coffee shop")
-            - Consider cuisine type, dining style, and service type
-            - Return ONLY a JSON array, no explanation
+            Return ONLY valid JSON:
+            {{
+                "text_search_query": "optimized search terms",
+                "place_types": ["type1", "type2", "type3"],
+                "search_intent": "brief description of what user wants"
+            }}
 
-            Examples:
-            - "Italian restaurants" → ["italian_restaurant", "restaurant", "food", "establishment", "meal_takeaway"]
-            - "coffee shops near me" → ["coffee_shop", "cafe", "bakery", "breakfast_restaurant", "food"]
-            - "sushi delivery" → ["sushi_restaurant", "japanese_restaurant", "meal_delivery", "restaurant", "food"]
-            - "best steakhouse" → ["steak_house", "american_restaurant", "restaurant", "food", "establishment"]
+            Make the text_search_query specific enough to find relevant places but not so narrow it excludes good options.
             """
 
             # FIXED: OpenAI v1.0+ API call syntax
@@ -673,37 +718,115 @@ class LocationMapSearchAgent:
                 model=self.openai_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=100
+                max_tokens=150
             )
 
             if response and response.choices and len(response.choices) > 0:
                 result = response.choices[0].message.content.strip()
-                place_types = json.loads(result)
+                analysis = json.loads(result)
 
-                # Validate that returned types are in our list
-                valid_types = [t for t in place_types if t in self.RESTAURANT_PLACE_TYPES]
+                # Validate place types are in our list
+                valid_place_types = [t for t in analysis.get("place_types", []) if t in self.RESTAURANT_PLACE_TYPES]
 
-                if len(valid_types) < 3:
+                if len(valid_place_types) < 2:
                     # Add fallbacks if AI didn't return enough valid types
                     fallbacks = ["restaurant", "food", "meal_takeaway"]
                     for fallback in fallbacks:
-                        if fallback not in valid_types:
-                            valid_types.append(fallback)
-                        if len(valid_types) >= 5:
+                        if fallback not in valid_place_types:
+                            valid_place_types.append(fallback)
+                        if len(valid_place_types) >= 5:
                             break
 
-                logger.info(f"🤖 AI selected place types for '{query}': {valid_types[:5]}")
-                return valid_types[:5]
+                result_analysis = {
+                    "text_search_query": analysis.get("text_search_query", query),
+                    "place_types": valid_place_types[:5],
+                    "search_intent": analysis.get("search_intent", "restaurant search")
+                }
+
+                logger.info(f"🤖 AI query analysis for '{query}':")
+                logger.info(f"   Text search: '{result_analysis['text_search_query']}'")
+                logger.info(f"   Place types: {result_analysis['place_types']}")
+                return result_analysis
             else:
                 logger.warning("⚠️  OpenAI returned empty response")
-                return self._get_default_place_types(query)
+                return self._get_default_search_analysis(query)
 
         except json.JSONDecodeError as e:
             logger.warning(f"⚠️  AI returned invalid JSON: {e}")
-            return self._get_default_place_types(query)
+            return self._get_default_search_analysis(query)
         except Exception as e:
             logger.warning(f"⚠️  AI query analysis failed: {e}")
-            return self._get_default_place_types(query)
+            return self._get_default_search_analysis(query)
+
+    def _get_default_search_analysis(self, query: str) -> Dict[str, Any]:
+        """
+        Get default search analysis based on simple query analysis
+        Returns both text search query and place types
+        """
+        query_lower = query.lower()
+
+        # Simple keyword-based analysis
+        if any(word in query_lower for word in ["pasta", "italian"]):
+            return {
+                "text_search_query": "italian pasta restaurant",
+                "place_types": ["italian_restaurant", "restaurant", "food"],
+                "search_intent": "Italian cuisine"
+            }
+        elif any(word in query_lower for word in ["coffee", "cafe", "espresso"]):
+            return {
+                "text_search_query": "coffee cafe",
+                "place_types": ["coffee_shop", "cafe", "breakfast_restaurant"],
+                "search_intent": "Coffee/cafe"
+            }
+        elif any(word in query_lower for word in ["sushi", "japanese", "ramen"]):
+            return {
+                "text_search_query": "japanese sushi restaurant",
+                "place_types": ["japanese_restaurant", "sushi_restaurant", "restaurant"],
+                "search_intent": "Japanese cuisine"
+            }
+        elif any(word in query_lower for word in ["cocktail", "bar", "drinks"]):
+            return {
+                "text_search_query": "cocktail bar",
+                "place_types": ["bar", "restaurant", "establishment"],
+                "search_intent": "Cocktails/bar"
+            }
+        elif any(word in query_lower for word in ["romantic", "anniversary", "date"]):
+            return {
+                "text_search_query": "romantic restaurant",
+                "place_types": ["restaurant", "food", "establishment"],
+                "search_intent": "Romantic dining"
+            }
+        elif any(word in query_lower for word in ["vegan", "vegetarian", "plant"]):
+            return {
+                "text_search_query": "vegan vegetarian restaurant",
+                "place_types": ["vegetarian_restaurant", "vegan_restaurant", "restaurant"],
+                "search_intent": "Vegan/vegetarian"
+            }
+        elif any(word in query_lower for word in ["wine", "sommelier"]):
+            return {
+                "text_search_query": "wine restaurant bar",
+                "place_types": ["bar", "restaurant", "establishment"],
+                "search_intent": "Wine focused"
+            }
+        elif any(word in query_lower for word in ["breakfast", "brunch"]):
+            return {
+                "text_search_query": "breakfast brunch",
+                "place_types": ["breakfast_restaurant", "brunch_restaurant", "cafe"],
+                "search_intent": "Breakfast/brunch"
+            }
+        elif any(word in query_lower for word in ["kids", "family", "children"]):
+            return {
+                "text_search_query": "family restaurant",
+                "place_types": ["restaurant", "family_restaurant", "food"],
+                "search_intent": "Family dining"
+            }
+        else:
+            # Generic restaurant search
+            return {
+                "text_search_query": "restaurant",
+                "place_types": ["restaurant", "food", "meal_takeaway"],
+                "search_intent": "General restaurant search"
+            }
 
     def _get_default_place_types(self, query: str) -> List[str]:
         """Get default place types based on simple query analysis - FIXED"""
