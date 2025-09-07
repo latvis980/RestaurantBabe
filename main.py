@@ -1,4 +1,4 @@
-# main.py - Updated with automatic file cleanup
+# main.py - Updated with correct LangSmith environment variables
 import os
 import logging
 import time
@@ -20,14 +20,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configure LangSmith tracing if API key is available
+# FIXED: Configure LangSmith tracing with correct environment variables
 if hasattr(config, 'LANGSMITH_API_KEY') and config.LANGSMITH_API_KEY:
-    os.environ["LANGSMITH_TRACING"] = "true"
+    # CRITICAL: Use LANGSMITH_TRACING_V2 instead of LANGSMITH_TRACING
+    os.environ["LANGSMITH_TRACING_V2"] = "true"
     os.environ["LANGSMITH_API_KEY"] = config.LANGSMITH_API_KEY
-    os.environ["LANGSMITH_PROJECT"] = "restaurant-recommender"
-    logger.info("LangSmith tracing enabled")
+
+    # Set project name - use LANGSMITH_PROJECT instead of LANGCHAIN_PROJECT
+    project_name = getattr(config, 'LANGSMITH_PROJECT', 'restaurant-recommender')
+    os.environ["LANGSMITH_PROJECT"] = project_name
+
+    # Optional: Set endpoint if using self-hosted or EU region
+    if hasattr(config, 'LANGSMITH_ENDPOINT'):
+        os.environ["LANGSMITH_ENDPOINT"] = config.LANGSMITH_ENDPOINT
+
+    # Optional: Set workspace ID if you have multiple workspaces
+    if hasattr(config, 'LANGSMITH_WORKSPACE_ID'):
+        os.environ["LANGSMITH_WORKSPACE_ID"] = config.LANGSMITH_WORKSPACE_ID
+
+    # ALSO set the legacy LANGCHAIN variables for backward compatibility
+    os.environ["LANGCHAIN_TRACING_V2"] = "true"
+    os.environ["LANGCHAIN_API_KEY"] = config.LANGSMITH_API_KEY
+    os.environ["LANGCHAIN_PROJECT"] = project_name
+
+    logger.info(f"✅ LangSmith tracing enabled for project: {project_name}")
+    logger.info("🔍 Both LANGSMITH_TRACING_V2 and LANGCHAIN_TRACING_V2 set to 'true'")
 else:
-    logger.warning("LangSmith API key not found - tracing disabled")
+    logger.warning("⚠️ LangSmith API key not found - tracing disabled")
+    logger.warning("💡 Set LANGSMITH_API_KEY in config.py to enable tracing")
 
 # Initialize database
 initialize_db(config)
@@ -71,6 +91,13 @@ def main():
     # Initialize the orchestrator once at startup
     setup_orchestrator()
     logger.info("✅ Application initialization complete")
+
+    # Log tracing status for debugging
+    if os.environ.get("LANGSMITH_TRACING_V2") == "true":
+        logger.info("🔍 LangSmith tracing is ENABLED")
+        logger.info(f"📊 Project: {os.environ.get('LANGSMITH_PROJECT', 'default')}")
+    else:
+        logger.warning("⚠️ LangSmith tracing is DISABLED")
 
     # Start the Telegram bot
     from telegram_bot import main as telegram_main
