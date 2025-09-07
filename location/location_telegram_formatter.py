@@ -153,12 +153,16 @@ class LocationTelegramFormatter:
 
     def _format_single_restaurant(self, restaurant: Union[Dict[str, Any], Any], index: int) -> str:
         """
-        UPDATED: Format a single restaurant from database with enhanced descriptions and sources
+        ENHANCED DEBUG VERSION: Format a single restaurant from database with enhanced descriptions and sources
         """
         try:
             # Restaurant name with index
             name = self._get_value(restaurant, 'name', 'Unknown Restaurant')
             formatted_name = f"<b>{index}. {self._clean_html(name)}</b>\n"
+
+            # DEBUG: Log restaurant processing
+            logger.info(f"🔍 DEBUG - Processing restaurant {index}: {name}")
+            logger.info(f"🔍 DEBUG - Restaurant type: {type(restaurant)}")
 
             # Address with canonical Google Maps link
             address_line = self._format_address_link(restaurant)
@@ -169,11 +173,19 @@ class LocationTelegramFormatter:
             # UPDATED: Enhanced description with more content from database
             description_line = self._format_description_enhanced(restaurant)
 
-            # UPDATED: Sources showing only domain names
+            # UPDATED: Sources showing only domain names WITH DEBUG
+            logger.info(f"🔍 DEBUG - About to format sources for {name}...")
             sources_line = self._format_sources_domains_only(restaurant)
+            logger.info(f"🔍 DEBUG - Sources line result: '{sources_line}'")
 
             # Combine all parts
-            return f"{formatted_name}{address_line}{distance_line}{description_line}{sources_line}"
+            result = f"{formatted_name}{address_line}{distance_line}{description_line}{sources_line}"
+
+            # DEBUG: Log final result
+            logger.info(f"🔍 DEBUG - Final formatted restaurant {index}:")
+            logger.info(f"🔍 DEBUG - {result}")
+
+            return result
 
         except Exception as e:
             logger.error(f"❌ Error formatting restaurant {self._get_value(restaurant, 'name', 'Unknown')}: {e}")
@@ -306,31 +318,59 @@ class LocationTelegramFormatter:
     def _format_sources_domains_only(self, restaurant: Union[Dict[str, Any], Any]) -> str:
         """
         UPDATED: Format restaurant sources showing ONLY domain names (not full URLs)
+        ENHANCED DEBUG VERSION
         """
         try:
+            restaurant_name = self._get_value(restaurant, 'name', 'Unknown')
+
+            # DEBUG: Log the restaurant object type and structure
+            logger.info(f"🔍 DEBUG - Formatting sources for restaurant: {restaurant_name}")
+            logger.info(f"🔍 DEBUG - Restaurant object type: {type(restaurant)}")
+
+            # Try to get sources from multiple possible fields
             sources = self._get_value(restaurant, 'sources', [])
+            logger.info(f"🔍 DEBUG - Sources field: {sources} (type: {type(sources)})")
 
             if not sources:
                 # Also check for alternative field names
-                sources = self._get_value(restaurant, 'media_sources', []) or self._get_value(restaurant, 'sources_domains', [])
+                media_sources = self._get_value(restaurant, 'media_sources', [])
+                sources_domains = self._get_value(restaurant, 'sources_domains', [])
+                logger.info(f"🔍 DEBUG - media_sources field: {media_sources}")
+                logger.info(f"🔍 DEBUG - sources_domains field: {sources_domains}")
+
+                sources = media_sources or sources_domains
 
             if not sources:
+                logger.info(f"🔍 DEBUG - No sources found for {restaurant_name}")
+
+                # DEBUG: Let's see what fields ARE available
+                if hasattr(restaurant, '__dict__'):
+                    logger.info(f"🔍 DEBUG - Available fields in restaurant object: {restaurant.__dict__.keys()}")
+                elif isinstance(restaurant, dict):
+                    logger.info(f"🔍 DEBUG - Available keys in restaurant dict: {restaurant.keys()}")
+
                 return ""
+
+            logger.info(f"🔍 DEBUG - Found sources for {restaurant_name}: {sources}")
 
             # Extract domains from sources
             domains = self._extract_domains_from_sources(sources)
+            logger.info(f"🔍 DEBUG - Extracted domains: {domains}")
 
             if domains:
                 # Show max 3 domains to keep it clean
                 domains_text = ", ".join(domains[:3])
                 if len(domains) > 3:
                     domains_text += f" +{len(domains)-3} more"
-                return f"📚 Sources: {domains_text}\n"
+                result = f"📚 Sources: {domains_text}\n"
+                logger.info(f"🔍 DEBUG - Final sources line: {result}")
+                return result
 
+            logger.info(f"🔍 DEBUG - No valid domains extracted for {restaurant_name}")
             return ""
 
         except Exception as e:
-            logger.debug(f"Error formatting sources: {e}")
+            logger.error(f"❌ DEBUG - Error formatting sources for {restaurant_name}: {e}")
             return ""
 
     def _extract_domains_from_sources(self, sources: List[str]) -> List[str]:

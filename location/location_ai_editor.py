@@ -32,15 +32,15 @@ class CombinedVenueData:
     business_status: str
     rating: Optional[float] = None
     user_ratings_total: Optional[int] = None
-    google_reviews: List[Dict[str, Any]] = None
+    google_reviews: Optional[List[Dict[str, Any]]] = None  # FIXED: Optional
     google_maps_url: str = ""
 
     # Media verification data
     has_professional_coverage: bool = False
     media_coverage_score: float = 0.0
-    professional_sources: List[Dict[str, Any]] = None
-    scraped_content: List[Dict[str, Any]] = None
-    credibility_assessment: Dict[str, Any] = None
+    professional_sources: Optional[List[Dict[str, Any]]] = None  # FIXED: Optional
+    scraped_content: Optional[List[Dict[str, Any]]] = None  # FIXED: Optional
+    credibility_assessment: Optional[Dict[str, Any]] = None  # FIXED: Optional
 
     def __post_init__(self):
         if self.google_reviews is None:
@@ -52,6 +52,7 @@ class CombinedVenueData:
         if self.credibility_assessment is None:
             self.credibility_assessment = {}
 
+
 @dataclass
 class RestaurantDescription:
     """Final restaurant description result"""
@@ -61,10 +62,10 @@ class RestaurantDescription:
     distance_km: float
     description: str
     has_media_coverage: bool = False
-    media_sources: List[str] = None  # Only for database results
+    media_sources: Optional[List[str]] = None  # FIXED: Optional
     google_rating: Optional[float] = None
     selection_score: Optional[float] = None
-    sources: List[str] = None  # For database results - separate field
+    sources: Optional[List[str]] = None  # FIXED: Optional
 
     def __post_init__(self):
         if self.media_sources is None:
@@ -377,12 +378,7 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
         user_query: str
     ) -> List[RestaurantDescription]:
         """
-        FIXED: Generate descriptions for DATABASE RESULTS with proper sources transfer
-
-        Key fixes:
-        - Ensure sources from database are properly extracted and preserved
-        - Handle both parsed and unparsed sources formats
-        - Transfer sources to RestaurantDescription objects correctly
+        FIXED: Generate descriptions for DATABASE RESULTS with proper type safety
         """
         try:
             if not venues:
@@ -391,27 +387,38 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
             # Create combined prompt with all restaurants for DATABASE
             all_restaurants_data = []
             for i, venue in enumerate(venues):
-                # Get original database data
+                # Get original database data with bounds checking
                 original_restaurant = original_database_restaurants[i] if i < len(original_database_restaurants) else {}
 
-                # Extract existing description and sources from database
-                existing_description = original_restaurant.get('description', '') or original_restaurant.get('raw_description', '')
+                # FIXED: Safe string extraction
+                existing_description = (
+                    original_restaurant.get('description', '') or 
+                    original_restaurant.get('raw_description', '') or
+                    ''
+                )
 
-                # FIXED: Properly extract sources from database (handle different formats)
+                # FIXED: Type-safe source extraction
                 existing_sources = self._extract_sources_from_database_restaurant(original_restaurant)
+
+                # FIXED: Safe place_id extraction  
+                place_id = (
+                    original_restaurant.get('place_id') or 
+                    original_restaurant.get('google_place_id') or
+                    ''
+                )
 
                 restaurant_data = {
                     'index': i,
-                    'name': venue.name,
+                    'name': str(venue.name),
                     'rating': venue.rating,
                     'distance_km': venue.distance_km,
-                    'existing_description': existing_description,
-                    'existing_sources': existing_sources,
-                    'cuisine_tags': original_restaurant.get('cuisine_tags', [])
+                    'existing_description': str(existing_description),
+                    'existing_sources': existing_sources,  # Guaranteed List[str]
+                    'cuisine_tags': original_restaurant.get('cuisine_tags', []) or []
                 }
                 all_restaurants_data.append(restaurant_data)
 
-            # DATABASE specific prompt
+            # DATABASE specific prompt (same as before)
             combined_prompt = f"""You are a professional food journalist writing SHORT restaurant descriptions for DATABASE RESULTS.
 
     USER QUERY: "{user_query}"
@@ -428,20 +435,20 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
     {self._format_database_restaurants_for_description(all_restaurants_data)}
 
     Return JSON format with descriptions for ALL venues:
-    {{{{
+    {{
     "descriptions": [
-        {{{{
+        {{
             "index": 0,
             "restaurant_name": "Name",
             "description": "Professional description based on existing database content..."
-        }}}},
-        {{{{
+        }},
+        {{
             "index": 1,
             "restaurant_name": "Name", 
             "description": "Different style description..."
-        }}}}
+        }}
     ]
-    }}}}
+    }}
 
     Write ALL descriptions with variety and uniqueness. Focus on cuisine and atmosphere."""
 
@@ -456,11 +463,12 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
             )
 
             result_text = response.choices[0].message.content
+            result_text = str(result_text).strip() if result_text else ""
             if not result_text:
                 logger.warning("AI returned empty response for database description generation")
                 return self._create_fallback_descriptions(venues, result_type="database")
 
-            # Parse JSON response
+            # FIXED: Safer JSON parsing
             try:
                 result_text = result_text.strip()
                 start_idx = result_text.find('{')
@@ -471,7 +479,7 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
                     return self._create_fallback_descriptions(venues, result_type="database")
 
                 json_str = result_text[start_idx:end_idx + 1]
-                import json
+                import json  # FIXED: Import here to avoid "possibly unbound"
                 descriptions_result = json.loads(json_str)
 
             except (json.JSONDecodeError, ValueError) as json_error:
@@ -479,7 +487,7 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
                 logger.debug(f"Raw response: '{result_text}'")
                 return self._create_fallback_descriptions(venues, result_type="database")
 
-            # Build final results with PROPER SOURCES TRANSFER
+            # Build final results with FIXED sources transfer
             descriptions = []
 
             if isinstance(descriptions_result, dict) and 'descriptions' in descriptions_result:
@@ -489,30 +497,34 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
                     if isinstance(desc, dict) and 'index' in desc:
                         description_lookup[desc['index']] = desc
 
-                # Create RestaurantDescription objects with SOURCES
+                # Create RestaurantDescription objects with GUARANTEED types
                 for i, venue in enumerate(venues):
                     desc_data = description_lookup.get(i, {})
 
                     # Get description from AI
                     description_text = desc_data.get('description', f"A quality restaurant in {venue.address.split(',')[0] if venue.address else 'a great location'}.")
 
-                    # FIXED: Get original sources and place_id from database restaurant
+                    # FIXED: Get original sources and place_id with type safety
                     original_restaurant = original_database_restaurants[i] if i < len(original_database_restaurants) else {}
-                    original_sources = self._extract_sources_from_database_restaurant(original_restaurant)
-                    original_place_id = original_restaurant.get('place_id', '') or original_restaurant.get('google_place_id', '')
+                    original_sources = self._extract_sources_from_database_restaurant(original_restaurant)  # Guaranteed List[str]
+                    original_place_id = (
+                        original_restaurant.get('place_id') or 
+                        original_restaurant.get('google_place_id') or
+                        venue.place_id
+                    )
 
-                    # FIXED: Properly transfer sources and place_id to RestaurantDescription
+                    # FIXED: Type-safe RestaurantDescription creation
                     restaurant_desc = RestaurantDescription(
-                        place_id=original_place_id or venue.place_id,  # Use database place_id if available, fallback to venue
-                        name=venue.name,
-                        address=venue.address,
-                        distance_km=venue.distance_km,
-                        description=description_text,
-                        has_media_coverage=False,  # Database results don't have media verification
-                        media_sources=[],  # Empty for database results
+                        place_id=str(original_place_id),
+                        name=str(venue.name),
+                        address=str(venue.address),
+                        distance_km=float(venue.distance_km),
+                        description=str(description_text),
+                        has_media_coverage=False,
+                        media_sources=[],  # FIXED: Always empty list for database
                         google_rating=venue.rating,
                         selection_score=getattr(venue, 'selection_score', None),
-                        sources=original_sources  # FIXED: Preserve database sources HERE
+                        sources=original_sources  # FIXED: Guaranteed List[str], never None
                     )
 
                     descriptions.append(restaurant_desc)
@@ -528,61 +540,64 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
             logger.error(f"Error generating database descriptions: {e}")
             return self._create_fallback_descriptions(venues, result_type="database")
 
+
     def _extract_sources_from_database_restaurant(self, restaurant: Dict[str, Any]) -> List[str]:
         """
-        FIXED: Extract and parse sources from database restaurant with robust handling
-
-        Database sources can be stored in various formats:
-        - Already parsed list: ['source1', 'source2']
-        - JSON string: '["source1", "source2"]'
-        - Comma-separated string: 'source1,source2'
-        - Single string: 'source1'
+        FIXED: Extract and parse sources with guaranteed List[str] return (never None)
         """
         try:
-            sources = restaurant.get('sources', [])
+            sources_raw = restaurant.get('sources', [])
 
-            # If already a list, return as-is
-            if isinstance(sources, list):
-                return [str(s).strip() for s in sources if s and str(s).strip()]
+            # FIXED: Handle None case explicitly
+            if sources_raw is None:
+                return []
+
+            # If already a list, return cleaned version
+            if isinstance(sources_raw, list):
+                return [str(s).strip() for s in sources_raw if s and str(s).strip()]
 
             # If string, try to parse
-            if isinstance(sources, str) and sources.strip():
-                sources = sources.strip()
+            if isinstance(sources_raw, str) and sources_raw.strip():
+                sources_str = sources_raw.strip()
 
                 # Try JSON parsing first
                 try:
-                    import json
-                    parsed_sources = json.loads(sources)
+                    import json  # FIXED: Import inside try to avoid "possibly unbound"
+                    parsed_sources = json.loads(sources_str)
                     if isinstance(parsed_sources, list):
                         return [str(s).strip() for s in parsed_sources if s and str(s).strip()]
+                    elif parsed_sources:  # Single item
+                        return [str(parsed_sources).strip()]
                     else:
-                        return [str(parsed_sources).strip()] if str(parsed_sources).strip() else []
+                        return []
                 except json.JSONDecodeError:
                     pass
 
                 # Try ast.literal_eval
                 try:
                     import ast
-                    parsed_sources = ast.literal_eval(sources)
+                    parsed_sources = ast.literal_eval(sources_str)
                     if isinstance(parsed_sources, list):
                         return [str(s).strip() for s in parsed_sources if s and str(s).strip()]
+                    elif parsed_sources:  # Single item
+                        return [str(parsed_sources).strip()]
                     else:
-                        return [str(parsed_sources).strip()] if str(parsed_sources).strip() else []
+                        return []
                 except (ValueError, SyntaxError):
                     pass
 
                 # Fall back to comma-separated or single string
-                if ',' in sources:
-                    return [s.strip() for s in sources.split(',') if s.strip()]
+                if ',' in sources_str:
+                    return [s.strip() for s in sources_str.split(',') if s.strip()]
                 else:
-                    return [sources] if sources else []
+                    return [sources_str] if sources_str else []
 
-            # Empty or None
+            # FIXED: Always return List[str], never None
             return []
 
         except Exception as e:
             logger.debug(f"Error extracting sources from database restaurant: {e}")
-            return []
+            return []  # FIXED: Guaranteed List[str] return
 
     def _format_map_search_restaurants_for_description(self, restaurants_data: List[Dict[str, Any]]) -> str:
         """Format MAP SEARCH restaurant data for description prompt"""
@@ -635,43 +650,33 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
 
     def _create_fallback_descriptions(self, venues: List[CombinedVenueData], result_type: str = "map_search") -> List[RestaurantDescription]:
         """
-        Create simple fallback descriptions when AI generation fails
+        FIXED: Create simple fallback descriptions with guaranteed types
         """
         fallback_descriptions = []
 
         for venue in venues:
-            rating_text = f"{venue.rating:.1f}-star" if venue.rating else "highly rated"
-            description = f"A {rating_text} restaurant offering quality dining in {venue.address.split(',')[0] if venue.address else 'a great location'}."
+            try:
+                rating_text = f"{venue.rating:.1f}-star" if venue.rating else "highly rated"
+                location_part = venue.address.split(',')[0] if venue.address else 'a great location'
+                description = f"A {rating_text} restaurant offering quality dining in {location_part}."
 
-            # Different handling based on result type
-            if result_type == "map_search":
+                # FIXED: Type-safe RestaurantDescription creation
                 restaurant_desc = RestaurantDescription(
-                    place_id=venue.place_id,
-                    name=venue.name,
-                    address=venue.address,
-                    distance_km=venue.distance_km,
-                    description=description,
-                    has_media_coverage=venue.has_professional_coverage,
-                    media_sources=[],  # Empty for map search
-                    google_rating=venue.rating,
-                    selection_score=getattr(venue, 'selection_score', None),
-                    sources=[]  # Empty for map search
-                )
-            else:  # database
-                restaurant_desc = RestaurantDescription(
-                    place_id=getattr(venue, 'place_id', str(venue.name)),
-                    name=venue.name,
-                    address=venue.address,
-                    distance_km=venue.distance_km,
-                    description=description,
+                    place_id=str(venue.place_id),
+                    name=str(venue.name),
+                    address=str(venue.address),
+                    distance_km=float(venue.distance_km),
+                    description=str(description),
                     has_media_coverage=False,
-                    media_sources=[],
+                    media_sources=[],  # FIXED: Always empty list
                     google_rating=venue.rating,
                     selection_score=getattr(venue, 'selection_score', None),
-                    sources=[]  # Would be filled from original database data
+                    sources=[]  # FIXED: Always empty list for fallback
                 )
 
-            fallback_descriptions.append(restaurant_desc)
+                fallback_descriptions.append(restaurant_desc)
+            except Exception as e:
+                logger.error(f"Error creating fallback description for {venue.name}: {e}")
 
         logger.info(f"Created {len(fallback_descriptions)} fallback descriptions for {result_type}")
         return fallback_descriptions
@@ -749,47 +754,54 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
 
     def _convert_database_to_venue_format(self, database_restaurants: List[Dict[str, Any]]) -> List[CombinedVenueData]:
         """
-        UPDATED: Convert database restaurant format to CombinedVenueData format with place_id extraction
+        FIXED: Convert database restaurant format to CombinedVenueData format with type safety
         """
         try:
             combined_venues = []
 
             for restaurant in database_restaurants:
-                # Extract basic info
+                # FIXED: Type-safe extraction
                 restaurant_id = str(restaurant.get('id', ''))
-                name = restaurant.get('name', 'Unknown')
-                address = restaurant.get('address', '')
-                latitude = float(restaurant.get('latitude', 0.0))
-                longitude = float(restaurant.get('longitude', 0.0))
-                distance_km = float(restaurant.get('distance_km', 0.0))
+                name = str(restaurant.get('name', 'Unknown'))
+                address = str(restaurant.get('address', ''))
 
-                # ADDED: Extract place_id from database (check multiple possible field names)
+                # FIXED: Safe float conversion
+                try:
+                    latitude = float(restaurant.get('latitude', 0.0))
+                    longitude = float(restaurant.get('longitude', 0.0))
+                    distance_km = float(restaurant.get('distance_km', 0.0))
+                except (ValueError, TypeError):
+                    latitude = 0.0
+                    longitude = 0.0
+                    distance_km = 0.0
+
+                # FIXED: Extract place_id with type safety
                 place_id = (
                     restaurant.get('place_id') or 
                     restaurant.get('google_place_id') or 
                     restaurant.get('google_maps_place_id') or
-                    restaurant_id  # Fallback to restaurant ID if no place_id
+                    restaurant_id
                 )
                 place_id = str(place_id) if place_id else restaurant_id
 
-                # Database restaurants don't have Google data or media verification  
+                # FIXED: Type-safe venue creation with guaranteed non-None lists
                 combined_venue = CombinedVenueData(
-                    place_id=place_id,  # UPDATED: Use extracted place_id
+                    place_id=place_id,
                     name=name,
                     address=address,
                     latitude=latitude,
                     longitude=longitude,
                     distance_km=distance_km,
-                    business_status="OPERATIONAL",  # Assume operational for database restaurants
-                    rating=None,  # Database restaurants don't have Google ratings
+                    business_status="OPERATIONAL",
+                    rating=None,
                     user_ratings_total=None,
-                    google_reviews=[],
-                    google_maps_url="",  # Will be generated by formatter if needed
-                    has_professional_coverage=False,  # No media verification for database
+                    google_reviews=[],  # FIXED: Always list, never None
+                    google_maps_url="",
+                    has_professional_coverage=False,
                     media_coverage_score=0.0,
-                    professional_sources=[],
-                    scraped_content=[],
-                    credibility_assessment={}
+                    professional_sources=[],  # FIXED: Always list, never None
+                    scraped_content=[],  # FIXED: Always list, never None
+                    credibility_assessment={}  # FIXED: Always dict, never None
                 )
 
                 combined_venues.append(combined_venue)
@@ -817,7 +829,7 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
                     'review_count': venue.user_ratings_total or 0,
                     'reviews': venue.google_reviews[:5],  # Top 5 reviews
                     'has_media_coverage': venue.has_professional_coverage,
-                    'media_sources': [source.get('source_name', '') for source in venue.professional_sources[:3]]
+                    'media_sources': [source.get('source_name', '') for source in venue.professional_sources[:3]]  # Top 3 sources
                 }
                 restaurants_data.append(restaurant_data)
 
