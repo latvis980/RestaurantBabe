@@ -602,8 +602,7 @@ class LocationMapSearchAgent:
         key_name: str
     ) -> List[VenueSearchResult]:
         """
-        Internal GoogleMaps search method with specific client
-        UPDATED: Better handling of AI-generated text search queries
+        Internal GoogleMaps search method with ENHANCED DEBUG LOGGING
         """
         venues = []
 
@@ -618,9 +617,7 @@ class LocationMapSearchAgent:
             location = f"{latitude},{longitude}"
             radius_m = int(self.search_radius_km * 1000)
 
-            # UPDATED: Smarter query construction
-            # If the query already contains "restaurant", "bar", "cafe", etc., use it as-is
-            # Otherwise, add "restaurant" for better results
+            # ENHANCED: Smarter query construction with detailed logging
             search_terms = query.lower()
             has_venue_type = any(term in search_terms for term in [
                 'restaurant', 'bar', 'cafe', 'coffee', 'bakery', 'bistro', 
@@ -632,9 +629,21 @@ class LocationMapSearchAgent:
             else:
                 final_query = f"{query} restaurant"
 
-            logger.debug(f"🔍 GoogleMaps search query ({key_name}): '{final_query}'")
+            # 🆕 ENHANCED DEBUG LOGGING - Multiple log levels for visibility
+            logger.info(f"🔍 GoogleMaps Search Debug ({key_name}):")
+            logger.info(f"   📥 Original user query: '{query}'")
+            logger.info(f"   🎯 Final search query: '{final_query}'")
+            logger.info(f"   📍 Location: {latitude:.4f}, {longitude:.4f}")
+            logger.info(f"   📏 Radius: {radius_m}m ({self.search_radius_km}km)")
+            logger.info(f"   🏷️  Has venue type: {has_venue_type}")
 
-            # FIXED: Text search with proper error handling
+            # Also log at DEBUG level for detailed debugging
+            logger.debug(f"🔍 GoogleMaps detailed params:")
+            logger.debug(f"   query='{final_query}'")
+            logger.debug(f"   location='{location}'")
+            logger.debug(f"   radius={radius_m}")
+
+            # Execute the search
             response = gmaps_client.places(
                 query=final_query,
                 location=location,
@@ -642,8 +651,19 @@ class LocationMapSearchAgent:
             )
 
             results = response.get('results', []) if response else []
-            logger.info(f"✅ GoogleMaps ({key_name}) returned {len(results)} results for '{final_query}'")
 
+            # 🆕 ENHANCED RESULTS LOGGING
+            logger.info(f"✅ GoogleMaps ({key_name}) Results:")
+            logger.info(f"   📊 Total results: {len(results)}")
+
+            if results:
+                logger.info(f"   🏆 Top 3 results:")
+                for i, place in enumerate(results[:3], 1):
+                    name = place.get('name', 'Unknown')
+                    rating = place.get('rating', 'No rating')
+                    logger.info(f"     {i}. {name} ({rating}⭐)")
+
+            # Convert results
             for place in results:
                 try:
                     venue = self._convert_gmaps_result(place, latitude, longitude)
@@ -654,6 +674,8 @@ class LocationMapSearchAgent:
 
         except Exception as e:
             logger.error(f"❌ GoogleMaps search failed ({key_name}): {e}")
+            logger.error(f"   Query was: '{final_query}'")
+            logger.error(f"   Location was: {latitude:.4f}, {longitude:.4f}")
 
         logger.info(f"🎯 GoogleMaps search completed: {len(venues)} venues ({key_name})")
         return venues
