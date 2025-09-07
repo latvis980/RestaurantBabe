@@ -814,52 +814,80 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
             return []
 
     async def _filter_atmospheric_restaurants(self, combined_venues: List[CombinedVenueData], user_query: str) -> List[CombinedVenueData]:
-        """Filter restaurants for atmospheric qualities using AI"""
+        """
+        FIXED: Filter restaurants for atmospheric qualities using AI with complete type safety
+        """
+        import json  # Import at method start to avoid "possibly unbound"
+
         try:
             if not combined_venues:
                 return []
 
-            # Prepare data for AI analysis
+            # Prepare data for AI analysis with type safety
             restaurants_data = []
             for i, venue in enumerate(combined_venues):
+                # FIXED: Safe attribute access with guaranteed types
+                venue_name = getattr(venue, 'name', 'Unknown')
+                venue_rating = getattr(venue, 'rating', None) or 0
+                venue_review_count = getattr(venue, 'user_ratings_total', None) or 0
+                venue_reviews = getattr(venue, 'google_reviews', None) or []
+                venue_has_coverage = getattr(venue, 'has_professional_coverage', False)
+                venue_professional_sources = getattr(venue, 'professional_sources', None) or []
+
+                # FIXED: Safe media sources extraction
+                media_sources = []
+                if venue_professional_sources and isinstance(venue_professional_sources, list):
+                    for source in venue_professional_sources[:3]:  # Top 3 sources
+                        if source and isinstance(source, dict):
+                            source_name = source.get('source_name', '')
+                            if source_name:
+                                media_sources.append(source_name)
+
+                # FIXED: Safe reviews handling
+                safe_reviews = []
+                if venue_reviews and isinstance(venue_reviews, list):
+                    for review in venue_reviews[:5]:  # Top 5 reviews
+                        if review and isinstance(review, dict):
+                            safe_reviews.append(review)
+
                 restaurant_data = {
                     'index': i,
-                    'name': venue.name,
-                    'rating': venue.rating or 0,
-                    'review_count': venue.user_ratings_total or 0,
-                    'reviews': venue.google_reviews[:5],  # Top 5 reviews
-                    'has_media_coverage': venue.has_professional_coverage,
-                    'media_sources': [source.get('source_name', '') for source in venue.professional_sources[:3]]  # Top 3 sources
+                    'name': venue_name,
+                    'rating': venue_rating,
+                    'review_count': venue_review_count,
+                    'reviews': safe_reviews,
+                    'has_media_coverage': venue_has_coverage,
+                    'media_sources': media_sources
                 }
                 restaurants_data.append(restaurant_data)
 
             # AI selection prompt
             selection_prompt = f"""You are an expert restaurant curator selecting truly atmospheric, special places.
 
-USER QUERY: "{user_query}"
+    USER QUERY: "{user_query}"
 
-Select restaurants that are TRULY ATMOSPHERIC and SPECIAL. Focus on:
-- Emotional, detailed reviews mentioning specific experiences
-- Unique character, ambiance, or exceptional quality
-- Special occasions, memorable experiences, authentic atmosphere
-- Avoid generic, chain, or purely functional restaurants
+    Select restaurants that are TRULY ATMOSPHERIC and SPECIAL. Focus on:
+    - Emotional, detailed reviews mentioning specific experiences
+    - Unique character, ambiance, or exceptional quality
+    - Special occasions, memorable experiences, authentic atmosphere
+    - Avoid generic, chain, or purely functional restaurants
 
-RESTAURANT DATA:
-{self._format_restaurants_for_selection(restaurants_data)}
+    RESTAURANT DATA:
+    {self._format_restaurants_for_selection(restaurants_data)}
 
-Return JSON with selected restaurant indices and scores:
-{{{{
+    Return JSON with selected restaurant indices and scores:
+    {{
     "selected_restaurants": [
-        {{{{
+        {{
             "index": 0,
             "name": "Restaurant Name",
             "selection_score": 8.5,
             "reason": "Brief reason for selection"
-        }}}}
+        }}
     ]
-}}}}
+    }}
 
-Select 3-5 truly atmospheric restaurants with highest appeal."""
+    Select 3-5 truly atmospheric restaurants with highest appeal."""
 
             response = await self.openai_client.chat.completions.create(
                 model=self.openai_model,
@@ -871,34 +899,55 @@ Select 3-5 truly atmospheric restaurants with highest appeal."""
                 max_tokens=1000
             )
 
-            # Parse selection results
+            # FIXED: Safe response parsing with guaranteed string handling
             selected_venues = []
             try:
-                response_text = response.choices[0].message.content.strip()
+                response_content = response.choices[0].message.content
+                response_text = str(response_content).strip() if response_content else ""
 
+                if not response_text:
+                    logger.warning("Empty response from atmospheric filtering AI")
+                    return combined_venues[:3]  # Fallback to first 3
+
+                # Clean JSON markers
                 if response_text.startswith('```json'):
                     response_text = response_text.replace('```json', '').replace('```', '').strip()
 
-                import json
+                # FIXED: Safe JSON parsing
                 selection_data = json.loads(response_text)
 
-                for selected in selection_data.get('selected_restaurants', []):
-                    venue_index = selected.get('index', 0)
+                # FIXED: Safe data extraction with type checking
+                selected_restaurants = selection_data.get('selected_restaurants', [])
+                if not isinstance(selected_restaurants, list):
+                    logger.warning("Invalid selection data format")
+                    return combined_venues[:3]
+
+                for selected in selected_restaurants:
+                    if not isinstance(selected, dict):
+                        continue
+
+                    venue_index = selected.get('index')
                     selection_score = selected.get('selection_score', 0.0)
 
-                    if venue_index < len(combined_venues):
+                    # FIXED: Safe index validation
+                    if venue_index is not None and 0 <= venue_index < len(combined_venues):
                         venue = combined_venues[venue_index]
-                        # Add selection score to venue
-                        venue.selection_score = selection_score
+                        # Add selection score to venue (create new attribute)
+                        venue.selection_score = float(selection_score)
                         selected_venues.append(venue)
 
-            except (json.JSONDecodeError, KeyError) as e:
-                logger.error(f"Error parsing selection results: {e}")
+            except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+                logger.error(f"Error parsing atmospheric selection results: {e}")
+                logger.debug(f"Raw response: '{response_text[:500] if 'response_text' in locals() else 'No response'}'")
                 # Fallback: return first 3 venues
-                selected_venues = combined_venues[:3]
+                return combined_venues[:3]
 
-            # Sort by selection score
-            selected_venues.sort(key=lambda v: getattr(v, 'selection_score', 0.0), reverse=True)
+            # FIXED: Safe sorting with getattr fallback
+            if selected_venues:
+                selected_venues.sort(key=lambda v: getattr(v, 'selection_score', 0.0), reverse=True)
+            else:
+                # If no venues selected, fallback to first 3
+                selected_venues = combined_venues[:3]
 
             logger.info(f"AI selected {len(selected_venues)} atmospheric restaurants from {len(combined_venues)} candidates")
             return selected_venues
