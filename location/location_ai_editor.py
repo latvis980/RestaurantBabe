@@ -1,15 +1,18 @@
 # location/location_ai_editor.py
 """
-Location AI Description Editor - Enhanced with Separate Methods
+Location AI Description Editor - Enhanced with Separate Methods - ALL TYPE ERRORS FIXED
 
 Key improvements:
 - Separate methods for map search vs database results
 - Different formatting for media sources (inline vs sources field)
 - Proper handling of media verification data vs database sources
 - Enhanced prompts for each result type
+- FIXED: All Pyright "possibly unbound" errors using proper initialization patterns
 """
 
 import logging
+import json
+import ast
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from openai import AsyncOpenAI
@@ -32,15 +35,15 @@ class CombinedVenueData:
     business_status: str
     rating: Optional[float] = None
     user_ratings_total: Optional[int] = None
-    google_reviews: Optional[List[Dict[str, Any]]] = None  # FIXED: Optional
+    google_reviews: Optional[List[Dict[str, Any]]] = None
     google_maps_url: str = ""
 
     # Media verification data
     has_professional_coverage: bool = False
     media_coverage_score: float = 0.0
-    professional_sources: Optional[List[Dict[str, Any]]] = None  # FIXED: Optional
-    scraped_content: Optional[List[Dict[str, Any]]] = None  # FIXED: Optional
-    credibility_assessment: Optional[Dict[str, Any]] = None  # FIXED: Optional
+    professional_sources: Optional[List[Dict[str, Any]]] = None
+    scraped_content: Optional[List[Dict[str, Any]]] = None
+    credibility_assessment: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
         if self.google_reviews is None:
@@ -62,10 +65,10 @@ class RestaurantDescription:
     distance_km: float
     description: str
     has_media_coverage: bool = False
-    media_sources: Optional[List[str]] = None  # FIXED: Optional
+    media_sources: Optional[List[str]] = None
     google_rating: Optional[float] = None
     selection_score: Optional[float] = None
-    sources: Optional[List[str]] = None  # FIXED: Optional
+    sources: Optional[List[str]] = None
 
     def __post_init__(self):
         if self.media_sources is None:
@@ -324,15 +327,27 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
 
             # Parse response and create RestaurantDescription objects
             descriptions = []
+
+            # FIXED: Initialize all variables early to prevent "possibly unbound" errors
+            response_text = ""
+            result_data: Dict[str, Any] = {}
+
             try:
-                response_text = response.choices[0].message.content.strip()
+                # FIXED: Safe response handling with proper None checks
+                response_content = response.choices[0].message.content
+                if response_content is not None:
+                    response_text = str(response_content).strip()
+                else:
+                    response_text = ""
 
                 # Clean JSON markers
                 if response_text.startswith('```json'):
                     response_text = response_text.replace('```json', '').replace('```', '').strip()
 
-                import json
-                result_data = json.loads(response_text)
+                if response_text:
+                    result_data = json.loads(response_text)
+                else:
+                    result_data = {"descriptions": []}
 
                 for desc_data in result_data.get('descriptions', []):
                     venue_index = desc_data.get('index', 0)
@@ -397,15 +412,8 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
                     ''
                 )
 
-                # FIXED: Type-safe source extraction
+                # FIXED: Safe source extraction
                 existing_sources = self._extract_sources_from_database_restaurant(original_restaurant)
-
-                # FIXED: Safe place_id extraction  
-                place_id = (
-                    original_restaurant.get('place_id') or 
-                    original_restaurant.get('google_place_id') or
-                    ''
-                )
 
                 restaurant_data = {
                     'index': i,
@@ -418,39 +426,39 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
                 }
                 all_restaurants_data.append(restaurant_data)
 
-            # DATABASE specific prompt (same as before)
+            # DATABASE specific prompt
             combined_prompt = f"""You are a professional food journalist writing SHORT restaurant descriptions for DATABASE RESULTS.
 
-    USER QUERY: "{user_query}"
+USER QUERY: "{user_query}"
 
-    Write a professional, engaging description for EACH restaurant below. For DATABASE results:
-    - 1-2 complete sentences capturing the restaurant's unique character
-    - Use existing descriptions as foundation but make them more engaging and professional
-    - Focus on cuisine type, atmosphere, and unique features
-    - Professional yet warm tone
-    - Each description should feel DIFFERENT (vary sentence structure, focus areas)
-    - DO NOT mention specific media sources - sources are handled separately
+Write a professional, engaging description for EACH restaurant below. For DATABASE results:
+- 1-2 complete sentences capturing the restaurant's unique character
+- Use existing descriptions as foundation but make them more engaging and professional
+- Focus on cuisine type, atmosphere, and unique features
+- Professional yet warm tone
+- Each description should feel DIFFERENT (vary sentence structure, focus areas)
+- DO NOT mention specific media sources - sources are handled separately
 
-    RESTAURANT DATA:
-    {self._format_database_restaurants_for_description(all_restaurants_data)}
+RESTAURANT DATA:
+{self._format_database_restaurants_for_description(all_restaurants_data)}
 
-    Return JSON format with descriptions for ALL venues:
-    {{
-    "descriptions": [
-        {{
-            "index": 0,
-            "restaurant_name": "Name",
-            "description": "Professional description based on existing database content..."
-        }},
-        {{
-            "index": 1,
-            "restaurant_name": "Name", 
-            "description": "Different style description..."
-        }}
-    ]
-    }}
+Return JSON format with descriptions for ALL venues:
+{{{{
+"descriptions": [
+    {{{{
+        "index": 0,
+        "restaurant_name": "Name",
+        "description": "Professional description based on existing database content..."
+    }}}},
+    {{{{
+        "index": 1,
+        "restaurant_name": "Name", 
+        "description": "Different style description..."
+    }}}}
+]
+}}}}
 
-    Write ALL descriptions with variety and uniqueness. Focus on cuisine and atmosphere."""
+Write ALL descriptions with variety and uniqueness. Focus on cuisine and atmosphere."""
 
             response = await self.openai_client.chat.completions.create(
                 model=self.openai_model,
@@ -462,15 +470,23 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
                 max_tokens=2000
             )
 
-            result_text = response.choices[0].message.content
-            result_text = str(result_text).strip() if result_text else ""
-            if not result_text:
-                logger.warning("AI returned empty response for database description generation")
-                return self._create_fallback_descriptions(venues, result_type="database")
+            # FIXED: Initialize all variables early to prevent "possibly unbound" errors
+            result_text = ""
+            descriptions_result: Dict[str, Any] = {}
 
-            # FIXED: Safer JSON parsing
             try:
-                result_text = result_text.strip()
+                # FIXED: Safe response handling
+                response_content = response.choices[0].message.content
+                if response_content is not None:
+                    result_text = str(response_content).strip()
+                else:
+                    result_text = ""
+
+                if not result_text:
+                    logger.warning("AI returned empty response for database description generation")
+                    return self._create_fallback_descriptions(venues, result_type="database")
+
+                # FIXED: Safer JSON parsing with proper initialization
                 start_idx = result_text.find('{')
                 end_idx = result_text.rfind('}')
 
@@ -479,7 +495,6 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
                     return self._create_fallback_descriptions(venues, result_type="database")
 
                 json_str = result_text[start_idx:end_idx + 1]
-                import json  # FIXED: Import here to avoid "possibly unbound"
                 descriptions_result = json.loads(json_str)
 
             except (json.JSONDecodeError, ValueError) as json_error:
@@ -562,7 +577,6 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
 
                 # Try JSON parsing first
                 try:
-                    import json  # FIXED: Import inside try to avoid "possibly unbound"
                     parsed_sources = json.loads(sources_str)
                     if isinstance(parsed_sources, list):
                         return [str(s).strip() for s in parsed_sources if s and str(s).strip()]
@@ -575,7 +589,6 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
 
                 # Try ast.literal_eval
                 try:
-                    import ast
                     parsed_sources = ast.literal_eval(sources_str)
                     if isinstance(parsed_sources, list):
                         return [str(s).strip() for s in parsed_sources if s and str(s).strip()]
@@ -817,8 +830,6 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
         """
         FIXED: Filter restaurants for atmospheric qualities using AI with complete type safety
         """
-        import json  # Import at method start to avoid "possibly unbound"
-
         try:
             if not combined_venues:
                 return []
@@ -864,30 +875,30 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
             # AI selection prompt
             selection_prompt = f"""You are an expert restaurant curator selecting truly atmospheric, special places.
 
-    USER QUERY: "{user_query}"
+USER QUERY: "{user_query}"
 
-    Select restaurants that are TRULY ATMOSPHERIC and SPECIAL. Focus on:
-    - Emotional, detailed reviews mentioning specific experiences
-    - Unique character, ambiance, or exceptional quality
-    - Special occasions, memorable experiences, authentic atmosphere
-    - Avoid generic, chain, or purely functional restaurants
+Select restaurants that are TRULY ATMOSPHERIC and SPECIAL. Focus on:
+- Emotional, detailed reviews mentioning specific experiences
+- Unique character, ambiance, or exceptional quality
+- Special occasions, memorable experiences, authentic atmosphere
+- Avoid generic, chain, or purely functional restaurants
 
-    RESTAURANT DATA:
-    {self._format_restaurants_for_selection(restaurants_data)}
+RESTAURANT DATA:
+{self._format_restaurants_for_selection(restaurants_data)}
 
-    Return JSON with selected restaurant indices and scores:
-    {{
-    "selected_restaurants": [
-        {{
-            "index": 0,
-            "name": "Restaurant Name",
-            "selection_score": 8.5,
-            "reason": "Brief reason for selection"
-        }}
-    ]
-    }}
+Return JSON with selected restaurant indices and scores:
+{{{{
+"selected_restaurants": [
+    {{{{
+        "index": 0,
+        "name": "Restaurant Name",
+        "selection_score": 8.5,
+        "reason": "Brief reason for selection"
+    }}}}
+]
+}}}}
 
-    Select 3-5 truly atmospheric restaurants with highest appeal."""
+Select 3-5 truly atmospheric restaurants with highest appeal."""
 
             response = await self.openai_client.chat.completions.create(
                 model=self.openai_model,
@@ -899,11 +910,17 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
                 max_tokens=1000
             )
 
-            # FIXED: Safe response parsing with guaranteed string handling
+            # FIXED: Initialize all variables early to prevent "possibly unbound" errors
             selected_venues = []
+            response_text = ""
+            selection_data: Dict[str, Any] = {}
+
             try:
                 response_content = response.choices[0].message.content
-                response_text = str(response_content).strip() if response_content else ""
+                if response_content is not None:
+                    response_text = str(response_content).strip()
+                else:
+                    response_text = ""
 
                 if not response_text:
                     logger.warning("Empty response from atmospheric filtering AI")
@@ -914,7 +931,10 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
                     response_text = response_text.replace('```json', '').replace('```', '').strip()
 
                 # FIXED: Safe JSON parsing
-                selection_data = json.loads(response_text)
+                if response_text:
+                    selection_data = json.loads(response_text)
+                else:
+                    selection_data = {"selected_restaurants": []}
 
                 # FIXED: Safe data extraction with type checking
                 selected_restaurants = selection_data.get('selected_restaurants', [])
@@ -938,7 +958,7 @@ Write ALL descriptions with variety and uniqueness. Integrate media mentions nat
 
             except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
                 logger.error(f"Error parsing atmospheric selection results: {e}")
-                logger.debug(f"Raw response: '{response_text[:500] if 'response_text' in locals() else 'No response'}'")
+                logger.debug(f"Raw response: '{response_text[:500]}'")
                 # Fallback: return first 3 venues
                 return combined_venues[:3]
 
