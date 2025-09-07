@@ -698,7 +698,6 @@ class LocationMapSearchAgent:
             # Create prompt for comprehensive query analysis
             place_types_str = ", ".join(self.RESTAURANT_PLACE_TYPES)
 
-            # FIXED: Use double curly braces for LangChain compatibility
             prompt = f"""
     Convert this user restaurant query into an optimized Google Maps text search query and relevant place types.
 

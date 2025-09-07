@@ -34,13 +34,13 @@ class LocationFilterEvaluator:
 
         # ENHANCED FILTERING PROMPT - More specific criteria
         self.filter_prompt = ChatPromptTemplate.from_template("""
-USER QUERY: "{{query}}"
-LOCATION: {{location_description}}
+USER QUERY: "{query}"
+LOCATION: {location_description}
 
 You are analyzing restaurants from our database to find SPECIFIC matches for this location-based query.
 
 RESTAURANT LIST:
-{{restaurants_text}}
+{restaurants_text}
 
 TASK: Select ONLY restaurants that SPECIFICALLY match the user's query intent.
 
