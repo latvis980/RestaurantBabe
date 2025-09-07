@@ -37,24 +37,24 @@ class LocationFilterEvaluator:
 USER QUERY: "{query}"
 LOCATION: {location_description}
 
-You are analyzing restaurants from our database to find SPECIFIC matches for this location-based query.
+You are analyzing restaurants from our database to find matches for this location-based query.
 
 RESTAURANT LIST:
 {restaurants_text}
 
-TASK: Select ONLY restaurants that SPECIFICALLY match the user's query intent.
+TASK: Select ONLY restaurants where cuisine tags and descriptions stronly suggest that match the user's query intent.
 
-ENHANCED MATCHING CRITERIA - BE SELECTIVE:
-1. **Cuisine Match**: Must be the requested cuisine type or very closely related
+SELECTION RULES
+1. **Cuisine Match**: Must be the requested cuisine type/dish or very closely related
 2. **Query Keywords**: Look for specific features mentioned (price range, atmosphere, dietary needs)
 3. **Context Analysis**: Consider what the user is actually looking for based on their exact words
 4. **Quality Over Quantity**: Better to return 2 perfect matches than 5 "reasonable" ones
+5. Ignore location keywords — the restaurants provided match location criteria already
 
 SPECIFICITY RULES:
-- If user asks for "Italian", don't include "Mediterranean" unless it specifically mentions Italian dishes
 - If user asks for "cheap eats", focus on casual/affordable places, not upscale restaurants
 - If user asks for "fine dining", focus on upscale/formal restaurants with detailed descriptions
-- If user asks for specific features (rooftop, wine bar, vegan), require those to be mentioned
+- If user asks for specific features (rooftop, wine bar, vegan), select restaurants that offer that based on cuisine tags and descriptions
 - If user asks for "famous chef restaurants", require chef mentions or high-end descriptions
 
 DESCRIPTION ANALYSIS:
@@ -74,7 +74,7 @@ OUTPUT: Return ONLY valid JSON with SPECIFICALLY matching restaurant IDs:
     ]
 }}
 
-IMPORTANT: Only include restaurants that are STRONG, SPECIFIC matches. Empty results are better than irrelevant ones.
+IMPORTANT: Only include restaurants that are very good matches or none.
 """)
 
         # ENHANCED EVALUATION PROMPT - More demanding criteria
