@@ -680,9 +680,12 @@ class LocationMapSearchAgent:
         logger.info(f"🎯 GoogleMaps search completed: {len(venues)} venues ({key_name})")
         return venues
 
+
+    # FIXED VERSION of _analyze_query_for_search method in location/location_map_search.py
+
     async def _analyze_query_for_search(self, query: str) -> Dict[str, Any]:
         """
-        NEW: AI analysis that converts user query to effective text search query + place types
+        FIXED: AI analysis that converts user query to effective text search query + place types
 
         Returns both optimized text search query and relevant place types for hybrid approach
         """
@@ -695,161 +698,253 @@ class LocationMapSearchAgent:
             # Create prompt for comprehensive query analysis
             place_types_str = ", ".join(self.RESTAURANT_PLACE_TYPES)
 
+            # FIXED: Use double curly braces for LangChain compatibility
             prompt = f"""
-            Convert this user restaurant query into an optimized Google Maps text search query and relevant place types.
+    Convert this user restaurant query into an optimized Google Maps text search query and relevant place types.
 
-            User Query: "{query}"
+    User Query: "{{query}}"
 
-            Your task:
-            1. Create an optimized text search query that will find relevant restaurants
-            2. Select 2-3 most relevant Google Places API place types as backup filters
+    Your task:
+    1. Create an optimized text search query that will find relevant restaurants
+    2. Select 2-3 most relevant Google Places API place types as backup filters
 
-            TEXT SEARCH QUERY GUIDELINES:
-            - Extract the key intent and convert to effective search terms
-            - The length of the search query should be 1-3 words
-            - Discard location information if included — neighborhoods/streets are handled by coordinates
-            - For dishes/food: include the dish name + cuisine type if relevant
-            - For atmosphere/features: include descriptive terms
-            - For specific needs: focus on the main requirement
-            - Keep it concise but specific (1-3 words typically)
+    TEXT SEARCH QUERY GUIDELINES:
+    - Extract the key intent and convert to effective search terms
+    - The length of the search query should be 1-3 words
+    - Discard location information if included — neighborhoods/streets are handled by coordinates
+    - For dishes/food: include the dish name + cuisine type if relevant
+    - For atmosphere/features: include descriptive terms
+    - For specific needs: focus on the main requirement
+    - Keep it concise but specific (1-3 words typically)
 
-            EXAMPLES:
-            - "my kids want pasta, where to go" → "pasta italian restaurant"
-            - "I'm looking for some fancy cocktails" → "mixology cocktails bar"
-            - "somewhere nice for a date" → "romantic restaurant"
-            - "best ramen in the area" → "ramen japanese"
-            - "I want to have lunch and I'm vegan" → "vegan restaurant"
-            - "restaurant with good wine list" → "restaurant wine list"
-            - "italian restaurants" → "italian restaurant"
-            - "coffee and breakfast" → "coffee breakfast cafe"
-            - "where to grab a bite after the club?" → "late night food"
-            - "Want to have a drink outside" → "outdoor seating bar"
+    EXAMPLES:
+    - "my kids want pasta, where to go" → "pasta italian restaurant"
+    - "I'm looking for some fancy cocktails" → "mixology cocktails bar"
+    - "somewhere nice for a date" → "romantic restaurant"
+    - "best ramen in the area" → "ramen japanese"
+    - "I want to have lunch and I'm vegan" → "vegan restaurant"
+    - "restaurant with good wine list" → "restaurant wine list"
+    - "italian restaurants" → "italian restaurant"
+    - "coffee and breakfast" → "coffee breakfast cafe"
+    - "where to grab a bite after the club?" → "late night food"
+    - "Want to have a drink outside" → "outdoor seating bar"
 
-            Available place types: {place_types_str}
+    Available place types: {place_types_str}
 
-            Return ONLY valid JSON:
-            {{
-                "text_search_query": "optimized search terms",
-                "place_types": ["type1", "type2", "type3"],
-                "search_intent": "brief description of what user wants"
-            }}
+    Return ONLY valid JSON:
+    {{{{
+        "text_search_query": "optimized search terms",
+        "place_types": ["type1", "type2", "type3"],
+        "search_intent": "brief description of what user wants"
+    }}}}
 
-            Make the text_search_query specific enough to find relevant places but not so narrow it excludes good options.
-            """
+    Make the text_search_query specific enough to find relevant places but not so narrow it excludes good options.
+    """
 
-            # FIXED: OpenAI v1.0+ API call syntax
+            # FIXED: Insert the actual query into the prompt properly
+            formatted_prompt = prompt.format(query=query)
+
+            # FIXED: OpenAI v1.0+ API call syntax with better error handling
             response = self.openai_client.chat.completions.create(
                 model=self.openai_model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": formatted_prompt}],
                 temperature=0.1,
                 max_tokens=150
             )
 
-            if response and response.choices and len(response.choices) > 0:
-                result = response.choices[0].message.content.strip()
-                analysis = json.loads(result)
-
-                # Validate place types are in our list
-                valid_place_types = [t for t in analysis.get("place_types", []) if t in self.RESTAURANT_PLACE_TYPES]
-
-                if len(valid_place_types) < 2:
-                    # Add fallbacks if AI didn't return enough valid types
-                    fallbacks = ["restaurant", "food", "meal_takeaway"]
-                    for fallback in fallbacks:
-                        if fallback not in valid_place_types:
-                            valid_place_types.append(fallback)
-                        if len(valid_place_types) >= 5:
-                            break
-
-                result_analysis = {
-                    "text_search_query": analysis.get("text_search_query", query),
-                    "place_types": valid_place_types[:5],
-                    "search_intent": analysis.get("search_intent", "restaurant search")
-                }
-
-                logger.info(f"🤖 AI query analysis for '{query}':")
-                logger.info(f"   Text search: '{result_analysis['text_search_query']}'")
-                logger.info(f"   Place types: {result_analysis['place_types']}")
-                return result_analysis
-            else:
+            # FIXED: Better response validation and error handling
+            if not response or not response.choices or len(response.choices) == 0:
                 logger.warning("⚠️  OpenAI returned empty response")
                 return self._get_default_search_analysis(query)
 
-        except json.JSONDecodeError as e:
-            logger.warning(f"⚠️  AI returned invalid JSON: {e}")
-            return self._get_default_search_analysis(query)
+            result = response.choices[0].message.content
+
+            # FIXED: Handle None response content
+            if not result:
+                logger.warning("⚠️  OpenAI returned None content")
+                return self._get_default_search_analysis(query)
+
+            result = result.strip()
+
+            # FIXED: Handle empty response
+            if not result:
+                logger.warning("⚠️  OpenAI returned empty content after strip")
+                return self._get_default_search_analysis(query)
+
+            # FIXED: Clean up markdown formatting if present
+            if result.startswith('```json'):
+                result = result[7:]  # Remove ```json
+                if result.endswith('```'):
+                    result = result[:-3]  # Remove trailing ```
+            elif result.startswith('```'):
+                result = result[3:]  # Remove ```
+                if result.endswith('```'):
+                    result = result[:-3]  # Remove trailing ```
+
+            result = result.strip()
+
+            # FIXED: Final check for empty content
+            if not result:
+                logger.warning("⚠️  Empty content after cleaning markdown")
+                return self._get_default_search_analysis(query)
+
+            # FIXED: Better JSON parsing with error handling
+            try:
+                analysis = json.loads(result)
+            except json.JSONDecodeError as json_error:
+                logger.warning(f"⚠️  AI returned invalid JSON: {json_error}")
+                logger.debug(f"   Raw response: '{result}'")
+                return self._get_default_search_analysis(query)
+
+            # FIXED: Validate the analysis structure
+            if not isinstance(analysis, dict):
+                logger.warning(f"⚠️  AI returned non-dict: {type(analysis)}")
+                return self._get_default_search_analysis(query)
+
+            # FIXED: Extract and validate fields with proper fallbacks
+            text_search_query = analysis.get("text_search_query")
+            if not text_search_query or not isinstance(text_search_query, str):
+                logger.warning("⚠️  No valid text_search_query in AI response")
+                text_search_query = query  # Use original query as fallback
+
+            place_types = analysis.get("place_types", [])
+            if not isinstance(place_types, list):
+                place_types = []
+
+            # Validate place types are in our list
+            valid_place_types = [t for t in place_types if t in self.RESTAURANT_PLACE_TYPES]
+
+            if len(valid_place_types) < 2:
+                # Add fallbacks if AI didn't return enough valid types
+                fallbacks = ["restaurant", "food", "meal_takeaway"]
+                for fallback in fallbacks:
+                    if fallback not in valid_place_types and fallback in self.RESTAURANT_PLACE_TYPES:
+                        valid_place_types.append(fallback)
+                    if len(valid_place_types) >= 5:
+                        break
+
+            result_analysis = {
+                "text_search_query": text_search_query,
+                "place_types": valid_place_types[:5],
+                "search_intent": analysis.get("search_intent", "restaurant search")
+            }
+
+            logger.info(f"🤖 AI query analysis for '{query}':")
+            logger.info(f"   Text search: '{result_analysis['text_search_query']}'")
+            logger.info(f"   Place types: {result_analysis['place_types']}")
+            return result_analysis
+
         except Exception as e:
             logger.warning(f"⚠️  AI query analysis failed: {e}")
+            import traceback
+            logger.debug(f"   Traceback: {traceback.format_exc()}")
             return self._get_default_search_analysis(query)
 
     def _get_default_search_analysis(self, query: str) -> Dict[str, Any]:
         """
-        Get default search analysis based on simple query analysis
-        Returns both text search query and place types
+        SCALABLE: AI-powered fallback when main analysis fails
+        Uses a simpler AI call with more constraints
         """
-        query_lower = query.lower()
-
-        # Simple keyword-based analysis
-        if any(word in query_lower for word in ["pasta", "italian"]):
-            return {
-                "text_search_query": "italian pasta restaurant",
-                "place_types": ["italian_restaurant", "restaurant", "food"],
-                "search_intent": "Italian cuisine"
-            }
-        elif any(word in query_lower for word in ["coffee", "cafe", "espresso"]):
-            return {
-                "text_search_query": "coffee cafe",
-                "place_types": ["coffee_shop", "cafe", "breakfast_restaurant"],
-                "search_intent": "Coffee/cafe"
-            }
-        elif any(word in query_lower for word in ["sushi", "japanese", "ramen"]):
-            return {
-                "text_search_query": "japanese sushi restaurant",
-                "place_types": ["japanese_restaurant", "sushi_restaurant", "restaurant"],
-                "search_intent": "Japanese cuisine"
-            }
-        elif any(word in query_lower for word in ["cocktail", "bar", "drinks"]):
-            return {
-                "text_search_query": "cocktail bar",
-                "place_types": ["bar", "restaurant", "establishment"],
-                "search_intent": "Cocktails/bar"
-            }
-        elif any(word in query_lower for word in ["romantic", "anniversary", "date"]):
-            return {
-                "text_search_query": "romantic restaurant",
-                "place_types": ["restaurant", "food", "establishment"],
-                "search_intent": "Romantic dining"
-            }
-        elif any(word in query_lower for word in ["vegan", "vegetarian", "plant"]):
-            return {
-                "text_search_query": "vegan vegetarian restaurant",
-                "place_types": ["vegetarian_restaurant", "vegan_restaurant", "restaurant"],
-                "search_intent": "Vegan/vegetarian"
-            }
-        elif any(word in query_lower for word in ["wine", "sommelier"]):
-            return {
-                "text_search_query": "wine restaurant bar",
-                "place_types": ["bar", "restaurant", "establishment"],
-                "search_intent": "Wine focused"
-            }
-        elif any(word in query_lower for word in ["breakfast", "brunch"]):
-            return {
-                "text_search_query": "breakfast brunch",
-                "place_types": ["breakfast_restaurant", "brunch_restaurant", "cafe"],
-                "search_intent": "Breakfast/brunch"
-            }
-        elif any(word in query_lower for word in ["kids", "family", "children"]):
-            return {
-                "text_search_query": "family restaurant",
-                "place_types": ["restaurant", "family_restaurant", "food"],
-                "search_intent": "Family dining"
-            }
-        else:
-            # Generic restaurant search
+        # Handle None query
+        if not query:
             return {
                 "text_search_query": "restaurant",
                 "place_types": ["restaurant", "food", "meal_takeaway"],
-                "search_intent": "General restaurant search"
+                "search_intent": "general restaurant search"
+            }
+
+        try:
+            # Use a simpler, more constrained AI prompt for fallback
+            simple_prompt = f"""
+    Convert this query to a simple Google Maps search: "{query}"
+
+    Rules:
+    - Extract main food/cuisine type if mentioned
+    - Add "restaurant" if not present
+    - Keep it 1-3 words max
+    - Remove location info
+
+    Examples:
+    "best sushi" → "sushi restaurant"
+    "coffee and pastries" → "coffee cafe"
+    "romantic dinner" → "romantic restaurant"
+    "where to eat" → "restaurant"
+
+    Return only the search terms, nothing else:
+    """
+
+            # Try a simple completion call with very low temperature
+            if self.openai_client:
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-4o-mini",  # Use cheaper model for fallback
+                    messages=[{"role": "user", "content": simple_prompt}],
+                    temperature=0.0,
+                    max_tokens=20
+                )
+
+                if response and response.choices and response.choices[0].message.content:
+                    ai_query = response.choices[0].message.content.strip()
+
+                    # Clean up the response
+                    ai_query = ai_query.replace('"', '').replace("'", '').strip()
+
+                    if ai_query and len(ai_query.split()) <= 4:
+                        # Determine place types based on the AI result
+                        place_types = ["restaurant", "food"]
+
+                        ai_lower = ai_query.lower()
+                        if "coffee" in ai_lower or "cafe" in ai_lower:
+                            place_types = ["cafe", "coffee_shop", "restaurant"]
+                        elif "bar" in ai_lower or "drink" in ai_lower:
+                            place_types = ["bar", "restaurant", "establishment"]
+                        elif any(word in ai_lower for word in ["breakfast", "brunch"]):
+                            place_types = ["breakfast_restaurant", "cafe", "restaurant"]
+                        else:
+                            place_types = ["restaurant", "food", "meal_takeaway"]
+
+                        return {
+                            "text_search_query": ai_query,
+                            "place_types": place_types,
+                            "search_intent": f"Search for {ai_query}"
+                        }
+
+            # Final fallback - extract key terms from query
+            query_words = query.lower().split()
+            food_words = []
+
+            # Look for common food/restaurant terms
+            food_terms = {
+                "restaurant", "food", "eat", "dining", "cuisine", "kitchen",
+                "coffee", "cafe", "bar", "pub", "bistro", "grill", "pizzeria",
+                "italian", "chinese", "japanese", "mexican", "thai", "indian",
+                "sushi", "pizza", "pasta", "burger", "steak", "seafood",
+                "breakfast", "lunch", "dinner", "brunch"
+            }
+
+            for word in query_words:
+                if word in food_terms:
+                    food_words.append(word)
+
+            if food_words:
+                text_query = " ".join(food_words[:2])  # Max 2 words
+                if "restaurant" not in text_query:
+                    text_query += " restaurant"
+            else:
+                text_query = "restaurant"
+
+            return {
+                "text_search_query": text_query,
+                "place_types": ["restaurant", "food", "meal_takeaway"],
+                "search_intent": f"Search for {text_query}"
+            }
+
+        except Exception as e:
+            logger.warning(f"⚠️  Even fallback analysis failed: {e}")
+            # Ultimate fallback
+            return {
+                "text_search_query": "restaurant",
+                "place_types": ["restaurant", "food", "meal_takeaway"],
+                "search_intent": "general restaurant search"
             }
 
     def _get_default_place_types(self, query: str) -> List[str]:
