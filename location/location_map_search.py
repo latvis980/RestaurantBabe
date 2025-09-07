@@ -638,7 +638,7 @@ class LocationMapSearchAgent:
             logger.info(f"   🏷️  Has venue type: {has_venue_type}")
 
             # Also log at DEBUG level for detailed debugging
-            logger.debug(f"🔍 GoogleMaps detailed params:")
+            logger.debug("🔍 GoogleMaps detailed params:")
             logger.debug(f"   query='{final_query}'")
             logger.debug(f"   location='{location}'")
             logger.debug(f"   radius={radius_m}")
@@ -657,7 +657,7 @@ class LocationMapSearchAgent:
             logger.info(f"   📊 Total results: {len(results)}")
 
             if results:
-                logger.info(f"   🏆 Top 3 results:")
+                logger.info("   🏆 Top 3 results:")
                 for i, place in enumerate(results[:3], 1):
                     name = place.get('name', 'Unknown')
                     rating = place.get('rating', 'No rating')
@@ -702,26 +702,28 @@ class LocationMapSearchAgent:
 
             Your task:
             1. Create an optimized text search query that will find relevant restaurants
-            2. Select 3-5 most relevant Google Places API place types as backup filters
+            2. Select 2-3 most relevant Google Places API place types as backup filters
 
             TEXT SEARCH QUERY GUIDELINES:
             - Extract the key intent and convert to effective search terms
+            - The length of the search query should be 1-3 words
+            - Discard location information if included — neighborhoods/streets are handled by coordinates
             - For dishes/food: include the dish name + cuisine type if relevant
             - For atmosphere/features: include descriptive terms
             - For specific needs: focus on the main requirement
-            - Keep it concise but specific (2-4 words typically)
+            - Keep it concise but specific (1-3 words typically)
 
             EXAMPLES:
             - "my kids want pasta, where to go" → "pasta italian restaurant"
             - "I'm looking for some fancy cocktails" → "mixology cocktails bar"
-            - "somewhere romantic for anniversary" → "romantic restaurant"
+            - "somewhere nice for a date" → "romantic restaurant"
             - "best ramen in the area" → "ramen japanese"
-            - "vegan options near me" → "vegan restaurant"
-            - "place with good wine list" → "wine restaurant"
+            - "I want to have lunch and I'm vegan" → "vegan restaurant"
+            - "restaurant with good wine list" → "restaurant wine list"
             - "italian restaurants" → "italian restaurant"
             - "coffee and breakfast" → "coffee breakfast cafe"
-            - "late night food" → "late night restaurant"
-            - "outdoor seating" → "outdoor dining restaurant"
+            - "where to grab a bite after the club?" → "late night food"
+            - "Want to have a drink outside" → "outdoor seating bar"
 
             Available place types: {place_types_str}
 
