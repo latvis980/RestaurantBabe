@@ -20,6 +20,7 @@ import asyncio
 from typing import Dict, List, Any, Optional, Tuple, Union
 from dataclasses import dataclass
 from openai import AsyncOpenAI
+from location.location_data_logger import LocationDataLogger
 
 logger = logging.getLogger(__name__)
 
@@ -94,12 +95,13 @@ class LocationAIEditor:
         self.openai_model = getattr(config, 'OPENAI_MODEL', 'gpt-4o-mini')
         self.description_temperature = getattr(config, 'DESCRIPTION_TEMPERATURE', 0.3)
         self.enable_media_mention = getattr(config, 'ENABLE_MEDIA_MENTION', True)
-        # REMOVED: max_description_length - no more character limits
-
+    
         # Initialize AsyncOpenAI client
         self.openai_client = AsyncOpenAI(
             api_key=getattr(config, 'OPENAI_API_KEY')
         )
+
+        self.data_logger = LocationDataLogger(config=config, enabled=True)
 
         logger.info("Location AI Editor initialized with improved AI-driven analysis")
 
@@ -127,12 +129,27 @@ class LocationAIEditor:
             # Step 1: Combine data from both agents
             combined_venues = self._combine_search_results(map_search_results, media_verification_results)
 
+            # LOG COMBINED DATA FOR DEBUGGING
+            self.data_logger.log_combined_data(
+                map_search_results=map_search_results,
+                media_verification_results=media_verification_results,
+                combined_venues=combined_venues,
+                user_query=user_query
+            )
+
             if cancel_check_fn and cancel_check_fn():
                 return []
 
             # Step 2: AI-powered restaurant selection filtering
             logger.info("Step 2: AI filtering for truly atmospheric restaurants")
             selected_venues = await self._filter_atmospheric_restaurants(combined_venues, user_query)
+            
+            # LOG AI SELECTION DATA
+            self.data_logger.log_ai_selection_data(
+                venues_before_selection=combined_venues,
+                venues_after_selection=selected_venues,
+                user_query=user_query
+            )
 
             if cancel_check_fn and cancel_check_fn():
                 return []
@@ -142,6 +159,13 @@ class LocationAIEditor:
             # Step 3: Generate ALL descriptions in SINGLE API call for variety
             logger.info("Step 3: Generating varied descriptions for all restaurants in single call")
             descriptions = await self._generate_all_venue_descriptions(selected_venues, user_query)
+
+            # LOG DESCRIPTION GENERATION DATA
+            self.data_logger.log_description_generation_data(
+                selected_venues=selected_venues,
+                generated_descriptions=descriptions,
+                user_query=user_query
+            )
 
             if cancel_check_fn and cancel_check_fn():
                 return []
