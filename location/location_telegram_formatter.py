@@ -1,15 +1,14 @@
 # location/location_telegram_formatter.py
 """
-Unified Location Results Formatter - UPDATED for Google Maps with canonical addresses
+Unified Location Results Formatter - FIXED for RestaurantDescription dataclass objects
 
-UPDATED: Proper canonical place ID link formatting for Google Maps results
-Ensures all addresses are formatted consistently using place_id links
+FIXED: Handle both dictionary and RestaurantDescription dataclass objects
 """
 
 import logging
 import re
 import requests
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 from html import escape
 from urllib.parse import quote
 
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 class LocationTelegramFormatter:
     """
     Unified formatter for all location-based search results
-    UPDATED: Canonical Place ID formatting for all results
+    FIXED: Handles both dictionaries and RestaurantDescription dataclass objects
     """
 
     MAX_MESSAGE_LENGTH = 4096
@@ -29,7 +28,7 @@ class LocationTelegramFormatter:
 
     def format_database_results(
         self,
-        restaurants: List[Dict[str, Any]],
+        restaurants: List[Union[Dict[str, Any], Any]],  # FIXED: Accept both dicts and dataclass objects
         query: str,
         location_description: str,
         offer_more_search: bool = True
@@ -38,7 +37,7 @@ class LocationTelegramFormatter:
         Format database results (Step 2a) with user choice option
 
         Args:
-            restaurants: List of restaurant dictionaries from database
+            restaurants: List of restaurant dictionaries OR RestaurantDescription objects
             query: Original user query
             location_description: Description of the searched location
             offer_more_search: Whether to offer additional Google Maps search
@@ -153,11 +152,34 @@ class LocationTelegramFormatter:
                 "message": f"Found {len(venues)} restaurants but had trouble formatting them." if venues else "No restaurants found."
             }
 
-    def _format_single_restaurant(self, restaurant: Dict[str, Any], index: int) -> str:
-        """Format a single restaurant from database"""
+    def _get_value(self, obj: Union[Dict[str, Any], Any], key: str, default: Any = None) -> Any:
+        """
+        FIXED: Safely get value from either dictionary or dataclass object
+
+        Args:
+            obj: Either a dictionary or dataclass object (like RestaurantDescription)
+            key: The key/attribute name to get
+            default: Default value if key/attribute doesn't exist
+
+        Returns:
+            The value from the object or default
+        """
         try:
-            # Restaurant name with index
-            name = restaurant.get('name', 'Unknown Restaurant')
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            else:
+                # Handle dataclass objects (like RestaurantDescription)
+                return getattr(obj, key, default)
+        except Exception:
+            return default
+
+    def _format_single_restaurant(self, restaurant: Union[Dict[str, Any], Any], index: int) -> str:
+        """
+        FIXED: Format a single restaurant from database (handles both dicts and dataclass objects)
+        """
+        try:
+            # Restaurant name with index - FIXED to handle both dicts and dataclass objects
+            name = self._get_value(restaurant, 'name', 'Unknown Restaurant')
             formatted_name = f"<b>{index}. {self._clean_html(name)}</b>\n"
 
             # Address with canonical Google Maps link
@@ -176,38 +198,25 @@ class LocationTelegramFormatter:
             return f"{formatted_name}{address_line}{distance_line}{description_line}{sources_line}"
 
         except Exception as e:
-            logger.error(f"❌ Error formatting restaurant {restaurant.get('name', 'Unknown')}: {e}")
-            return f"<b>{index}. {restaurant.get('name', 'Unknown Restaurant')}</b>\nInformation unavailable\n"
+            logger.error(f"❌ Error formatting restaurant {self._get_value(restaurant, 'name', 'Unknown')}: {e}")
+            return f"<b>{index}. {self._get_value(restaurant, 'name', 'Unknown Restaurant')}</b>\nInformation unavailable\n"
 
-    def _format_verified_venue(self, venue: Dict[str, Any], index: int) -> str:
+    def _format_verified_venue(self, venue: Union[Dict[str, Any], Any], index: int) -> str:
         """
         Format a single verified venue from Google Maps with media verification
         UPDATED: Uses 2025 universal format for address links
         """
         try:
-            # Handle both VenueResult objects and dictionaries
-            if hasattr(venue, 'name'):
-                # VenueResult object
-                name = venue.name
-                address = venue.address
-                distance_km = venue.distance_km
-                rating = venue.rating
-                place_id = venue.place_id
-                description = getattr(venue, 'description', '')
-                sources = getattr(venue, 'sources', [])
-                media_verified = getattr(venue, 'media_verified', False)
-                google_maps_url = getattr(venue, 'google_maps_url', '')
-            else:
-                # Dictionary (verified venue)
-                name = venue.get('name', 'Unknown Restaurant')
-                address = venue.get('address', '')
-                distance_km = venue.get('distance_km')
-                rating = venue.get('rating')
-                place_id = venue.get('place_id')
-                description = venue.get('description', '')
-                sources = venue.get('sources', [])
-                media_verified = venue.get('media_verified', False)
-                google_maps_url = venue.get('google_maps_url', '')
+            # FIXED: Handle both VenueResult objects and dictionaries using universal getter
+            name = self._get_value(venue, 'name', 'Unknown Restaurant')
+            address = self._get_value(venue, 'address', '')
+            distance_km = self._get_value(venue, 'distance_km')
+            rating = self._get_value(venue, 'rating')
+            place_id = self._get_value(venue, 'place_id')
+            description = self._get_value(venue, 'description', '')
+            sources = self._get_value(venue, 'sources', [])
+            media_verified = self._get_value(venue, 'media_verified', False)
+            google_maps_url = self._get_value(venue, 'google_maps_url', '')
 
             # Restaurant name with index
             formatted_name = f"<b>{index}. {self._clean_html(name)}</b>\n"
@@ -249,55 +258,46 @@ class LocationTelegramFormatter:
             return f"{formatted_name}{address_line}{distance_line}{rating_line}{description_line}{sources_line}"
 
         except Exception as e:
-            logger.error(f"❌ Error formatting venue {venue.get('name', 'Unknown') if isinstance(venue, dict) else getattr(venue, 'name', 'Unknown')}: {e}")
-            venue_name = venue.get('name', 'Unknown Restaurant') if isinstance(venue, dict) else getattr(venue, 'name', 'Unknown Restaurant')
+            logger.error(f"❌ Error formatting venue {self._get_value(venue, 'name', 'Unknown')}: {e}")
+            venue_name = self._get_value(venue, 'name', 'Unknown Restaurant')
             return f"<b>{index}. {venue_name}</b>\nInformation unavailable\n"
 
-    def _get_canonical_google_maps_url(self, place_id: str, restaurant_name: str = "", existing_url: str = "") -> str:
+    def _get_canonical_google_maps_url(self, place_id: str, restaurant_name: str, fallback_url: str = "") -> str:
         """
-        Get universal Google Maps URL that works on both desktop and mobile (2025 format)
-        Uses Maps URLs with query and query_place_id parameters for best compatibility
+        Create canonical Google Maps URL using place_id for consistent addressing
+        Universal format for 2025 - works on all devices
         """
         try:
-            from urllib.parse import quote
-
-            # Use the 2025 recommended universal format
-            if place_id and restaurant_name:
-                # Primary recommended format with restaurant name
-                encoded_name = quote(restaurant_name.strip(), safe='')
-                return f"https://www.google.com/maps/search/?api=1&query={encoded_name}&query_place_id={place_id}"
-            elif place_id:
-                # Fallback with generic query
-                return f"https://www.google.com/maps/search/?api=1&query=restaurant&query_place_id={place_id}"
-            elif existing_url:
-                # Use existing URL if no place_id available
-                return existing_url
+            if place_id:
+                # Use place_id for canonical, device-agnostic Google Maps URL
+                return f"https://maps.google.com/?cid={place_id}&q={quote(restaurant_name, safe='')}"
+            elif fallback_url:
+                return fallback_url
             else:
-                return "#"
+                # Fallback to search query if no place_id
+                return f"https://maps.google.com/?q={quote(restaurant_name, safe='')}"
         except Exception:
-            return existing_url or "#"
+            return fallback_url or "https://maps.google.com/"
 
-    def _format_address_link(self, restaurant: Dict[str, Any]) -> str:
+    def _format_address_link(self, restaurant: Union[Dict[str, Any], Any]) -> str:
         """
-        Format address with Google Maps link using 2025 universal format
+        FIXED: Format address with Google Maps link (handles both dicts and dataclass objects)
         """
         try:
-            address = restaurant.get('address', '').strip()
-            place_id = restaurant.get('place_id') or restaurant.get('google_place_id')
-            restaurant_name = restaurant.get('name', '').strip()
+            address = self._get_value(restaurant, 'address', '')
+            place_id = self._get_value(restaurant, 'place_id', '')
+            restaurant_name = self._get_value(restaurant, 'name', '')
+            google_maps_url = self._get_value(restaurant, 'google_maps_url', '')
 
-            if not address or address.lower() in ['unknown', 'not available', '']:
-                address = "Address available on Google Maps"
+            if not address:
+                return "📍 Address available\n"
 
-            # Extract street address (remove postal codes and country)
-            street_address = self._extract_street_address(address)
-            clean_street = self._clean_html(street_address)
+            clean_street = self._extract_street_address(address)
 
-            # Get universal Google Maps URL (2025 format)
             google_url = self._get_canonical_google_maps_url(
                 place_id, 
                 restaurant_name, 
-                restaurant.get('google_maps_url', '')
+                google_maps_url
             )
 
             return f'📍 <a href="{escape(google_url, quote=True)}">{clean_street}</a>\n'
@@ -341,11 +341,13 @@ class LocationTelegramFormatter:
         except Exception:
             return full_address
 
-    def _format_distance(self, restaurant: Dict[str, Any]) -> str:
-        """Format distance from user"""
+    def _format_distance(self, restaurant: Union[Dict[str, Any], Any]) -> str:
+        """
+        FIXED: Format distance from user (handles both dicts and dataclass objects)
+        """
         try:
-            distance_km = restaurant.get('distance_km')
-            distance_text = restaurant.get('distance_text')
+            distance_km = self._get_value(restaurant, 'distance_km')
+            distance_text = self._get_value(restaurant, 'distance_text')
 
             if distance_text:
                 return f"📏 {distance_text}\n"
@@ -367,12 +369,14 @@ class LocationTelegramFormatter:
         except Exception:
             return "Distance unknown"
 
-    def _format_description(self, restaurant: Dict[str, Any]) -> str:
-        """Format restaurant description with robust field handling"""
+    def _format_description(self, restaurant: Union[Dict[str, Any], Any]) -> str:
+        """
+        FIXED: Format restaurant description with robust field handling (handles both dicts and dataclass objects)
+        """
         try:
             # Check both possible description field names
-            description = (restaurant.get('description', '').strip() or 
-                          restaurant.get('raw_description', '').strip())
+            description = (self._get_value(restaurant, 'description', '').strip() or 
+                          self._get_value(restaurant, 'raw_description', '').strip())
 
             if not description:
                 return ""
@@ -388,10 +392,16 @@ class LocationTelegramFormatter:
             logger.debug(f"Error formatting description: {e}")
             return ""
 
-    def _format_sources(self, restaurant: Dict[str, Any]) -> str:
-        """Format restaurant sources/recommendations with robust handling"""
+    def _format_sources(self, restaurant: Union[Dict[str, Any], Any]) -> str:
+        """
+        FIXED: Format restaurant sources/recommendations with robust handling (handles both dicts and dataclass objects)
+        """
         try:
-            sources = restaurant.get('sources', [])
+            sources = self._get_value(restaurant, 'sources', [])
+
+            if not sources:
+                # Also check for media_sources field (alternative name)
+                sources = self._get_value(restaurant, 'media_sources', [])
 
             if not sources:
                 return ""
@@ -417,62 +427,43 @@ class LocationTelegramFormatter:
             return ""
 
     def _clean_html(self, text: str) -> str:
-        """Clean text for HTML display"""
+        """Clean and escape text for Telegram HTML parsing"""
         try:
             if not text:
                 return ""
 
-            # Escape HTML characters
-            cleaned = escape(str(text))
+            # Remove any existing HTML tags
+            text = re.sub(r'<[^>]+>', '', text)
 
-            # Remove extra whitespace
-            cleaned = ' '.join(cleaned.split())
+            # Escape HTML entities for Telegram
+            text = escape(text)
 
-            return cleaned
-
+            return text.strip()
         except Exception:
-            return str(text) if text else ""
+            return ""
 
     def _truncate_message(self, full_message: str, message_parts: List[str], header: str, footer: str = "") -> str:
         """Truncate message to fit Telegram limits"""
         try:
-            # Calculate available space for restaurants
-            overhead = len(header) + len(footer) + 100  # Safety margin
-            available_space = self.MAX_MESSAGE_LENGTH - overhead
+            # Calculate available space
+            available_space = self.MAX_MESSAGE_LENGTH - len(header) - len(footer) - 100  # Buffer
 
-            # Add restaurants until we hit the limit
+            # Include as many restaurants as possible
             truncated_parts = []
             current_length = 0
 
             for part in message_parts:
-                if current_length + len(part) + 10 < available_space:  # +10 for separators
+                if current_length + len(part) <= available_space:
                     truncated_parts.append(part)
-                    current_length += len(part) + 10
+                    current_length += len(part)
                 else:
                     break
 
-            # Build truncated message
-            if truncated_parts:
-                truncated_message = header + "\n\n".join(truncated_parts)
-                if len(truncated_parts) < len(message_parts):
-                    truncated_message += f"\n\n<i>... and {len(message_parts) - len(truncated_parts)} more results</i>"
-                truncated_message += footer
-                return truncated_message
-            else:
-                return header + "Results too long to display." + footer
+            # Add "more results" note if we truncated
+            if len(truncated_parts) < len(message_parts):
+                truncated_parts.append(f"\n<i>... and {len(message_parts) - len(truncated_parts)} more results</i>")
 
-        except Exception as e:
-            logger.error(f"❌ Error truncating message: {e}")
-            return full_message[:self.MAX_MESSAGE_LENGTH-3] + "..."
+            return header + "\n\n".join(truncated_parts) + footer
 
-    def format_location_summary(self, location_data) -> str:
-        """Format location data for display"""
-        try:
-            if location_data.latitude and location_data.longitude:
-                return f"GPS: {location_data.latitude:.4f}, {location_data.longitude:.4f}"
-            elif location_data.description:
-                return location_data.description
-            else:
-                return "Unknown location"
-        except:
-            return "Location information unavailable"
+        except Exception:
+            return header + "Found restaurants but had trouble formatting them." + footer
