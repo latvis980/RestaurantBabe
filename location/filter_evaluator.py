@@ -1,8 +1,8 @@
-# location/filter_evaluator.py
+# location/filter_evaluator.py - UPDATED FILTERING LOGIC
 """
-Location-based database filtering and evaluation - FIXED WITH LANGCHAIN CHAINS
+Location-based database filtering and evaluation - ENHANCED FOR SPECIFICITY
 
-Converted direct AI invokes to proper LangChain chain composition for tracing.
+Made filtering more specific and relevant by requiring stronger matches.
 """
 
 import logging
@@ -19,7 +19,7 @@ class LocationFilterEvaluator:
     """
     Filter and evaluate database results for location-based searches with LangChain chains
 
-    Logic: If ANY relevant results found → send immediately 
+    ENHANCED: More specific filtering logic for better relevance
     """
 
     def __init__(self, config):
@@ -32,70 +32,86 @@ class LocationFilterEvaluator:
             api_key=config.OPENAI_API_KEY
         )
 
-        # Filtering prompt (based on database_search_agent)
+        # ENHANCED FILTERING PROMPT - More specific criteria
         self.filter_prompt = ChatPromptTemplate.from_template("""
-USER QUERY: "{query}"
-LOCATION: {location_description}
+USER QUERY: "{{query}}"
+LOCATION: {{location_description}}
 
-You are analyzing restaurants from our database to find matches for this location-based query.
+You are analyzing restaurants from our database to find SPECIFIC matches for this location-based query.
 
 RESTAURANT LIST:
-{restaurants_text}
+{{restaurants_text}}
 
-TASK: Select restaurants that match the user's query intent.
+TASK: Select ONLY restaurants that SPECIFICALLY match the user's query intent.
 
-MATCHING CRITERIA:
-- Cuisine type relevance (direct matches, related cuisines)
-- Dining style and atmosphere
-- Special features mentioned (wine lists, vegan options, price range, etc.)
-- General vibe from descriptions
+ENHANCED MATCHING CRITERIA - BE SELECTIVE:
+1. **Cuisine Match**: Must be the requested cuisine type or very closely related
+2. **Query Keywords**: Look for specific features mentioned (price range, atmosphere, dietary needs)
+3. **Context Analysis**: Consider what the user is actually looking for based on their exact words
+4. **Quality Over Quantity**: Better to return 2 perfect matches than 5 "reasonable" ones
 
-OUTPUT: Return ONLY valid JSON with matching restaurant IDs:
+SPECIFICITY RULES:
+- If user asks for "Italian", don't include "Mediterranean" unless it specifically mentions Italian dishes
+- If user asks for "cheap eats", focus on casual/affordable places, not upscale restaurants
+- If user asks for "fine dining", focus on upscale/formal restaurants with detailed descriptions
+- If user asks for specific features (rooftop, wine bar, vegan), require those to be mentioned
+- If user asks for "famous chef restaurants", require chef mentions or high-end descriptions
+
+DESCRIPTION ANALYSIS:
+- Read the full description carefully - names and cuisine tags alone aren't enough
+- Look for atmosphere indicators (casual, upscale, family-friendly, etc.)
+- Check for specific features mentioned in descriptions
+- Consider price indicators in descriptions
+
+OUTPUT: Return ONLY valid JSON with SPECIFICALLY matching restaurant IDs:
 {{
     "selected_restaurants": [
         {{
             "id": "ID",
             "relevance_score": 0.8,
-            "reasoning": "why this matches the search intent"
+            "reasoning": "specific reason why this EXACTLY matches the query"
         }}
     ]
 }}
 
-Include restaurants that are good matches. For location searches, be inclusive - if it's a reasonable match, include it.
+IMPORTANT: Only include restaurants that are STRONG, SPECIFIC matches. Empty results are better than irrelevant ones.
 """)
 
-        # Evaluation prompt (simplified from content_evaluation_agent)
+        # ENHANCED EVALUATION PROMPT - More demanding criteria
         self.eval_prompt = ChatPromptTemplate.from_template("""
-USER QUERY: "{query}"
-LOCATION: {location_description}
-FOUND: {count} restaurants in database
+USER QUERY: "{{query}}"
+LOCATION: {{location_description}}
+FOUND: {{count}} specifically matching restaurants in database
 
 EVALUATION TASK: 
-For location-based searches, we send ANY relevant results immediately as "restaurants from my notes".
+Determine if these SPECIFIC matches are sufficient to answer the user's query immediately.
 
-CRITERIA:
-1. Are there ANY restaurants that match the query?
-2. Quality of matches (relevance scores)
+ENHANCED CRITERIA:
+1. **Match Quality**: Are these restaurants EXACTLY what the user wants?
+2. **Query Completeness**: Do we have enough variety/options for this specific request?
+3. **Relevance Score**: Are all selected restaurants highly relevant (0.7+ scores)?
 
 LOGIC:
-- 1+ relevant matches → SEND IMMEDIATELY (database_sufficient: true)
-- Zero matches → NO DATABASE RESULTS (database_sufficient: false)
+- 3+ high-quality specific matches → SEND IMMEDIATELY (database_sufficient: true)
+- 1-2 perfect matches for very specific queries → SEND IMMEDIATELY  
+- Any low-relevance matches (< 0.7) → TRIGGER WEB SEARCH
+- Zero truly relevant matches → NO DATABASE RESULTS (database_sufficient: false)
 
 Return ONLY JSON:
 {{
     "database_sufficient": true/false,
-    "reasoning": "brief explanation",
+    "reasoning": "specific explanation based on match quality and query intent",
     "quality_score": 0.8,
     "send_immediately": true/false
 }}
 
-For location searches, be generous - even 1-2 good matches should be sent.
+Focus on QUALITY and SPECIFICITY over quantity. Users prefer fewer, more relevant results.
 """)
 
-        # BUILD LANGCHAIN CHAINS - FIXED VERSION
+        # BUILD LANGCHAIN CHAINS
         self._build_chains()
 
-        logger.info("✅ Location Filter Evaluator initialized with LangChain chains")
+        logger.info("✅ ENHANCED Location Filter Evaluator initialized with specific filtering")
 
     def _build_chains(self):
         """Build LangChain chains for filtering and evaluation"""
@@ -103,7 +119,7 @@ For location searches, be generous - even 1-2 good matches should be sent.
         # CHAIN 1: Restaurant filtering chain
         self.filter_chain = (
             self.filter_prompt 
-            | self.ai_model.with_config(run_name="filter_restaurants")
+            | self.ai_model.with_config(run_name="filter_restaurants_specific")
             | StrOutputParser()
             | RunnableLambda(self._parse_filter_response, name="parse_filter_json")
         )
@@ -111,12 +127,12 @@ For location searches, be generous - even 1-2 good matches should be sent.
         # CHAIN 2: Results evaluation chain  
         self.evaluation_chain = (
             self.eval_prompt
-            | self.ai_model.with_config(run_name="evaluate_results") 
+            | self.ai_model.with_config(run_name="evaluate_results_enhanced") 
             | StrOutputParser()
             | RunnableLambda(self._parse_evaluation_response, name="parse_evaluation_json")
         )
 
-        logger.info("✅ LangChain chains built for filtering and evaluation")
+        logger.info("✅ LangChain chains built for enhanced filtering and evaluation")
 
     def _parse_filter_response(self, response_content: str) -> Dict[str, Any]:
         """Parse AI filter response to extract JSON"""
@@ -160,24 +176,23 @@ For location searches, be generous - even 1-2 good matches should be sent.
         """
         Filter database restaurants and evaluate if sufficient for immediate sending
 
-        Returns:
-            Dict with filtered results and evaluation
+        ENHANCED: More specific filtering and evaluation
         """
         try:
-            logger.info(f"🔍 Filtering {len(restaurants)} restaurants for location query: '{query}'")
+            logger.info(f"🔍 ENHANCED filtering {len(restaurants)} restaurants for query: '{query}'")
 
             if not restaurants:
                 return self._create_empty_result("No restaurants found in database")
 
-            # STEP 1: AI filtering to select relevant restaurants (using LangChain chain)
+            # STEP 1: AI filtering to select SPECIFICALLY relevant restaurants
             filtered_restaurants = self._filter_restaurants_with_chain(restaurants, query, location_description)
 
             if not filtered_restaurants:
-                return self._create_empty_result("No relevant matches found")
+                return self._create_empty_result("No specifically relevant matches found")
 
-            logger.info(f"🎯 AI selected {len(filtered_restaurants)} relevant restaurants")
+            logger.info(f"🎯 AI selected {len(filtered_restaurants)} SPECIFIC restaurants")
 
-            # STEP 2: Evaluate if sufficient for immediate sending (using LangChain chain)
+            # STEP 2: Evaluate if sufficient for immediate sending
             evaluation = self._evaluate_with_chain(filtered_restaurants, query, location_description)
 
             # STEP 3: Combine results
@@ -192,7 +207,7 @@ For location searches, be generous - even 1-2 good matches should be sent.
             }
 
         except Exception as e:
-            logger.error(f"❌ Error in filter and evaluate: {e}")
+            logger.error(f"❌ Error in enhanced filter and evaluate: {e}")
             return self._create_empty_result(f"Error during filtering: {str(e)}")
 
     def _filter_restaurants_with_chain(
@@ -201,22 +216,26 @@ For location searches, be generous - even 1-2 good matches should be sent.
         query: str,
         location_description: str
     ) -> List[Dict[str, Any]]:
-        """Filter restaurants using LangChain chain (FIXED VERSION)"""
+        """Filter restaurants using LangChain chain with ENHANCED specificity"""
         try:
-            # Create restaurant text for AI analysis
+            # Create restaurant text for AI analysis - ENHANCED VERSION
             restaurants_text = ""
             for i, restaurant in enumerate(restaurants):
                 name = restaurant.get('name', 'Unknown')
                 cuisine = restaurant.get('cuisine_tags', [])
                 cuisine_str = ', '.join(cuisine) if cuisine else 'No cuisine info'
-                description = restaurant.get('raw_description', 'No description')[:200]
+
+                # ENHANCED: Include MORE description for better analysis
+                description = restaurant.get('raw_description', 'No description')[:400]  # Increased from 200
                 distance = restaurant.get('distance_km', 'Unknown')
+                mention_count = restaurant.get('mention_count', 1)
 
                 restaurants_text += f"{i+1}. ID: {restaurant.get('id')} | {name} ({distance}km)\n"
                 restaurants_text += f"   Cuisine: {cuisine_str}\n"
+                restaurants_text += f"   Mentions: {mention_count}\n"
                 restaurants_text += f"   Description: {description}...\n\n"
 
-            # FIXED: Use LangChain chain instead of direct invoke
+            # Use enhanced LangChain chain
             ai_result = self.filter_chain.invoke({
                 "query": query,
                 "location_description": location_description,
@@ -225,7 +244,7 @@ For location searches, be generous - even 1-2 good matches should be sent.
 
             selected_data = ai_result.get("selected_restaurants", [])
 
-            # Map selected IDs back to full restaurant objects
+            # Map selected IDs back to full restaurant objects with metadata
             restaurant_lookup = {str(r.get('id')): r for r in restaurants}
             selected_restaurants = []
 
@@ -237,10 +256,11 @@ For location searches, be generous - even 1-2 good matches should be sent.
                     restaurant['_match_reasoning'] = selection.get('reasoning', '')
                     selected_restaurants.append(restaurant)
 
+            logger.info(f"✅ Enhanced filtering selected {len(selected_restaurants)} specific matches")
             return selected_restaurants
 
         except Exception as e:
-            logger.error(f"❌ Error in AI filtering chain: {e}")
+            logger.error(f"❌ Error in enhanced restaurant filtering: {e}")
             return []
 
     def _evaluate_with_chain(
@@ -249,52 +269,37 @@ For location searches, be generous - even 1-2 good matches should be sent.
         query: str,
         location_description: str
     ) -> Dict[str, Any]:
-        """Evaluate if results are sufficient using LangChain chain"""
+        """Evaluate filtered results with enhanced criteria"""
         try:
-            count = len(filtered_restaurants)
+            # Enhanced evaluation with quality analysis
+            evaluation = self.evaluation_chain.invoke({
+                "query": query,
+                "location_description": location_description,
+                "count": len(filtered_restaurants)
+            })
 
-            # For location searches: ANY relevant results = send immediately
-            if count > 0:
-                quality_scores = [r.get('_relevance_score', 0.5) for r in filtered_restaurants]
-                avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0.5
-
-                # FIXED: Use LangChain chain for evaluation
-                evaluation_result = self.evaluation_chain.invoke({
-                    "query": query,
-                    "location_description": location_description,
-                    "count": count
-                })
-
-                # Enhance with calculated quality score
-                evaluation_result["quality_score"] = round(avg_quality, 2)
-                return evaluation_result
-
-            else:
-                return {
-                    "database_sufficient": False,
-                    "send_immediately": False,
-                    "reasoning": "No relevant restaurants found",
-                    "quality_score": 0.0
-                }
+            logger.info(f"📊 Enhanced evaluation: {evaluation.get('reasoning', 'No reasoning')}")
+            return evaluation
 
         except Exception as e:
-            logger.error(f"❌ Error in evaluation chain: {e}")
+            logger.error(f"❌ Error in enhanced evaluation: {e}")
             return {
                 "database_sufficient": False,
-                "send_immediately": False,
-                "reasoning": f"Evaluation failed: {str(e)}",
-                "quality_score": 0.0
+                "reasoning": f"Enhanced evaluation failed: {str(e)}",
+                "quality_score": 0.0,
+                "send_immediately": False
             }
 
     def _create_empty_result(self, reason: str) -> Dict[str, Any]:
-        """Create empty result structure"""
+        """Create empty result with enhanced logging"""
+        logger.info(f"🚫 Enhanced filter returning empty result: {reason}")
         return {
             "filtered_restaurants": [],
             "evaluation": {
                 "database_sufficient": False,
-                "send_immediately": False,
                 "reasoning": reason,
-                "quality_score": 0.0
+                "quality_score": 0.0,
+                "send_immediately": False
             },
             "database_sufficient": False,
             "send_immediately": False,
