@@ -536,9 +536,11 @@ Focus on quality over quantity. Select restaurants that truly stand out as speci
 USER QUERY: "{user_query}"
 
 Write a professional, engaging description for EACH restaurant below. Each description should be:
+- Not longer than 300 characters, best between 250-270 characters
 - 1-2 complete sentences capturing the restaurant's unique character
 - Mention specific details from reviews or media coverage
-- Professional yet warm tone
+- Avoid generic praise, stick to details
+- Laconic and concise, yet engaging
 - Each description should feel DIFFERENT from the others (vary sentence structure, focus areas)
 
 RESTAURANT DATA:
