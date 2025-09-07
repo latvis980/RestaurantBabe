@@ -24,6 +24,7 @@ import json
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from openai import AsyncOpenAI
+from langsmith import traceable
 
 from location.location_data_logger import LocationDataLogger
 
@@ -88,6 +89,11 @@ class LocationMapSearchAIEditor:
 
         logger.info("Location Map Search AI Editor initialized for map search results")
 
+    @traceable(
+        run_type="chain",
+        name="map_search_description_generation",
+        metadata={"component": "ai_editor", "editor_type": "map_search"}
+    )
     async def create_descriptions_for_map_search_results(
         self,
         map_search_results: List[Any],
@@ -157,56 +163,119 @@ class LocationMapSearchAIEditor:
             logger.error(f"Error in create_descriptions_for_map_search_results: {e}")
             return []
 
+    @traceable(
+        run_type="tool",
+        name="combine_search_results", 
+        metadata={"component": "ai_editor", "step": "data_combination"}
+    )
     def _combine_search_results(
         self, 
         map_search_results: List[Any], 
         media_verification_results: Optional[List[Any]] = None
     ) -> List[CombinedVenueData]:
-        """Combine Google Maps results with media verification data"""
+        """
+        FIXED: Combine Google Maps results with media verification data
+
+        Main fix: Proper field mapping from VenueSearchResult to CombinedVenueData
+        The issue was that VenueSearchResult objects have specific field names that 
+        weren't being mapped correctly.
+        """
         combined_venues = []
         media_results = media_verification_results or []
 
-        # FIXED: Create a lookup for media results by restaurant name (using dict, not set)
+        # FIXED: Create a lookup for media results by venue name (using dict, not set)
         media_lookup: Dict[str, Any] = {}
         for media_result in media_results:
-            if hasattr(media_result, 'restaurant_name'):
-                media_lookup[media_result.restaurant_name.lower()] = media_result
+            # FIXED: Handle different possible name fields in media results
+            venue_name = None
+            if hasattr(media_result, 'venue_name'):
+                venue_name = media_result.venue_name
+            elif hasattr(media_result, 'restaurant_name'):
+                venue_name = media_result.restaurant_name
+            elif hasattr(media_result, 'name'):
+                venue_name = media_result.name
+
+            if venue_name:
+                media_lookup[venue_name.lower()] = media_result
 
         for i, map_result in enumerate(map_search_results):
             try:
-                # Get basic info from map search
+                # FIXED: Proper field mapping from VenueSearchResult to CombinedVenueData
+                # Debug: Log what we're getting from map search
+                logger.debug(f"🔍 Processing map result {i+1}: {type(map_result)}")
+
+                # The VenueSearchResult class has these exact fields (from your location_map_search.py):
+                # place_id, name, address, latitude, longitude, distance_km, business_status,
+                # rating, user_ratings_total, google_reviews, search_source, google_maps_url
+
                 name = getattr(map_result, 'name', 'Unknown Restaurant')
+                address = getattr(map_result, 'address', 'Address not available')
+                rating = getattr(map_result, 'rating', None)
+                user_ratings_total = getattr(map_result, 'user_ratings_total', 0) or 0
+                distance_km = getattr(map_result, 'distance_km', 0.0) or 0.0
+                place_id = getattr(map_result, 'place_id', '')
+
+                # FIXED: Get the Google Maps URL that's already created in VenueSearchResult
+                maps_link = getattr(map_result, 'google_maps_url', '')
+
+                # FIXED: Extract review context from google_reviews if available
+                google_reviews = getattr(map_result, 'google_reviews', []) or []
+                review_context = ""
+                if google_reviews:
+                    # Combine first few review snippets
+                    review_texts = []
+                    for review in google_reviews[:3]:  # First 3 reviews
+                        if isinstance(review, dict) and 'text' in review:
+                            review_texts.append(review['text'][:100])
+                    review_context = " | ".join(review_texts)
 
                 # Find matching media verification
                 media_match = media_lookup.get(name.lower())
 
-                # Combine data
+                # FIXED: Create combined venue data with CORRECT field mapping
                 venue_data = CombinedVenueData(
                     index=i + 1,
                     name=name,
-                    address=getattr(map_result, 'address', 'Address not available'),
-                    rating=getattr(map_result, 'rating', None),
-                    user_ratings_total=getattr(map_result, 'user_ratings_total', 0),
-                    distance_km=getattr(map_result, 'distance_km', 0.0),
-                    maps_link=getattr(map_result, 'maps_link', ''),
-                    place_id=getattr(map_result, 'place_id', ''),
-                    cuisine_tags=getattr(map_result, 'cuisine_tags', []),
-                    description=getattr(map_result, 'description', ''),
-                    has_media_coverage=bool(media_match and getattr(media_match, 'articles', [])),
-                    media_publications=getattr(media_match, 'publications', []) if media_match else [],
-                    media_articles=getattr(media_match, 'articles', []) if media_match else [],
-                    review_context=getattr(map_result, 'review_context', ''),
+                    address=address,
+                    rating=rating,
+                    user_ratings_total=user_ratings_total,
+                    distance_km=distance_km,
+                    maps_link=maps_link,
+                    place_id=place_id,
+                    cuisine_tags=getattr(map_result, 'cuisine_tags', []) or [],
+                    description=getattr(map_result, 'description', '') or '',
+                    has_media_coverage=bool(media_match and hasattr(media_match, 'has_professional_coverage') and media_match.has_professional_coverage),
+                    media_publications=getattr(media_match, 'media_publications', []) if media_match else [],
+                    media_articles=getattr(media_match, 'professional_sources', []) if media_match else [],
+                    review_context=review_context,
                     source='map_search'
                 )
 
                 combined_venues.append(venue_data)
 
+                # DEBUG: Log successful mapping
+                logger.info(f"✅ DEBUG - Mapped venue {i+1}: '{name}' at '{address}' ({distance_km}km)")
+
             except Exception as e:
-                logger.error(f"Error combining search results for venue {i}: {e}")
+                logger.error(f"❌ Error combining search results for venue {i+1}: {e}")
+
+                # DEBUG: Log the actual structure we received
+                if hasattr(map_result, '__dict__'):
+                    logger.error(f"   Map result fields: {list(map_result.__dict__.keys())}")
+                    logger.error(f"   Map result values: {map_result.__dict__}")
+                else:
+                    logger.error(f"   Map result type: {type(map_result)}")
+                    logger.error(f"   Map result dir: {dir(map_result)}")
                 continue
 
+        logger.info(f"✅ Successfully combined {len(combined_venues)} venues from {len(map_search_results)} map results")
         return combined_venues
 
+    @traceable(
+        run_type="llm",
+        name="atmospheric_filtering",
+        metadata={"component": "ai_editor", "step": "venue_filtering"}
+    )
     async def _filter_atmospheric_restaurants(
         self, 
         venues: List[CombinedVenueData], 
@@ -370,6 +439,11 @@ Select restaurants that would create memorable dining experiences, not just sati
             logger.error(f"Error parsing atmospheric filtering response: {e}")
             return venues
 
+    @traceable(
+        run_type="llm", 
+        name="generate_descriptions",
+        metadata={"component": "ai_editor", "step": "description_generation"}
+    )
     async def _generate_map_search_descriptions(
         self,
         venues: List[CombinedVenueData],
