@@ -599,6 +599,8 @@ class LocationOrchestrator:
                     }
                 }
 
+            # Replace this section in location_orchestrator.py around lines 440-460
+
             # FIXED: Step 2: Media verification using correct method name
             logger.info("📱 Enhanced verification: Starting media verification")
 
@@ -608,43 +610,26 @@ class LocationOrchestrator:
                     query=query,
                     cancel_check_fn=cancel_check_fn
                 )
-
-                # Extract verified venues from MediaVerificationResult objects
-                verified_venues = []
-                for result in media_verification_results:
-                    if hasattr(result, 'venue_name'):
-                        # Convert MediaVerificationResult to venue dict
-                        venue_dict = {
-                            'name': result.venue_name,
-                            'place_id': result.venue_id,
-                            'has_media_coverage': result.has_professional_coverage,
-                            'media_coverage_score': result.media_coverage_score
-                        }
-                        verified_venues.append(venue_dict)
-
-                # If no MediaVerificationResult conversion worked, use original venues
-                if not verified_venues:
-                    verified_venues = map_venues[:self.max_venues_to_verify]
-
             except Exception as media_error:
                 logger.warning(f"⚠️ Media verification failed: {media_error}")
-                # Use map venues without media verification
-                verified_venues = map_venues[:self.max_venues_to_verify]
+                # Set empty media results if verification fails
+                media_verification_results = []
 
             if cancel_check_fn and cancel_check_fn():
                 return {"restaurants": [], "metadata": {"cancelled": True}}
 
-            logger.info(f"✅ Media verification completed: {len(verified_venues)} venues verified")
+            logger.info(f"✅ Media verification completed: {len(media_verification_results)} results")
 
-            # FIXED: Step 3: AI description editing using correct method name
-            if verified_venues:
+            # FIXED: Step 3: AI description editing using ORIGINAL map venues, not converted ones
+            if map_venues:
                 logger.info("✏️ Enhanced verification: Creating AI descriptions")
 
                 try:
-                    # FIXED: Use the correct method for map search results
+                    # FIXED: Pass the original map_venues (full VenueSearchResult objects)
+                    # and the media_verification_results separately for media data
                     final_descriptions = await self.ai_editor.create_descriptions_for_map_search_results(
-                        map_search_results=verified_venues,
-                        media_verification_results=media_verification_results,  # Now guaranteed to be defined
+                        map_search_results=map_venues[:self.max_venues_to_verify],  # ✅ Use original full venue objects
+                        media_verification_results=media_verification_results,       # ✅ Use media results for media data
                         user_query=query,
                         cancel_check_fn=cancel_check_fn
                     )
@@ -656,7 +641,7 @@ class LocationOrchestrator:
                         "metadata": {
                             "enhanced_verification": True,
                             "map_search_venues": len(map_venues),
-                            "verified_venues": len(verified_venues),
+                            "media_verification_results": len(media_verification_results),
                             "final_descriptions": len(final_descriptions),
                             "agents_used": ["map_search", "media_verification", "ai_editor"]
                         }
@@ -664,13 +649,13 @@ class LocationOrchestrator:
 
                 except Exception as description_error:
                     logger.warning(f"⚠️ AI description creation failed: {description_error}")
-                    # Return verified venues without enhanced descriptions
+                    # Return original map venues without enhanced descriptions
                     return {
-                        "restaurants": verified_venues,
+                        "restaurants": map_venues[:self.max_venues_to_verify],
                         "metadata": {
                             "enhanced_verification": True,
                             "map_search_venues": len(map_venues),
-                            "verified_venues": len(verified_venues),
+                            "media_verification_results": len(media_verification_results),
                             "description_error": str(description_error),
                             "agents_used": ["map_search", "media_verification"]
                         }
@@ -681,8 +666,8 @@ class LocationOrchestrator:
                     "metadata": {
                         "enhanced_verification": True,
                         "map_search_venues": len(map_venues),
-                        "verified_venues": 0,
-                        "no_venues_passed_verification": True
+                        "media_verification_results": len(media_verification_results),
+                        "no_venues_found": True
                     }
                 }
 
