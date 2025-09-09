@@ -43,14 +43,14 @@ class LocationPoint:
     def __post_init__(self):
         """Validate coordinates after initialization"""
         if not self.is_valid():
-             raise ValueError(f"Invalid coordinates: ({self.latitude}, {self.longitude})")
+            raise ValueError(f"Invalid coordinates: ({self.latitude}, {self.longitude})")
 
     def is_valid(self) -> bool:
-         """Check if coordinates are valid"""
-         return (
-             -90 <= self.latitude <= 90 and 
-             -180 <= self.longitude <= 180
-         )
+        """Check if coordinates are valid"""
+        return (
+            -90 <= self.latitude <= 90 and 
+            -180 <= self.longitude <= 180
+        )
 
     def to_tuple(self) -> Tuple[float, float]:
         """Convert to (lat, lng) tuple"""
