@@ -57,7 +57,8 @@ class MapSearchRestaurantDescription:
     """Map search restaurant description with media integration"""
     name: str
     address: str
-    maps_link: str
+    google_maps_url: str
+    place_id: str
     distance_km: float
     description: str
     media_sources: List[str]  # Media publications for reference
@@ -574,7 +575,8 @@ Generate engaging descriptions for each restaurant."""}
                         description = MapSearchRestaurantDescription(
                             name=venue.name,
                             address=venue.address,
-                            maps_link=venue.maps_link,
+                            google_maps_url=venue.maps_link,
+                            place_id=venue.place_id,
                             distance_km=venue.distance_km,
                             description=desc_data['description'],
                             media_sources=venue.media_publications,
