@@ -21,7 +21,7 @@ FIXES APPLIED:
 
 import logging
 import json
-from typing import List, Dict, Any, Optional, cast
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from openai import AsyncOpenAI
 from langsmith import traceable
