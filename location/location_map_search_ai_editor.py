@@ -573,7 +573,25 @@ Generate engaging descriptions for each restaurant."""}
             return []
 
         # Parse AI response
-        descriptions_data = json.loads(response_content.strip())
+        response_content = response_content.strip()
+        if response_content.startswith("```"):
+            parts = response_content.split("```")
+            if len(parts) >= 3:
+                response_content = parts[1]
+            response_content = response_content.lstrip()
+            if response_content.lower().startswith("json"):
+                response_content = response_content.split("\n", 1)[1] if "\n" in response_content else ""
+            response_content = response_content.strip()
+
+        try:
+            descriptions_data = json.loads(response_content)
+        except json.JSONDecodeError as e:
+            logger.error(
+                "Failed to parse AI description JSON: %s. Raw content: %s",
+                e,
+                response_content[:500],
+            )
+            return []
 
         # Create MapSearchRestaurantDescription objects
         descriptions = []
