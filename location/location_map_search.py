@@ -712,9 +712,6 @@ class LocationMapSearchAgent:
         logger.info(f"🎯 GoogleMaps search completed: {len(venues)} venues ({key_name})")
         return venues
 
-
-    # FIXED VERSION of _analyze_query_for_search method in location/location_map_search.py
-
     async def _analyze_query_for_search(self, query: str) -> Dict[str, Any]:
         """
         FIXED: AI analysis that converts user query to effective text search query + place types
