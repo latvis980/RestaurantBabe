@@ -162,6 +162,9 @@ Include source attribution naturally in descriptions using domain names from the
 Use phrases like "recommended by TimeOut" or "featured in Eater" when sources are available.
 """
 
+            # Import typing utilities at the start
+            from typing import cast, Any
+            
             # Use proper typed message format for OpenAI
             try:
                 from openai.types.chat import ChatCompletionUserMessageParam, ChatCompletionSystemMessageParam
@@ -201,8 +204,8 @@ Generate enhanced descriptions for each restaurant."""
                     )
                 ]
             except ImportError:
-                # Fallback for older OpenAI versions
-                messages = [
+                # Fallback for older OpenAI versions - use cast to bypass type checking
+                messages = cast(Any, [
                     {"role": "system", "content": f"""You are an expert food writer enhancing restaurant descriptions for DATABASE RESULTS.
 
 {sources_instruction}
@@ -229,7 +232,7 @@ Restaurants data:
 {restaurants_text}
 
 Generate enhanced descriptions for each restaurant."""}
-                ]
+                ])
 
             response = await self.openai_client.chat.completions.create(
                 model=self.openai_model,
@@ -257,9 +260,14 @@ Generate enhanced descriptions for each restaurant."""}
 
                         # Extract sources
                         sources = self._extract_sources_from_database_restaurant(restaurant)
+                        
+                        # Generate Google Maps link
+                        place_id = restaurant.get('place_id') or restaurant.get('google_place_id', '')
+                        restaurant_name = restaurant.get('name', 'Unknown Restaurant')
+                        maps_link = build_google_maps_url(place_id, restaurant_name)
 
                         description = DatabaseRestaurantDescription(
-                            name=restaurant.get('name', 'Unknown Restaurant'),
+                            name=restaurant_name,
                             address=restaurant.get('address', 'Address not available'),
                             distance_km=restaurant.get('distance_km', 0.0),
                             description=desc_data['description'],

@@ -680,7 +680,7 @@ class LocationMapSearchAgent:
                     if venue and venue.distance_km <= self.search_radius_km:
                         venues.append(venue)
                     elif venue:
-                    logger.debug(
+                        logger.debug(
                         f"Skipping {venue.name} at {venue.distance_km:.2f}km – outside radius"
                     )
                 except Exception as e:

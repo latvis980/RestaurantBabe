@@ -336,21 +336,18 @@ class LocationMapSearchAIEditor:
     async def _call_atmospheric_filtering_ai(self, venues_text: str, user_query: str) -> str:
         """Call AI to filter for atmospheric restaurants"""
 
-        prompt = f"""You are selecting restaurants that offer truly atmospheric dining experiences for this query: "{user_query}"
+        prompt = f"""You are selecting restaurants that offer exceptional experiences that match this query: "{user_query}"
 
 {venues_text}
 
 SELECTION CRITERIA:
 - Unique atmosphere, character, or ambiance
 - Special dining experiences beyond basic food service
-- Places with personality, charm, or distinctive character
-- Settings that create memorable experiences
-- Quality cuisine in atmospheric settings
+- If the query mentions a specific type or cuisine or dish, make sure the restaurant offers those
 
 AVOID:
 - Generic chain restaurants
 - Basic fast food or casual dining without character
-- Places that are primarily functional rather than experiential
 
 OUTPUT FORMAT (JSON):
 {{
@@ -358,12 +355,12 @@ OUTPUT FORMAT (JSON):
         {{
             "index": 1,
             "selection_score": 0.9,
-            "reasoning": "Why this restaurant offers a special atmospheric experience..."
+            "reasoning": "Why this restaurant is special and matches the query..."
         }}
     ]
 }}
 
-Select restaurants that would create memorable dining experiences, not just satisfy hunger."""
+Select restaurants that would create memorable experiences, not just satisfy hunger."""
 
         # Import typing utilities at the start
         from typing import cast, Any
@@ -377,7 +374,7 @@ Select restaurants that would create memorable dining experiences, not just sati
                 messages = [
                     ChatCompletionSystemMessageParam(
                         role="system",
-                        content="You are an expert at identifying restaurants with exceptional atmosphere and dining experiences."
+                        content="You are an expert at identifying truly special and high-quality restaurants"
                     ),
                     ChatCompletionUserMessageParam(
                         role="user", 
@@ -511,18 +508,23 @@ Select restaurants that would create memorable dining experiences, not just sati
 
 {media_instruction}
 
-Write atmospheric, engaging descriptions that highlight:
+Write a brief, engaging descriptions that highlight:
 - Unique character and ambiance
 - Standout dishes or specialties 
 - What makes each place special
 - Media coverage when available
+
+- Mention concrete details from reviews when available
+- Avoid generic praise, focus on specific details
+- Be short, laconic, down-to-business
+- Mention the media references in the text if aavailable. If not, skip.
 
 Keep descriptions concise but evocative (2-3 sentences max).
 Return ONLY a JSON array with this structure:
 [
   {{
     "index": 1,
-    "description": "Intimate bistro known for exceptional pasta and cozy candlelit atmosphere, featured in Food & Wine for their handmade gnocchi.",
+    "description": "Intimate bistro known for exceptional pasta and cozy candlelit atmosphere. Featured in Food & Wine as one of the best Italian restaurants in the city.",
     "selection_score": 0.95
   }}
 ]"""
@@ -544,27 +546,26 @@ Generate engaging descriptions for each restaurant."""
 
 {media_instruction}
 
-Write atmospheric, engaging descriptions that highlight:
+Write a brief, engaging descriptions that highlight:
 - Unique character and ambiance
 - Standout dishes or specialties 
 - What makes each place special
 - Media coverage when available
+
+- Mention concrete details from reviews when available
+- Avoid generic praise, focus on specific details
+- Be short, laconic, down-to-business
+- Mention the media references in the text if aavailable. If not, skip.
 
 Keep descriptions concise but evocative (2-3 sentences max).
 Return ONLY a JSON array with this structure:
 [
   {{
     "index": 1,
-    "description": "Intimate bistro known for exceptional pasta and cozy candlelit atmosphere, featured in Food & Wine for their handmade gnocchi.",
+    "description": "Intimate bistro known for exceptional pasta and cozy candlelit atmosphere. Featured in Food & Wine as one of the best Italian restaurants in the city.",
     "selection_score": 0.95
-  }}
-]"""},
-                {"role": "user", "content": f"""Create descriptions for these MAP SEARCH restaurants based on user query: "{user_query}"
-
-Restaurants data:
-{restaurants_text}
-
-Generate engaging descriptions for each restaurant."""}
+}}
+]"""}
             ])
 
         response = await self.openai_client.chat.completions.create(
