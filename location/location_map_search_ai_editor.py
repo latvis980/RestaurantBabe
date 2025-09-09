@@ -358,6 +358,9 @@ OUTPUT FORMAT (JSON):
 
 Select restaurants that would create memorable dining experiences, not just satisfy hunger."""
 
+        # Import typing utilities at the start
+        from typing import cast, Any
+        
         try:
             # FIXED: Import and use proper OpenAI types for type safety
             try:
@@ -376,10 +379,10 @@ Select restaurants that would create memorable dining experiences, not just sati
                 ]
             except ImportError:
                 # Fallback for older OpenAI versions
-                messages = [
+                messages = cast(Any, [
                     {"role": "system", "content": "You are an expert at identifying restaurants with exceptional atmosphere and dining experiences."},
                     {"role": "user", "content": prompt}
-                ]
+                ])
 
             response = await self.openai_client.chat.completions.create(
                 model=self.openai_model,
@@ -484,6 +487,9 @@ Select restaurants that would create memorable dining experiences, not just sati
             '"featured in Time Out" or "recommended by Eater" naturally in descriptions.'
         )
 
+        # Import typing utilities at the start
+        from typing import cast, Any
+        
         try:
             from openai.types.chat import (
                 ChatCompletionUserMessageParam,
@@ -524,8 +530,8 @@ Generate engaging descriptions for each restaurant."""
                     )
                 ]
         except ImportError:
-            # Fallback for older OpenAI versions
-            messages = [
+            # Fallback for older OpenAI versions - use cast to bypass type checking
+            messages = cast(Any, [
                 {"role": "system", "content": f"""You are an expert food writer creating engaging restaurant descriptions for MAP SEARCH results.
 
 {media_instruction}
@@ -551,51 +557,52 @@ Restaurants data:
 {restaurants_text}
 
 Generate engaging descriptions for each restaurant."""}
-            ]
+            ])
 
-            response = await self.openai_client.chat.completions.create(
-                model=self.openai_model,
-                messages=messages,
-                temperature=self.description_temperature,
-                max_tokens=2000
-            )
+        response = await self.openai_client.chat.completions.create(
+            model=self.openai_model,
+            messages=messages,
+            temperature=self.description_temperature,
+            max_tokens=2000
+        )
 
-            # FIXED: Handle potential None return
-            response_content = response.choices[0].message.content
-            if not response_content:
-                logger.warning("Empty response from AI description generation")
-                return []
-
-            # Parse AI response
-            descriptions_data = json.loads(response_content.strip())
-
-            # Create MapSearchRestaurantDescription objects
-            descriptions = []
-            for desc_data in descriptions_data:
-                try:
-                    index = desc_data.get('index')
-                    venue = index_to_venue.get(index)
-                    if not venue:
-                        logger.warning(f"Invalid or missing venue index: {index}")
-                        continue
-
-                    description = MapSearchRestaurantDescription(
-                        name=venue.name,
-                        address=venue.address,
-                        google_maps_url=venue.maps_link,
-                        place_id=venue.place_id,
-                        distance_km=venue.distance_km,
-                        description=desc_data['description'],
-                        media_sources=venue.media_publications,
-                        rating=venue.rating,
-                        user_ratings_total=venue.user_ratings_total,
-                        selection_score=desc_data.get('selection_score', 0.8)
-                    )
-                    descriptions.append(description)
-
-                except (KeyError, ValueError, TypeError) as e:
-                    logger.error(f"Error generating map search descriptions: {e}")
+        # FIXED: Handle potential None return
+        response_content = response.choices[0].message.content
+        if not response_content:
+            logger.warning("Empty response from AI description generation")
             return []
+
+        # Parse AI response
+        descriptions_data = json.loads(response_content.strip())
+
+        # Create MapSearchRestaurantDescription objects
+        descriptions = []
+        for desc_data in descriptions_data:
+            try:
+                index = desc_data.get('index')
+                venue = index_to_venue.get(index)
+                if not venue:
+                    logger.warning(f"Invalid or missing venue index: {index}")
+                    continue
+
+                description = MapSearchRestaurantDescription(
+                    name=venue.name,
+                    address=venue.address,
+                    google_maps_url=venue.maps_link,
+                    place_id=venue.place_id,
+                    distance_km=venue.distance_km,
+                    description=desc_data['description'],
+                    media_sources=venue.media_publications,
+                    rating=venue.rating,
+                    user_ratings_total=venue.user_ratings_total,
+                    selection_score=desc_data.get('selection_score', 0.8)
+                )
+                descriptions.append(description)
+
+            except (KeyError, ValueError, TypeError) as e:
+                logger.error(f"Error generating map search descriptions: {e}")
+        
+        return descriptions
 
     # DEPRECATED methods - redirect to maintain compatibility
     async def create_descriptions(self, *args, **kwargs):
