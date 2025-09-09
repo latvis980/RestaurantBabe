@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from openai import AsyncOpenAI
 from langsmith import traceable
 
+from formatters.google_links import build_google_maps_url
 from location.location_data_logger import LocationDataLogger
 
 logger = logging.getLogger(__name__)
@@ -215,8 +216,8 @@ class LocationMapSearchAIEditor:
                 distance_km = getattr(map_result, 'distance_km', 0.0) or 0.0
                 place_id = getattr(map_result, 'place_id', '')
 
-                # FIXED: Get the Google Maps URL that's already created in VenueSearchResult
-                maps_link = getattr(map_result, 'google_maps_url', '')
+                # Get canonical Google Maps URL
+                maps_link = build_google_maps_url(place_id, name) if place_id else getattr(map_result, 'google_maps_url', '')
 
                 # FIXED: Extract review context from google_reviews if available
                 google_reviews = getattr(map_result, 'google_reviews', []) or []

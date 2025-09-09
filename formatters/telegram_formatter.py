@@ -8,10 +8,8 @@ FIXED: Domain extraction from full URLs in sources
 import re
 import logging
 from html import escape
-import urllib.parse
-import requests
 from urllib.parse import urlparse
-from urllib.parse import quote
+from formatters.google_links import build_google_maps_url
 
 logger = logging.getLogger(__name__)
 
@@ -55,41 +53,6 @@ class TelegramFormatter:
             logger.error(f"❌ Error in Telegram formatting: {e}")
             return self._no_results_message()
 
-    def _canonical_google_url(self, url: str, place_id: str = None, restaurant_name: str = "") -> str:
-        """
-        Return 2025 universal Google Maps URL format for mobile/desktop compatibility
-        """
-        try:
-            # If we have place_id and name, use 2025 universal format
-            if place_id and restaurant_name:
-                encoded_name = quote(restaurant_name.strip())
-                return f"https://www.google.com/maps/search/?api=1&query={encoded_name}&query_place_id={place_id}"
-            elif place_id:
-                return f"https://www.google.com/maps/search/?api=1&query=restaurant&query_place_id={place_id}"
-
-            # Legacy fallback for existing CID URLs
-            if not url:
-                return "#"
-
-            m = re.search(r"[?&]cid=(\d+)", url)
-            if m:
-                return f"https://maps.google.com/?cid={m.group(1)}"
-
-            # Handle redirects for short URLs
-            if "goo.gl/maps" in url or "maps.app.goo.gl" in url:
-                try:
-                    r = requests.head(url, allow_redirects=True, timeout=3)
-                    m = re.search(r"[?&]cid=(\d+)", r.url)
-                    if m:
-                        return f"https://maps.google.com/?cid={m.group(1)}"
-                except requests.exceptions.RequestException:
-                    pass
-
-            return url or "#"
-
-        except Exception:
-            return url or "#"
-
     def _format_address_link(self, address, place_id, restaurant_name=""):
         """Create Google Maps link with 2025 universal URL format"""
         if not address:
@@ -97,9 +60,8 @@ class TelegramFormatter:
 
         clean_address = self._extract_street(address)
 
-        # Use 2025 universal format for best mobile/desktop compatibility
-        google_url = self._canonical_google_url("", place_id, restaurant_name)
-
+        google_url = build_google_maps_url(place_id, restaurant_name)
+        
         return f'📍 <a href="{google_url}">{clean_address}</a>\n'
 
     def _format_restaurant(self, restaurant, index):

@@ -6,8 +6,7 @@ import re
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from utils.debug_utils import dump_chain_state, log_function_call
-import requests
-from urllib.parse import quote
+from formatters.google_links import build_google_maps_url
 
 logger = logging.getLogger(__name__)
 
@@ -338,22 +337,16 @@ class FollowUpSearchAgent:
                 )
 
             # Add Google Maps URL using official place_id format or Google's URL
-            cid_url = self._canonical_cid_url(google_url)
+            if place_id:
+                updated_restaurant["google_maps_url"] = build_google_maps_url(place_id, restaurant_name)
+            elif google_url:
 
-            if cid_url:                              # prefer canonical CID
-                updated_restaurant["google_maps_url"] = cid_url
-            elif google_url:                         # fall back to whatever we got
                 updated_restaurant["google_maps_url"] = google_url
-            elif place_id:                           # ultimate fallback - use 2025 format
-                if restaurant_name and restaurant_name.strip():
-                    encoded_name = quote(restaurant_name.strip())
-                    updated_restaurant["google_maps_url"] = f"https://www.google.com/maps/search/?api=1&query={encoded_name}&query_place_id={place_id}"
-                else:
-                    updated_restaurant["google_maps_url"] = f"https://www.google.com/maps/search/?api=1&query=restaurant&query_place_id={place_id}"
 
             if address_component:
                 updated_restaurant["address_component"] = address_component
                 logger.debug(f"✅ Stored address_component for {restaurant_name}")
+
 
             # Add business status information
             if business_status:
@@ -562,12 +555,10 @@ class FollowUpSearchAgent:
 
             # Generate 2025 universal format URL
             if restaurant_name and restaurant_name.strip():
-                # Use restaurant name with proper URL encoding
-                encoded_name = quote(restaurant_name.strip())
-                google_maps_url = f"https://www.google.com/maps/search/?api=1&query={encoded_name}&query_place_id={place_id}"
+                    google_maps_url = build_google_maps_url(place_id, restaurant_name)
+                
             else:
-                # Fallback if no restaurant name
-                google_maps_url = f"https://www.google.com/maps/search/?api=1&query=restaurant&query_place_id={place_id}"
+                    google_maps_url = build_google_maps_url(place_id)
 
             return {
                 "formatted_address": formatted_address,
@@ -587,32 +578,6 @@ class FollowUpSearchAgent:
         except Exception as e:
             logger.error(f"Unexpected error searching Google Maps for {restaurant_name} in {city}: {e}")
             return None
-
-    @staticmethod
-    def _canonical_cid_url(url: Optional[str]) -> str:    
-        """
-        Ensures we always return https://maps.google.com/?cid=<cid>
-        Handles long URLs with ?cid=…, and short goo.gl/maps redirects.
-        """
-        if not url:
-            return ""
-
-        # long form already contains ?cid=
-        m = re.search(r"[?&]cid=(\d+)", url)
-        if m:
-            return f"https://maps.google.com/?cid={m.group(1)}"
-
-        # short link – follow one HEAD request (fast, no body)
-        try:
-            r = requests.head(url, allow_redirects=True, timeout=3)
-            m = re.search(r"[?&]cid=(\d+)", r.url)
-            if m:
-                return f"https://maps.google.com/?cid={m.group(1)}"
-        except requests.exceptions.RequestException:
-            pass
-
-        # give up – let formatter fall back to place-id URL later
-        return ""
 
     def _update_database_with_geodata(self, restaurant_name: str, city: str, maps_info: Dict[str, Any], extracted_country: Optional[str] = None) -> bool:
         """

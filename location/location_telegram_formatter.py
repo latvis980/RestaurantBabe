@@ -15,6 +15,8 @@ from html import escape
 from typing import Dict, List, Any, Union
 from urllib.parse import urlparse, quote
 
+from formatters.google_links import build_google_maps_url
+
 logger = logging.getLogger(__name__)
 
 class LocationTelegramFormatter:
@@ -58,7 +60,7 @@ class LocationTelegramFormatter:
             message_parts = []
 
             # Header with personal notes context
-            header = f"📝 <b>From my personal restaurant notes:</b>\n\n"
+            header = "📝 <b>From my personal restaurant notes:</b>\n\n"
 
             # Format each restaurant
             for i, restaurant in enumerate(restaurants[:6], 1):  # Limit to 6 for choice flow
@@ -210,7 +212,10 @@ class LocationTelegramFormatter:
             formatted_name = f"<b>{index}. {self._clean_html(name)}</b>\n"
 
             # Address with universal Google Maps link
-            universal_url = self._get_canonical_google_maps_url(place_id, name, google_maps_url)
+            if place_id:
+                universal_url = build_google_maps_url(place_id, name)
+            else:
+                universal_url = google_maps_url or "#"
             clean_address = self._extract_street_address(address)
             address_line = f'📍 <a href="{escape(universal_url, quote=True)}">{self._clean_html(clean_address)}</a>\n'
 
@@ -436,7 +441,7 @@ class LocationTelegramFormatter:
 
             # Create Google Maps URL
             if place_id:
-                google_url = self._get_canonical_google_maps_url(place_id, name, "")
+                google_url = build_google_maps_url(place_id, name)
             else:
                 # Fallback to search-based URL
                 encoded_name = quote(f"{name} {address}")
@@ -448,21 +453,6 @@ class LocationTelegramFormatter:
         except Exception as e:
             logger.debug(f"Error formatting address link: {e}")
             return ""
-
-    def _get_canonical_google_maps_url(self, place_id: str, name: str, fallback_url: str) -> str:
-        """
-        Create canonical Google Maps URL
-        """
-        try:
-            if place_id and name:
-                encoded_name = quote(name.strip())
-                return f"https://www.google.com/maps/search/?api=1&query={encoded_name}&query_place_id={place_id}"
-            elif place_id:
-                return f"https://www.google.com/maps/search/?api=1&query=restaurant&query_place_id={place_id}"
-            else:
-                return fallback_url or "#"
-        except Exception:
-            return fallback_url or "#"
 
     def _extract_street_address(self, full_address: str) -> str:
         """

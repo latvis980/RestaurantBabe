@@ -14,7 +14,7 @@ from typing import Dict, List, Any, Optional, Tuple, Union
 from dataclasses import dataclass, field
 import googlemaps
 from location.location_utils import LocationUtils
-from urllib.parse import quote
+from formatters.google_links import build_google_maps_url
 
 logger = logging.getLogger(__name__)
 
@@ -60,14 +60,8 @@ class VenueSearchResult:
     google_maps_url: str = ""
 
     def __post_init__(self):
-        if not self.google_maps_url and self.place_id and self.name:
-            # Use 2025 universal format for mobile/desktop compatibility
-            from urllib.parse import quote
-            encoded_name = quote(self.name.strip(), safe='')
-            self.google_maps_url = f"https://www.google.com/maps/search/?api=1&query={encoded_name}&query_place_id={self.place_id}"
-        elif not self.google_maps_url and self.place_id:
-            # Fallback if no name available
-            self.google_maps_url = f"https://www.google.com/maps/search/?api=1&query=restaurant&query_place_id={self.place_id}"
+        if not self.google_maps_url and self.place_id:
+            self.google_maps_url = build_google_maps_url(self.place_id, self.name)
 
 class LocationMapSearchAgent:
     """

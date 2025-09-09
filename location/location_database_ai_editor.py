@@ -22,6 +22,7 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from openai import AsyncOpenAI
 
+from formatters.google_links import build_google_maps_url
 from location.location_data_logger import LocationDataLogger
 
 logger = logging.getLogger(__name__)
@@ -260,10 +261,10 @@ Generate enhanced descriptions for each restaurant."""}
                         description = DatabaseRestaurantDescription(
                             name=restaurant.get('name', 'Unknown Restaurant'),
                             address=restaurant.get('address', 'Address not available'),
-                            maps_link=restaurant.get('maps_link', ''),
                             distance_km=restaurant.get('distance_km', 0.0),
                             description=desc_data['description'],
                             sources=sources,
+                            maps_link=maps_link,
                             rating=restaurant.get('rating'),
                             user_ratings_total=restaurant.get('user_ratings_total', 0),
                             selection_score=desc_data.get('selection_score', 0.8)
@@ -385,12 +386,15 @@ Generate enhanced descriptions for each restaurant."""}
 
                 # Use existing description or create basic one
                 existing_desc = restaurant.get('raw_description', restaurant.get('description', ''))
-                fallback_desc = existing_desc if existing_desc else f"Restaurant serving quality cuisine."
+                fallback_desc = existing_desc if existing_desc else "Restaurant serving quality cuisine."
 
+                place_id = restaurant.get('place_id', '')
+                maps_link = build_google_maps_url(place_id, restaurant.get('name', '')) if place_id else restaurant.get('maps_link', '')
+                
                 description = DatabaseRestaurantDescription(
                     name=restaurant.get('name', 'Unknown Restaurant'),
                     address=restaurant.get('address', 'Address not available'),
-                    maps_link=restaurant.get('maps_link', ''),
+                    maps_link=maps_link,
                     distance_km=restaurant.get('distance_km', 0.0),
                     description=fallback_desc,
                     sources=sources,
