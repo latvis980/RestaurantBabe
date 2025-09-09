@@ -654,7 +654,7 @@ class LocationOrchestrator:
                         "restaurants": map_venues[:self.max_venues_to_verify],
                         "metadata": {
                             "enhanced_verification": True,
-                            "map_search_venues": len(map_venues),
+                            "map_sea_format_sourcesrch_venues": len(map_venues),
                             "media_verification_results": len(media_verification_results),
                             "description_error": str(description_error),
                             "agents_used": ["map_search", "media_verification"]
