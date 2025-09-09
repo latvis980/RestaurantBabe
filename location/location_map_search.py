@@ -548,10 +548,21 @@ class LocationMapSearchAgent:
                 venues = await self._googlemaps_search_with_rotation(latitude, longitude, text_search_query)
                 if cancel_check_fn and cancel_check_fn():
                     return []
+            # Ensure results are within search radius
+            distance_filtered_venues = [
+                v for v in venues
+                if LocationUtils.is_within_radius(
+                    (latitude, longitude), (v.latitude, v.longitude), self.search_radius_km
+                )
+            ]
+
+            if not distance_filtered_venues:
+                logger.info("📵 No venues found within search radius")
+                return []
 
             # Apply rating filter
             filtered_venues = [
-                v for v in venues 
+                v for v in distance_filtered_venues
                 if v.rating and v.rating >= self.rating_threshold
             ]
 
@@ -666,8 +677,12 @@ class LocationMapSearchAgent:
             for place in results:
                 try:
                     venue = self._convert_gmaps_result(place, latitude, longitude)
-                    if venue:
+                    if venue and venue.distance_km <= self.search_radius_km:
                         venues.append(venue)
+                    elif venue:
+                    logger.debug(
+                        f"Skipping {venue.name} at {venue.distance_km:.2f}km – outside radius"
+                    )
                 except Exception as e:
                     logger.warning(f"⚠️  Error converting GoogleMaps result: {e}")
 

@@ -113,21 +113,23 @@ class LocationDatabaseService:
         coordinates: Tuple[float, float], 
         radius_km: float
     ) -> List[Dict[str, Any]]:
-        """
-        Fallback: Manual distance calculation for all restaurants with coordinates
-        FIX: Removed the erroneous .execute() call on SyncSelectRequestBuilder
+        """Fallback: Manual distance calculation for all restaurants with coordinates.
+
+        The Supabase query builder must be executed with ``.execute()`` rather than
+        being invoked directly. This retrieves the raw restaurant data before the
+        manual distance calculations are applied.
         """
         try:
             latitude, longitude = coordinates
 
-            # Get all restaurants with coordinates from the database
-            # FIX: This was missing .execute() call - supabase query builder needs execute()
+            # Get all restaurants with coordinates from the database. Calling
+            # ``.execute()`` runs the query builder and returns the result object.
             result = db.supabase.table('restaurants')\
                 .select('*')\
                 .not_('latitude', 'is', None)\
                 .not_('longitude', 'is', None)\
                 .limit(200)\
-                .execute()  # FIX: Added the missing .execute() call
+                .execute() 
 
             all_restaurants = result.data or []
             logger.info(f"Retrieved {len(all_restaurants)} restaurants with coordinates for manual filtering")
