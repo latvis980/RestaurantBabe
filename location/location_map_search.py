@@ -279,6 +279,11 @@ class LocationMapSearchAgent:
         try:
             logger.info("🔄 Rotating to secondary Places API credentials...")
 
+            # Check if required modules are available
+            if service_account is None or places_v1 is None:
+                logger.error("❌ Required Google modules not available for credential rotation")
+                return False
+
             # Load secondary credentials
             try:
                 if os.path.exists(self.secondary_places_credentials):
@@ -630,6 +635,9 @@ class LocationMapSearchAgent:
             logger.warning(f"⚠️  GoogleMaps {key_name} client not available")
             return venues
 
+        # Initialize final_query to ensure it's always available in exception handler
+        final_query = query
+        
         try:
             self._log_coordinates(latitude, longitude, f"GoogleMaps library search ({key_name})")
             self.api_usage["gmaps"] += 1
