@@ -51,6 +51,7 @@ class CombinedVenueData:
     review_context: str = ""
     source: str = ""
     selection_score: Optional[float] = None
+    selection_reason: str = ""
 
 @dataclass
 class MapSearchRestaurantDescription:
@@ -65,6 +66,7 @@ class MapSearchRestaurantDescription:
     rating: Optional[float] = None
     user_ratings_total: Optional[int] = None
     selection_score: Optional[float] = None
+    selection_reason: Optional[str] = None
 
 class LocationMapSearchAIEditor:
     """
@@ -326,6 +328,11 @@ class LocationMapSearchAIEditor:
 
         return formatted
 
+    @traceable(
+        run_type="llm",
+        name="atmospheric_filtering_llm_call",
+        metadata={"component": "ai_editor", "step": "venue_filtering_llm"},
+    )
     async def _call_atmospheric_filtering_ai(self, venues_text: str, user_query: str) -> str:
         """Call AI to filter for atmospheric restaurants"""
 
@@ -427,6 +434,7 @@ Select restaurants that would create memorable dining experiences, not just sati
                         venue = venues[index]
                         # Add selection score to venue
                         venue.selection_score = selection.get("selection_score", 0.8)
+                        venue.selection_reason = selection.get("reasoning", "")
                         selected_venues.append(venue)
 
                 except (KeyError, IndexError) as e:
@@ -613,7 +621,8 @@ Generate engaging descriptions for each restaurant."""}
                     media_sources=venue.media_publications,
                     rating=venue.rating,
                     user_ratings_total=venue.user_ratings_total,
-                    selection_score=desc_data.get('selection_score', 0.8)
+                    selection_score=desc_data.get('selection_score', 0.8),
+                    selection_reason=venue.selection_reason
                 )
                 descriptions.append(description)
 
