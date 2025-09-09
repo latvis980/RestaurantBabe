@@ -217,6 +217,11 @@ class LocationMapSearchAgent:
                 continue
 
             try:
+                # Check if service_account is available before using it
+                if service_account is None:
+                    logger.error(f"❌ Google service_account module not available, skipping {creds_name} credentials")
+                    continue
+                
                 # Check if it's a file path or JSON string
                 if os.path.exists(creds_data):
                     # File path
@@ -238,6 +243,11 @@ class LocationMapSearchAgent:
                         logger.error(f"❌ Invalid JSON in {creds_name} credentials: {e}")
                         continue
 
+                # Check if Places API is available before trying to create the client
+                if not HAS_PLACES_API or places_v1 is None:
+                    logger.error(f"❌ Google Places API v1 not available, skipping {creds_name} credentials")
+                    continue
+                
                 # Try to create the client
                 client = places_v1.PlacesClient(credentials=credentials)
 
