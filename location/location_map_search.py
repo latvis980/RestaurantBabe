@@ -13,8 +13,10 @@ import os
 from typing import Dict, List, Any, Optional, Tuple, Union
 from dataclasses import dataclass, field
 import googlemaps
+from langsmith import traceable
 from location.location_utils import LocationUtils
 from formatters.google_links import build_google_maps_url
+
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +297,7 @@ class LocationMapSearchAgent:
             logger.error(f"❌ Failed to rotate to secondary Places API credentials: {e}")
             return False
 
+    @traceable(run_type="tool", name="places_api_search")
     async def _places_api_search_with_rotation(
         self, 
         latitude: float, 
@@ -494,6 +497,7 @@ class LocationMapSearchAgent:
             logger.error(f"❌ Error converting GoogleMaps result: {e}")
             return None
 
+    @traceable(run_type="chain", name="map_search")
     async def search_venues_with_ai_analysis(
         self, 
         coordinates: Tuple[float, float], 
@@ -587,6 +591,7 @@ class LocationMapSearchAgent:
 
         return venues
 
+    @traceable(run_type="tool", name="googlemaps_search")
     async def _googlemaps_search_internal(
         self, 
         latitude: float, 

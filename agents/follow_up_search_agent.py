@@ -5,6 +5,7 @@ import googlemaps
 import re
 from typing import Dict, List, Any, Optional
 from datetime import datetime
+from langsmith import traceable
 from utils.debug_utils import dump_chain_state, log_function_call
 from formatters.google_links import build_google_maps_url
 
@@ -504,6 +505,7 @@ class FollowUpSearchAgent:
             logger.error(f"❌ Error auto-deleting closed restaurant {restaurant_name}: {e}")
             return False
 
+    @traceable(run_type="tool", name="google_maps_follow_up")
     def _search_google_maps(self, restaurant_name: str, city: str, restaurant_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """
         Search Google Maps for restaurant info including address, rating, business status, and address component.

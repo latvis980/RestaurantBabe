@@ -15,6 +15,7 @@ import json
 import logging
 import time
 from bs4 import BeautifulSoup
+from langsmith import traceable
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -113,6 +114,7 @@ class BraveSearchAgent:
             ("user", "Title: {title}\nDescription: {description}\nURL: {url}\nContent Preview: {content_preview}")
         ])
 
+    @traceable(run_type="chain", name="web_search_pipeline")
     def search(self, search_queries: List[str], destination: str, query_metadata: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """
         FIXED: Main search method with proper async event loop management
@@ -324,6 +326,7 @@ class BraveSearchAgent:
         except UnicodeEncodeError:
             return False
 
+    @traceable(run_type="tool", name="brave_search")
     async def _brave_search_batch(self, session: aiohttp.ClientSession, queries: List[str]) -> List[Dict[str, Any]]:
         """
         FIXED: Execute Brave Search for multiple queries using shared session
@@ -399,6 +402,7 @@ class BraveSearchAgent:
 
         return results
 
+    @traceable(run_type="tool", name="tavily_search")
     async def _tavily_search_batch(self, session: aiohttp.ClientSession, queries: List[str]) -> List[Dict[str, Any]]:
         """
         FIXED: Execute Tavily Search for multiple queries using shared session
