@@ -21,7 +21,7 @@ FIXES APPLIED:
 
 import logging
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, cast
 from dataclasses import dataclass, field
 from openai import AsyncOpenAI
 from langsmith import traceable
@@ -454,41 +454,46 @@ Select restaurants that would create memorable dining experiences, not just sati
         """
         Generate descriptions for MAP SEARCH results with media integration
         """
+        if not venues:
+            return []
+
+        # Create mapping of sequential indices to venues
+        index_to_venue = {i: v for i, v in enumerate(venues, start=1)}
+
+        # Create combined prompt with all restaurants for MAP SEARCH
+        all_restaurants_data = []
+        for idx, venue in index_to_venue.items():
+            restaurant_data = {
+                "index": idx,
+                "name": venue.name,
+                "rating": venue.rating or "N/A",
+                "user_ratings_total": venue.user_ratings_total or 0,
+                "distance_km": venue.distance_km,
+                "has_media_coverage": venue.has_media_coverage,
+                "media_publications": venue.media_publications,
+                "review_context": venue.review_context,
+            }
+            all_restaurants_data.append(restaurant_data)
+
+        # Generate description for all restaurants at once
+        restaurants_text = json.dumps(all_restaurants_data, indent=2)
+
+        # Instruction block for media mentions
+        media_instruction = (
+            "Include specific media mentions when available. Use publication names like "
+            '"featured in Time Out" or "recommended by Eater" naturally in descriptions.'
+        )
+
         try:
-            if not venues:
-                return []
+            from openai.types.chat import (
+                ChatCompletionUserMessageParam,
+                ChatCompletionSystemMessageParam,
+            )
 
-            # Create combined prompt with all restaurants for MAP SEARCH
-            all_restaurants_data = []
-            for venue in venues:
-                restaurant_data = {
-                    'index': venue.index,
-                    'name': venue.name,
-                    'rating': venue.rating or 'N/A',
-                    'user_ratings_total': venue.user_ratings_total or 0,
-                    'distance_km': venue.distance_km,
-                    'has_media_coverage': venue.has_media_coverage,
-                    'media_publications': venue.media_publications,
-                    'review_context': venue.review_context
-                }
-                all_restaurants_data.append(restaurant_data)
-
-            # Generate description for all restaurants at once
-            restaurants_text = json.dumps(all_restaurants_data, indent=2)
-
-            # FIXED: No f-string without placeholders
-            media_instruction = """
-Include specific media mentions when available. Use publication names like "featured in Time Out" or "recommended by Eater" naturally in descriptions.
-"""
-
-            # FIXED: Use proper typed message format for OpenAI
-            try:
-                from openai.types.chat import ChatCompletionUserMessageParam, ChatCompletionSystemMessageParam
-
-                messages = [
-                    ChatCompletionSystemMessageParam(
-                        role="system", 
-                        content=f"""You are an expert food writer creating engaging restaurant descriptions for MAP SEARCH results.
+            messages = [
+                ChatCompletionSystemMessageParam(
+                    role="system",
+                    content=f"""You are an expert food writer creating engaging restaurant descriptions for MAP SEARCH results.
 
 {media_instruction}
 
@@ -518,10 +523,10 @@ Restaurants data:
 Generate engaging descriptions for each restaurant."""
                     )
                 ]
-            except ImportError:
-                # Fallback for older OpenAI versions
-                messages = [
-                    {"role": "system", "content": f"""You are an expert food writer creating engaging restaurant descriptions for MAP SEARCH results.
+        except ImportError:
+            # Fallback for older OpenAI versions
+            messages = [
+                {"role": "system", "content": f"""You are an expert food writer creating engaging restaurant descriptions for MAP SEARCH results.
 
 {media_instruction}
 
@@ -540,13 +545,13 @@ Return ONLY a JSON array with this structure:
     "selection_score": 0.95
   }}
 ]"""},
-                    {"role": "user", "content": f"""Create descriptions for these MAP SEARCH restaurants based on user query: "{user_query}"
+                {"role": "user", "content": f"""Create descriptions for these MAP SEARCH restaurants based on user query: "{user_query}"
 
 Restaurants data:
 {restaurants_text}
 
 Generate engaging descriptions for each restaurant."""}
-                ]
+            ]
 
             response = await self.openai_client.chat.completions.create(
                 model=self.openai_model,
@@ -568,32 +573,28 @@ Generate engaging descriptions for each restaurant."""}
             descriptions = []
             for desc_data in descriptions_data:
                 try:
-                    venue_index = desc_data['index'] - 1  # Convert to 0-based
-                    if 0 <= venue_index < len(venues):
-                        venue = venues[venue_index]
+                    index = desc_data.get('index')
+                    venue = index_to_venue.get(index)
+                    if not venue:
+                        logger.warning(f"Invalid or missing venue index: {index}")
+                        continue
 
-                        description = MapSearchRestaurantDescription(
-                            name=venue.name,
-                            address=venue.address,
-                            google_maps_url=venue.maps_link,
-                            place_id=venue.place_id,
-                            distance_km=venue.distance_km,
-                            description=desc_data['description'],
-                            media_sources=venue.media_publications,
-                            rating=venue.rating,
-                            user_ratings_total=venue.user_ratings_total,
-                            selection_score=desc_data.get('selection_score', 0.8)
-                        )
-                        descriptions.append(description)
+                    description = MapSearchRestaurantDescription(
+                        name=venue.name,
+                        address=venue.address,
+                        google_maps_url=venue.maps_link,
+                        place_id=venue.place_id,
+                        distance_km=venue.distance_km,
+                        description=desc_data['description'],
+                        media_sources=venue.media_publications,
+                        rating=venue.rating,
+                        user_ratings_total=venue.user_ratings_total,
+                        selection_score=desc_data.get('selection_score', 0.8)
+                    )
+                    descriptions.append(description)
 
-                except (KeyError, IndexError, ValueError) as e:
-                    logger.error(f"Error processing description data: {e}")
-                    continue
-
-            return descriptions
-
-        except Exception as e:
-            logger.error(f"Error generating map search descriptions: {e}")
+                except (KeyError, ValueError, TypeError) as e:
+                    logger.error(f"Error generating map search descriptions: {e}")
             return []
 
     # DEPRECATED methods - redirect to maintain compatibility
