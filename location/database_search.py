@@ -5,7 +5,7 @@ Database Search for Location-Based Queries - STEP 1
 Handles coordinate-based queries to the main app's database with PostGIS.
 
 This implements Step 1 of the location search flow:
-- Proximity search using coordinates (PostGIS, 3 km radius)
+- Proximity search using coordinates (PostGIS, 2 km radius)
 - Extract all database results by proximity 
 - Extract cuisine_tags, descriptions, and sources
 - Compile results for further analysis in Step 2
@@ -100,7 +100,7 @@ class LocationDatabaseService:
             restaurants = db.get_restaurants_by_coordinates(
                 center=(latitude, longitude),
                 radius_km=radius_km,
-                limit=100
+                limit=60
             )
 
             logger.info(f"PostGIS search returned {len(restaurants)} restaurants")
