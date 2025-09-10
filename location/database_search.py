@@ -2,7 +2,6 @@
 """
 Database Search for Location-Based Queries - STEP 1
 
-Renamed from database_service.py for clean architecture.
 Handles coordinate-based queries to the main app's database with PostGIS.
 
 This implements Step 1 of the location search flow:
