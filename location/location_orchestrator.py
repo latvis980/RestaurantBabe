@@ -81,7 +81,7 @@ class LocationOrchestrator:
         self.formatter = LocationTelegramFormatter(config)
 
         # Pipeline settings
-        self.db_search_radius = getattr(config, 'DB_PROXIMITY_RADIUS_KM', 3.0)
+        self.db_search_radius = getattr(config, 'DB_PROXIMITY_RADIUS_KM', 2.0)
         self.min_db_matches = 2
         self.max_venues_to_verify = getattr(config, 'MAX_LOCATION_RESULTS', 8)
 
