@@ -28,7 +28,7 @@ class LocationDatabaseService:
 
     def __init__(self, config):
         self.config = config
-        self.default_radius_km = getattr(config, 'DB_PROXIMITY_RADIUS_KM', 3.0)
+        self.default_radius_km = getattr(config, 'DB_PROXIMITY_RADIUS_KM', 2.0)
         logger.info("✅ Location Database Search Service initialized (Step 1)")
 
     def search_by_proximity(
@@ -54,22 +54,26 @@ class LocationDatabaseService:
         try:
             if radius_km is None:
                 radius_km = self.default_radius_km
+            
+            # Type assertion to help the type checker understand radius_km is now guaranteed to be float
+            assert radius_km is not None, "radius_km should not be None after default assignment"
+            effective_radius: float = radius_km
 
             latitude, longitude = coordinates
-            logger.info(f"🗃️ STEP 1: Database proximity search within {radius_km}km of {latitude:.4f}, {longitude:.4f}")
+            logger.info(f"🗃️ STEP 1: Database proximity search within {effective_radius}km of {latitude:.4f}, {longitude:.4f}")
 
             # Use existing database interface
             db = get_database()
 
             # Try PostGIS-enabled proximity search first
-            restaurants = self._search_with_postgis(db, coordinates, radius_km)
+            restaurants = self._search_with_postgis(db, coordinates, effective_radius)
 
             # If PostGIS fails, fallback to manual distance calculation
             if not restaurants:
                 logger.info("PostGIS search failed, falling back to manual distance calculation")
-                restaurants = self._search_with_manual_distance(db, coordinates, radius_km)
+                restaurants = self._search_with_manual_distance(db, coordinates, effective_radius)
 
-            logger.info(f"📊 STEP 1 COMPLETE: Found {len(restaurants)} restaurants within {radius_km}km")
+            logger.info(f"📊 STEP 1 COMPLETE: Found {len(restaurants)} restaurants within {effective_radius}km")
 
             # Add cuisine tags, description, and sources extraction for Step 2
             if extract_descriptions:
@@ -97,7 +101,7 @@ class LocationDatabaseService:
             restaurants = db.get_restaurants_by_coordinates(
                 center=(latitude, longitude),
                 radius_km=radius_km,
-                limit=50
+                limit=100
             )
 
             logger.info(f"PostGIS search returned {len(restaurants)} restaurants")
