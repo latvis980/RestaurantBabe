@@ -176,19 +176,17 @@ Use phrases like "recommended by TimeOut" or "featured in Eater" when sources ar
 
 {sources_instruction}
 
-Write enhanced, engaging descriptions that:
+Write brief, but engaging descriptions that:
 - Build upon the existing raw_description 
-- Highlight unique character and specialties
-- Include source attribution when available (use domain names naturally)
-- Keep the authentic voice but make it more engaging
-- Focus on what makes each place special
+- Mention concrete details like specialties, concept, or unique features
+- Mention why this result is relevant to the user query
 
 Keep descriptions concise but evocative (2-3 sentences max).
 Return ONLY a JSON array with this structure:
 [
   {{
     "index": 1,
-    "description": "Enhanced description that builds on the original while adding atmosphere and source attribution.",
+    "description": "Brief description that builds on the original focusing on the details and relevance.",
     "selection_score": 0.85
   }}
 ]"""
