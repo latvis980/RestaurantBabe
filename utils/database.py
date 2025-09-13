@@ -284,11 +284,11 @@ class Database:
             logger.error(f"Error getting restaurants by preference tags: {e}")
             return []
 
-    # utils/database.py - Coordinate-based search using numeric calculations
+    # utils/database.py - Coordinate-based search using PostGIS spatial functions
 
     def get_restaurants_by_coordinates(self, center: Tuple[float, float], radius_km: float, limit: int = 20) -> List[Dict[str, Any]]:
         """
-        Get restaurants within radius of coordinates using numeric coordinate calculation
+        Get restaurants within radius of coordinates using PostGIS spatial search
 
         NOTE: This method should ONLY be called by location/database_search.py
         All location-based logic should remain in the /location/ folder.
@@ -305,55 +305,20 @@ class Database:
             center_lat, center_lng = center
             logger.info(f"📍 Searching restaurants within {radius_km}km of ({center_lat}, {center_lng})")
 
-            # Get all restaurants with coordinates
-            result = self.supabase.table('restaurants')\
-                .select('*')\
-                .or_('coordinates.not.is.null,and(latitude.not.is.null,longitude.not.is.null)')\
-                .execute()
+            # Use PostGIS function for efficient spatial search
+            result = self.supabase.rpc('search_restaurants_by_coordinates', {
+                'center_lat': center_lat,
+                'center_lng': center_lng,
+                'radius_km': radius_km,
+                'result_limit': limit
+            }).execute()
 
-            all_restaurants = result.data or []
-
-            # Filter by distance using LocationUtils
-            from location.location_utils import LocationUtils
-            restaurants_with_distance = []
-
-            for restaurant in all_restaurants:
-                try:
-                    # Check if restaurant has valid coordinates
-                    lat = restaurant.get('latitude')
-                    lng = restaurant.get('longitude')
-
-                    if lat is not None and lng is not None:
-                        # Convert to float safely
-                        try:
-                            lat = float(lat)
-                            lng = float(lng)
-                        except (ValueError, TypeError):
-                            continue  # Skip restaurants with invalid coordinates
-
-                        # Calculate distance using Haversine formula
-                        restaurant_coords = (lat, lng)
-                        distance_km = LocationUtils.calculate_distance(center, restaurant_coords)
-
-                        # Only include if within radius
-                        if distance_km <= radius_km:
-                            restaurant['distance_km'] = distance_km
-                            restaurant['distance_text'] = LocationUtils.format_distance(distance_km)
-                            restaurants_with_distance.append(restaurant)
-
-                except Exception as e:
-                    logger.warning(f"Error processing restaurant {restaurant.get('name', 'unknown')}: {e}")
-                    continue
-
-            # Sort by distance and limit results
-            restaurants_with_distance.sort(key=lambda x: x.get('distance_km', float('inf')))
-            limited_results = restaurants_with_distance[:limit]
-
-            logger.info(f"✅ Coordinate search found {len(limited_results)} restaurants within {radius_km}km")
-            return limited_results
+            restaurants = result.data or []
+            logger.info(f"✅ PostGIS search found {len(restaurants)} restaurants within {radius_km}km")
+            return restaurants
 
         except Exception as e:
-            logger.error(f"❌ Error in coordinate-based search: {e}")
+            logger.error(f"❌ Error in PostGIS coordinate search: {e}")
             return []
 
     # ============ STATISTICS AND MONITORING ============

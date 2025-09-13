@@ -2,10 +2,10 @@
 """
 Database Search for Location-Based Queries - STEP 1
 
-Handles coordinate-based queries to the main app's database using numeric coordinates.
+Handles coordinate-based queries to the main app's database using PostGIS spatial functions.
 
 This implements Step 1 of the location search flow:
-- Proximity search using coordinates (Haversine formula, 2 km radius)
+- Proximity search using coordinates (PostGIS spatial search, 2 km radius)
 - Extract all database results by proximity 
 - Extract cuisine_tags, descriptions, and sources
 - Compile results for further analysis in Step 2
@@ -37,7 +37,7 @@ class LocationDatabaseService:
         extract_descriptions: bool = True
     ) -> List[Dict[str, Any]]:
         """
-        STEP 1: Database proximity search using coordinates (Haversine formula, 2 km radius)
+        STEP 1: Database proximity search using coordinates (PostGIS spatial search, 2 km radius)
 
         Extract all database results by proximity, then extract cuisine_tags,
         descriptions, and sources for further analysis in Step 2.
@@ -86,60 +86,26 @@ class LocationDatabaseService:
         radius_km: float
     ) -> List[Dict[str, Any]]:
         """
-        Coordinate-based distance calculation for all restaurants with coordinates.
-
-        The Supabase query builder must be executed with ``.execute()`` rather than
-        being invoked directly. This retrieves the raw restaurant data before the
-        distance calculations are applied.
+        PostGIS-based coordinate search using the database's spatial function.
+        
+        Uses the PostGIS search_restaurants_by_coordinates function for efficient
+        spatial queries with proper indexing and distance calculations.
         """
         try:
             latitude, longitude = coordinates
 
-            # Get all restaurants with coordinates from the database. Calling
-            # ``.execute()`` runs the query builder and returns the result object.
-            result = db.supabase.table('restaurants')\
-                .select('*')\
-                .not_('latitude', 'is', None)\
-                .not_('longitude', 'is', None)\
-                .limit(200)\
-                .execute() 
+            # Use PostGIS spatial search function
+            restaurants = db.get_restaurants_by_coordinates(
+                center=(latitude, longitude),
+                radius_km=radius_km,
+                limit=60  # Get more results for Step 2 filtering
+            )
 
-            all_restaurants = result.data or []
-            logger.info(f"Retrieved {len(all_restaurants)} restaurants with coordinates for distance filtering")
-
-            # Filter by distance
-            nearby_restaurants = []
-
-            for restaurant in all_restaurants:
-                try:
-                    rest_lat = float(restaurant.get('latitude', 0))
-                    rest_lon = float(restaurant.get('longitude', 0))
-
-                    if rest_lat == 0 or rest_lon == 0:
-                        continue
-
-                    # Calculate distance using haversine formula
-                    distance = LocationUtils.calculate_distance(
-                        (latitude, longitude),
-                        (rest_lat, rest_lon)
-                    )
-
-                    if distance <= radius_km:
-                        restaurant['distance_km'] = round(distance, 2)
-                        nearby_restaurants.append(restaurant)
-
-                except (ValueError, TypeError) as e:
-                    logger.debug(f"Invalid coordinates for restaurant {restaurant.get('id')}: {e}")
-                    continue
-
-            # Sort by distance
-            nearby_restaurants.sort(key=lambda x: x.get('distance_km', float('inf')))
-
-            logger.info(f"Coordinate distance filtering: {len(nearby_restaurants)} restaurants within {radius_km}km")
-            return nearby_restaurants
+            logger.info(f"PostGIS search returned {len(restaurants)} restaurants within {radius_km}km")
+            return restaurants
 
         except Exception as e:
-            logger.error(f"❌ Error in coordinate distance calculation: {e}")
+            logger.error(f"❌ Error in PostGIS coordinate search: {e}")
             return []
 
     def _extract_cuisine_descriptions_and_sources(self, restaurants: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
