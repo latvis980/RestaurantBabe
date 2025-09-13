@@ -2,10 +2,10 @@
 """
 Database Search for Location-Based Queries - STEP 1
 
-Handles coordinate-based queries to the main app's database with PostGIS.
+Handles coordinate-based queries to the main app's database using numeric coordinates.
 
 This implements Step 1 of the location search flow:
-- Proximity search using coordinates (PostGIS, 2 km radius)
+- Proximity search using coordinates (Haversine formula, 2 km radius)
 - Extract all database results by proximity 
 - Extract cuisine_tags, descriptions, and sources
 - Compile results for further analysis in Step 2
@@ -37,7 +37,7 @@ class LocationDatabaseService:
         extract_descriptions: bool = True
     ) -> List[Dict[str, Any]]:
         """
-        STEP 1: Database proximity search using coordinates (PostGIS, 3 km radius)
+        STEP 1: Database proximity search using coordinates (Haversine formula, 2 km radius)
 
         Extract all database results by proximity, then extract cuisine_tags,
         descriptions, and sources for further analysis in Step 2.
@@ -64,13 +64,8 @@ class LocationDatabaseService:
             # Use existing database interface
             db = get_database()
 
-            # Try PostGIS-enabled proximity search first
-            restaurants = self._search_with_postgis(db, coordinates, effective_radius)
-
-            # If PostGIS fails, fallback to manual distance calculation
-            if not restaurants:
-                logger.info("PostGIS search failed, falling back to manual distance calculation")
-                restaurants = self._search_with_manual_distance(db, coordinates, effective_radius)
+            # Use coordinate-based proximity search
+            restaurants = self._search_with_coordinates(db, coordinates, effective_radius)
 
             logger.info(f"📊 STEP 1 COMPLETE: Found {len(restaurants)} restaurants within {effective_radius}km")
 
@@ -84,43 +79,18 @@ class LocationDatabaseService:
             logger.error(f"❌ Error in Step 1 database proximity search: {e}")
             return []
 
-    def _search_with_postgis(
+    def _search_with_coordinates(
         self, 
         db, 
         coordinates: Tuple[float, float], 
         radius_km: float
     ) -> List[Dict[str, Any]]:
         """
-        Search using PostGIS spatial functions (preferred method)
-        """
-        try:
-            latitude, longitude = coordinates
-
-            # Try PostGIS spatial query
-            restaurants = db.get_restaurants_by_coordinates(
-                center=(latitude, longitude),
-                radius_km=radius_km,
-                limit=60
-            )
-
-            logger.info(f"PostGIS search returned {len(restaurants)} restaurants")
-            return restaurants
-
-        except Exception as e:
-            logger.warning(f"PostGIS search failed: {e}")
-            return []
-
-    def _search_with_manual_distance(
-        self, 
-        db, 
-        coordinates: Tuple[float, float], 
-        radius_km: float
-    ) -> List[Dict[str, Any]]:
-        """Fallback: Manual distance calculation for all restaurants with coordinates.
+        Coordinate-based distance calculation for all restaurants with coordinates.
 
         The Supabase query builder must be executed with ``.execute()`` rather than
         being invoked directly. This retrieves the raw restaurant data before the
-        manual distance calculations are applied.
+        distance calculations are applied.
         """
         try:
             latitude, longitude = coordinates
@@ -135,7 +105,7 @@ class LocationDatabaseService:
                 .execute() 
 
             all_restaurants = result.data or []
-            logger.info(f"Retrieved {len(all_restaurants)} restaurants with coordinates for manual filtering")
+            logger.info(f"Retrieved {len(all_restaurants)} restaurants with coordinates for distance filtering")
 
             # Filter by distance
             nearby_restaurants = []
@@ -165,11 +135,11 @@ class LocationDatabaseService:
             # Sort by distance
             nearby_restaurants.sort(key=lambda x: x.get('distance_km', float('inf')))
 
-            logger.info(f"Manual distance filtering: {len(nearby_restaurants)} restaurants within {radius_km}km")
+            logger.info(f"Coordinate distance filtering: {len(nearby_restaurants)} restaurants within {radius_km}km")
             return nearby_restaurants
 
         except Exception as e:
-            logger.error(f"❌ Error in manual distance calculation: {e}")
+            logger.error(f"❌ Error in coordinate distance calculation: {e}")
             return []
 
     def _extract_cuisine_descriptions_and_sources(self, restaurants: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
