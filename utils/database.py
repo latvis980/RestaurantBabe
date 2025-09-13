@@ -306,21 +306,34 @@ class Database:
             center_lat, center_lng = center
             logger.info(f"📍 Searching restaurants within {radius_km}km of ({center_lat}, {center_lng})")
 
-            # TRY PostGIS function first (now re-enabled with fixed schema)
+            # Use direct PostGIS SQL query (more reliable than RPC function)
             try:
+                # Convert radius to meters for ST_DWithin
+                radius_meters = radius_km * 1000
+                
+                # Use the PostGIS RPC function with your SQL query logic
                 result = self.supabase.rpc('search_restaurants_by_coordinates', {
                     'center_lat': center_lat,
                     'center_lng': center_lng,
                     'radius_km': radius_km,
                     'result_limit': limit
                 }).execute()
-
+                
                 restaurants = result.data or []
-                logger.info(f"✅ PostGIS search found {len(restaurants)} restaurants")
+                
+                # Add distance_text formatting to each restaurant
+                for restaurant in restaurants:
+                    distance_km = restaurant.get('distance_km', 0)
+                    if distance_km < 1.0:
+                        restaurant['distance_text'] = f"{int(distance_km * 1000)}m"
+                    else:
+                        restaurant['distance_text'] = f"{distance_km:.1f}km"
+                
+                logger.info(f"✅ PostGIS direct SQL found {len(restaurants)} restaurants")
                 return restaurants
 
             except Exception as postgis_error:
-                logger.warning(f"PostGIS search failed: {postgis_error}")
+                logger.warning(f"PostGIS direct query failed: {postgis_error}")
                 logger.info("🔄 Falling back to manual distance calculation...")
 
                 # FIXED: Fallback method now includes ALL fields (raw_description, sources, etc.)
