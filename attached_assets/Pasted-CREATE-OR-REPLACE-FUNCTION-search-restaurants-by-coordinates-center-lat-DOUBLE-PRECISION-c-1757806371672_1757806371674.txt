@@ -1,0 +1,83 @@
+CREATE OR REPLACE FUNCTION search_restaurants_by_coordinates(
+    center_lat DOUBLE PRECISION,
+    center_lng DOUBLE PRECISION,
+    radius_km DOUBLE PRECISION DEFAULT 5.0,
+    result_limit INTEGER DEFAULT 20
+)
+RETURNS TABLE (
+    id INTEGER,
+    name TEXT,
+    address TEXT,
+    city TEXT,
+    country TEXT,
+    raw_description TEXT,
+    cuisine_tags TEXT[],
+    first_added TIMESTAMPTZ,
+    last_updated TIMESTAMPTZ,
+    sources TEXT[],
+    mention_count INTEGER,
+    latitude NUMERIC,
+    longitude NUMERIC,
+    place_id TEXT,
+    distance_km DOUBLE PRECISION,
+    distance_text TEXT
+) AS $$
+DECLARE
+    radius_meters DOUBLE PRECISION;
+BEGIN
+    -- Convert radius from kilometers to meters
+    radius_meters := radius_km * 1000;
+    
+    RETURN QUERY
+    SELECT 
+        r.id,
+        r.name,
+        r.address,
+        r.city,
+        r.country,
+        r.raw_description,
+        r.cuisine_tags,
+        r.first_added,
+        r.last_updated,
+        r.sources,
+        r.mention_count,
+        r.latitude,
+        r.longitude,
+        r.place_id,
+        -- Calculate distance in kilometers
+        (ST_Distance(
+            ST_SetSRID(ST_MakePoint(r.longitude::double precision, r.latitude::double precision), 4326)::geography,
+            ST_SetSRID(ST_MakePoint(center_lng, center_lat), 4326)::geography
+        ) / 1000.0) AS distance_km,
+        -- Format distance text
+        CASE 
+            WHEN (ST_Distance(
+                ST_SetSRID(ST_MakePoint(r.longitude::double precision, r.latitude::double precision), 4326)::geography,
+                ST_SetSRID(ST_MakePoint(center_lng, center_lat), 4326)::geography
+            ) / 1000.0) < 1.0 
+            THEN ROUND((ST_Distance(
+                ST_SetSRID(ST_MakePoint(r.longitude::double precision, r.latitude::double precision), 4326)::geography,
+                ST_SetSRID(ST_MakePoint(center_lng, center_lat), 4326)::geography
+            ) / 1000.0)::numeric * 1000) || 'm'
+            ELSE ROUND((ST_Distance(
+                ST_SetSRID(ST_MakePoint(r.longitude::double precision, r.latitude::double precision), 4326)::geography,
+                ST_SetSRID(ST_MakePoint(center_lng, center_lat), 4326)::geography
+            ) / 1000.0)::numeric, 1) || 'km'
+        END AS distance_text
+    FROM restaurants r
+    WHERE 
+        r.latitude IS NOT NULL 
+        AND r.longitude IS NOT NULL
+        AND ST_DWithin(
+            ST_SetSRID(ST_MakePoint(r.longitude::double precision, r.latitude::double precision), 4326)::geography,
+            ST_SetSRID(ST_MakePoint(center_lng, center_lat), 4326)::geography,
+            radius_meters
+        )
+    ORDER BY 
+        ST_Distance(
+            ST_SetSRID(ST_MakePoint(r.longitude::double precision, r.latitude::double precision), 4326)::geography,
+            ST_SetSRID(ST_MakePoint(center_lng, center_lat), 4326)::geography
+        )
+    LIMIT result_limit;
+END;
+$$ LANGUAGE plpgsql;
