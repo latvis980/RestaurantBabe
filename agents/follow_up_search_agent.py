@@ -508,40 +508,63 @@ class FollowUpSearchAgent:
     @traceable(run_type="tool", name="google_maps_follow_up")
     def _search_google_maps(self, restaurant_name: str, city: str, restaurant_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """
-        Search Google Maps for restaurant info including address, rating, business status, and address component.
-        NEW: Now uses intelligent venue type detection from restaurant data and API key rotation
+        OPTIMIZED: Search Google Maps for restaurant info with place_id optimization.
+        
+        For restaurants from database (with existing place_id):
+        - Skip expensive text search (saves quota)
+        - Go directly to cheap place details API
+        
+        For new restaurants (no place_id):
+        - Fall back to expensive text search + place details
         """
         try:
             # Get the appropriate client
             gmaps_client, key_name = self._get_gmaps_client()
 
-            # Determine venue type intelligently
-            venue_type = self._determine_venue_type(restaurant_data)
+            # OPTIMIZATION: Check for existing place_id first
+            existing_place_id = None
+            if restaurant_data:
+                existing_place_id = restaurant_data.get('place_id') or restaurant_data.get('google_maps_place_id')
+            
+            if existing_place_id:
+                # FAST PATH: Use existing place_id, skip expensive text search
+                logger.info(f"💰 QUOTA SAVING: Using existing place_id for {restaurant_name} (skipping text search)")
+                place_id = existing_place_id
+                
+                # Update usage counter for cheaper place details call only
+                self.api_usage[key_name] += 1
+                
+            else:
+                # SLOW PATH: No place_id available, use expensive text search
+                logger.info(f"💸 Using expensive text search for {restaurant_name} (no existing place_id)")
+                
+                # Determine venue type intelligently
+                venue_type = self._determine_venue_type(restaurant_data)
 
-            # Create search query with appropriate venue type
-            search_query = f"{restaurant_name} {venue_type} {city}"
-            logger.debug(f"Google Maps search query ({key_name} key): {search_query} [detected type: {venue_type}]")
+                # Create search query with appropriate venue type
+                search_query = f"{restaurant_name} {venue_type} {city}"
+                logger.debug(f"Google Maps search query ({key_name} key): {search_query} [detected type: {venue_type}]")
 
-            # Perform text search using the selected client
-            search_response = gmaps_client.places(query=search_query)
+                # Perform expensive text search
+                search_response = gmaps_client.places(query=search_query)
 
-            # Update usage counter
-            self.api_usage[key_name] += 1
+                # Update usage counter for expensive text search
+                self.api_usage[key_name] += 1
 
-            results = search_response.get("results", [])
-            if not results:
-                logger.debug(f"No Google Maps results for: {search_query}")
-                return None
+                results = search_response.get("results", [])
+                if not results:
+                    logger.debug(f"No Google Maps results for: {search_query}")
+                    return None
 
-            # Get the first result (most relevant)
-            first_result = results[0]
-            place_id = first_result.get("place_id")
+                # Get the first result (most relevant)
+                first_result = results[0]
+                place_id = first_result.get("place_id")
 
-            if not place_id:
-                logger.debug(f"No place_id in first result for: {search_query}")
-                return None
+                if not place_id:
+                    logger.debug(f"No place_id in first result for: {search_query}")
+                    return None
 
-            # Get detailed place information including rating, business status, and address component
+            # Get detailed place information using place_id (works for both paths)
             place_details = gmaps_client.place(
                 place_id=place_id,
                 fields=self.place_fields
