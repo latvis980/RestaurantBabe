@@ -352,9 +352,8 @@ LOCATION CONTEXT: {location_context}
         """
         try:
             # Step 1: Add message to conversation history
-            if self._detect_destination_change(user_id, message_text):
-                logger.info(f"🤖 AI detected destination change - clearing location context for user {user_id}")
-                self.clear_location_search_context(user_id)
+            # FIXED: Only clear location context when user explicitly provides NEW location
+            # The 30-minute expiration in get_location_search_context() handles automatic cleanup
             
             self._add_to_conversation(user_id, message_text, is_user=True)
 
