@@ -731,6 +731,20 @@ def perform_location_search(search_query: str, user_id: int, chat_id: int):
                 restaurant_count = result.get("restaurant_count", 0)
                 add_run_log("INFO", f"Got {restaurant_count} location-based results")
 
+                # FIXED: Store location context for follow-up searches - THIS WAS MISSING!
+                if conversation_handler is not None:
+                    # Extract coordinates from the result
+                    coordinates = result.get("coordinates")
+                    location_desc = result.get("location_description", "searched area")
+                    conversation_handler.store_location_search_context(
+                        user_id=user_id,
+                        query=search_query,
+                        location_data=location_data,
+                        location_description=location_desc,
+                        coordinates=coordinates
+                    )
+                    add_run_log("INFO", f"Stored location context for user {user_id}")
+
                 formatted_message = result.get("location_formatted_results", "Found restaurants near you!")
 
                 bot.send_message(

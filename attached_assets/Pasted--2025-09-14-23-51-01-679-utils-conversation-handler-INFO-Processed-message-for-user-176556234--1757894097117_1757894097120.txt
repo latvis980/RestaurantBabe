@@ -1,0 +1,57 @@
+
+2025-09-14 23:51:01,679 - utils.conversation_handler - INFO - Processed message for user 176556234: SEARCH_LOCATION -> searching
+2025-09-14 23:51:01,702 - telegram_bot - INFO - Created cancel event for user 176556234
+2025-09-14 23:51:02,040 - location.location_map_search - INFO - ✅ Google Places API v1 imports successful
+2025-09-14 23:51:02,040 - location.location_map_search - INFO - ✅ OpenAI v1.0+ imported successfully
+2025-09-14 23:51:02,049 - location.database_search - INFO - ✅ Location Database Search Service initialized (Step 1)
+2025-09-14 23:51:02,049 - location.filter_evaluator - INFO - ✅ LangChain chains built for enhanced filtering and evaluation
+2025-09-14 23:51:02,049 - location.filter_evaluator - INFO - ✅ ENHANCED Location Filter Evaluator initialized with specific filtering
+2025-09-14 23:51:02,077 - location.location_data_logger - INFO - Location data logger initialized. Files will be saved to: /tmp/location_debug
+2025-09-14 23:51:02,077 - location.location_database_ai_editor - INFO - Location Database AI Editor initialized for database results
+2025-09-14 23:51:02,102 - location.location_data_logger - INFO - Location data logger initialized. Files will be saved to: /tmp/location_debug
+2025-09-14 23:51:02,102 - location.location_map_search_ai_editor - INFO - Location Map Search AI Editor initialized for map search results
+2025-09-14 23:51:02,102 - location.location_ai_editor - WARNING - LocationAIEditor is deprecated. Use LocationDatabaseAIEditor or LocationMapSearchAIEditor directly.
+2025-09-14 23:51:02,127 - location.location_map_search - INFO - ✅ OpenAI client initialized
+2025-09-14 23:51:02,127 - googlemaps.client - INFO - API queries_quota: 60
+2025-09-14 23:51:02,128 - location.location_map_search - INFO - ✅ GoogleMaps client initialized
+2025-09-14 23:51:02,128 - googlemaps.client - INFO - API queries_quota: 60
+2025-09-14 23:51:02,128 - location.location_map_search - INFO - ✅ Secondary GoogleMaps client initialized
+2025-09-14 23:51:02,129 - location.location_map_search - INFO - ✅ Loaded primary credentials from JSON
+2025-09-14 23:51:02,144 - location.location_map_search - INFO - ✅ Places API v1 client initialized with primary credentials
+2025-09-14 23:51:02,144 - location.location_map_search - INFO - ✅ LocationMapSearchAgent initialized:
+2025-09-14 23:51:02,144 - location.location_map_search - INFO -    - Rating threshold: 4.3
+2025-09-14 23:51:02,144 - location.location_map_search - INFO -    - Search radius: 2.0km
+2025-09-14 23:51:02,144 - location.location_map_search - INFO -    - Has Places API v1: True
+2025-09-14 23:51:02,144 - location.location_map_search - INFO -    - Has GoogleMaps fallback: True
+2025-09-14 23:51:02,171 - location.location_media_verification - INFO - Location Media Verification Agent initialized
+2025-09-14 23:51:02,196 - location.location_data_logger - INFO - Location data logger initialized. Files will be saved to: /tmp/location_debug
+2025-09-14 23:51:02,197 - location.location_database_ai_editor - INFO - Location Database AI Editor initialized for database results
+2025-09-14 23:51:02,225 - location.location_data_logger - INFO - Location data logger initialized. Files will be saved to: /tmp/location_debug
+2025-09-14 23:51:02,225 - location.location_map_search_ai_editor - INFO - Location Map Search AI Editor initialized for map search results
+2025-09-14 23:51:02,225 - location.location_ai_editor - WARNING - LocationAIEditor is deprecated. Use LocationDatabaseAIEditor or LocationMapSearchAIEditor directly.
+2025-09-14 23:51:02,227 - location.location_orchestrator - INFO - ✅ LangChain pipeline built with FIXED tracing decorators
+2025-09-14 23:51:02,227 - location.location_orchestrator - INFO - ✅ LangChain Location Orchestrator initialized with ALL METHOD NAMES FIXED
+2025-09-14 23:51:02,715 - httpx - INFO - HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2025-09-14 23:51:02,719 - location.location_orchestrator - INFO - 🔍 Starting LangChain location search: 'specialty coffee in 15th arrondissement Paris'
+2025-09-14 23:51:02,725 - location.location_orchestrator - INFO - 🌍 Geocoding location: 15th arrondissement, Paris
+2025-09-14 23:51:02,825 - location.location_orchestrator - INFO - ✅ Geocoded to: 48.8411, 2.2928
+2025-09-14 23:51:02,828 - location.location_orchestrator - INFO - 🗃️ Database search within 2.0km
+2025-09-14 23:51:02,828 - location.database_search - INFO - 🗃️ STEP 1: Database proximity search within 2.0km of 48.8411, 2.2928
+2025-09-14 23:51:02,828 - utils.database - INFO - 📍 Searching restaurants within 2.0km of (48.8411228, 2.2927657)
+2025-09-14 23:51:03,145 - httpx - INFO - HTTP Request: POST https://giphzrzvmwtjiywngktt.supabase.co/rest/v1/rpc/search_restaurants_by_coordinates "HTTP/2 200 OK"
+
+
+(database search flow completed)
+
+2025-09-14 23:51:08,677 - location.location_orchestrator - INFO - ✅ LangChain location search completed in 5.96s
+2025-09-14 23:51:08,961 - utils.run_logger - INFO - ✅ Run log saved: temp/run_20250914_235058_958_user176556234.txt
+2025-09-14 23:51:08,961 - telegram_bot - INFO - Cleaned up search tracking for user 176556234
+2025-09-14 23:51:10,649 - telegram_bot - INFO - 📝 Received text message from user 176556234: 'yes, find other cafes...'
+2025-09-14 23:51:10,649 - utils.run_logger - INFO - 🚀 Started run logging for: yes, find other cafes...
+2025-09-14 23:51:10,649 - utils.run_logger - INFO - 📝 Run ID: run_20250914_235110_649_user176556234
+2025-09-14 23:51:12,724 - httpx - INFO - HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2025-09-14 23:51:12,728 - utils.conversation_handler - INFO - Processed message for user 176556234: GOOGLE_MAPS_MORE -> searching
+2025-09-14 23:51:12,756 - utils.conversation_handler - INFO - 🔍 LOCATION CONTEXT LOOKUP for user 176556234:
+2025-09-14 23:51:12,756 - utils.conversation_handler - INFO -    Total contexts available: 0
+2025-09-14 23:51:12,756 - utils.conversation_handler - INFO -    Available user IDs: []
+2025-09-14 23:51:12,756 - utils.conversation_handler - INFO - ❌ No location context found for user 176556234

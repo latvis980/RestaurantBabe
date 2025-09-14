@@ -636,13 +636,11 @@ LOCATION CONTEXT: {location_context}
 
             self.location_search_context[user_id] = context_data
 
-            # ENHANCED DEBUG: Log storage with more detail
-            logger.info(f"🔄 LOCATION CONTEXT STORED for user {user_id}:")
-            logger.info(f"   Query: {query}")
-            logger.info(f"   Location: {location_description}")
-            logger.info(f"   Coordinates: {final_coordinates}")
-            logger.info(f"   Timestamp: {context_data['last_search_time']}")
-            logger.info(f"   Total contexts stored: {len(self.location_search_context)}")
+            # Log storage result
+            if final_coordinates:
+                logger.info(f"✅ Stored location context for user {user_id}: {final_coordinates}")
+            else:
+                logger.warning(f"⚠️ No coordinates stored for user {user_id}")
 
         except Exception as e:
             logger.error(f"❌ Error storing location context: {e}")
@@ -650,14 +648,9 @@ LOCATION CONTEXT: {location_context}
     def get_location_search_context(self, user_id: int) -> Optional[Dict[str, Any]]:
         """FIXED: Simplified coordinate retrieval"""
         try:
-            # ENHANCED DEBUG: Show current state before lookup
-            logger.info(f"🔍 LOCATION CONTEXT LOOKUP for user {user_id}:")
-            logger.info(f"   Total contexts available: {len(self.location_search_context)}")
-            logger.info(f"   Available user IDs: {list(self.location_search_context.keys())}")
-            
             context = self.location_search_context.get(user_id)
             if not context:
-                logger.info(f"❌ No location context found for user {user_id}")
+                logger.info(f"No location context found for user {user_id}")
                 return None
 
             # Check if context is still valid (within 30 minutes)
