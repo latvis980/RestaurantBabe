@@ -43,6 +43,7 @@ class EditorAgent:
 
         CONCIERGE APPROACH:
         - List the restaurants that best match the user's original request first
+        - If some restaurant in the final list are possible duplicates (similar name, same address), list them only once.
         - If restaurants don't perfectly match ALL user requirements and were included due to very limited results and very narrow query, explain diplomatically why you chose them
         - Whenever necessary (limited results), use phrases like "While this may not have X specifically mentioned, it offers Y which makes it worth considering"
         - Be honest about uncertainties: "though I cannot confirm if they have vegan options, their modern approach suggests they likely accommodate dietary preferences"
