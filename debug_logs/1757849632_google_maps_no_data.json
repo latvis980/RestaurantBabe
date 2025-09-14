@@ -1,0 +1,15 @@
+{
+  "restaurant": "Popelini",
+  "destination": "Test City",
+  "_debug_metadata": {
+    "stage_name": "google_maps_no_data",
+    "timestamp": "2025-09-14T11:33:52.868614",
+    "caller_info": {
+      "file": "/home/runner/workspace/agents/follow_up_search_agent.py",
+      "function": "_verify_and_filter_restaurant",
+      "line": 379
+    },
+    "total_state_keys": 2,
+    "serialized_keys": 1
+  }
+}

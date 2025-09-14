@@ -1,0 +1,21 @@
+{
+  "destination": "Test City",
+  "original_count": 3,
+  "final_count": 3,
+  "rejected_count": 0,
+  "closed_count": 0,
+  "coordinates_saved_count": 0,
+  "country_extracted_count": 0,
+  "min_rating": 4.1,
+  "_debug_metadata": {
+    "stage_name": "follow_up_search_complete",
+    "timestamp": "2025-09-14T11:33:52.869974",
+    "caller_info": {
+      "file": "/home/runner/workspace/agents/follow_up_search_agent.py",
+      "function": "perform_follow_up_searches",
+      "line": 205
+    },
+    "total_state_keys": 8,
+    "serialized_keys": 7
+  }
+}

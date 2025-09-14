@@ -1,0 +1,26 @@
+{
+  "restaurant": "Du Pain et des Idées",
+  "destination": "Test City",
+  "verified_address": "34 Rue Yves Toudic, 75010 Paris, France",
+  "extracted_country": "France",
+  "coordinates": {
+    "type": "sampled_list",
+    "length": 2,
+    "sample_type": "<class 'float'>",
+    "first_item": "48.8712453"
+  },
+  "rating": 4.3,
+  "business_status": "OPERATIONAL",
+  "saved_to_database": false,
+  "_debug_metadata": {
+    "stage_name": "address_verified",
+    "timestamp": "2025-09-14T11:35:30.828765",
+    "caller_info": {
+      "file": "/home/runner/workspace/agents/follow_up_search_agent.py",
+      "function": "_verify_and_filter_restaurant",
+      "line": 365
+    },
+    "total_state_keys": 8,
+    "serialized_keys": 7
+  }
+}

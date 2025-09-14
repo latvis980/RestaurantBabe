@@ -62,7 +62,7 @@ class FollowUpSearchAgent:
             "user_ratings_total",
             "business_status",  # To check if restaurant is closed
             "opening_hours",    # Additional info about operating hours
-            "address_components"  # FIXED: Plural form for Google Places API
+            "address_component"  # FIXED: Singular form for Google Places API
         ]
 
     def _determine_venue_type(self, restaurant: Dict[str, Any]) -> str:
