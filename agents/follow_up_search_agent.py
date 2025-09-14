@@ -4,7 +4,7 @@ import logging
 import googlemaps
 import re
 from typing import Dict, List, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from langsmith import traceable
 from utils.debug_utils import dump_chain_state, log_function_call
 from formatters.google_links import build_google_maps_url
@@ -242,8 +242,15 @@ class FollowUpSearchAgent:
 
         logger.info(f"Verifying: {restaurant_name} in {destination}")
 
-        # Search Google Maps for restaurant info with intelligent venue type
-        maps_info = self._search_google_maps(restaurant_name, destination, restaurant)
+        # 🚀 FRESH DATA OPTIMIZATION: Check if data is fresh (< 3 months) to save API quota
+        if self._is_restaurant_data_fresh(restaurant):
+            logger.info(f"💰 FRESH DATA: Skipping API call for {restaurant_name} (verified < 3 months ago)")
+            maps_info = self._build_cached_maps_info(restaurant)
+            used_cached_data = True
+        else:
+            logger.info(f"🔍 STALE DATA: Making API call for {restaurant_name} (needs fresh verification)")
+            maps_info = self._search_google_maps(restaurant_name, destination, restaurant)
+            used_cached_data = False
 
         coordinates_saved = False
         country_extracted = False
@@ -377,6 +384,10 @@ class FollowUpSearchAgent:
                 "business_status": business_status,
                 "saved_to_database": coordinates_saved
             })
+
+            # 📅 Update verification timestamp after successful API call (not for cached data)
+            if not used_cached_data:
+                self._update_verification_timestamp(restaurant_name, destination)
 
         else:
             # No Maps data found - keep restaurant but log it
