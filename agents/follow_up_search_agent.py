@@ -19,7 +19,7 @@ class FollowUpSearchAgent:
     3. Rating filtering and restaurant rejection based on Google ratings
     4. Filtering out closed restaurants (temporarily or permanently) with auto-deletion
     5. Saving coordinates and corrected country data back to database
-    6. FIXED: Proper address_component storage for street-only display
+    6. FIXED: Proper address_components storage for street-only display
     7. NEW: Intelligent venue type detection from cuisine tags and descriptions
     """
 
@@ -62,7 +62,7 @@ class FollowUpSearchAgent:
             "user_ratings_total",
             "business_status",  # To check if restaurant is closed
             "opening_hours",    # Additional info about operating hours
-            "address_component"  # For country extraction AND street-only display
+            "address_components"  # FIXED: Plural form for Google Places API
         ]
 
     def _determine_venue_type(self, restaurant: Dict[str, Any]) -> str:
@@ -223,7 +223,7 @@ class FollowUpSearchAgent:
         2. Extracts country from Google Maps formatted addresses
         3. Auto-deletes closed restaurants from database
         4. Filters by rating threshold
-        5. STORES address_component for proper street-only formatting
+        5. STORES address_components for proper street-only formatting
         6. Saves coordinates and country data back to database
         7. NEW: Uses intelligent venue type detection for better search accuracy
         """
@@ -252,7 +252,7 @@ class FollowUpSearchAgent:
             # FIXED: Extract variables from maps_info at the start
             place_id = maps_info.get("place_id")
             google_url = maps_info.get("url")
-            address_component = maps_info.get("address_component", [])
+            address_components = maps_info.get("address_components", [])
 
             if place_id:
                 updated_restaurant["place_id"] = place_id
@@ -344,9 +344,9 @@ class FollowUpSearchAgent:
 
                 updated_restaurant["google_maps_url"] = google_url
 
-            if address_component:
-                updated_restaurant["address_component"] = address_component
-                logger.debug(f"✅ Stored address_component for {restaurant_name}")
+            if address_components:
+                updated_restaurant["address_components"] = address_components
+                logger.debug(f"✅ Stored address_components for {restaurant_name}")
 
 
             # Add business status information
@@ -526,17 +526,42 @@ class FollowUpSearchAgent:
             if restaurant_data:
                 existing_place_id = restaurant_data.get('place_id') or restaurant_data.get('google_maps_place_id')
             
+            place_id = None
+            
             if existing_place_id:
-                # FAST PATH: Use existing place_id, skip expensive text search
-                logger.info(f"💰 QUOTA SAVING: Using existing place_id for {restaurant_name} (skipping text search)")
-                place_id = existing_place_id
+                # FAST PATH: Try using existing place_id first
+                logger.info(f"💰 QUOTA SAVING: Attempting to use existing place_id for {restaurant_name}")
                 
-                # Update usage counter for cheaper place details call only
-                self.api_usage[key_name] += 1
-                
-            else:
-                # SLOW PATH: No place_id available, use expensive text search
-                logger.info(f"💸 Using expensive text search for {restaurant_name} (no existing place_id)")
+                try:
+                    # Get detailed place information using existing place_id
+                    place_details = gmaps_client.place(
+                        place_id=existing_place_id,
+                        fields=self.place_fields
+                    )
+                    
+                    # Update usage counter for place details call
+                    self.api_usage[key_name] += 1
+                    
+                    result_data = place_details.get("result", {})
+                    
+                    # Check if place details returned valid data
+                    if result_data and result_data.get("place_id"):
+                        place_id = existing_place_id
+                        logger.info(f"✅ Successfully used existing place_id for {restaurant_name}")
+                    else:
+                        logger.warning(f"⚠️ Existing place_id invalid/stale for {restaurant_name}, falling back to text search")
+                        
+                except googlemaps.exceptions.ApiError as e:
+                    if "NOT_FOUND" in str(e):
+                        logger.warning(f"⚠️ Existing place_id not found for {restaurant_name}, falling back to text search")
+                    else:
+                        logger.error(f"Place details API error for existing place_id: {e}")
+                except Exception as e:
+                    logger.error(f"Unexpected error using existing place_id: {e}")
+            
+            # FALLBACK PATH: If fast path failed or no existing place_id
+            if not place_id:
+                logger.info(f"💸 Using expensive text search for {restaurant_name}")
                 
                 # Determine venue type intelligently
                 venue_type = self._determine_venue_type(restaurant_data)
@@ -564,19 +589,22 @@ class FollowUpSearchAgent:
                     logger.debug(f"No place_id in first result for: {search_query}")
                     return None
 
-            # Get detailed place information using place_id (works for both paths)
-            place_details = gmaps_client.place(
-                place_id=place_id,
-                fields=self.place_fields
-            )
+                # Get detailed place information using new place_id
+                place_details = gmaps_client.place(
+                    place_id=place_id,
+                    fields=self.place_fields
+                )
+                
+                # Update usage counter for place details call
+                self.api_usage[key_name] += 1
 
-            result_data = place_details.get("result", {})
+                result_data = place_details.get("result", {})
 
             formatted_address = result_data.get("formatted_address")
             rating = result_data.get("rating")
             user_ratings_total = result_data.get("user_ratings_total")
             business_status = result_data.get("business_status")
-            address_component = result_data.get("address_component", [])
+            address_components = result_data.get("address_components", [])
 
             # Generate 2025 universal format URL
             if restaurant_name and restaurant_name.strip():
@@ -593,7 +621,7 @@ class FollowUpSearchAgent:
                 "place_id": place_id,
                 "url": google_maps_url,
                 "geometry": result_data.get("geometry", {}),
-                "address_component": address_component
+                "address_components": address_components
             }
 
         except googlemaps.exceptions.ApiError as e:
