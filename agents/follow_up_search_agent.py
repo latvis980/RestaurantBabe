@@ -272,12 +272,17 @@ class FollowUpSearchAgent:
 
                 logger.warning(f"🚫 {restaurant_name} rejected: {business_status}")
 
-                # Auto-delete from database when we find it's closed
-                self._delete_closed_restaurant_from_database(restaurant_name, destination, business_status)
+                # Auto-delete from database ONLY if permanently closed
+                # Keep temporarily closed restaurants in database (they might reopen)
+                if business_status == "CLOSED_PERMANENTLY":
+                    self._delete_closed_restaurant_from_database(restaurant_name, destination, business_status)
+                    logger.info(f"🗑️ Permanently closed restaurant will be deleted from database")
+                else:
+                    logger.info(f"📋 Temporarily closed restaurant kept in database (might reopen)")
 
                 updated_restaurant["is_closed"] = True
                 updated_restaurant["closure_reason"] = business_status
-                return None  # Reject closed restaurants
+                return None  # Reject both types from user results
 
             # Check rating - reject if below threshold
             rating = maps_info.get("rating")
