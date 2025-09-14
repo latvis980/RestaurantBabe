@@ -431,10 +431,12 @@ def call_orchestrator_more_results(query: str, coordinates: tuple, location_desc
         asyncio.set_event_loop(loop)
 
         result = loop.run_until_complete(
-            location_orchestrator.process_more_results_query(
+            location_orchestrator.process_location_query(
                 query=query,
-                coordinates=coordinates,
-                location_desc=location_desc,
+                location_data={
+                    'coordinates': coordinates,
+                    'description': location_desc
+                },
                 cancel_check_fn=cancel_check
             )
         )
