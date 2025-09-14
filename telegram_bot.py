@@ -230,6 +230,40 @@ def process_text_message(message_text: str,
             finish_run_log(success=True)
             return
 
+        # Check if user was shown results and wants more options
+        if conversation_handler and conversation_handler.get_user_state(user_id) == ConversationState.RESULTS_SHOWN:
+            add_run_log("INFO", "User in RESULTS_SHOWN state - checking if they want more results")
+            # Check if this is an affirmative response for more results
+            affirmative_words = ['yes', 'please', 'more', 'search', 'find', 'sure', 'ok', 'okay', 'yeah', 'yep']
+            if any(word in message_text.lower() for word in affirmative_words):
+                add_run_log("INFO", "User wants more results - triggering Google Maps search")
+                
+                # Get stored location context
+                location_context = conversation_handler.get_location_search_context(user_id)
+                if location_context:
+                    query = location_context.get('query', '')
+                    coordinates = extract_coordinates_for_more_results(location_context)
+                    location_desc = location_context.get('location_description', 'the area')
+                    
+                    if coordinates:
+                        # Launch Google Maps search for more results
+                        threading.Thread(target=call_orchestrator_more_results,
+                                       args=(query, coordinates, location_desc, user_id, chat_id),
+                                       daemon=True).start()
+                        finish_run_log(success=True)
+                        return
+                    else:
+                        add_run_log("ERROR", "No coordinates available for more results")
+                else:
+                    add_run_log("ERROR", "No location context found for more results")
+                    bot.send_message(chat_id, "😔 I don't have the location context. Please search again.", parse_mode='HTML')
+                    finish_run_log(success=False, error_message="No location context for more results")
+                    return
+            else:
+                add_run_log("INFO", "User response not affirmative - resetting state and processing normally")
+                # Reset state and process as normal message
+                conversation_handler.set_user_state(user_id, ConversationState.IDLE)
+
         # Send typing indicator
         bot.send_chat_action(chat_id, 'typing')
         add_run_log("INFO", "Sent typing indicator")
