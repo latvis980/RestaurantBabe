@@ -936,33 +936,16 @@ class LocationMapSearchAgent:
                             "search_intent": f"Search for {ai_query}"
                         }
 
-            # Final fallback - extract key terms from query
-            query_words = query.lower().split()
-            food_words = []
-
-            # Look for common food/restaurant terms
-            food_terms = {
-                "restaurant", "food", "eat", "dining", "cuisine", "kitchen",
-                "coffee", "cafe", "bar", "pub", "bistro", "grill", "pizzeria",
-                "italian", "chinese", "japanese", "mexican", "thai", "indian",
-                "sushi", "pizza", "pasta", "burger", "steak", "seafood",
-                "breakfast", "lunch", "dinner", "brunch"
-            }
-
-            for word in query_words:
-                if word in food_terms:
-                    food_words.append(word)
-
-            if food_words:
-                text_query = " ".join(food_words[:2])  # Max 2 words
-                if "restaurant" not in text_query:
-                    text_query += " restaurant"
             else:
                 text_query = "restaurant"
 
+            # Use default place type mapping based on the original query
+            place_types = self._get_default_place_types(text_query)
+            
+            
             return {
                 "text_search_query": text_query,
-                "place_types": ["restaurant", "food", "meal_takeaway"],
+                "place_types": place_types,
                 "search_intent": f"Search for {text_query}"
             }
 
