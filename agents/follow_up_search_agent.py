@@ -510,6 +510,105 @@ class FollowUpSearchAgent:
             logger.error(f"❌ Error auto-deleting closed restaurant {restaurant_name}: {e}")
             return False
 
+    def _is_restaurant_data_fresh(self, restaurant: Dict[str, Any]) -> bool:
+        """
+        Check if restaurant data is fresh (less than 3 months old).
+        
+        Args:
+            restaurant: Restaurant data from database
+            
+        Returns:
+            bool: True if data is fresh (< 3 months), False if stale or missing timestamp
+        """
+        last_updated_str = restaurant.get('last_updated')
+        if not last_updated_str:
+            return False  # No timestamp = needs verification
+        
+        try:
+            # Handle both ISO format with/without timezone
+            if last_updated_str.endswith('Z'):
+                last_updated = datetime.fromisoformat(last_updated_str.replace('Z', '+00:00'))
+            elif '+' in last_updated_str or last_updated_str.endswith('+00:00'):
+                last_updated = datetime.fromisoformat(last_updated_str)
+            else:
+                # Assume UTC if no timezone info
+                last_updated = datetime.fromisoformat(last_updated_str).replace(tzinfo=timezone.utc)
+            
+            now = datetime.now(timezone.utc)
+            age = now - last_updated
+            is_fresh = age.days < 90  # 3 months = 90 days
+            
+            logger.debug(f"📅 Data age for {restaurant.get('name', 'Unknown')}: {age.days} days, fresh: {is_fresh}")
+            return is_fresh
+            
+        except Exception as e:
+            logger.debug(f"⚠️ Invalid timestamp format for {restaurant.get('name', 'Unknown')}: {e}")
+            return False  # Invalid timestamp = needs verification
+
+    def _build_cached_maps_info(self, restaurant: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Build maps_info dict from cached database fields for fresh restaurants.
+        
+        Args:
+            restaurant: Restaurant data from database with cached Google Maps info
+            
+        Returns:
+            Dict containing maps_info in the same format as _search_google_maps returns
+        """
+        # Build geometry object if coordinates available
+        geometry = {}
+        if restaurant.get("latitude") and restaurant.get("longitude"):
+            geometry = {
+                "location": {
+                    "lat": float(restaurant.get("latitude")),
+                    "lng": float(restaurant.get("longitude"))
+                }
+            }
+        
+        cached_info = {
+            "formatted_address": restaurant.get("address"),
+            "rating": restaurant.get("rating"), 
+            "user_ratings_total": restaurant.get("user_ratings_total"),
+            "business_status": restaurant.get("business_status"),
+            "place_id": restaurant.get("place_id"),
+            "url": restaurant.get("google_maps_url"),
+            "geometry": geometry,
+            "address_components": restaurant.get("address_components", [])
+        }
+        
+        logger.debug(f"🏠 Built cached maps_info for {restaurant.get('name', 'Unknown')}")
+        return cached_info
+
+    def _update_verification_timestamp(self, restaurant_name: str, city: str):
+        """
+        Update last_updated timestamp after successful Google Maps verification.
+        
+        Args:
+            restaurant_name: Name of the restaurant
+            city: City where the restaurant is located
+        """
+        try:
+            from utils.database import get_database
+            db = get_database()
+            
+            # Update last_updated to current UTC time
+            update_result = db.supabase.table('restaurants')\
+                .update({'last_updated': datetime.now(timezone.utc).isoformat()})\
+                .eq('name', restaurant_name)\
+                .eq('city', city)\
+                .execute()
+            
+            if update_result.data:
+                logger.info(f"📅 Updated verification timestamp for {restaurant_name}")
+                return True
+            else:
+                logger.warning(f"⚠️ Failed to update verification timestamp for {restaurant_name}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Error updating verification timestamp for {restaurant_name}: {e}")
+            return False
+
     @traceable(run_type="tool", name="google_maps_follow_up")
     def _search_google_maps(self, restaurant_name: str, city: str, restaurant_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """
