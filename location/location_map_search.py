@@ -869,17 +869,15 @@ class LocationMapSearchAgent:
             return self._get_default_search_analysis(query)
 
     def _get_default_search_analysis(self, query: str) -> Dict[str, Any]:
-        """
-        SCALABLE: AI-powered fallback when main analysis fails
-        Uses a simpler AI call with more constraints
-        """
         # Handle None query
         if not query:
             return {
-                "text_search_query": "restaurant",
+                "text_search_query": "restaurant", 
                 "place_types": ["restaurant", "food", "meal_takeaway"],
                 "search_intent": "general restaurant search"
             }
+        # Initialize text_query with a default value to prevent UnboundLocalError
+        text_query = "restaurant"  # <-- ADD THIS LINE
 
         try:
             # Use a simpler, more constrained AI prompt for fallback
