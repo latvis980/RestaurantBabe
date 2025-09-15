@@ -480,7 +480,8 @@ def call_orchestrator_more_results(query: str, coordinates: tuple, location_desc
             location_orchestrator.process_location_query(
                 query=query,
                 location_data=location_data,
-                cancel_check_fn=cancel_check
+                cancel_check_fn=cancel_check,
+                maps_only=True  # FIXED: Skip database search for follow-up requests
             )
         )
 

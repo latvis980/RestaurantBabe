@@ -147,10 +147,25 @@ class LocationOrchestrator:
             self.enhanced_verification_chain | self.formatting_chain
         )
 
-        # Complete pipeline
-        self.location_pipeline = basic_sequence | branch
+        # Maps-only pipeline for follow-up searches (skip database entirely)
+        self.maps_only_pipeline = (
+            self.geocoding_chain | 
+            self.enhanced_verification_chain | 
+            self.formatting_chain
+        )
 
-        logger.info("✅ LangChain pipeline built with FIXED tracing decorators")
+        # Complete pipeline with top-level conditional branching
+        self.location_pipeline = RunnableBranch(
+            # If maps_only=True -> skip database, go directly to Google Maps search
+            (
+                lambda x: x.get("maps_only", False) if isinstance(x, dict) else False,
+                self.maps_only_pipeline
+            ),
+            # Default case: normal flow with database search first
+            basic_sequence | branch
+        )
+
+        logger.info("✅ LangChain pipeline built with FIXED tracing decorators and maps-only fast path")
 
     # ============ MAIN PUBLIC METHOD ============
 
@@ -163,7 +178,8 @@ class LocationOrchestrator:
         self, 
         query: str, 
         location_data: LocationData,
-        cancel_check_fn=None
+        cancel_check_fn=None,
+        maps_only: bool = False
     ) -> Dict[str, Any]:
         """
         Process location query using LangChain pipeline with FIXED LangSmith tracing
@@ -179,7 +195,9 @@ class LocationOrchestrator:
         start_time = time.time()
 
         try:
-            logger.info(f"🔍 Starting LangChain location search: '{query}'")
+            # Log the flow type for debugging
+            flow_type = "MAPS-ONLY (skip database)" if maps_only else "NORMAL (database first)"
+            logger.info(f"🔍 Starting LangChain location search: '{query}' | Flow: {flow_type}")
 
             # Prepare input for pipeline
             pipeline_input = {
@@ -188,6 +206,7 @@ class LocationOrchestrator:
                 "location_data": location_data,
                 "cancel_check_fn": cancel_check_fn,
                 "start_time": start_time,
+                "maps_only": maps_only,  # ADDED: Flag for conditional pipeline branching
                 "orchestrator_config": {
                     "db_search_radius": self.db_search_radius,
                     "min_db_matches": self.min_db_matches,
