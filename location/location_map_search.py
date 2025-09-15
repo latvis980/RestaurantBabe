@@ -445,35 +445,35 @@ class LocationMapSearchAgent:
 
     Your task:
     1. Create an optimized text search query that will find relevant restaurants
-    2. Select 2-3 most relevant Google Places API place types as backup filters
+    2. Select one most relevant Google Places API place type as backup filter
 
     TEXT SEARCH QUERY GUIDELINES:
-    - Extract the key intent and convert to effective search terms
     - The length of the search query should be 1-3 words
     - Discard location information if included — neighborhoods/streets are handled by coordinates
     - For dishes/food: include the dish name + cuisine type if relevant
     - For atmosphere/features: include descriptive terms
-    - For specific needs: focus on the main requirement
-    - Keep it concise but specific (1-3 words typically)
+    - Keep it concise and very specific
+    - discard of generic words like 'cafe', 'bar', 'restaurant'
 
     EXAMPLES:
     - "my kids want pasta, where to go" → "pasta italian restaurant"
-    - "I'm looking for some fancy cocktails" → "mixology cocktails bar"
+    - "I'm looking for some fancy cocktails" → "mixology"
+    - "best sushi in the city" → "sushi"
     - "somewhere nice for a date" → "romantic restaurant"
-    - "best ramen in the area" → "ramen japanese"
-    - "I want to have lunch and I'm vegan" → "vegan restaurant"
-    - "restaurant with good wine list" → "restaurant wine list"
+    - "best ramen in the area" → "ramen"
+    - "I want to have lunch and I'm vegan" → "vegan lunch"
+    - "restaurant with good wine list" → "wine list"
     - "italian restaurants" → "italian restaurant"
-    - "coffee and breakfast" → "coffee breakfast cafe"
+    - "coffee and breakfast" → "coffee breakfast"
     - "where to grab a bite after the club?" → "late night food"
-    - "Want to have a drink outside" → "outdoor seating bar"
+    - "Want to have a drink outside" → "bar outdoor seating"
 
     Available place types: {place_types_str}
 
     Return ONLY valid JSON:
     {{{{
         "text_search_query": "optimized search terms",
-        "place_types": ["type1", "type2", "type3"],
+        "place_types": ["type"],
         "search_intent": "brief description of what user wants"
     }}}}
 
