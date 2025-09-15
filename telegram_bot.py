@@ -554,9 +554,7 @@ def call_orchestrator_more_results(query: str, coordinates: tuple, location_desc
             "😔 I encountered an error while searching for more restaurants. Please try again!",
             parse_mode='HTML'
         )
-    finally:
-        cleanup_search(user_id)
-
+    
 # ============ SEARCH EXECUTION FUNCTIONS ============
 
 
