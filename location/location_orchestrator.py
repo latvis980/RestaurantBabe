@@ -37,7 +37,8 @@ from location.filter_evaluator import LocationFilterEvaluator
 from location.location_telegram_formatter import LocationTelegramFormatter
 
 # AI Editor and separate agents
-from location.location_ai_editor import LocationAIEditor
+from location.location_database_ai_editor import LocationDatabaseAIEditor
+from location.location_map_search_ai_editor import LocationMapSearchAIEditor
 from location.location_map_search import LocationMapSearchAgent
 from location.location_media_verification import LocationMediaVerificationAgent
 
@@ -71,12 +72,12 @@ class LocationOrchestrator:
         # Initialize location-specific services (keep existing but wrap)
         self.database_service = LocationDatabaseService(config)
         self.filter_evaluator = LocationFilterEvaluator(config)
-        self.description_editor = LocationAIEditor(config)
+        self.description_editor = LocationDatabaseAIEditor(config)
 
         # Enhanced verification agents
         self.map_search_agent = LocationMapSearchAgent(config)
         self.media_verification_agent = LocationMediaVerificationAgent(config)
-        self.ai_editor = LocationAIEditor(config)
+        self.ai_editor = LocationMapSearchAIEditor(config)
 
         self.formatter = LocationTelegramFormatter(config)
 
