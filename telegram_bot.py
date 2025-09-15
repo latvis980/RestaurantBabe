@@ -455,10 +455,22 @@ def call_orchestrator_more_results(query: str, coordinates: tuple, location_desc
 
         # Create location orchestrator
         from location.location_orchestrator import LocationOrchestrator
+        from location.telegram_location_handler import LocationData
         location_orchestrator = LocationOrchestrator(config)
 
         def cancel_check():
             return is_search_cancelled(user_id)
+
+        # FIXED: Create proper LocationData object with pre-populated coordinates
+        # This skips the geocoding step entirely since coordinates are already known
+        location_data = LocationData(
+            latitude=coordinates[0],
+            longitude=coordinates[1],
+            description=location_desc,
+            location_type="stored_coordinates",
+            confidence=1.0
+        )
+        logger.info(f"✅ Created LocationData with stored coordinates: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
 
         # Create async loop and call orchestrator's more results method
         loop = asyncio.new_event_loop()
@@ -467,10 +479,7 @@ def call_orchestrator_more_results(query: str, coordinates: tuple, location_desc
         result = loop.run_until_complete(
             location_orchestrator.process_location_query(
                 query=query,
-                location_data={
-                    'coordinates': coordinates,
-                    'description': location_desc
-                },
+                location_data=location_data,
                 cancel_check_fn=cancel_check
             )
         )
