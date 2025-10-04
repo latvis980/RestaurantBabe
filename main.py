@@ -8,7 +8,6 @@ os.makedirs("debug_logs", exist_ok=True)
 
 import config
 from pydantic import config as pydantic_config
-from utils.orchestrator_manager import initialize_orchestrator
 from langchain_core.tracers.langchain import wait_for_all_tracers
 from utils.database import initialize_db 
 from utils.supabase_storage import initialize_storage_manager
@@ -80,11 +79,11 @@ except Exception as e:
 
 def setup_orchestrator():
     """
-    Initialize and return the orchestrator using singleton pattern.
-    This replaces the old setup_orchestrator function.
+    Initialize and return the LangGraph restaurant agent using singleton pattern.
     """
-    logger.info("Setting up restaurant recommendation orchestrator")
-    return initialize_orchestrator(config)
+    logger.info("🚀 Setting up LangGraph restaurant agent")
+    from utils.langgraph_orchestrator_manager import initialize_langgraph_agent
+    return initialize_langgraph_agent(config)
 
 def main():
     """Main entry point: initialize orchestrator and start the Telegram bot"""
