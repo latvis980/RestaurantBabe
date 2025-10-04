@@ -97,129 +97,117 @@ class RestaurantSearchTools:
             Search the local restaurant database based on analyzed query.
 
             Args:
-                query_analysis: JSON string of the query analysis result from analyze_restaurant_query
+                query_analysis: JSON string containing the query analysis results
 
             Returns:
-                Dictionary with database search results including restaurants found
+                Dictionary with database search results and metadata
             """
             try:
-                # FIXED: Better JSON parsing with fallback
-                if isinstance(query_analysis, str):
-                    try:
-                        query_data = json.loads(query_analysis)
-                    except json.JSONDecodeError:
-                        logger.error(f"Failed to parse query_analysis as JSON: {query_analysis}")
-                        # Try to extract destination manually
-                        if "destination" in query_analysis:
-                            query_data = {"destination": "Unknown", "raw_query": query_analysis}
-                        else:
-                            raise ValueError("Invalid query analysis format")
-                else:
-                    query_data = query_analysis
+                logger.info(f"🔍 Searching database...")
 
-                destination = query_data.get('destination', 'Unknown')
+                # Parse the query analysis (handle both string and dict)
+                if isinstance(query_analysis, str):
+                    analysis_data = json.loads(query_analysis)
+                else:
+                    analysis_data = query_analysis
+
+                destination = analysis_data.get('destination', 'Unknown')
                 logger.info(f"🔍 Searching database for: {destination}")
-                result = self.database_search_agent.search_and_evaluate(query_data)
-                count = result.get('restaurant_count', 0)
-                has_content = result.get('has_database_content', False)
-                logger.info(f"✅ Database search complete: {count} restaurants found, has_content={has_content}")
+
+                # Call the database search agent
+                result = self.database_search_agent.search_and_evaluate(analysis_data)
+
+                database_restaurants = result.get("database_restaurants", [])
+                has_content = result.get("has_database_content", False)
+
+                logger.info(f"✅ Database search complete: {len(database_restaurants)} restaurants found, has_content={has_content}")
                 logger.info(f"   Database result keys: {list(result.keys())}")
+
                 return result
+
             except Exception as e:
-                logger.error(f"❌ Error searching database: {e}")
+                logger.error(f"❌ Error in database search: {e}")
                 return {
                     "error": str(e),
                     "database_restaurants": [],
                     "has_database_content": False,
                     "restaurant_count": 0,
                     "destination": "Unknown",
-                    "raw_query": str(query_analysis),
-                    "search_flow": "error",
+                    "raw_query": query_analysis if isinstance(query_analysis, str) else str(query_analysis),
                     "empty_reason": f"database_error: {str(e)}"
                 }
 
         @tool
-        def evaluate_and_route_content(pipeline_data: str) -> Dict[str, Any]:
+        def evaluate_and_route_content(combined_data: str) -> Dict[str, Any]:
             """
-            Evaluate database search results and determine if web search is needed.
-            Also selects the best matching restaurants.
+            Evaluate database results and determine if web search is needed.
 
             Args:
-                pipeline_data: JSON string containing query analysis and database results
+                combined_data: JSON string containing query analysis + database results
 
             Returns:
-                Dictionary with evaluation results and routing decision
+                Dictionary with evaluation results and routing decisions
             """
             try:
-                # FIXED: Better JSON parsing with fallback
-                if isinstance(pipeline_data, str):
-                    try:
-                        data = json.loads(pipeline_data)
-                    except json.JSONDecodeError:
-                        logger.error(f"Failed to parse pipeline_data as JSON: {pipeline_data}")
-                        # Create minimal data structure
-                        data = {
-                            "database_restaurants": [],
-                            "has_database_content": False,
-                            "restaurant_count": 0,
-                            "destination": "Unknown",
-                            "raw_query": pipeline_data
-                        }
-                else:
-                    data = pipeline_data
-
                 logger.info(f"🔍 Evaluating content for routing decision")
-                result = self.content_evaluation_agent.evaluate(data)
-                logger.info(f"✅ Content evaluation complete")
+
+                # Parse the combined data
+                if isinstance(combined_data, str):
+                    data = json.loads(combined_data)
+                else:
+                    data = combined_data
+
+                # FIXED: Call the correct method name
+                result = self.content_evaluation_agent.evaluate_and_route(data)
+
+                selected_restaurants = result.get("database_restaurants_final", [])
+                trigger_web_search = result.get("evaluation_result", {}).get("trigger_web_search", True)
+
+                logger.info(f"✅ Content evaluation complete: {len(selected_restaurants)} selected, web_search={trigger_web_search}")
                 logger.info(f"   Evaluation result keys: {list(result.keys())}")
+
                 return result
+
             except Exception as e:
                 logger.error(f"❌ Error evaluating content: {e}")
                 return {
                     "error": str(e),
                     "selected_restaurants": [],
-                    "needs_web_search": True,
-                    "routing_decision": "hybrid_mode"
+                    "trigger_web_search": True,
+                    "database_restaurants_final": [],
+                    "evaluation_result": {
+                        "database_sufficient": False,
+                        "trigger_web_search": True,
+                        "reasoning": f"Evaluation error: {str(e)}"
+                    }
                 }
 
         @tool
         def search_web_for_restaurants(search_data: str) -> Dict[str, Any]:
             """
-            Search the web for restaurant information using Brave Search API.
+            Search the web for restaurant recommendations using multiple strategies.
 
             Args:
-                search_data: JSON string containing search queries and destination
+                search_data: JSON string containing search parameters and queries
 
             Returns:
-                Dictionary with web search results including URLs and content
+                Dictionary with web search results
             """
             try:
-                # FIXED: Better JSON parsing and query extraction
+                # Parse search data
                 if isinstance(search_data, str):
-                    try:
-                        data = json.loads(search_data)
-                    except json.JSONDecodeError:
-                        logger.error(f"Failed to parse search_data as JSON: {search_data}")
-                        # Try to extract search queries from the raw string
-                        # This is a fallback when JSON parsing fails
-                        search_queries = [search_data.strip()]
-                        destination = "Unknown"
-                        query_metadata = {}
-                        data = {
-                            "search_queries": search_queries,
-                            "destination": destination,
-                            "query_metadata": query_metadata
-                        }
+                    data = json.loads(search_data)
                 else:
                     data = search_data
 
-                # FIXED: Extract search queries with multiple fallback strategies
+                # ENHANCED: Multiple strategies to extract search queries
                 search_queries = []
+                destination = data.get('destination', 'Unknown')
 
                 # Strategy 1: Direct search_queries field
                 if data.get('search_queries'):
                     search_queries = data.get('search_queries', [])
-                    logger.info(f"📝 Using search_queries field: {search_queries}")
+                    logger.info(f"📝 Using direct search_queries: {search_queries}")
 
                 # Strategy 2: Combine english_queries and local_queries
                 elif data.get('english_queries') or data.get('local_queries'):
@@ -251,93 +239,87 @@ class RestaurantSearchTools:
 
                 # Strategy 5: Last resort fallback
                 if not search_queries:
-                    logger.warning("❌ No search queries available, using fallback")
-                    destination = data.get('destination', 'Unknown')
-                    if destination != "Unknown":
-                        search_queries = [f"best restaurants in {destination}"]
-                    else:
-                        search_queries = ["best restaurants"]
-                    logger.info(f"📝 Fallback queries: {search_queries}")
-
-                destination = data.get('destination', 'Unknown')
-                query_metadata = data.get('query_metadata', {})
+                    logger.warning("⚠️ No search queries found, using fallback")
+                    fallback_query = f"restaurants in {destination}" if destination != "Unknown" else "restaurants"
+                    search_queries = [fallback_query]
 
                 logger.info(f"🌐 Searching web with {len(search_queries)} queries")
                 logger.info(f"   Queries: {search_queries}")
+                logger.info(f"   Destination: {destination}")
 
-                results = self.search_agent.search(search_queries, destination, query_metadata)
-                logger.info(f"✅ Web search complete: {len(results)} results")
+                if not search_queries:
+                    return {
+                        "error": "No search queries available",
+                        "filtered_results": []
+                    }
 
-                return {
-                    "filtered_results": results,
-                    "search_performed": True,
-                    "result_count": len(results),
-                    "search_queries_used": search_queries
-                }
+                # Execute web search
+                search_results = self.search_agent.search_and_filter(
+                    search_queries=search_queries,
+                    destination=destination
+                )
+
+                filtered_results = search_results.get("filtered_results", [])
+                logger.info(f"✅ Web search complete: {len(filtered_results)} results")
+
+                return search_results
+
             except Exception as e:
-                logger.error(f"❌ Error searching web: {e}")
+                logger.error(f"❌ Error in web search: {e}")
                 return {
                     "error": str(e),
                     "filtered_results": [],
-                    "search_performed": False,
-                    "result_count": 0
+                    "search_results": [],
+                    "high_quality_sources": []
                 }
 
         @tool
-        def format_restaurant_recommendations(recommendations_data: str) -> Dict[str, Any]:
+        def format_restaurant_recommendations(all_data: str) -> Dict[str, Any]:
             """
-            Format restaurant recommendations into the final user-friendly output.
+            Format the final restaurant recommendations for the user.
 
             Args:
-                recommendations_data: JSON string containing selected restaurants and web results
+                all_data: JSON string containing all collected data from previous steps
 
             Returns:
                 Dictionary with formatted recommendations ready for display
             """
             try:
-                # FIXED: Better JSON parsing with fallback
-                if isinstance(recommendations_data, str):
-                    try:
-                        data = json.loads(recommendations_data)
-                    except json.JSONDecodeError:
-                        logger.error(f"Failed to parse recommendations_data as JSON: {recommendations_data}")
-                        # Create minimal data structure
-                        data = {
-                            "selected_restaurants": [],
-                            "filtered_results": [],
-                            "raw_query": recommendations_data,
-                            "destination": "Unknown"
-                        }
-                else:
-                    data = recommendations_data
-
                 logger.info(f"✨ Formatting recommendations")
 
+                # Parse all collected data
+                if isinstance(all_data, str):
+                    data = json.loads(all_data)
+                else:
+                    data = all_data
+
                 # Extract the necessary data
-                selected_restaurants = data.get('selected_restaurants', [])
+                selected_restaurants = data.get('database_restaurants_final', [])
                 web_results = data.get('filtered_results', [])
                 raw_query = data.get('raw_query', '')
                 destination = data.get('destination', 'Unknown')
 
                 # Determine the mode based on available data
-                if selected_restaurants and web_results:
+                db_count = len(selected_restaurants) if selected_restaurants else 0
+                web_count = len(web_results) if web_results else 0
+
+                if db_count > 0 and web_count > 0:
                     mode = "hybrid"
-                elif selected_restaurants:
+                elif db_count > 0:
                     mode = "database_only"
-                elif web_results:
+                elif web_count > 0:
                     mode = "web_only"
                 else:
                     mode = "no_results"
 
-                logger.info(f"✨ Formatting mode: {mode}, {len(selected_restaurants)} selected, {len(web_results)} web results")
+                logger.info(f"✨ Formatting mode: {mode}, {db_count} selected, {web_count} web results")
 
                 # Call the editor agent to format the results
                 result = self.editor_agent.edit(
-                    selected_restaurants,
-                    mode=mode,
-                    query=raw_query,
-                    destination=destination,
-                    web_results=web_results
+                    database_restaurants=selected_restaurants,
+                    scraped_results=web_results,
+                    raw_query=raw_query,
+                    destination=destination
                 )
 
                 logger.info(f"✅ Formatting complete: formatted results")
@@ -349,7 +331,8 @@ class RestaurantSearchTools:
                 return {
                     "error": str(e),
                     "edited_results": {"main_list": []},
-                    "follow_up_queries": []
+                    "follow_up_queries": [],
+                    "fallback_message": "I encountered an issue formatting the recommendations. Please try a different search."
                 }
 
         return [
