@@ -778,17 +778,33 @@ class UnifiedRestaurantAgent:
         try:
             logger.info("📝 Location Results Formatting")
 
+            # Get query and location description for formatting
+            query = state.get("query", "restaurant")
+            location_description = f"Location search: {query}"
+
             # Determine what results to format
             if state.get("media_verification_results"):
                 # Format Google Maps + verification results
                 results = state["media_verification_results"]
-                formatted_message = self.location_formatter.format_google_maps_results(results)
-                restaurants = results.get("verified_venues", [])
+                venues = results if isinstance(results, list) else results.get("verified_venues", [])
+                formatted_result = self.location_formatter.format_google_maps_results(
+                    venues=venues,
+                    query=query,
+                    location_description=location_description
+                )
+                formatted_message = formatted_result.get("message", "")
+                restaurants = venues
             else:
                 # Format database-only results
                 results = state.get("filtered_results", {})
-                formatted_message = self.location_formatter.format_database_results(results)
-                restaurants = results.get("restaurants", [])
+                restaurants_list = results.get("restaurants", [])
+                formatted_result = self.location_formatter.format_database_results(
+                    restaurants=restaurants_list,
+                    query=query,
+                    location_description=location_description
+                )
+                formatted_message = formatted_result.get("message", "")
+                restaurants = restaurants_list
 
             return {
                 **state,
