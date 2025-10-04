@@ -356,6 +356,13 @@ ENHANCED_VERIFICATION_RATE_LIMITS = {
 BUCKET_NAME = "scraped-content"
 
 # ============================================================================
+# LANGGRAPH AGENT CONFIGURATION
+# ============================================================================
+
+# Enable LangGraph agent (Phase 1 implementation)
+USE_LANGGRAPH_AGENT = True  # Set to True to use new LangGraph-based agent
+
+# ============================================================================
 # DEBUG AND LOGGING CONFIGURATION
 # ============================================================================
 

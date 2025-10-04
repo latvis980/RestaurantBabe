@@ -17,7 +17,7 @@ import re
 import threading
 import asyncio
 from threading import Event
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # Import the centralized handler
 from utils.conversation_handler import CentralizedConversationHandler, ConversationState
@@ -25,9 +25,11 @@ from utils.voice_handler import VoiceMessageHandler
 
 import config
 from utils.orchestrator_manager import get_orchestrator
+from utils.langgraph_orchestrator_manager import get_langgraph_agent, initialize_langgraph_agent
 from location.telegram_location_handler import TelegramLocationHandler, LocationData
 from location.location_analyzer import LocationAnalyzer
 from utils.run_logger import get_run_logger, start_run_log, finish_run_log, add_run_log
+from formatters.telegram_formatter import TelegramFormatter
 
 # Configure logging
 logging.basicConfig(
@@ -558,8 +560,47 @@ def call_orchestrator_more_results(query: str, coordinates: tuple, location_desc
 # ============ SEARCH EXECUTION FUNCTIONS ============
 
 
+def perform_langgraph_search(search_query: str, chat_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Execute restaurant search using the new LangGraph agent.
+    
+    Returns a dict with the result in the same format as the old orchestrator.
+    """
+    try:
+        logger.info(f"🦜 Using LangGraph agent for search: '{search_query}'")
+        
+        agent = get_langgraph_agent()
+        
+        result = agent.process_query(
+            query=search_query,
+            user_id=user_id
+        )
+        
+        if result.get('success'):
+            response_text = result.get('response', '')
+            
+            telegram_formatter = TelegramFormatter(config)
+            
+            if 'recommendations' in response_text or 'restaurant' in response_text.lower():
+                formatted_output = response_text
+            else:
+                formatted_output = response_text
+            
+            return {
+                "langchain_formatted_results": formatted_output,
+                "success": True
+            }
+        else:
+            logger.error(f"LangGraph agent error: {result.get('error')}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error in LangGraph search: {e}", exc_info=True)
+        return None
+
+
 def perform_city_search(search_query: str, chat_id: int, user_id: int):
-    """Execute city-wide restaurant search using existing orchestrator"""
+    """Execute city-wide restaurant search using orchestrator or LangGraph agent"""
     processing_msg = None
     try:
         create_cancel_event(user_id, chat_id)
@@ -580,11 +621,14 @@ def perform_city_search(search_query: str, chat_id: int, user_id: int):
                 "🔍 <b>Searching for the best restaurants...</b>\n\n⏱ This might take a minute while I check with my sources.",
                 parse_mode='HTML')
 
-        # Get orchestrator instance
-        orchestrator = get_orchestrator()
-
-        # Use the orchestrator.process_query() method
-        result = orchestrator.process_query(search_query)
+        # Use LangGraph agent or traditional orchestrator based on config
+        if config.USE_LANGGRAPH_AGENT:
+            logger.info("🦜 Using LangGraph agent for search")
+            result = perform_langgraph_search(search_query, chat_id, user_id)
+        else:
+            logger.info("🔧 Using traditional orchestrator for search")
+            orchestrator = get_orchestrator()
+            result = orchestrator.process_query(search_query)
 
         # Clean up processing message
         if processing_msg:
@@ -1338,6 +1382,11 @@ def main():
         voice_handler = VoiceMessageHandler()
         logger.info("✅ Voice handler initialized")
 
+        # Initialize LangGraph agent if enabled
+        if config.USE_LANGGRAPH_AGENT:
+            initialize_langgraph_agent(config)
+            logger.info("✅ LangGraph agent initialized")
+        
         # Start bot
         logger.info("🤖 Starting Telegram bot...")
         bot.infinity_polling(timeout=10, long_polling_timeout=5)
