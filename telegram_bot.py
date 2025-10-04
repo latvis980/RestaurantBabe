@@ -563,40 +563,57 @@ def call_orchestrator_more_results(query: str, coordinates: tuple, location_desc
 def perform_langgraph_search(search_query: str, chat_id: int, user_id: int) -> Optional[Dict[str, Any]]:
     """
     Execute restaurant search using the new LangGraph agent.
-    
+
     Returns a dict with the result in the same format as the old orchestrator.
     """
     try:
         logger.info(f"🦜 Using LangGraph agent for search: '{search_query}'")
-        
+
         agent = get_langgraph_agent()
-        
+
         result = agent.process_query(
             query=search_query,
             user_id=user_id
         )
-        
-        if result.get('success'):
-            response_text = result.get('response', '')
-            
-            telegram_formatter = TelegramFormatter(config)
-            
-            if 'recommendations' in response_text or 'restaurant' in response_text.lower():
-                formatted_output = response_text
+
+        logger.info(f"🔍 LangGraph agent result: success={result.get('success') if result else 'None'}")
+        logger.info(f"🔍 LangGraph result keys: {list(result.keys()) if result else 'None'}")
+
+        if result and result.get('success'):
+            # FIXED: Use the langchain_formatted_results directly from your agent
+            formatted_output = result.get('langchain_formatted_results', '')
+
+            logger.info(f"🔍 LangGraph formatted output length: {len(formatted_output) if formatted_output else 0}")
+
+            # Validate the response content
+            if formatted_output and formatted_output.strip():
+                logger.info(f"✅ LangGraph agent returned valid response")
+                return {
+                    "langchain_formatted_results": formatted_output,
+                    "success": True
+                }
             else:
-                formatted_output = response_text
-            
-            return {
-                "langchain_formatted_results": formatted_output,
-                "success": True
-            }
+                logger.warning("⚠️ LangGraph agent returned empty formatted results")
+                # Return a fallback message instead of failing
+                return {
+                    "langchain_formatted_results": "I couldn't find any restaurants matching your criteria. Please try a different search or be more specific about your location and preferences.",
+                    "success": False
+                }
         else:
-            logger.error(f"LangGraph agent error: {result.get('error')}")
-            return None
-            
+            # Handle unsuccessful results
+            error_msg = result.get('error') if result else 'No result returned from agent'
+            logger.error(f"❌ LangGraph agent failed: {error_msg}")
+            return {
+                "langchain_formatted_results": "I encountered an issue while searching for restaurants. Please try again with a different query.",
+                "success": False
+            }
+
     except Exception as e:
-        logger.error(f"Error in LangGraph search: {e}", exc_info=True)
-        return None
+        logger.error(f"❌ Error in LangGraph search: {e}", exc_info=True)
+        return {
+            "langchain_formatted_results": "I encountered an error while searching. Please try again later!",
+            "success": False
+        }
 
 
 def perform_city_search(search_query: str, chat_id: int, user_id: int):
