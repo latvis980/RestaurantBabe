@@ -20,7 +20,7 @@ from threading import Event
 import time
 
 # Import the memory-enhanced unified agent
-from agents.memory_enhanced_unified_agent import create_memory_enhanced_unified_agent
+from agents.unified_restaurant_agent import create_unified_restaurant_agent
 from utils.voice_handler import VoiceMessageHandler
 from utils.database import initialize_database
 import config
@@ -38,7 +38,7 @@ bot = telebot.TeleBot(config.TELEGRAM_BOT_TOKEN)
 initialize_database(config)
 
 # Initialize memory-enhanced unified agent (single source of truth)
-unified_agent = create_memory_enhanced_unified_agent(config)
+unified_agent = create_unified_restaurant_agent(config)
 
 # Initialize voice handler for transcription only
 voice_handler = VoiceMessageHandler() if hasattr(config, 'OPENAI_API_KEY') and config.OPENAI_API_KEY else None

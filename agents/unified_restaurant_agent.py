@@ -28,8 +28,10 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langsmith import traceable
+from datetime import datetime, timezone
 
 from utils.async_utils import sync_to_async
+from utils.ai_memory_system import AIMemorySystem, RestaurantMemory, ConversationState
 
 # Import ALL existing agents (preserve their logic)
 from agents.query_analyzer import QueryAnalyzer
@@ -111,6 +113,8 @@ class UnifiedRestaurantAgent:
         # Build the unified graph
         self.checkpointer = MemorySaver()
         self.graph = self._build_unified_graph()
+
+        self.memory_system = AIMemorySystem(config)
 
         logger.info("✅ Unified Restaurant Agent initialized")
 
@@ -704,6 +708,154 @@ class UnifiedRestaurantAgent:
                 "processing_time": round(time.time() - start_time, 2)
             }
 
+    async def restaurant_search_with_memory(
+        self,
+        query: str,
+        user_id: int,
+        gps_coordinates: Optional[Tuple[float, float]] = None,
+        thread_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Main entry point for restaurant search with memory integration
+        This replaces the basic restaurant_search method with memory-aware functionality
+        """
+        try:
+            start_time = time.time()
+
+            if not thread_id:
+                thread_id = f"search_{user_id}_{int(time.time())}"
+
+            logger.info(f"🧠 Starting memory-enhanced search for user {user_id}: '{query}'")
+
+            # 1. Learn from user query
+            await self.learn_from_user_query(user_id, query)
+
+            # 2. Update conversation state
+            await self.update_conversation_state(user_id, thread_id, "searching")
+
+            # 3. Get personalized context
+            memory_context = await self.get_personalized_context(user_id, thread_id)
+
+            # 4. Perform the actual search using existing unified search
+            search_result = await self.search_restaurants(
+                query=query,
+                user_id=user_id,
+                gps_coordinates=gps_coordinates,
+                thread_id=thread_id
+            )
+
+            # 5. If search was successful, process results with memory
+            if search_result.get("success") and search_result.get("final_restaurants"):
+                restaurants = search_result["final_restaurants"]
+
+                # Extract city from query analysis or use a default
+                city = search_result.get("destination", "Unknown")
+
+                # Filter out already recommended restaurants
+                filtered_restaurants = await self.filter_already_recommended(
+                    user_id, restaurants, city
+                )
+
+                # Store new recommendations in memory
+                if filtered_restaurants:
+                    await self.store_search_results_in_memory(
+                        user_id, filtered_restaurants, query, city
+                    )
+
+                    # Update the result with filtered restaurants
+                    search_result["final_restaurants"] = filtered_restaurants
+                    search_result["restaurants_filtered"] = len(restaurants) - len(filtered_restaurants)
+
+                    # Generate memory-aware response
+                    search_result["ai_response"] = self._generate_memory_aware_response(
+                        filtered_restaurants, memory_context, query, city
+                    )
+                else:
+                    # All restaurants were already recommended
+                    search_result["ai_response"] = self._generate_already_recommended_response(
+                        memory_context, query, city
+                    )
+                    search_result["final_restaurants"] = []
+
+            # 6. Update conversation state
+            await self.update_conversation_state(user_id, thread_id, "presenting_results")
+
+            # 7. Add processing time
+            processing_time = round(time.time() - start_time, 2)
+            search_result["processing_time"] = processing_time
+
+            logger.info(f"✅ Memory-enhanced search completed in {processing_time}s")
+            return search_result
+
+        except Exception as e:
+            logger.error(f"❌ Error in memory-enhanced restaurant search: {e}")
+            return {
+                "success": False,
+                "error_message": f"Search failed: {str(e)}",
+                "final_restaurants": [],
+                "ai_response": "I'm having trouble finding restaurants right now. Could you try again?",
+                "processing_time": round(time.time() - start_time, 2) if 'start_time' in locals() else 0
+            }
+
+    def _generate_memory_aware_response(
+        self, 
+        restaurants: List[Dict[str, Any]], 
+        memory_context: Dict[str, Any], 
+        query: str, 
+        city: str
+    ) -> str:
+        """Generate a personalized response based on user's memory"""
+        try:
+            preferences = memory_context.get('preferences', {})
+            restaurant_count = len(restaurants)
+
+            # Personalized greeting based on memory
+            if preferences.get('preferred_cities') and city in preferences['preferred_cities']:
+                intro = f"Great choice! I remember you love {city}. "
+            else:
+                intro = "Perfect! "
+
+            intro += f"I found {restaurant_count} amazing {'spot' if restaurant_count == 1 else 'spots'} for you"
+
+            # Add cuisine preference reference if relevant
+            user_cuisines = preferences.get('preferred_cuisines', [])
+            if user_cuisines:
+                cuisine_match = any(cuisine.lower() in query.lower() for cuisine in user_cuisines)
+                if cuisine_match:
+                    intro += f" - I know you enjoy good {user_cuisines[0]} food"
+
+            intro += "! 🍽️\n\n"
+
+            # Use the existing formatted message but add personalized intro
+            return intro + "Here are my top recommendations:\n\n"
+
+        except Exception as e:
+            logger.error(f"Error generating memory-aware response: {e}")
+            return f"I found {len(restaurants)} great restaurants for you! 🍽️\n\n"
+
+    def _generate_already_recommended_response(
+        self, 
+        memory_context: Dict[str, Any], 
+        query: str, 
+        city: str
+    ) -> str:
+        """Generate response when all restaurants were already recommended"""
+        preferences = memory_context.get('preferences', {})
+
+        response = f"I notice I've already recommended all the top spots for '{query}' in {city}! 🤔\n\n"
+
+        # Suggest alternatives based on preferences
+        user_cuisines = preferences.get('preferred_cuisines', [])
+        if user_cuisines and len(user_cuisines) > 1:
+            alt_cuisine = next((c for c in user_cuisines if c.lower() not in query.lower()), user_cuisines[0])
+            response += f"Would you like to try some great {alt_cuisine} places instead? "
+        else:
+            response += "Would you like to explore a different cuisine or neighborhood? "
+
+        response += "Just let me know what sounds good! ✨"
+
+        return response
+
     def handle_human_decision(self, thread_id: str, decision: str) -> Dict[str, Any]:
         """Handle human-in-the-loop decision"""
         try:
@@ -727,6 +879,128 @@ class UnifiedRestaurantAgent:
         except Exception as e:
             logger.error(f"❌ Error handling human decision: {e}")
             return {"success": False, "error_message": f"Decision handling failed: {str(e)}"}
+
+    async def store_search_results_in_memory(
+        self, 
+        user_id: int, 
+        results: List[Dict[str, Any]], 
+        query: str,
+        city: str
+    ) -> bool:
+        """Store successful search results in user's memory"""
+        try:
+            for restaurant_data in results:
+                restaurant_memory = RestaurantMemory(
+                    restaurant_name=restaurant_data.get('name', 'Unknown'),
+                    city=city,
+                    cuisine=restaurant_data.get('cuisine', 'Unknown'),
+                    recommended_date=datetime.now(timezone.utc).isoformat(),
+                    user_feedback=None,
+                    rating_given=None,
+                    notes=f"Recommended for query: {query}",
+                    source=restaurant_data.get('source', 'unified_search')
+                )
+
+                await self.memory_system.add_restaurant_memory(user_id, restaurant_memory)
+
+            logger.info(f"Stored {len(results)} restaurants in memory for user {user_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error storing search results in memory: {e}")
+            return False
+
+    async def filter_already_recommended(
+        self, 
+        user_id: int, 
+        restaurants: List[Dict[str, Any]], 
+        city: str
+    ) -> List[Dict[str, Any]]:
+        """Filter out restaurants that have already been recommended to the user"""
+        try:
+            filtered_restaurants = []
+
+            for restaurant in restaurants:
+                restaurant_name = restaurant.get('name', '')
+                if restaurant_name:
+                    already_recommended = await self.memory_system.has_restaurant_been_recommended(
+                        user_id, restaurant_name, city
+                    )
+
+                    if not already_recommended:
+                        filtered_restaurants.append(restaurant)
+                    else:
+                        logger.info(f"Filtered out already recommended restaurant: {restaurant_name}")
+
+            logger.info(f"Filtered {len(restaurants) - len(filtered_restaurants)} already recommended restaurants")
+            return filtered_restaurants
+
+        except Exception as e:
+            logger.error(f"Error filtering already recommended restaurants: {e}")
+            return restaurants  # Return original list if filtering fails
+
+    async def learn_from_user_query(self, user_id: int, query: str, city: Optional[str] = None) -> bool:
+        """Learn user preferences from their search query"""
+        try:
+            return await self.memory_system.learn_preferences_from_message(
+                user_id, query, city or ""
+            )
+        except Exception as e:
+            logger.error(f"Error learning from user query: {e}")
+            return False
+
+    async def get_user_memory_summary(self, user_id: int) -> Dict[str, Any]:
+        """Get a summary of user's memory for debugging/display"""
+        try:
+            memory_context = await self.memory_system.get_user_context(user_id, "summary")
+
+            preferences = memory_context.get('preferences', {})
+            restaurant_history = memory_context.get('restaurant_history', [])
+            conversation_patterns = memory_context.get('conversation_patterns', {})
+
+            return {
+                "memory_summary": {
+                    "total_restaurants": len(restaurant_history),
+                    "preferred_cities": preferences.get('preferred_cities', []),
+                    "preferred_cuisines": preferences.get('preferred_cuisines', []),
+                    "current_city": memory_context.get('current_city'),
+                    "conversation_style": conversation_patterns.get('user_communication_style', 'casual'),
+                    "last_search_date": restaurant_history[-1].get('recommended_date') if restaurant_history else None
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting user memory summary: {e}")
+            return {"memory_summary": {}, "error": str(e)}
+
+    async def update_conversation_state(
+        self, 
+        user_id: int, 
+        thread_id: str, 
+        state: str
+    ) -> bool:
+        """Update the current conversation state"""
+        try:
+            # Convert string to ConversationState enum if needed
+            if isinstance(state, str):
+                state_enum = ConversationState(state.lower())
+            else:
+                state_enum = state
+
+            return await self.memory_system.set_session_state(user_id, thread_id, state_enum)
+
+        except Exception as e:
+            logger.error(f"Error updating conversation state: {e}")
+            return False
+
+    async def get_personalized_context(self, user_id: int, thread_id: str) -> Dict[str, Any]:
+        """Get personalized context for the user's current conversation"""
+        try:
+            return await self.memory_system.get_user_context(user_id, thread_id)
+        except Exception as e:
+            logger.error(f"Error getting personalized context: {e}")
+            return {}
+        
 
 
 def create_unified_restaurant_agent(config):
