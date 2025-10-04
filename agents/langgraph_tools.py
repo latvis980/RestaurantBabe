@@ -25,8 +25,8 @@ class RestaurantSearchTools:
         """Initialize all agents that will be wrapped as tools"""
         self.config = config
 
-        # Use the fixed query analyzer
-        from agents.query_analyzer_fixed import QueryAnalyzer
+        # Use the fixed query analyzer (now in the regular file)
+        from agents.query_analyzer import QueryAnalyzer
         from agents.database_search_agent import DatabaseSearchAgent
         from agents.dbcontent_evaluation_agent import ContentEvaluationAgent
         from agents.search_agent import BraveSearchAgent

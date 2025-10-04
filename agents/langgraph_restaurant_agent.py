@@ -38,6 +38,18 @@ class RestaurantAgentState(TypedDict):
     conversation_context: Optional[Dict[str, Any]]
 
 
+def create_langgraph_agent(config):
+    """
+    Factory function to create a LangGraph restaurant agent.
+
+    Args:
+        config: Configuration object with all required settings
+
+    Returns:
+        LangGraphRestaurantAgent: The initialized agent instance
+    """
+    return LangGraphRestaurantAgent(config)
+
 class LangGraphRestaurantAgent:
     """
     FIXED LangGraph-based restaurant recommendation agent.
@@ -151,7 +163,7 @@ Remember: Your goal is to provide excellent restaurant recommendations efficient
             ]
 
             logger.info(f"📨 Sending messages to agent: HumanMessage='{query}...'")
-            logger.info(f"🔄 Invoking LangGraph agent...")
+            logger.info("🔄 Invoking LangGraph agent...")
 
             # Invoke the agent
             result = self.agent.invoke(
