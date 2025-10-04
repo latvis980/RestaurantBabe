@@ -18,7 +18,7 @@ Key Design Principles:
 import logging
 import asyncio
 import time
-from typing import Dict, List, Any, Optional, TypedDict, Annotated, Tuple
+from typing import Dict, List, Any, Optional, TypedDict, Tuple
 from typing import cast
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -338,7 +338,7 @@ class UnifiedRestaurantAgent:
             search_queries = analysis_result.get("search_queries", [])
             metadata = analysis_result.get("query_metadata", {})
 
-            logger.info(f"✅ Query analysis complete:")
+            logger.info("✅ Query analysis complete:")
             logger.info(f"  📍 Destination: {analysis_result.get('destination')}")
             logger.info(f"  🔍 Search queries: {search_queries}")
             logger.info(f"  🧠 Metadata: {metadata}")
