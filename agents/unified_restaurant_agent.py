@@ -431,10 +431,23 @@ class UnifiedRestaurantAgent:
             if not destination:
                 raise ValueError("No destination available for search")
 
-            # Use existing BraveSearchAgent AS-IS
+            # Get search queries from evaluation results or generate from query
+            evaluation_results = state.get("evaluation_results", {})
+            search_queries = evaluation_results.get("search_queries")
+
+            # Fallback: generate search queries if not available
+            if not search_queries:
+                search_queries = [state["query"]]  # Convert single query to list
+
+            # Get query metadata from analysis if available
+            query_analysis = state.get("query_analysis", {})
+            query_metadata = query_analysis.get("metadata", {})
+
+            # Use existing BraveSearchAgent AS-IS with correct parameters
             search_results = self.search_agent.search(
-                query=state["query"],
-                destination=destination
+                search_queries=search_queries,
+                destination=destination,
+                query_metadata=query_metadata
             )
 
             return {
