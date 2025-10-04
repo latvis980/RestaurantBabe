@@ -58,7 +58,10 @@ class RestaurantSearchTools:
             try:
                 logger.info(f"🔍 Analyzing query: {query}")
                 result = self.query_analyzer.analyze(query)
-                logger.info(f"✅ Query analysis complete: {result.get('destination', 'Unknown')}")
+                dest = result.get('destination', 'Unknown')
+                cuisine = result.get('cuisine_type', 'Any')
+                logger.info(f"✅ Query analysis complete: destination={dest}, cuisine={cuisine}")
+                logger.info(f"   Analysis result keys: {list(result.keys())}")
                 return result
             except Exception as e:
                 logger.error(f"❌ Error analyzing query: {e}")
@@ -88,7 +91,10 @@ class RestaurantSearchTools:
                     
                 logger.info(f"🔍 Searching database for: {query_data.get('destination', 'Unknown')}")
                 result = self.database_search_agent.search_and_evaluate(query_data)
-                logger.info(f"✅ Database search complete: {result.get('restaurant_count', 0)} restaurants found")
+                count = result.get('restaurant_count', 0)
+                has_content = result.get('has_database_content', False)
+                logger.info(f"✅ Database search complete: {count} restaurants found, has_content={has_content}")
+                logger.info(f"   Database result keys: {list(result.keys())}")
                 return result
             except Exception as e:
                 logger.error(f"❌ Error searching database: {e}")
@@ -120,7 +126,11 @@ class RestaurantSearchTools:
                     
                 logger.info(f"🧠 Evaluating content for: {data.get('destination', 'Unknown')}")
                 result = self.content_evaluation_agent.evaluate_and_route(data)
-                logger.info(f"✅ Evaluation complete: DB sufficient={result.get('database_sufficient', False)}")
+                db_sufficient = result.get('database_sufficient', False)
+                selected_count = len(result.get('selected_restaurants', []))
+                trigger_web = result.get('trigger_web_search', False)
+                logger.info(f"✅ Evaluation complete: DB sufficient={db_sufficient}, selected={selected_count}, trigger_web={trigger_web}")
+                logger.info(f"   Evaluation result keys: {list(result.keys())}")
                 return result
             except Exception as e:
                 logger.error(f"❌ Error evaluating content: {e}")
@@ -188,13 +198,13 @@ class RestaurantSearchTools:
                 else:
                     data = recommendations_data
                     
-                logger.info(f"✨ Formatting recommendations")
-                
                 selected_restaurants = data.get('selected_restaurants', [])
                 raw_query = data.get('raw_query', '')
                 destination = data.get('destination', 'Unknown')
                 scraped_results = data.get('scraped_results', [])
                 processing_mode = data.get('processing_mode', 'database_only')
+                
+                logger.info(f"✨ Formatting recommendations: {len(selected_restaurants)} selected, {len(scraped_results)} scraped, mode={processing_mode}")
                 
                 formatted = self.editor_agent.edit(
                     database_restaurants=selected_restaurants,
@@ -204,7 +214,8 @@ class RestaurantSearchTools:
                     processing_mode=processing_mode
                 )
                 
-                logger.info(f"✅ Formatting complete: {len(formatted.get('restaurants', []))} restaurants")
+                logger.info(f"✅ Formatting complete: {len(formatted.get('restaurants', []))} restaurants formatted")
+                logger.info(f"   Formatted result keys: {list(formatted.keys())}")
                 return formatted
             except Exception as e:
                 logger.error(f"❌ Error formatting recommendations: {e}")

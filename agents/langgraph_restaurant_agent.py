@@ -129,15 +129,31 @@ Remember: Your goal is to provide excellent restaurant recommendations efficient
                 HumanMessage(content=user_message)
             ]
             
+            logger.info(f"📨 Sending messages to agent: HumanMessage='{user_message[:100]}...'")
             logger.info("🔄 Invoking LangGraph agent...")
+            
             result = self.agent.invoke(
                 {"messages": messages},
                 config=config
             )
             
+            logger.info(f"📥 Agent returned {len(result.get('messages', []))} messages")
+            
+            for i, msg in enumerate(result.get('messages', [])):
+                msg_type = type(msg).__name__
+                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                    logger.info(f"  Message {i}: {msg_type} with {len(msg.tool_calls)} tool call(s)")
+                    for tc in msg.tool_calls:
+                        logger.info(f"    🔧 Tool: {tc.get('name', 'unknown')}")
+                elif hasattr(msg, 'content'):
+                    content_preview = str(msg.content)[:150]
+                    logger.info(f"  Message {i}: {msg_type} content='{content_preview}...'")
+                else:
+                    logger.info(f"  Message {i}: {msg_type}")
+            
             response = self._extract_response(result)
             
-            logger.info("✅ Query processing complete")
+            logger.info(f"✅ Query processing complete. Response length: {len(response)} chars")
             return {
                 "success": True,
                 "response": response,
