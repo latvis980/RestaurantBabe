@@ -327,12 +327,21 @@ class UnifiedRestaurantAgent:
 
     @traceable(name="city_analyze_query")
     def _city_analyze_query(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """Use existing QueryAnalyzer (preserve logic)"""
+        """Use existing QueryAnalyzer (preserve logic) - ENHANCED"""
         try:
             logger.info("🔍 City Query Analysis")
 
             # Use existing QueryAnalyzer agent AS-IS
             analysis_result = self.query_analyzer.analyze(state["query"])
+
+            # ENHANCEMENT: Log what we got from analysis
+            search_queries = analysis_result.get("search_queries", [])
+            metadata = analysis_result.get("query_metadata", {})
+
+            logger.info(f"✅ Query analysis complete:")
+            logger.info(f"  📍 Destination: {analysis_result.get('destination')}")
+            logger.info(f"  🔍 Search queries: {search_queries}")
+            logger.info(f"  🧠 Metadata: {metadata}")
 
             return {
                 **state,
@@ -423,7 +432,7 @@ class UnifiedRestaurantAgent:
 
     @traceable(name="city_web_search")
     def _city_web_search(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """Use existing BraveSearchAgent (preserve logic)"""
+        """Use existing BraveSearchAgent (preserve logic) - COMPLETELY FIXED"""
         try:
             logger.info("🌐 City Web Search")
 
@@ -431,24 +440,67 @@ class UnifiedRestaurantAgent:
             if not destination:
                 raise ValueError("No destination available for search")
 
-            # Get search queries from evaluation results or generate from query
+            # STEP 1: Extract search queries from the pipeline state
+            # Priority order: evaluation_results -> query_analysis -> fallback
+            search_queries = None
+            query_metadata = {}
+
+            # Try to get from evaluation results first (preferred)
             evaluation_results = state.get("evaluation_results", {})
-            search_queries = evaluation_results.get("search_queries")
+            if evaluation_results:
+                search_queries = evaluation_results.get("search_queries")
+                # Also try alternative keys
+                if not search_queries:
+                    search_queries = evaluation_results.get("english_queries")
 
-            # Fallback: generate search queries if not available
+                logger.info(f"🔍 Found search queries from evaluation: {search_queries}")
+
+            # Try to get from query analysis if not in evaluation
             if not search_queries:
-                search_queries = [state["query"]]  # Convert single query to list
+                query_analysis = state.get("query_analysis", {})
+                if query_analysis:
+                    search_queries = query_analysis.get("search_queries")
+                    if not search_queries:
+                        search_queries = query_analysis.get("english_queries")
 
-            # Get query metadata from analysis if available
-            query_analysis = state.get("query_analysis", {})
-            query_metadata = query_analysis.get("metadata", {})
+                    # Extract metadata from query analysis
+                    query_metadata = {
+                        "is_english_speaking": query_analysis.get("is_english_speaking", True),
+                        "local_language": query_analysis.get("local_language", "none"),
+                        "is_usa": query_analysis.get("is_usa", False)
+                    }
 
-            # Use existing BraveSearchAgent AS-IS with correct parameters
+                    logger.info(f"🔍 Found search queries from analysis: {search_queries}")
+                    logger.info(f"🧠 Extracted metadata: {query_metadata}")
+
+            # STEP 2: Fallback to creating search queries from raw query
+            if not search_queries or not isinstance(search_queries, list) or len(search_queries) == 0:
+                logger.warning("⚠️ No search queries found in state, creating fallback")
+                raw_query = state.get("query", "")
+                search_queries = [raw_query] if raw_query else ["restaurants"]
+                logger.info(f"🔧 Created fallback search queries: {search_queries}")
+
+            # STEP 3: Ensure query_metadata has minimum required fields
+            if not query_metadata:
+                query_metadata = {
+                    "is_english_speaking": True,  # Safe default
+                    "local_language": "none",
+                    "is_usa": False
+                }
+
+            # STEP 4: Call BraveSearchAgent with correct parameters
+            logger.info(f"🚀 Calling search agent with {len(search_queries)} queries")
+            logger.info(f"📝 Search queries: {search_queries}")
+            logger.info(f"📍 Destination: {destination}")
+            logger.info(f"🧠 Metadata: {query_metadata}")
+
             search_results = self.search_agent.search(
-                search_queries=search_queries,
-                destination=destination,
-                query_metadata=query_metadata
+                search_queries=search_queries,      # ✅ Correct parameter (list)
+                destination=destination,            # ✅ Correct 
+                query_metadata=query_metadata       # ✅ Correct (dict)
             )
+
+            logger.info(f"✅ Search completed: {len(search_results)} results found")
 
             return {
                 **state,
