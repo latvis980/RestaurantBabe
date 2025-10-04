@@ -28,6 +28,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import ToolNode
 from langsmith import traceable
 
+from utils.async_utils import sync_to_async
 
 # Import ALL existing agents (preserve their logic)
 from agents.query_analyzer import QueryAnalyzer
@@ -53,7 +54,6 @@ from location.location_telegram_formatter import LocationTelegramFormatter
 from formatters.telegram_formatter import TelegramFormatter
 
 logger = logging.getLogger(__name__)
-
 
 class UnifiedSearchState(TypedDict):
     """Unified state schema for both city and location searches"""
@@ -517,7 +517,7 @@ class UnifiedRestaurantAgent:
 
     @traceable(name="city_scrape_content")
     def _city_scrape_content(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """Use existing BrowserlessRestaurantScraper (preserve logic)"""
+        """Use existing BrowserlessRestaurantScraper (preserve logic) - FIXED ASYNC"""
         try:
             logger.info("🕷️ City Content Scraping")
 
@@ -525,10 +525,19 @@ class UnifiedRestaurantAgent:
             if not search_results or not isinstance(search_results, list):
                 raise ValueError("No valid search results available for scraping")
 
-            # Use existing BrowserlessRestaurantScraper AS-IS
-            scraped_results = self.scraper.scrape_search_results(
-                search_results=search_results
-            )
+            # FIXED: Use your existing sync_to_async utility
+            async def run_scraper():
+                return await sync_to_async(self.scraper.scrape_search_results)(search_results=search_results)
+
+            # Run the async operation
+            scraped_results = asyncio.run(run_scraper())
+
+            # Validate results
+            if not isinstance(scraped_results, list):
+                logger.error(f"❌ Invalid scraper results type: {type(scraped_results)}")
+                raise ValueError("Scraper returned invalid results format")
+
+            logger.info(f"✅ Scraping completed: {len(scraped_results)} results")
 
             return {
                 **state,
@@ -545,7 +554,7 @@ class UnifiedRestaurantAgent:
 
     @traceable(name="city_clean_content")
     def _city_clean_content(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """Use existing TextCleanerAgent (preserve logic)"""
+        """Use existing TextCleanerAgent (preserve logic) - FIXED ASYNC"""
         try:
             logger.info("🧹 City Content Cleaning")
 
@@ -557,11 +566,14 @@ class UnifiedRestaurantAgent:
             if not query:
                 raise ValueError("No query available for content cleaning")
 
-            # Use existing TextCleanerAgent AS-IS
-            cleaned_file_path = self.text_cleaner.process_scraped_results_individually(
-                scraped_results=scraped_results,
-                query=query
-            )
+            # FIXED: Use your existing sync_to_async utility
+            async def run_cleaner():
+                return await sync_to_async(self.text_cleaner.process_scraped_results_individually)(
+                    scraped_results=scraped_results,
+                    query=query
+                )
+
+            cleaned_file_path = asyncio.run(run_cleaner())
 
             return {
                 **state,
@@ -578,7 +590,7 @@ class UnifiedRestaurantAgent:
 
     @traceable(name="city_edit_content")
     def _city_edit_content(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """Use existing EditorAgent (preserve logic)"""
+        """Use existing EditorAgent (preserve logic) - FIXED ASYNC"""
         try:
             logger.info("✏️ City Content Editing")
 
@@ -599,14 +611,17 @@ class UnifiedRestaurantAgent:
             scraped_results = state.get("scraped_results")
             cleaned_file_path = state.get("cleaned_file_path")
 
-            # Use existing EditorAgent AS-IS with correct parameter names
-            edited_results = self.editor_agent.edit(
-                destination=destination,
-                database_restaurants=database_restaurants,  # Corrected parameter name
-                scraped_results=scraped_results,
-                cleaned_file_path=cleaned_file_path,
-                raw_query=state["query"]
-            )
+            # FIXED: Use your existing sync_to_async utility
+            async def run_editor():
+                return await sync_to_async(self.editor_agent.edit)(
+                    destination=destination,
+                    database_restaurants=database_restaurants,
+                    scraped_results=scraped_results,
+                    cleaned_file_path=cleaned_file_path,
+                    raw_query=state["query"]
+                )
+
+            edited_results = asyncio.run(run_editor())
 
             return {
                 **state,
