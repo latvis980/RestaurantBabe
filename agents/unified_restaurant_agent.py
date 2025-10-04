@@ -19,12 +19,15 @@ import logging
 import asyncio
 import time
 from typing import Dict, List, Any, Optional, TypedDict, Annotated, Tuple
+from typing import cast
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import ToolNode
 from langsmith import traceable
+
 
 # Import ALL existing agents (preserve their logic)
 from agents.query_analyzer import QueryAnalyzer
@@ -153,7 +156,7 @@ class UnifiedRestaurantAgent:
         self.telegram_formatter = TelegramFormatter(self.config)
         self.location_formatter = LocationTelegramFormatter(self.config)
 
-    def _build_unified_graph(self) -> StateGraph[UnifiedSearchState]:
+    def _build_unified_graph(self):
         """Build the unified LangGraph with flow routing"""
         graph = StateGraph(UnifiedSearchState)
 
@@ -564,7 +567,7 @@ class UnifiedRestaurantAgent:
                 raise ValueError("No edited results available for formatting")
 
             # Use existing TelegramFormatter AS-IS
-            formatted_message = self.telegram_formatter.format_restaurants(edited_results)
+            formatted_message = self.telegram_formatter.format_recommendations(edited_results)
             restaurants = edited_results.get("main_list", [])
 
             return {
@@ -721,7 +724,7 @@ class UnifiedRestaurantAgent:
             location_description = f"near {coordinates[0]}, {coordinates[1]}"
 
             # Use existing LocationMapSearchAgent AS-IS with all required parameters
-            maps_results = self.location_map_search_agent.search_venues(
+            maps_results = self.location_map_search_agent.search_venues_with_ai_analysis(
                 query=query,
                 location_description=location_description,
                 coordinates=coordinates
@@ -786,7 +789,7 @@ class UnifiedRestaurantAgent:
             if state.get("media_verification_results"):
                 # Format Google Maps + verification results
                 results = state["media_verification_results"]
-                venues = results if isinstance(results, list) else results.get("verified_venues", [])
+                venues = results if isinstance(results, list) else (results.get("verified_venues", []) if results else [])
                 formatted_result = self.location_formatter.format_google_maps_results(
                     venues=venues,
                     query=query,
@@ -797,7 +800,7 @@ class UnifiedRestaurantAgent:
             else:
                 # Format database-only results
                 results = state.get("filtered_results", {})
-                restaurants_list = results.get("restaurants", [])
+                restaurants_list = results.get("restaurants", []) if results else []
                 formatted_result = self.location_formatter.format_database_results(
                     restaurants=restaurants_list,
                     query=query,
@@ -888,8 +891,8 @@ class UnifiedRestaurantAgent:
                 thread_id = f"search_{user_id}_{int(time.time())}"
 
             # Execute the unified graph
-            config = {"thread_id": thread_id}
-            result = await self.graph.ainvoke(initial_state, config=config)
+            config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+            result = await self.graph.ainvoke(initial_state, config)
 
             # Add timing information
             processing_time = round(time.time() - start_time, 2)
@@ -926,17 +929,20 @@ class UnifiedRestaurantAgent:
             logger.info(f"🤔 Human decision: {decision}")
 
             # Get current state from checkpointer using correct LangGraph pattern
-            config = {"configurable": {"thread_id": thread_id}}
+            config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
             checkpoint_tuple = self.checkpointer.get_tuple(config)
 
             if checkpoint_tuple and checkpoint_tuple.checkpoint:
                 # Access the values from the checkpoint
-                current_state = checkpoint_tuple.checkpoint.get("channel_values", {})
+                channel_values = checkpoint_tuple.checkpoint.get("channel_values", {})
+
+                # Create updated state by casting the channel_values and updating specific fields
+                current_state = dict(channel_values)  # Convert to mutable dict
                 current_state["human_decision_result"] = decision
                 current_state["human_decision_pending"] = False
 
                 # Continue execution from the decision point
-                result = self.graph.invoke(current_state, config=config)
+                result = self.graph.invoke(cast(UnifiedSearchState, current_state), config)
                 return result
             else:
                 logger.error("No conversation state found for thread_id")
