@@ -79,11 +79,11 @@ except Exception as e:
 
 def setup_orchestrator():
     """
-    Initialize and return the LangGraph restaurant agent using singleton pattern.
+    Initialize and return the unified LangGraph restaurant agent.
     """
-    logger.info("🚀 Setting up LangGraph restaurant agent")
-    from utils.langgraph_orchestrator_manager import initialize_langgraph_agent
-    return initialize_langgraph_agent(config)
+    logger.info("🚀 Setting up unified LangGraph restaurant agent")
+    from agents.unified_restaurant_agent import create_unified_restaurant_agent
+    return create_unified_restaurant_agent(config)
 
 def main():
     """Main entry point: initialize orchestrator and start the Telegram bot"""
