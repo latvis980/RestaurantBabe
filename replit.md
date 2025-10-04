@@ -11,12 +11,32 @@ Preferred communication style: Simple, everyday language.
 # System Architecture
 
 ## Core Framework
+- **LangGraph Agent System**: Phase 1 implementation of LangGraph-based ReAct agent with tool orchestration and state management
 - **LangChain Orchestration**: Central orchestrator manages the multi-agent workflow with LangSmith tracing for monitoring and debugging
 - **Async Processing**: Built on asyncio with Gunicorn async workers for handling concurrent requests efficiently
 - **Railway Deployment**: Optimized for Railway platform with proper resource management and Docker containerization
+- **Dual Architecture**: Supports both traditional orchestrator and new LangGraph agent (configurable via USE_LANGGRAPH_AGENT flag)
 
 ## Multi-Agent Architecture
-The system employs a pipeline of specialized AI agents:
+
+### LangGraph Agent Framework (Phase 1)
+The system now includes a LangGraph-based agent that orchestrates tools using the ReAct pattern:
+
+**Core Tools:**
+1. **analyze_restaurant_query**: Analyzes user queries to extract destination and preferences
+2. **search_restaurant_database**: Searches local restaurant database with AI filtering
+3. **evaluate_and_route_content**: Evaluates results and determines search strategy
+4. **search_web_for_restaurants**: Performs web searches using Brave API
+5. **format_restaurant_recommendations**: Formats final output for users
+
+**Features:**
+- Stateful conversation with memory checkpointing
+- Autonomous tool selection and orchestration
+- Error handling and graceful degradation
+- Configurable via `USE_LANGGRAPH_AGENT` flag in config.py
+
+### Traditional Agent Pipeline
+The system also maintains the original pipeline of specialized AI agents:
 
 1. **Query Analyzer**: Parses user requests to extract destination, cuisine preferences, and search intent
 2. **Database Search Agent**: Searches local restaurant database using proximity and content matching

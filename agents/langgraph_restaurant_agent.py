@@ -57,12 +57,11 @@ class LangGraphRestaurantAgent:
         
         self.checkpointer = MemorySaver()
         
-        system_prompt = self._build_system_prompt()
+        self.system_prompt = self._build_system_prompt()
         
         self.agent = create_react_agent(
             model=self.llm,
             tools=self.tools,
-            state_modifier=system_prompt,
             checkpointer=self.checkpointer
         )
         
@@ -125,7 +124,10 @@ Remember: Your goal is to provide excellent restaurant recommendations efficient
             
             user_message = f"{query}{context_msg}"
             
-            messages = [HumanMessage(content=user_message)]
+            messages = [
+                SystemMessage(content=self.system_prompt),
+                HumanMessage(content=user_message)
+            ]
             
             logger.info("🔄 Invoking LangGraph agent...")
             result = self.agent.invoke(
