@@ -1,4 +1,4 @@
-# utils/async_utils.py  – universal helper for sync + async callables
+# utils/async_utils.py  – helper for sync + async callables
 import asyncio
 import inspect
 from functools import wraps, partial
