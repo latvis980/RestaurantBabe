@@ -1,4 +1,4 @@
-# agents/langgraph_restaurant_agent_fixed.py
+# agents/langgraph_restaurant_agent.py
 """
 FIXED LangGraph Restaurant Recommendation Agent
 
@@ -19,7 +19,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
-from agents.langgraph_tools_fixed import create_restaurant_tools
+from agents.langgraph_tools import create_restaurant_tools
 
 logger = logging.getLogger(__name__)
 
