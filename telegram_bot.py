@@ -29,6 +29,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Initialize bot
+if not config.TELEGRAM_BOT_TOKEN:
+    raise ValueError("TELEGRAM_BOT_TOKEN is required in config")
 bot = telebot.TeleBot(config.TELEGRAM_BOT_TOKEN)
 
 # Initialize database FIRST
@@ -38,7 +40,7 @@ initialize_database(config)
 unified_agent = create_unified_restaurant_agent(config)
 
 # Initialize voice handler for transcription only
-voice_handler = VoiceMessageHandler(config) if hasattr(config, 'OPENAI_API_KEY') else None
+voice_handler = VoiceMessageHandler() if hasattr(config, 'OPENAI_API_KEY') and config.OPENAI_API_KEY else None
 
 # Simple cancellation tracking (Telegram-specific concern)
 active_searches = {}  # user_id -> Event

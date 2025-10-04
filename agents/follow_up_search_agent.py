@@ -35,10 +35,15 @@ class FollowUpSearchAgent:
             raise ValueError("GOOGLE_MAPS_API_KEY is required in config")
 
         api_key_2 = getattr(config, 'GOOGLE_MAPS_API_KEY2', None)
-        if api_key_2:
-            self.gmaps_secondary = googlemaps.Client(key=api_key_2)
-            self.has_dual_keys = True
-            logger.info("✅ Secondary Google Maps client initialized - dual key mode enabled")
+        if api_key_2 and api_key_2.strip():
+            try:
+                self.gmaps_secondary = googlemaps.Client(key=api_key_2)
+                self.has_dual_keys = True
+                logger.info("✅ Secondary Google Maps client initialized - dual key mode enabled")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to initialize secondary Google Maps client: {e}")
+                self.gmaps_secondary = None
+                self.has_dual_keys = False
         else:
             self.gmaps_secondary = None
             self.has_dual_keys = False
