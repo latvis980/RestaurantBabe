@@ -199,12 +199,11 @@ class RestaurantSearchTools:
                     }
 
                 # STEP 1: Web Search - MUST SUCCEED
-                search_results = self.search_agent.search_and_filter(
+                raw_results = self.search_agent.search(
                     search_queries=search_queries,
-                    destination=destination
+                    destination=destination,
+                    query_metadata=data.get('query_analysis', {})
                 )
-
-                raw_results = search_results.get("filtered_results", [])
                 logger.info(f"✅ Step 1 complete: {len(raw_results)} search results")
 
                 if not raw_results:
