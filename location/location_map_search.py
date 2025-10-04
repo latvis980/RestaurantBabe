@@ -181,9 +181,6 @@ class LocationMapSearchAgent:
             self.has_secondary_gmaps = False
 
 
-
-
-
     def _log_coordinates(self, latitude: float, longitude: float, context: str):
         """Log coordinates for debugging"""
         logger.info(f"🌍 {context}: {latitude:.6f}, {longitude:.6f}")

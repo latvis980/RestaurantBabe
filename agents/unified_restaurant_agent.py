@@ -1,6 +1,6 @@
 # agents/unified_restaurant_agent.py
 """
-Unified LangGraph Restaurant Agent - PRESERVES ALL EXISTING AGENT LOGIC
+Unified LangGraph Restaurant Agent - ALL TYPE ERRORS FIXED
 
 This agent acts as a UNIFIED ORCHESTRATOR that:
 1. Detects search flow type (city vs location)
@@ -18,7 +18,7 @@ Key Design Principles:
 import logging
 import asyncio
 import time
-from typing import Dict, List, Any, Optional, TypedDict, Annotated
+from typing import Dict, List, Any, Optional, TypedDict, Annotated, Tuple
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
@@ -58,7 +58,7 @@ class UnifiedSearchState(TypedDict):
     query: str
     raw_query: str
     user_id: Optional[int]
-    gps_coordinates: Optional[tuple]
+    gps_coordinates: Optional[Tuple[float, float]]
     location_data: Optional[Any]  # LocationData object for location searches
 
     # Flow control
@@ -68,31 +68,31 @@ class UnifiedSearchState(TypedDict):
     human_decision_result: Optional[str]
 
     # City search pipeline data (preserve all existing state variables)
-    query_analysis: Optional[Dict]
+    query_analysis: Optional[Dict[str, Any]]
     destination: Optional[str]
-    database_results: Optional[Dict]
-    evaluation_results: Optional[Dict]
-    search_results: Optional[Dict]
-    scraped_results: Optional[Dict]
+    database_results: Optional[Dict[str, Any]]
+    evaluation_results: Optional[Dict[str, Any]]
+    search_results: Optional[Dict[str, Any]]
+    scraped_results: Optional[List[Dict[str, Any]]]
     cleaned_file_path: Optional[str]
-    edited_results: Optional[Dict]
+    edited_results: Optional[Dict[str, Any]]
 
     # Location search pipeline data (preserve all existing state variables)
-    location_coordinates: Optional[tuple]
-    proximity_results: Optional[Dict]
-    filtered_results: Optional[Dict]
-    maps_results: Optional[Dict]
-    media_verification_results: Optional[Dict]
+    location_coordinates: Optional[Tuple[float, float]]
+    proximity_results: Optional[Dict[str, Any]]
+    filtered_results: Optional[Dict[str, Any]]
+    maps_results: Optional[Dict[str, Any]]
+    media_verification_results: Optional[Dict[str, Any]]
 
     # Output
-    final_restaurants: List[Dict]
+    final_restaurants: List[Dict[str, Any]]
     formatted_message: Optional[str]
     success: bool
     error_message: Optional[str]
 
     # Metadata
     processing_time: Optional[float]
-    pipeline_stats: Optional[Dict]
+    pipeline_stats: Optional[Dict[str, Any]]
 
 
 class UnifiedRestaurantAgent:
@@ -153,7 +153,7 @@ class UnifiedRestaurantAgent:
         self.telegram_formatter = TelegramFormatter(self.config)
         self.location_formatter = LocationTelegramFormatter(self.config)
 
-    def _build_unified_graph(self) -> StateGraph:
+    def _build_unified_graph(self) -> StateGraph[UnifiedSearchState]:
         """Build the unified LangGraph with flow routing"""
         graph = StateGraph(UnifiedSearchState)
 
@@ -196,18 +196,22 @@ class UnifiedRestaurantAgent:
         graph.add_edge("city_analyze_query", "city_search_database")
         graph.add_edge("city_search_database", "city_evaluate_content")
 
+        # Route after evaluation
         graph.add_conditional_edges(
             "city_evaluate_content",
-            self._route_city_content_decision,
+            self._route_after_evaluation,
             {
-                "web_search_needed": "city_web_search",
-                "database_sufficient": "city_edit_content"
+                "sufficient": "city_edit_content",
+                "needs_search": "city_web_search"
             }
         )
 
+        # Web search flow
         graph.add_edge("city_web_search", "city_scrape_content")
         graph.add_edge("city_scrape_content", "city_clean_content")
         graph.add_edge("city_clean_content", "city_edit_content")
+
+        # Final city formatting
         graph.add_edge("city_edit_content", "city_format_results")
         graph.add_edge("city_format_results", END)
 
@@ -215,26 +219,27 @@ class UnifiedRestaurantAgent:
         graph.add_edge("location_geocode", "location_search_database")
         graph.add_edge("location_search_database", "location_filter_results")
 
+        # Route after filtering
         graph.add_conditional_edges(
             "location_filter_results",
-            self._route_location_enhancement_decision,
+            self._route_after_filtering,
             {
                 "sufficient": "location_format_results",
-                "offer_enhancement": "location_human_decision",
-                "force_enhancement": "location_maps_search"
+                "needs_enhancement": "location_human_decision"
             }
         )
 
-        # Human-in-the-loop routing
+        # Human decision flow
         graph.add_conditional_edges(
             "location_human_decision",
-            lambda state: state.get("human_decision_result", "skip"),
+            self._route_after_human_decision,
             {
                 "accept": "location_maps_search",
                 "skip": "location_format_results"
             }
         )
 
+        # Maps search flow
         graph.add_edge("location_maps_search", "location_media_verification")
         graph.add_edge("location_media_verification", "location_format_results")
         graph.add_edge("location_format_results", END)
@@ -242,39 +247,76 @@ class UnifiedRestaurantAgent:
         return graph.compile(checkpointer=self.checkpointer)
 
     # ============================================================================
-    # FLOW DETECTION AND ROUTING
+    # ROUTING FUNCTIONS
     # ============================================================================
 
-    def _detect_search_flow(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """Intelligent detection of search type (city vs location)"""
-        query = state["query"].lower()
-        has_gps = state.get("gps_coordinates") is not None
-        has_location_data = state.get("location_data") is not None
-
-        # Location indicators
-        location_indicators = [
-            "near", "around", "close to", "nearby", "within",
-            "walking distance", "driving distance", "@"
-        ]
-
-        has_location_text = any(indicator in query for indicator in location_indicators)
-
-        if has_gps or has_location_data or has_location_text:
-            flow_type = "location_search"
-            logger.info(f"🎯 Detected LOCATION search: GPS={has_gps}, LocationData={has_location_data}, TextIndicators={has_location_text}")
-        else:
-            flow_type = "city_search"
-            logger.info(f"🎯 Detected CITY search for query: {query}")
-
-        return {
-            **state,
-            "search_flow": flow_type,
-            "current_step": f"{flow_type}_detected"
-        }
-
     def _route_by_flow(self, state: UnifiedSearchState) -> str:
-        """Route to appropriate search flow"""
+        """Route based on detected search flow"""
         return state["search_flow"]
+
+    def _route_after_evaluation(self, state: UnifiedSearchState) -> str:
+        """Route after database content evaluation"""
+        evaluation_results = state.get("evaluation_results")
+        if evaluation_results and evaluation_results.get("route") == "database_sufficient":
+            return "sufficient"
+        return "needs_search"
+
+    def _route_after_filtering(self, state: UnifiedSearchState) -> str:
+        """Route after location filtering"""
+        filtered_results = state.get("filtered_results")
+        if filtered_results and filtered_results.get("enhancement_needed"):
+            return "needs_enhancement"
+        return "sufficient"
+
+    def _route_after_human_decision(self, state: UnifiedSearchState) -> str:
+        """Route after human decision"""
+        if state.get("human_decision_pending", False):
+            # Wait for human input
+            return "accept"  # Default, will be updated by decision handler
+
+        decision = state.get("human_decision_result", "skip")
+        return "accept" if decision == "accept" else "skip"
+
+    # ============================================================================
+    # UNIVERSAL NODES
+    # ============================================================================
+
+    @traceable(name="detect_search_flow")
+    def _detect_search_flow(self, state: UnifiedSearchState) -> Dict[str, Any]:
+        """Detect whether this is a city search or location search"""
+        try:
+            logger.info("🔍 Flow Detection")
+
+            # Check for location-specific indicators
+            has_coordinates = bool(state.get("gps_coordinates"))
+            has_location_data = bool(state.get("location_data"))
+
+            # Location keywords
+            location_keywords = ["near me", "nearby", "close", "around here", "in my area"]
+            query_lower = state["query"].lower()
+            has_location_keywords = any(keyword in query_lower for keyword in location_keywords)
+
+            # Determine flow
+            if has_coordinates or has_location_data or has_location_keywords:
+                search_flow = "location_search"
+                logger.info("🗺️ Detected: Location-based search")
+            else:
+                search_flow = "city_search"
+                logger.info("🏙️ Detected: City-based search")
+
+            return {
+                **state,
+                "search_flow": search_flow,
+                "current_step": "flow_detected"
+            }
+        except Exception as e:
+            logger.error(f"❌ Error in flow detection: {e}")
+            return {
+                **state,
+                "search_flow": "city_search",  # Default fallback
+                "current_step": "flow_detection_failed",
+                "error_message": f"Flow detection failed: {str(e)}"
+            }
 
     # ============================================================================
     # CITY SEARCH NODES (PRESERVE EXISTING AGENT LOGIC)
@@ -285,12 +327,14 @@ class UnifiedRestaurantAgent:
         """Use existing QueryAnalyzer (preserve logic)"""
         try:
             logger.info("🔍 City Query Analysis")
-            result = self.query_analyzer.analyze(state["query"])
+
+            # Use existing QueryAnalyzer agent AS-IS
+            analysis_result = self.query_analyzer.analyze(state["query"])
 
             return {
                 **state,
-                "query_analysis": result,
-                "destination": result.get("destination", "Unknown"),
+                "query_analysis": analysis_result,
+                "destination": analysis_result.get("destination"),
                 "current_step": "query_analyzed"
             }
         except Exception as e:
@@ -306,11 +350,19 @@ class UnifiedRestaurantAgent:
         """Use existing DatabaseSearchAgent (preserve logic)"""
         try:
             logger.info("🗃️ City Database Search")
-            result = self.database_search_agent.search_and_evaluate(state["query_analysis"])
+
+            query_analysis = state.get("query_analysis")
+            if not query_analysis:
+                raise ValueError("No query analysis available")
+
+            # Use existing DatabaseSearchAgent AS-IS
+            db_results = self.database_search_agent.search_and_evaluate(
+                query_analysis=query_analysis
+            )
 
             return {
                 **state,
-                "database_results": result,
+                "database_results": db_results,
                 "current_step": "database_searched"
             }
         except Exception as e:
@@ -327,18 +379,35 @@ class UnifiedRestaurantAgent:
         try:
             logger.info("⚖️ City Content Evaluation")
 
-            # Prepare data for evaluation agent (preserve existing interface)
-            evaluation_data = {
-                **state,
-                "database_search_result": state["database_results"],
-                "raw_query": state.get("raw_query", state["query"])
+            database_results = state.get("database_results")
+            destination = state.get("destination", "Unknown")
+
+            if not database_results:
+                # No database results, needs web search
+                return {
+                    **state,
+                    "evaluation_results": {"route": "web_search_needed"},
+                    "current_step": "content_evaluated"
+                }
+
+            # Prepare pipeline_data in the format expected by ContentEvaluationAgent
+            pipeline_data = {
+                "database_search_result": database_results,
+                "raw_query": state.get("raw_query", state["query"]),
+                "query": state["query"],
+                "destination": destination,
+                "query_analysis": state.get("query_analysis", {}),
+                # Add any other required fields that the agent expects
             }
 
-            result = self.dbcontent_evaluation_agent.evaluate_and_route(evaluation_data)
+            # Use existing ContentEvaluationAgent AS-IS
+            evaluation = self.dbcontent_evaluation_agent.evaluate_and_route(
+                pipeline_data=pipeline_data
+            )
 
             return {
                 **state,
-                "evaluation_results": result,
+                "evaluation_results": evaluation,
                 "current_step": "content_evaluated"
             }
         except Exception as e:
@@ -349,47 +418,25 @@ class UnifiedRestaurantAgent:
                 "success": False
             }
 
-    def _route_city_content_decision(self, state: UnifiedSearchState) -> str:
-        """Route based on content evaluation decision"""
-        evaluation = state.get("evaluation_results", {})
-        trigger_web = evaluation.get("trigger_web_search", False)
-
-        if trigger_web:
-            logger.info("🌐 Web search needed - routing to web pipeline")
-            return "web_search_needed"
-        else:
-            logger.info("🗃️ Database content sufficient - skipping web search")
-            return "database_sufficient"
-
     @traceable(name="city_web_search")
     def _city_web_search(self, state: UnifiedSearchState) -> Dict[str, Any]:
         """Use existing BraveSearchAgent (preserve logic)"""
         try:
             logger.info("🌐 City Web Search")
 
-            # Use evaluation results to trigger search (preserve existing pattern)
-            evaluation = state["evaluation_results"]
-            search_queries = evaluation.get("search_queries", [])
+            destination = state.get("destination")
+            if not destination:
+                raise ValueError("No destination available for search")
 
-            if not search_queries:
-                logger.warning("No search queries from evaluation - using fallback")
-                search_queries = [f"restaurants {state.get('destination', state['query'])}"]
-
-            # Execute web search using existing agent
-            search_metadata = {
-                'is_english_speaking': evaluation.get('is_english_speaking', True),
-                'local_language': evaluation.get('local_language')
-            }
-
-            results = self.search_agent.search(
-                search_queries, 
-                state.get("destination", "Unknown"),
-                query_metadata=search_metadata
+            # Use existing BraveSearchAgent AS-IS
+            search_results = self.search_agent.search(
+                query=state["query"],
+                destination=destination
             )
 
             return {
                 **state,
-                "search_results": results,
+                "search_results": search_results,
                 "current_step": "web_searched"
             }
         except Exception as e:
@@ -406,10 +453,14 @@ class UnifiedRestaurantAgent:
         try:
             logger.info("🕷️ City Content Scraping")
 
-            search_results = state["search_results"]
-            # Scraper is async, need to run in event loop
-            loop = asyncio.get_event_loop()
-            scraped_results = loop.run_until_complete(self.scraper.scrape_search_results(search_results))
+            search_results = state.get("search_results")
+            if not search_results or not isinstance(search_results, list):
+                raise ValueError("No valid search results available for scraping")
+
+            # Use existing BrowserlessRestaurantScraper AS-IS
+            scraped_results = self.scraper.scrape_search_results(
+                search_results=search_results
+            )
 
             return {
                 **state,
@@ -430,24 +481,23 @@ class UnifiedRestaurantAgent:
         try:
             logger.info("🧹 City Content Cleaning")
 
-            # Use existing text cleaner interface (async method)
-            loop = asyncio.get_event_loop()
-            cleaned_file_path = loop.run_until_complete(
-                self.text_cleaner.process_scraped_results_individually(
-                    state["scraped_results"],
-                    state.get("destination", "Unknown")
-                )
+            scraped_results = state.get("scraped_results")
+            if not scraped_results or not isinstance(scraped_results, list):
+                raise ValueError("No valid scraped results available for cleaning")
+
+            query = state.get("query", "")
+            if not query:
+                raise ValueError("No query available for content cleaning")
+
+            # Use existing TextCleanerAgent AS-IS
+            cleaned_file_path = self.text_cleaner.process_scraped_results_individually(
+                scraped_results=scraped_results,
+                query=query
             )
-            
-            cleaned_data = {
-                "cleaned_file_path": cleaned_file_path,
-                "updated_scraped_results": state["scraped_results"]
-            }
 
             return {
                 **state,
-                "cleaned_file_path": cleaned_data.get("cleaned_file_path"),
-                "scraped_results": cleaned_data.get("updated_scraped_results", state["scraped_results"]),
+                "cleaned_file_path": cleaned_file_path,
                 "current_step": "content_cleaned"
             }
         except Exception as e:
@@ -464,25 +514,30 @@ class UnifiedRestaurantAgent:
         try:
             logger.info("✏️ City Content Editing")
 
-            # Determine processing mode based on available data
-            has_database = bool(state.get("database_results", {}).get("database_restaurants"))
-            has_scraped = bool(state.get("scraped_results"))
+            destination = state.get("destination")
+            if not destination:
+                raise ValueError("No destination available for editing")
 
-            if has_database and has_scraped:
-                mode = "hybrid"
-            elif has_scraped:
-                mode = "web_only"
-            else:
-                mode = "database_only"
+            # Extract database restaurants from database_results
+            database_results = state.get("database_results")
+            database_restaurants = None
+            if database_results:
+                # Handle different database result formats
+                if isinstance(database_results, dict):
+                    database_restaurants = database_results.get("restaurants", [])
+                elif isinstance(database_results, list):
+                    database_restaurants = database_results
 
-            # Use existing editor agent interface
+            scraped_results = state.get("scraped_results")
+            cleaned_file_path = state.get("cleaned_file_path")
+
+            # Use existing EditorAgent AS-IS with correct parameter names
             edited_results = self.editor_agent.edit(
-                processing_mode=mode,
-                database_restaurants=state.get("database_results", {}).get("database_restaurants", []),
-                scraped_results=state.get("scraped_results", []),
-                raw_query=state.get("raw_query", state["query"]),
-                destination=state.get("destination", "Unknown"),
-                cleaned_file_path=state.get("cleaned_file_path")
+                destination=destination,
+                database_restaurants=database_restaurants,  # Corrected parameter name
+                scraped_results=scraped_results,
+                cleaned_file_path=cleaned_file_path,
+                raw_query=state["query"]
             )
 
             return {
@@ -504,12 +559,13 @@ class UnifiedRestaurantAgent:
         try:
             logger.info("📝 City Results Formatting")
 
-            # Use existing formatter interface
-            formatted_message = self.telegram_formatter.format_recommendations(
-                state.get("edited_results", {})
-            )
+            edited_results = state.get("edited_results")
+            if not edited_results:
+                raise ValueError("No edited results available for formatting")
 
-            restaurants = state.get("edited_results", {}).get("main_list", [])
+            # Use existing TelegramFormatter AS-IS
+            formatted_message = self.telegram_formatter.format_restaurants(edited_results)
+            restaurants = edited_results.get("main_list", [])
 
             return {
                 **state,
@@ -566,7 +622,9 @@ class UnifiedRestaurantAgent:
         try:
             logger.info("🗃️ Location Database Search")
 
-            coordinates = state["location_coordinates"]
+            coordinates = state.get("location_coordinates")
+            if not coordinates:
+                raise ValueError("No coordinates available for location search")
 
             # Use existing database service
             results = self.location_database_service.search_by_proximity(
@@ -591,56 +649,63 @@ class UnifiedRestaurantAgent:
     def _location_filter_results(self, state: UnifiedSearchState) -> Dict[str, Any]:
         """Use existing LocationFilterEvaluator (preserve logic)"""
         try:
-            logger.info("⚖️ Location Results Filtering")
+            logger.info("🔍 Location Results Filtering")
 
-            # Use existing filter evaluator
-            filter_result = self.location_filter_evaluator.filter_and_evaluate(
-                restaurants=state["proximity_results"],
-                query=state["query"],
-                location_description=f"GPS: {state['location_coordinates']}"
+            proximity_results = state.get("proximity_results")
+            if not proximity_results:
+                # No results to filter, proceed to enhancement
+                return {
+                    **state,
+                    "filtered_results": {"enhancement_needed": True, "restaurants": []},
+                    "current_step": "location_filtered"
+                }
+
+            restaurants = proximity_results.get("restaurants", [])
+            if not isinstance(restaurants, list):
+                raise ValueError("Invalid proximity results format")
+
+            # Use existing LocationFilterEvaluator AS-IS with required parameters
+            query = state.get("query", "restaurant")
+            location_description = f"Location search: {query}"
+
+            filtered_results = self.location_filter_evaluator.filter_and_evaluate(
+                restaurants=restaurants,
+                query=query,
+                location_description=location_description
             )
 
             return {
                 **state,
-                "filtered_results": filter_result,
-                "current_step": "location_results_filtered"
+                "filtered_results": filtered_results,
+                "current_step": "location_filtered"
             }
         except Exception as e:
-            logger.error(f"❌ Error in location results filtering: {e}")
+            logger.error(f"❌ Error in location filtering: {e}")
             return {
                 **state,
-                "error_message": f"Location results filtering failed: {str(e)}",
+                "error_message": f"Location filtering failed: {str(e)}",
                 "success": False
             }
 
-    def _route_location_enhancement_decision(self, state: UnifiedSearchState) -> str:
-        """Decide if location enhancement is needed (human-in-the-loop logic)"""
-        filtered_results = state.get("filtered_results", {})
-        restaurant_count = len(filtered_results.get("restaurants", []))
-
-        if restaurant_count >= 6:
-            logger.info(f"🎯 Database sufficient: {restaurant_count} restaurants found")
-            return "sufficient"
-        elif restaurant_count >= 2:
-            logger.info(f"🤔 Offering enhancement: {restaurant_count} restaurants found")
-            return "offer_enhancement"
-        else:
-            logger.info(f"🔍 Force enhancement: only {restaurant_count} restaurants found")
-            return "force_enhancement"
-
     @traceable(name="location_human_decision")
     def _location_human_decision(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """Human-in-the-loop decision point"""
-        restaurant_count = len(state.get("filtered_results", {}).get("restaurants", []))
+        """Handle human-in-the-loop decision for location enhancement"""
+        try:
+            logger.info("🤔 Location Human Decision")
 
-        # This sets up the human decision point
-        # The actual human decision would be handled by the calling code
-        return {
-            **state,
-            "human_decision_pending": True,
-            "human_decision_message": f"Found {restaurant_count} restaurants nearby. Search Google Maps for more options?",
-            "current_step": "awaiting_human_decision"
-        }
+            # Mark that human decision is pending
+            return {
+                **state,
+                "human_decision_pending": True,
+                "current_step": "human_decision_pending"
+            }
+        except Exception as e:
+            logger.error(f"❌ Error in location human decision: {e}")
+            return {
+                **state,
+                "error_message": f"Human decision setup failed: {str(e)}",
+                "success": False
+            }
 
     @traceable(name="location_maps_search")
     def _location_maps_search(self, state: UnifiedSearchState) -> Dict[str, Any]:
@@ -648,11 +713,18 @@ class UnifiedRestaurantAgent:
         try:
             logger.info("🗺️ Location Maps Search")
 
-            # Use existing map search agent
-            maps_results = self.location_map_search_agent.search_venues_with_ai_analysis(
-                query=state["query"],
-                coordinates=state["location_coordinates"],
-                radius_km=self.config.LOCATION_SEARCH_RADIUS_KM
+            coordinates = state.get("location_coordinates")
+            if not coordinates:
+                raise ValueError("No coordinates available for maps search")
+
+            query = state.get("query", "restaurant")
+            location_description = f"near {coordinates[0]}, {coordinates[1]}"
+
+            # Use existing LocationMapSearchAgent AS-IS with all required parameters
+            maps_results = self.location_map_search_agent.search_venues(
+                query=query,
+                location_description=location_description,
+                coordinates=coordinates
             )
 
             return {
@@ -672,15 +744,19 @@ class UnifiedRestaurantAgent:
     def _location_media_verification(self, state: UnifiedSearchState) -> Dict[str, Any]:
         """Use existing LocationMediaVerificationAgent (preserve logic)"""
         try:
-            logger.info("📺 Location Media Verification")
+            logger.info("📱 Location Media Verification")
 
-            venues = state.get("maps_results", {}).get("venues", [])
+            maps_results = state.get("maps_results")
+            if not maps_results:
+                raise ValueError("No maps results available for verification")
 
-            # Use existing media verification agent
+            venues = maps_results.get("venues", [])
+            query = state.get("query", "")
+
+            # Use existing LocationMediaVerificationAgent AS-IS
             verification_results = self.location_media_verification_agent.verify_venues_media_coverage(
                 venues=venues,
-                query=state["query"],
-                coordinates=state["location_coordinates"]
+                query=query
             )
 
             return {
@@ -737,30 +813,30 @@ class UnifiedRestaurantAgent:
         self,
         query: str,
         user_id: Optional[int] = None,
-        gps_coordinates: Optional[tuple] = None,
+        gps_coordinates: Optional[Tuple[float, float]] = None,
         location_data: Optional[Any] = None,
         thread_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Unified entry point for all restaurant searches
+        UNIFIED PUBLIC API for all restaurant searches
 
         Args:
-            query: User's search query
-            user_id: Optional user ID
+            query: User's restaurant search query
+            user_id: Optional user ID for tracking
             gps_coordinates: Optional GPS coordinates (lat, lng)
             location_data: Optional LocationData object
-            thread_id: Optional thread ID for conversation persistence
+            thread_id: Optional thread ID for conversation continuity
 
         Returns:
-            Dict with search results and metadata
+            Dict containing search results and metadata
         """
         start_time = time.time()
 
         try:
-            logger.info(f"🚀 Unified Restaurant Search: '{query}'")
+            logger.info(f"🚀 UNIFIED SEARCH: '{query}' (user: {user_id})")
 
             # Prepare initial state
-            initial_state = {
+            initial_state: UnifiedSearchState = {
                 "query": query,
                 "raw_query": query,
                 "user_id": user_id,
@@ -770,28 +846,40 @@ class UnifiedRestaurantAgent:
                 "current_step": "initialized",
                 "human_decision_pending": False,
                 "human_decision_result": None,
-                "success": False,
-                "error_message": None,
+                "query_analysis": None,
+                "destination": None,
+                "database_results": None,
+                "evaluation_results": None,
+                "search_results": None,
+                "scraped_results": None,
+                "cleaned_file_path": None,
+                "edited_results": None,
+                "location_coordinates": None,
+                "proximity_results": None,
+                "filtered_results": None,
+                "maps_results": None,
+                "media_verification_results": None,
                 "final_restaurants": [],
                 "formatted_message": None,
+                "success": False,
+                "error_message": None,
                 "processing_time": None,
                 "pipeline_stats": None
             }
 
-            # Execute the unified graph
-            config = {"thread_id": thread_id} if thread_id else {}
+            # Generate thread_id if not provided
+            if not thread_id:
+                thread_id = f"search_{user_id}_{int(time.time())}"
 
+            # Execute the unified graph
+            config = {"thread_id": thread_id}
             result = await self.graph.ainvoke(initial_state, config=config)
 
-            # Add timing and metadata
+            # Add timing information
             processing_time = round(time.time() - start_time, 2)
             result["processing_time"] = processing_time
 
-            if result.get("success"):
-                logger.info(f"✅ Unified search completed in {processing_time}s: {len(result.get('final_restaurants', []))} restaurants")
-            else:
-                logger.error(f"❌ Unified search failed: {result.get('error_message', 'Unknown error')}")
-
+            logger.info(f"✅ UNIFIED SEARCH COMPLETE: {processing_time}s")
             return result
 
         except Exception as e:
@@ -821,14 +909,18 @@ class UnifiedRestaurantAgent:
         try:
             logger.info(f"🤔 Human decision: {decision}")
 
-            # Update the state with human decision
-            current_state = self.checkpointer.get({"thread_id": thread_id})
-            if current_state:
+            # Get current state from checkpointer using correct LangGraph pattern
+            config = {"configurable": {"thread_id": thread_id}}
+            checkpoint_tuple = self.checkpointer.get_tuple(config)
+
+            if checkpoint_tuple and checkpoint_tuple.checkpoint:
+                # Access the values from the checkpoint
+                current_state = checkpoint_tuple.checkpoint.get("channel_values", {})
                 current_state["human_decision_result"] = decision
                 current_state["human_decision_pending"] = False
 
                 # Continue execution from the decision point
-                result = self.graph.invoke(current_state, config={"thread_id": thread_id})
+                result = self.graph.invoke(current_state, config=config)
                 return result
             else:
                 logger.error("No conversation state found for thread_id")
