@@ -1,25 +1,26 @@
-# telegram_bot_clean.py
+# telegram_bot.py
 """
-Clean Telegram Bot - ONLY Messaging, NO Business Logic
+Memory-Enhanced Telegram Bot for Restaurant Recommendations
 
-This bot is a thin wrapper that:
-1. Receives Telegram messages
-2. Sends them to the unified LangGraph agent  
-3. Displays agent responses
-4. Handles Telegram-specific UI elements
+This bot integrates with the AI Chat Layer and Memory System to provide:
+1. Intelligent conversation routing (chat vs search)
+2. Memory-aware responses
+3. Natural conversation flow
+4. Context preservation across sessions
 
-ALL business logic is handled by the unified agent.
+NO MORE AUTOMATED SEARCH MESSAGES - All responses are now contextual and intelligent.
 """
 
 import telebot
 import asyncio
 import logging
 import os
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from threading import Event
+import time
 
-# Import ONLY the unified agent - no orchestrators!
-from agents.unified_restaurant_agent import create_unified_restaurant_agent
+# Import the memory-enhanced unified agent
+from agents.memory_enhanced_unified_agent import create_memory_enhanced_unified_agent
 from utils.voice_handler import VoiceMessageHandler
 from utils.database import initialize_database
 import config
@@ -36,8 +37,8 @@ bot = telebot.TeleBot(config.TELEGRAM_BOT_TOKEN)
 # Initialize database FIRST
 initialize_database(config)
 
-# Initialize unified agent (single source of truth)
-unified_agent = create_unified_restaurant_agent(config)
+# Initialize memory-enhanced unified agent (single source of truth)
+unified_agent = create_memory_enhanced_unified_agent(config)
 
 # Initialize voice handler for transcription only
 voice_handler = VoiceMessageHandler() if hasattr(config, 'OPENAI_API_KEY') and config.OPENAI_API_KEY else None
@@ -49,13 +50,14 @@ active_searches = {}  # user_id -> Event
 WELCOME_MESSAGE = (
     "🍸 Hello! I'm Restaurant Babe. I know all about the most delicious restaurants worldwide.\n\n"
     "Tell me what you're looking for, like <i>best ramen in Tokyo</i>, or share your location for nearby recommendations.\n\n"
+    "I remember our conversations and your preferences, so feel free to just say things like \"more options\" or \"different cuisine\"!\n\n"
     "💡 <b>Tip:</b> Type /cancel to stop a search.\n\n"
     "What are you hungry for?"
 )
 
 
 # ============================================================================
-# CORE MESSAGE PROCESSING (Delegates to Unified Agent)
+# CORE MESSAGE PROCESSING (Delegates to Memory-Enhanced Agent)
 # ============================================================================
 
 async def process_user_message(
@@ -66,158 +68,247 @@ async def process_user_message(
     message_type: str = "text"
 ) -> None:
     """
-    CORE FUNCTION: Process any user message through unified agent
+    CORE FUNCTION: Process any user message through memory-enhanced agent
 
-    This is the ONLY place where business logic decisions are made,
-    and they're all delegated to the unified agent.
+    This now provides intelligent, contextual responses instead of 
+    automated search messages.
     """
     processing_msg = None
 
     try:
-        # 1. TELEGRAM CONCERN: Show processing message
-        processing_msg = show_processing_message(chat_id, message_text, gps_coordinates)
+        # 1. TELEGRAM CONCERN: Show initial processing (brief)
+        processing_msg = show_brief_processing_message(chat_id, message_text)
 
-        # 2. TELEGRAM CONCERN: Set up cancellation
-        cancel_event = setup_cancellation(user_id, chat_id)
+        # 2. DELEGATE TO MEMORY-ENHANCED AGENT: All intelligence happens here
+        logger.info(f"🎯 Processing message for user {user_id}: '{message_text[:50]}...'")
 
-        # 3. BUSINESS LOGIC: Delegate everything to unified agent
-        result = await unified_agent.search_restaurants(
+        result = await unified_agent.restaurant_search_with_memory(
             query=message_text,
             user_id=user_id,
             gps_coordinates=gps_coordinates,
-            thread_id=f"user_{user_id}"
+            thread_id=f"telegram_{user_id}_{int(time.time())}"
         )
 
-        # 4. TELEGRAM CONCERN: Clean up processing message
-        cleanup_processing_message(chat_id, processing_msg)
+        # 3. TELEGRAM CONCERN: Clean up processing message
+        try:
+            bot.delete_message(chat_id, processing_msg.message_id)
+        except Exception:
+            pass  # Message might already be deleted
 
-        # 5. TELEGRAM CONCERN: Check cancellation
-        if is_cancelled(user_id):
-            return
+        # 4. TELEGRAM CONCERN: Send the AI response
+        ai_response = result.get("ai_response") or result.get("formatted_message")
 
-        # 6. TELEGRAM CONCERN: Display agent response
-        await display_agent_response(chat_id, user_id, result)
+        if ai_response:
+            # Split long messages for Telegram
+            if len(ai_response) > 4000:
+                # Send in chunks
+                chunks = split_message_for_telegram(ai_response)
+                for chunk in chunks:
+                    bot.send_message(
+                        chat_id,
+                        fix_telegram_html(chunk),
+                        parse_mode='HTML',
+                        disable_web_page_preview=True
+                    )
+            else:
+                bot.send_message(
+                    chat_id,
+                    fix_telegram_html(ai_response),
+                    parse_mode='HTML',
+                    disable_web_page_preview=True
+                )
+        else:
+            # Fallback response
+            bot.send_message(
+                chat_id,
+                "I'm here to help you find amazing restaurants! What are you looking for?",
+                parse_mode='HTML'
+            )
+
+        # 5. Log success
+        processing_time = result.get("processing_time", 0)
+        logger.info(f"✅ Message processed successfully in {processing_time}s")
 
     except Exception as e:
-        logger.error(f"❌ Error processing message: {e}")
-        cleanup_processing_message(chat_id, processing_msg)
-        send_error_message(chat_id, "I encountered an error. Please try again.")
+        error_msg = f"Error processing message: {str(e)}"
+        logger.error(error_msg)
 
-    finally:
-        cleanup_cancellation(user_id)
+        # Clean up processing message
+        if processing_msg:
+            try:
+                bot.delete_message(chat_id, processing_msg.message_id)
+            except Exception:
+                pass
 
-
-async def display_agent_response(chat_id: int, user_id: int, result: Dict[str, Any]) -> None:
-    """
-    TELEGRAM CONCERN: Display unified agent response
-
-    Handles different response types from the agent.
-    """
-    if result.get("success"):
-        # Agent succeeded - display results
-        formatted_message = result.get("formatted_message", "Found some great restaurants!")
-
+        # Send error response
         bot.send_message(
             chat_id,
-            formatted_message,
-            parse_mode='HTML',
-            disable_web_page_preview=True
+            "I'm having a bit of trouble right now. Could you try asking again in a moment? 😔",
+            parse_mode='HTML'
         )
 
-        # Handle human-in-the-loop decisions (Telegram UI concern)
-        if result.get("human_decision_pending"):
-            await handle_human_decision_ui(chat_id, user_id, result)
 
-        logger.info(f"✅ Sent results to user {user_id}: {len(result.get('final_restaurants', []))} restaurants")
+def show_brief_processing_message(chat_id: int, message_text: str) -> Any:
+    """Show a brief, intelligent processing message"""
 
+    # Quick analysis to show appropriate processing message
+    if any(word in message_text.lower() for word in ["restaurant", "food", "eat", "dining"]):
+        processing_text = "🔍 Finding the perfect spots for you..."
+    elif any(word in message_text.lower() for word in ["more", "other", "different"]):
+        processing_text = "✨ Getting more options..."
+    elif any(word in message_text.lower() for word in ["near", "nearby", "around"]):
+        processing_text = "📍 Searching your area..."
     else:
-        # Agent failed - display error
-        error_message = result.get("error_message", "Search failed")
-        send_error_message(chat_id, f"😔 {error_message}")
+        processing_text = "🤔 Let me think about this..."
+
+    return bot.send_message(chat_id, processing_text)
 
 
-async def handle_human_decision_ui(chat_id: int, user_id: int, result: Dict[str, Any]) -> None:
-    """
-    TELEGRAM CONCERN: Show human-in-the-loop UI
+def split_message_for_telegram(message: str, max_length: int = 4000) -> List[str]:
+    """Split long messages into Telegram-friendly chunks"""
+    if len(message) <= max_length:
+        return [message]
 
-    The decision logic is in the agent, this just shows the UI.
-    """
-    decision_message = result.get("human_decision_message", "Found some restaurants. Search for more?")
+    chunks = []
+    current_chunk = ""
 
-    # Create Telegram inline keyboard
-    keyboard = telebot.types.InlineKeyboardMarkup()
-    keyboard.row(
-        telebot.types.InlineKeyboardButton(
-            "🔍 Yes, find more options", 
-            callback_data=f"decision_accept_{user_id}"
-        )
-    )
-    keyboard.row(
-        telebot.types.InlineKeyboardButton(
-            "✅ These are perfect", 
-            callback_data=f"decision_skip_{user_id}"
-        )
-    )
+    # Split by paragraphs first
+    paragraphs = message.split("\n\n")
 
-    bot.send_message(
-        chat_id,
-        f"<b>{decision_message}</b>\n\nI can search for additional options in the same area.",
-        reply_markup=keyboard,
-        parse_mode='HTML'
-    )
+    for paragraph in paragraphs:
+        if len(current_chunk + paragraph) <= max_length:
+            current_chunk += paragraph + "\n\n"
+        else:
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = paragraph + "\n\n"
+            else:
+                # Paragraph itself is too long, split by sentences
+                sentences = paragraph.split(". ")
+                for sentence in sentences:
+                    if len(current_chunk + sentence) <= max_length:
+                        current_chunk += sentence + ". "
+                    else:
+                        if current_chunk:
+                            chunks.append(current_chunk.strip())
+                        current_chunk = sentence + ". "
+
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+
+    return chunks
+
+
+def fix_telegram_html(text: str) -> str:
+    """Fix HTML formatting for Telegram"""
+    # Simple HTML fixes for Telegram compatibility
+    replacements = {
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+    }
+
+    # Don't escape HTML tags we want to keep
+    preserved_tags = ["<b>", "</b>", "<i>", "</i>", "<code>", "</code>", "<pre>", "</pre>"]
+
+    result = text
+    for old, new in replacements.items():
+        result = result.replace(old, new)
+
+    # Restore preserved tags
+    for tag in preserved_tags:
+        escaped_tag = tag.replace("<", "&lt;").replace(">", "&gt;")
+        result = result.replace(escaped_tag, tag)
+
+    return result
 
 
 # ============================================================================
-# TELEGRAM MESSAGE HANDLERS (Pure Messaging)
+# TELEGRAM BOT HANDLERS
 # ============================================================================
 
-@bot.message_handler(commands=['start'])
-def handle_start(message):
-    """Handle /start command - Pure UI"""
-    bot.send_message(
-        message.chat.id,
-        WELCOME_MESSAGE,
-        parse_mode='HTML'
-    )
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    """Handle /start and /help commands"""
+    user_id = message.from_user.id
+    logger.info(f"📱 New user {user_id} started conversation")
+
+    bot.reply_to(message, WELCOME_MESSAGE, parse_mode='HTML')
 
 
 @bot.message_handler(commands=['cancel'])
 def handle_cancel(message):
-    """Handle /cancel command - Telegram-specific cancellation"""
+    """Handle /cancel command to stop current search"""
     user_id = message.from_user.id
+    logger.info(f"Cancel command received from user {user_id}")
 
-    if user_id in active_searches:
-        active_searches[user_id].set()
-        bot.send_message(message.chat.id, "🛑 Search cancelled.")
-        logger.info(f"🛑 User {user_id} cancelled search")
-    else:
-        bot.send_message(message.chat.id, "No active search to cancel.")
-
-
-@bot.message_handler(content_types=['text'])
-def handle_text_message(message):
-    """Handle text messages - Delegate to unified agent"""
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-    text = message.text.strip()
-
-    if not text or text.startswith('/'):
+    # Check if user has an active search
+    if user_id not in active_searches:
+        bot.reply_to(
+            message,
+            "🤷‍♀️ I'm not currently searching for anything. What restaurants are you looking for?",
+            parse_mode='HTML'
+        )
         return
 
-    logger.info(f"📝 Text message from user {user_id}: '{text[:50]}...'")
+    # Cancel active search
+    cancel_event = active_searches[user_id]
+    cancel_event.set()
+    del active_searches[user_id]
 
-    # Delegate everything to unified agent
-    asyncio.run(process_user_message(user_id, chat_id, text))
+    bot.reply_to(
+        message,
+        "✅ Search cancelled! What else can I help you find?",
+        parse_mode='HTML'
+    )
+
+
+@bot.message_handler(commands=['memory'])
+def handle_memory_summary(message):
+    """Handle /memory command to show user's memory summary (for debugging)"""
+    user_id = message.from_user.id
+
+    async def get_memory():
+        try:
+            summary = await unified_agent.get_user_memory_summary(user_id)
+
+            memory_data = summary.get("memory_summary", {})
+            response = f"🧠 <b>Your Memory Summary:</b>\n\n"
+            response += f"• Restaurants remembered: {memory_data.get('total_restaurants', 0)}\n"
+            response += f"• Favorite cities: {', '.join(memory_data.get('preferred_cities', [])[:3]) or 'None yet'}\n"
+            response += f"• Preferred cuisines: {', '.join(memory_data.get('preferred_cuisines', [])[:3]) or 'Learning your tastes'}\n"
+            response += f"• Current city: {memory_data.get('current_city') or 'Not set'}\n"
+            response += f"• Chat style: {memory_data.get('conversation_style', 'casual')}\n"
+
+            bot.send_message(message.chat.id, response, parse_mode='HTML')
+
+        except Exception as e:
+            logger.error(f"Error getting memory summary: {e}")
+            bot.send_message(
+                message.chat.id, 
+                "Sorry, I couldn't retrieve your memory summary right now.",
+                parse_mode='HTML'
+            )
+
+    # Run async function
+    asyncio.run(get_memory())
 
 
 @bot.message_handler(content_types=['voice'])
 def handle_voice_message(message):
-    """Handle voice messages - Transcribe then delegate"""
+    """Handle voice messages - TRANSCRIPTION ONLY"""
     user_id = message.from_user.id
     chat_id = message.chat.id
 
+    logger.info(f"🎙️ Voice message from user {user_id}")
+
+    # Check if voice handler is available
     if not voice_handler:
-        bot.send_message(chat_id, "😔 Voice messages are not available. Please send text.")
+        bot.send_message(
+            chat_id,
+            "🔇 Sorry, voice message processing isn't available right now. Please send text.",
+            parse_mode='HTML'
+        )
         return
 
     # Show transcription progress
@@ -233,7 +324,7 @@ def handle_voice_message(message):
         if transcribed_text:
             logger.info(f"🎙️ Voice transcribed for user {user_id}: '{transcribed_text[:50]}...'")
 
-            # Delegate transcribed text to unified agent
+            # Delegate transcribed text to memory-enhanced agent
             asyncio.run(process_user_message(user_id, chat_id, transcribed_text, message_type="voice"))
         else:
             bot.send_message(chat_id, "😔 Couldn't understand your voice message. Please try again.")
@@ -257,7 +348,7 @@ def handle_location_message(message):
 
     logger.info(f"📍 Location from user {user_id}: {latitude:.4f}, {longitude:.4f}")
 
-    # Delegate to unified agent with coordinates
+    # Delegate to memory-enhanced agent with coordinates
     asyncio.run(process_user_message(
         user_id=user_id,
         chat_id=chat_id,
@@ -266,133 +357,74 @@ def handle_location_message(message):
     ))
 
 
+@bot.message_handler(func=lambda message: True)
+def handle_text_message(message):
+    """Handle all text messages - Main entry point"""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    message_text = message.text
+
+    logger.info(f"📝 Text message from user {user_id}: '{message_text[:50]}...'")
+
+    # Delegate to memory-enhanced agent
+    asyncio.run(process_user_message(user_id, chat_id, message_text, message_type="text"))
+
+
 # ============================================================================
-# HUMAN-IN-THE-LOOP CALLBACK HANDLER (Telegram UI)
+# HUMAN-IN-THE-LOOP CALLBACK HANDLER (Preserved from original)
 # ============================================================================
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("decision_"))
 def handle_decision_callback(call):
-    """Handle human decision callbacks - Pure UI delegation"""
+    """Handle human-in-the-loop decisions (for location enhancement)"""
     try:
-        parts = call.data.split("_")
-        action = parts[1]  # "accept" or "skip"  
-        user_id = int(parts[2])
+        user_id = call.from_user.id
+        decision = call.data.replace("decision_", "")  # "accept" or "skip"
 
-        # Validate user
-        if call.from_user.id != user_id:
-            bot.answer_callback_query(call.id, "❌ Invalid user")
-            return
+        logger.info(f"🤔 Human decision from user {user_id}: {decision}")
 
-        # Show processing
-        bot.edit_message_text(
-            "🔄 Processing your choice...",
-            call.message.chat.id,
-            call.message.message_id,
-            parse_mode='HTML'
-        )
+        # Answer the callback to remove loading state
+        bot.answer_callback_query(call.id, f"Decision: {decision}")
 
-        # Delegate decision to unified agent
-        asyncio.run(continue_agent_workflow(
-            user_id=user_id,
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            decision=action
-        ))
+        # Generate thread ID for this decision
+        thread_id = f"telegram_{user_id}_{int(time.time())}"
+
+        # Handle the decision through unified agent
+        async def handle_async_decision():
+            try:
+                result = await unified_agent.handle_human_decision(thread_id, decision)
+
+                if result.get("success"):
+                    # Send the final results
+                    final_message = result.get("formatted_message") or result.get("ai_response")
+                    if final_message:
+                        bot.send_message(
+                            call.message.chat.id,
+                            fix_telegram_html(final_message),
+                            parse_mode='HTML',
+                            disable_web_page_preview=True
+                        )
+                else:
+                    bot.send_message(
+                        call.message.chat.id,
+                        "I had some trouble processing that decision. Could you try searching again?",
+                        parse_mode='HTML'
+                    )
+
+            except Exception as e:
+                logger.error(f"Error handling async decision: {e}")
+                bot.send_message(
+                    call.message.chat.id,
+                    "Sorry, there was an error processing your decision.",
+                    parse_mode='HTML'
+                )
+
+        # Run the async handler
+        asyncio.run(handle_async_decision())
 
     except Exception as e:
-        logger.error(f"❌ Error handling decision callback: {e}")
-        bot.answer_callback_query(call.id, "❌ Error occurred")
-
-
-async def continue_agent_workflow(user_id: int, chat_id: int, message_id: int, decision: str):
-    """Continue unified agent workflow after human decision"""
-    try:
-        # BUSINESS LOGIC: Delegate to unified agent
-        result = unified_agent.handle_human_decision(
-            thread_id=f"user_{user_id}",
-            decision=decision
-        )
-
-        # TELEGRAM CONCERN: Update UI with agent response
-        if result.get("success"):
-            formatted_message = result["formatted_message"]
-
-            bot.edit_message_text(
-                formatted_message,
-                chat_id,
-                message_id,
-                parse_mode='HTML'
-            )
-
-            logger.info(f"✅ Decision {decision} completed for user {user_id}")
-
-        else:
-            error_message = result.get("error_message", "Decision processing failed")
-            bot.edit_message_text(
-                f"😔 {error_message}",
-                chat_id,
-                message_id,
-                parse_mode='HTML'
-            )
-
-    except Exception as e:
-        logger.error(f"❌ Error continuing workflow: {e}")
-        bot.edit_message_text(
-            "😔 Something went wrong. Please try a new search.",
-            chat_id,
-            message_id,
-            parse_mode='HTML'
-        )
-
-
-# ============================================================================
-# TELEGRAM-SPECIFIC UTILITY FUNCTIONS
-# ============================================================================
-
-def show_processing_message(chat_id: int, message_text: str, gps_coordinates: Optional[tuple]) -> Optional[telebot.types.Message]:
-    """Show processing message - Pure Telegram UI"""
-    try:
-        if gps_coordinates:
-            text = "🔍 <b>Searching for restaurants near your location...</b>"
-        else:
-            text = f"🔍 <b>Searching for {message_text[:30]}...</b>"
-
-        return bot.send_message(chat_id, text, parse_mode='HTML')
-    except Exception:
-        return None
-
-
-def cleanup_processing_message(chat_id: int, processing_msg: Optional[telebot.types.Message]) -> None:
-    """Clean up processing message - Pure Telegram UI"""
-    if processing_msg:
-        try:
-            bot.delete_message(chat_id, processing_msg.message_id)
-        except Exception:
-            pass
-
-
-def send_error_message(chat_id: int, message: str) -> None:
-    """Send error message - Pure Telegram UI"""
-    bot.send_message(chat_id, message, parse_mode='HTML')
-
-
-def setup_cancellation(user_id: int, chat_id: int) -> Event:
-    """Set up cancellation tracking - Telegram-specific"""
-    cancel_event = Event()
-    active_searches[user_id] = cancel_event
-    return cancel_event
-
-
-def is_cancelled(user_id: int) -> bool:
-    """Check if search is cancelled - Telegram-specific"""
-    if user_id in active_searches:
-        return active_searches[user_id].is_set()
-    return False
-
-
-def cleanup_cancellation(user_id: int) -> None:
-    """Clean up cancellation tracking - Telegram-specific"""
-    active_searches.pop(user_id, None)
+        logger.error(f"Error in decision callback: {e}")
+        bot.answer_callback_query(call.id, "Error processing decision")
 
 
 # ============================================================================
@@ -400,23 +432,22 @@ def cleanup_cancellation(user_id: int) -> None:
 # ============================================================================
 
 def main():
-    """Start the clean telegram bot"""
-    logger.info("🚀 Starting Clean Telegram Bot (Business Logic in LangGraph)")
-
+    """Initialize and start the memory-enhanced bot"""
     try:
-        # Test unified agent initialization
-        logger.info("🧪 Testing unified agent...")
-        test_agent = create_unified_restaurant_agent(config)
-        logger.info("✅ Unified agent ready")
+        logger.info("🚀 Starting Memory-Enhanced Restaurant Bot...")
+        logger.info("✨ Features: AI Chat Layer + Memory System + Natural Conversations")
+
+        # Test agent initialization
+        logger.info("🧪 Testing agent initialization...")
+        test_result = asyncio.run(unified_agent.get_user_memory_summary(1))
+        logger.info("✅ Agent test passed")
 
         # Start bot
         logger.info("🤖 Starting Telegram bot polling...")
         bot.infinity_polling(timeout=10, long_polling_timeout=5)
 
-    except KeyboardInterrupt:
-        logger.info("🛑 Bot stopped by user")
     except Exception as e:
-        logger.error(f"❌ Bot startup error: {e}")
+        logger.error(f"❌ Error starting bot: {e}")
         raise
 
 

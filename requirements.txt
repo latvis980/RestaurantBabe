@@ -1,5 +1,7 @@
 # Core LangChain and AI
 langchain>=0.1.0
+langgraph
+langgraph-checkpoint
 langchain-openai>=0.1.0
 langchain-core>=0.1.0
 langchain-mistralai>=0.1.0  # Keep for other agents if needed
@@ -8,6 +10,9 @@ openai>=1.0.0
 anthropic>=0.25.0  # Official Anthropic Python client
 langchain-community>=0.3.22
 langchain-deepseek>=0.1.3
+
+# Observability
+langsmith
 
 # SUPABASE INTEGRATION (replacing PostgreSQL)
 supabase>=2.10.0
@@ -22,12 +27,14 @@ playwright==1.41.0
 # Telegram bot
 pyTelegramBotAPI>=4.20.0
 
+# Memory
+dataclasses-json>=0.6.0  # If not already installed
+typing-extensions>=4.0.0
+
 # Google Maps integration
 googlemaps>=4.10.0
 google-maps-places>=0.2.2  # NEW: Google Places API (New) for enhanced verification
 
-# Observability
-langsmith
 
 # Schema validation
 pydantic>=2.0
@@ -48,5 +55,5 @@ numpy>=1.24.0
 
 # File clean up
 schedule>=1.2.0
-langgraph
-langgraph-checkpoint
+
+

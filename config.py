@@ -376,6 +376,67 @@ LOG_COMBINED_DATA = True  # Log map + media verification combined data
 LOG_AI_SELECTION = True   # Log AI restaurant selection process  
 LOG_DESCRIPTION_GENERATION = True  # Log description generation input/output
 
+
+# memory_config_update.py
+"""
+Configuration updates to add to config.py for AI Memory and Chat Layer
+
+Add these settings to your config.py file to enable the memory-enhanced features.
+"""
+
+# ============================================================================
+# AI MEMORY AND CHAT LAYER CONFIGURATION
+# ============================================================================
+
+# AI Chat Layer settings
+USE_MEMORY_ENHANCED_AGENT = True  # Enable the new memory-enhanced agent
+AI_CHAT_LAYER_MODEL = "gpt-4o-mini"  # Model for chat decisions
+AI_CHAT_TEMPERATURE = 0.3  # Temperature for chat responses
+AI_CHAT_MAX_TOKENS = 1000  # Max tokens for chat responses
+
+# Memory system settings  
+MEMORY_STORE_TYPE = "in_memory"  # "in_memory", "postgresql", "mongodb"
+ENABLE_LONG_TERM_MEMORY = True  # Cross-conversation memory
+ENABLE_SHORT_TERM_MEMORY = True  # Within-conversation memory
+MAX_RESTAURANT_MEMORIES = 100  # Max restaurants to remember per user
+MEMORY_CLEANUP_DAYS = 30  # Clean up old sessions after X days
+
+# Conversation learning settings
+LEARN_PREFERENCES_FROM_MESSAGES = True  # Extract preferences from chat
+LEARN_CONVERSATION_PATTERNS = True  # Learn user communication style
+AUTO_UPDATE_USER_PREFERENCES = True  # Update preferences automatically
+
+# Response personalization
+ENABLE_CONTEXTUAL_RESPONSES = True  # Use memory for personalized responses
+ENABLE_FOLLOW_UP_SUGGESTIONS = True  # Suggest follow-up actions
+REFERENCE_PAST_RECOMMENDATIONS = True  # Reference previous restaurants
+
+# Debug settings for memory system
+MEMORY_DEBUG_MODE = False  # Enable detailed memory logging
+LOG_MEMORY_OPERATIONS = False  # Log all memory store operations
+LOG_AI_CHAT_DECISIONS = True  # Log AI chat layer decisions
+
+# Performance settings
+MEMORY_STORE_POOL_SIZE = 10  # Connection pool size for persistent stores
+MEMORY_OPERATION_TIMEOUT = 30.0  # Timeout for memory operations
+AI_CHAT_DECISION_TIMEOUT = 15.0  # Timeout for AI chat decisions
+
+print("""
+🧠 MEMORY SYSTEM CONFIGURATION UPDATE
+
+To enable the memory-enhanced AI chat layer, add these settings to your config.py:
+
+1. Copy the configuration above into your config.py file
+2. Restart your application 
+3. The new memory system will be active
+
+Key Features Enabled:
+✨ AI-powered conversation routing
+🧠 Long-term user memory across sessions
+💬 Natural conversation flow
+🎯 Context-aware restaurant recommendations
+📚 Learning user preferences automatically
+""")
 # ============================================================================
 # VALIDATION
 # ============================================================================
