@@ -1,236 +1,292 @@
-# formatters/telegram_formatter.py
+# formatters/location_telegram_formatter.py
 """
-SIMPLE Telegram HTML formatter - production approach
-Based on Telegram bot best practices: keep it simple and reliable
+FIXED Location-specific Telegram formatter - Proper HTML handling
 
-FIXED: Domain extraction from full URLs in sources
+CRITICAL FIX: 
+- Fixed _clean_html() method that was double-escaping HTML
+- Fixed Google Maps link formatting  
+- Proper handling of Telegram HTML tags
+- Better formatting for database and maps results
+
+This was causing raw HTML to appear in the Telegram bot because the formatter
+was escaping HTML tags then trying to remove them, which doesn't work.
 """
+
 import re
 import logging
 from html import escape
-from urllib.parse import urlparse
+from typing import Dict, List, Any, Union
+from urllib.parse import urlparse, quote
+
 from formatters.google_links import build_google_maps_url
 
 logger = logging.getLogger(__name__)
 
-class TelegramFormatter:
-    """Simple, reliable Telegram HTML formatter following production best practices"""
+class LocationTelegramFormatter:
+    """
+    FIXED: Location-specific Telegram formatter with proper HTML handling
+    """
 
     MAX_MESSAGE_LENGTH = 4096
 
     def __init__(self, config=None):
-        """Initialize formatter with config for AI features"""
         self.config = config
 
-    def format_recommendations(self, recommendations_data):
-        """Main entry point for formatting recommendations"""
-        try:
-            main_list = recommendations_data.get("main_list", [])
-            logger.info(f"📋 Formatting {len(main_list)} restaurants for Telegram")
+    def format_database_results(
+        self,
+        restaurants: List[Union[Dict[str, Any], Any]], 
+        query: str,
+        location_description: str,
+        offer_more_search: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Format database search results with proper HTML handling
 
-            if not main_list:
-                return self._no_results_message()
+        Args:
+            restaurants: List of restaurant data from database
+            query: Original user query
+            location_description: Description of the searched location
+            offer_more_search: Whether to offer additional Google Maps search
+
+        Returns:
+            Formatted results dictionary for telegram bot
+        """
+        try:
+            if not restaurants:
+                return {
+                    "message": "No restaurants found in my notes for this area.",
+                    "restaurant_count": 0,
+                    "has_choice": False
+                }
+
+            # Build the results message
+            message_parts = []
+
+            # Header with personal notes context
+            header = "📝 <b>From my personal restaurant notes:</b>\n\n"
+
+            # Format each restaurant
+            for i, restaurant in enumerate(restaurants[:6], 1):  # Limit to 6 for choice flow
+                formatted_restaurant = self._format_single_restaurant(restaurant, i)
+                message_parts.append(formatted_restaurant)
+
+            # Combine all parts
+            full_message = header + "\n\n".join(message_parts)
+
+            # Add choice explanation if offering more search
+            if offer_more_search:
+                choice_text = (
+                    "\n\n💡 <b>These are from my curated collection.</b> "
+                    "Would you like to see these options or search for more restaurants in the area?"
+                )
+                full_message += choice_text
+
+            # Truncate if necessary
+            if len(full_message) > self.MAX_MESSAGE_LENGTH:
+                full_message = self._truncate_message(full_message, message_parts, header)
+
+            return {
+                "message": full_message,
+                "restaurant_count": len(restaurants),
+                "has_choice": offer_more_search
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error formatting database results: {e}")
+            return {
+                "message": "Sorry, I had trouble formatting the restaurant information.",
+                "restaurant_count": 0,
+                "has_choice": False
+            }
+
+    def format_google_maps_results(
+        self,
+        venues: List[Union[Dict[str, Any], Any]],
+        query: str,
+        location_description: str
+    ) -> Dict[str, Any]:
+        """
+        Format Google Maps search results with media verification
+        """
+        try:
+            if not venues:
+                return {
+                    "message": f"😔 No restaurants found near {location_description}. Try expanding the search area or be more specific?",
+                    "restaurant_count": 0,
+                    "has_choice": False
+                }
 
             # Build message parts
-            parts = ["<b>🍽️ Here's a selection for you:</b>\n\n"]
+            message_parts = []
+            header = f"🗺️ <b>Found these restaurants near {location_description}:</b>\n\n"
 
-            for i, restaurant in enumerate(main_list, 1):
-                restaurant_text = self._format_restaurant(restaurant, i)
-                if restaurant_text:
-                    parts.append(restaurant_text)
+            for i, venue in enumerate(venues[:10], 1):  # Limit to 10 venues
+                formatted_venue = self._format_verified_venue(venue, i)
+                message_parts.append(formatted_venue)
 
-            parts.append("\n<i>Click the address to see the venue photos and menu on Google Maps</i>")
+            # Combine all parts
+            full_message = header + "\n\n".join(message_parts)
 
-            # Join and apply length limit
-            message = ''.join(parts)
-            if len(message) > self.MAX_MESSAGE_LENGTH:
-                message = message[:self.MAX_MESSAGE_LENGTH-3] + "…"
+            # Truncate if necessary
+            if len(full_message) > self.MAX_MESSAGE_LENGTH:
+                full_message = self._truncate_message(full_message, message_parts, header)
 
-            logger.info("✅ Telegram formatting completed")
-            return message
+            return {
+                "message": full_message,
+                "restaurant_count": len(venues),
+                "has_choice": False
+            }
 
         except Exception as e:
-            logger.error(f"❌ Error in Telegram formatting: {e}")
-            return self._no_results_message()
+            logger.error(f"❌ Error formatting Google Maps results: {e}")
+            return {
+                "message": f"Found restaurants near {location_description} but had trouble formatting them.",
+                "restaurant_count": len(venues) if venues else 0,
+                "has_choice": False
+            }
 
-    def _format_address_link(self, address, place_id, restaurant_name=""):
-        """Create Google Maps link with 2025 universal URL format"""
-        if not address:
+    def _format_single_restaurant(self, restaurant: Union[Dict[str, Any], Any], index: int) -> str:
+        """
+        Format a single restaurant from database with proper HTML handling
+        """
+        try:
+            # Restaurant name with index
+            name = self._get_value(restaurant, 'name', 'Unknown Restaurant')
+            formatted_name = f"<b>{index}. {self._clean_html_preserve_tags(name)}</b>\n"
+
+            # Address with canonical Google Maps link
+            address_line = self._format_address_link(restaurant)
+
+            # Distance with proper "0.1 km" format
+            distance_line = self._format_distance_enhanced(restaurant)
+
+            # Enhanced description with more content from database
+            description_line = self._format_description_enhanced(restaurant)
+
+            # Sources showing only domain names
+            sources_line = self._format_sources_domains_only(restaurant)
+
+            # Combine all parts
+            result = f"{formatted_name}{address_line}{distance_line}{description_line}{sources_line}"
+
+            return result
+
+        except Exception as e:
+            logger.error(f"❌ Error formatting restaurant {self._get_value(restaurant, 'name', 'Unknown')}: {e}")
+            return f"<b>{index}. {self._get_value(restaurant, 'name', 'Unknown Restaurant')}</b>\nInformation unavailable\n"
+
+    def _format_verified_venue(self, venue: Union[Dict[str, Any], Any], index: int) -> str:
+        """
+        Format a single verified venue from Google Maps with media verification
+        """
+        try:
+            name = self._get_value(venue, 'name', 'Unknown Restaurant')
+            address = self._get_value(venue, 'address', '')
+            distance_km = self._get_value(venue, 'distance_km')
+            rating = self._get_value(venue, 'rating')
+            place_id = self._get_value(venue, 'place_id')
+            description = self._get_value(venue, 'description', '')
+            sources = self._get_value(venue, 'sources', [])
+            media_verified = self._get_value(venue, 'media_verified', False)
+            google_maps_url = self._get_value(venue, 'google_maps_url', '')
+
+            # Restaurant name with index
+            formatted_name = f"<b>{index}. {self._clean_html_preserve_tags(name)}</b>\n"
+
+            # Address with Google Maps link
+            if place_id:
+                google_url = build_google_maps_url(place_id, name)
+            elif google_maps_url:
+                google_url = google_maps_url
+            else:
+                encoded_query = quote(f"{name} {address}")
+                google_url = f"https://www.google.com/maps/search/?api=1&query={encoded_query}"
+
+            clean_address = self._extract_street_address(address)
+            address_line = f'📍 <a href="{google_url}">{clean_address}</a>\n'
+
+            # Distance and rating
+            details_parts = []
+            if distance_km is not None:
+                details_parts.append(f"{distance_km:.1f} km")
+            if rating:
+                details_parts.append(f"⭐ {rating}")
+
+            details_line = f"📊 {' • '.join(details_parts)}\n" if details_parts else ""
+
+            # Description
+            if description:
+                clean_desc = self._clean_html_preserve_tags(description)
+                description_line = f"{clean_desc}\n"
+            else:
+                description_line = ""
+
+            # Sources (if media verified)
+            sources_line = ""
+            if media_verified and sources:
+                domain_names = []
+                for source in sources:
+                    domain = self._extract_domain_from_url(source)
+                    if domain and domain not in domain_names:
+                        domain_names.append(domain)
+
+                if domain_names:
+                    sources_text = ", ".join(domain_names[:3])
+                    sources_line = f"<i>✅ Featured in: {sources_text}</i>\n"
+
+            return f"{formatted_name}{address_line}{details_line}{description_line}{sources_line}"
+
+        except Exception as e:
+            logger.error(f"❌ Error formatting venue {self._get_value(venue, 'name', 'Unknown')}: {e}")
+            return f"<b>{index}. {self._get_value(venue, 'name', 'Unknown Restaurant')}</b>\nInformation unavailable\n"
+
+    def _format_distance_enhanced(self, restaurant: Union[Dict[str, Any], Any]) -> str:
+        """Format distance with proper spacing"""
+        try:
+            distance_km = self._get_value(restaurant, 'distance_km')
+            if distance_km is not None:
+                return f"📏 {distance_km:.1f} km\n"
+            return ""
+        except Exception:
             return ""
 
-        clean_address = self._extract_street(address)
-
-        google_url = build_google_maps_url(place_id, restaurant_name)
-        
-        return f'📍 <a href="{google_url}">{clean_address}</a>\n'
-
-    def _format_restaurant(self, restaurant, index):
-        """Format single restaurant with all details"""
+    def _format_description_enhanced(self, restaurant: Union[Dict[str, Any], Any]) -> str:
+        """Format enhanced description from database"""
         try:
-            name = restaurant.get("name", "").strip()
-            address = restaurant.get("address", "").strip()
-            description = restaurant.get("description", "").strip()
-            sources = restaurant.get("sources", [])
-            place_id = restaurant.get("place_id")
+            description = self._get_value(restaurant, 'description', '')
+            if description:
+                clean_desc = self._clean_html_preserve_tags(description)
+                return f"{clean_desc}\n"
+            return ""
+        except Exception:
+            return ""
 
-            if not name:
-                logger.warning(f"Restaurant {index} missing name")
+    def _format_sources_domains_only(self, restaurant: Union[Dict[str, Any], Any]) -> str:
+        """Format sources showing only domain names"""
+        try:
+            sources = self._get_value(restaurant, 'sources', [])
+            if not sources:
                 return ""
 
-            # Clean name
-            name_clean = self._clean_html(name)
+            domain_names = []
+            for source in sources:
+                domain = self._extract_domain_from_url(source)
+                if domain and domain not in domain_names:
+                    domain_names.append(domain)
 
-            # Clean description
-            desc_clean = self._clean_html(description) if description else ""
+            if domain_names:
+                sources_text = ", ".join(domain_names[:3])
+                return f"<i>✅ Recommended by: {sources_text}</i>\n"
 
-            # Build restaurant text
-            parts = [f"<b>{index}. {name_clean}</b>\n"]
-
-            # Add address with link
-            address_line = self._format_address_link(address, place_id)
-            if address_line:
-                parts.append(address_line)
-
-            # Add description
-            if desc_clean:
-                parts.append(f"{desc_clean}\n")
-
-            # Add sources - FIXED: Extract domains from URLs
-            sources_line = self._format_sources(sources)
-            if sources_line:
-                parts.append(sources_line)
-                # ADD THIS DEBUG LOGGING:
-                logger.debug(f"🔍 TELEGRAM FORMATTER - Generated sources line: {sources_line}")
-            else:
-                logger.debug(f"⚠️ No sources line generated for {name}")
-
-            parts.append("\n")  # Spacing between restaurants
-
-            formatted_result = ''.join(parts)
-
-            # ADD THIS DEBUG LOGGING:
-            logger.debug(f"🔍 TELEGRAM FORMATTER - Final formatted restaurant:")
-            logger.debug(f"🔍 TELEGRAM FORMATTER - Result: {formatted_result}")
-
-            return formatted_result
-
-        except Exception as e:
-            logger.error(f"❌ Error formatting restaurant {index}: {e}")
             return ""
 
-    def _extract_street(self, full_address):
-        """Extract street address using AI - handles international formats"""
-        if not full_address:
-            return "Address available"
-
-        try:
-            # Use AI for smart address cleaning
-            cleaned_address = self._ai_clean_address(full_address)
-            if cleaned_address:
-                return cleaned_address
-            else:
-                logger.warning(f"AI cleaning failed, using full address: {full_address}")
-                return self._clean_html(full_address)  # Use full address as fallback
         except Exception as e:
-            logger.warning(f"AI address cleaning failed: {e}, using full address")
-            return self._clean_html(full_address)  # Use full address as fallback
-
-    def _ai_clean_address(self, full_address):
-        """Use AI to intelligently remove postal codes and countries"""
-        try:
-            from openai import OpenAI
-
-            # Check if we have config and API key
-            if not self.config or not getattr(self.config, 'DEEPSEEK_API_KEY', None):
-                logger.warning("No API key found for address cleaning, using full address")
-                return self._clean_html(full_address)  # Return full address if no API key
-
-            # Initialize client
-            client = OpenAI(
-                api_key=getattr(self.config, 'DEEPSEEK_API_KEY'),
-                base_url="https://api.deepseek.com"
-            )
-
-            prompt = f"""Clean this address by removing ONLY the postal code and country. Keep the street address and city.
-
-Examples:
-- Via dei Tribunali, 94, 80139 Naples, Italy → Via dei Tribunali, 94, Naples  
-- 123 Main St, New York, NY 10001, USA → 123 Main St, New York, NY
-- Sheikh Mohammed bin Rashid Blvd - Downtown Dubai - Dubai - UAE → Sheikh Mohammed bin Rashid Blvd - Downtown Dubai - Dubai
-- Rua Augusta 123, 1100-048 Lisboa, Portugal → Rua Augusta 123, Lisboa
-- 東京都渋谷区渋谷2-21-1, 150-8510 Japan → 東京都渋谷区渋谷2-21-1
-- Av. Santa Fe 1860, C1123ABN CABA, Argentina → Av. Santa Fe 1860, CABA
-- 上海市黄浦区南京东路300号, 200001 China → 上海市黄浦区南京东路300号
-- ул. Арбат, 12, 119019 Москва, Россия → ул. Арбат, 12, Москва
-
-Address to clean: "{full_address}"
-
-Return only the cleaned address, nothing else."""
-
-            response = client.chat.completions.create(
-                model="deepseek-chat",  # CHANGED: Use GPT-4o Mini instead of deepseek-chat
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=100,
-                temperature=0.1  # Low temperature for consistency
-            )
-
-            cleaned = response.choices[0].message.content.strip()
-
-            # Basic validation - cleaned address should be shorter than original
-            if cleaned and len(cleaned) < len(full_address) and len(cleaned) > 5:
-                logger.debug(f"AI cleaned address: '{full_address}' → '{cleaned}'")
-                return cleaned
-            else:
-                logger.warning(f"AI cleaning suspicious: '{full_address}' → '{cleaned}', using full address")
-                return self._clean_html(full_address)  # Return full address if AI result is suspicious
-
-        except Exception as e:
-            logger.error(f"AI API error: {e}, using full address")
-            return self._clean_html(full_address)  # Return full address on any error
-
-    def _simple_extract_street(self, full_address):
-        """Fallback simple address extraction"""
-        parts = str(full_address).split(',')
-        street = parts[0].strip()
-
-        # Keep street + city (first two parts)
-        if len(parts) >= 2:
-            return f"{parts[0].strip()}, {parts[1].strip()}"
-
-        return street if street else "Address available"
-
-    def _format_sources(self, sources):
-        """Format sources - FIXED: Extract domains from URLs and deduplicate"""
-        if not sources or not isinstance(sources, list):
+            logger.debug(f"Error formatting sources: {e}")
             return ""
 
-        # Extract domains from URLs and clean them
-        clean_domains = []
-        seen_domains = set()  # For deduplication
-
-        for source in sources[:3]:  # Max 3 sources
-            if source and str(source).strip():
-                # Extract domain from URL if it's a URL, otherwise use as-is
-                domain = self._extract_domain_from_url(str(source).strip())
-
-                # Clean the domain/source
-                clean_domain = self._clean_html(domain)
-
-                # Add to list if not already seen (deduplicate)
-                if clean_domain and clean_domain.lower() not in seen_domains:
-                    clean_domains.append(clean_domain)
-                    seen_domains.add(clean_domain.lower())
-
-        if clean_domains:
-            sources_text = ", ".join(clean_domains)
-            return f"<i>✅ Recommended by: {sources_text}</i>\n"
-
-        return ""
-
-    def _extract_domain_from_url(self, source):
-        """Extract domain from URL, or return source as-is if not a URL"""
+    def _extract_domain_from_url(self, source: str) -> str:
+        """Extract domain from URL"""
         try:
-            # Check if it looks like a URL
             if '://' in source or source.startswith('www.'):
                 parsed_url = urlparse(source if '://' in source else f'http://{source}')
                 domain = parsed_url.netloc.lower()
@@ -248,24 +304,125 @@ Return only the cleaned address, nothing else."""
             logger.debug(f"Could not parse URL {source}: {e}")
             return source
 
-    def _clean_html(self, text):
-        """Simple HTML cleaning - production approach"""
+    def _format_address_link(self, restaurant: Union[Dict[str, Any], Any]) -> str:
+        """
+        Create address line with Google Maps link
+        """
+        try:
+            address = self._get_value(restaurant, 'address', '')
+            place_id = self._get_value(restaurant, 'place_id', '')
+            name = self._get_value(restaurant, 'name', '')
+
+            if not address:
+                return ""
+
+            # Create Google Maps URL
+            if place_id:
+                google_url = build_google_maps_url(place_id, name)
+            else:
+                # Fallback to search-based URL
+                encoded_name = quote(f"{name} {address}")
+                google_url = f"https://www.google.com/maps/search/?api=1&query={encoded_name}"
+
+            clean_address = self._extract_street_address(address)
+            return f'📍 <a href="{google_url}">{self._clean_html_preserve_tags(clean_address)}</a>\n'
+
+        except Exception as e:
+            logger.debug(f"Error formatting address link: {e}")
+            return ""
+
+    def _extract_street_address(self, full_address: str) -> str:
+        """
+        Extract street address and city, removing postal codes and country
+        """
+        try:
+            if not full_address:
+                return "Address available"
+
+            parts = str(full_address).split(',')
+
+            # Remove country (common country names)
+            if len(parts) >= 2:
+                last_part = parts[-1].strip()
+                if last_part in ['United States', 'United Kingdom', 'Portugal', 'France', 'Germany', 'Spain', 'Italy']:
+                    parts = parts[:-1]
+
+            # Remove postal codes (last part if it contains numbers)
+            if len(parts) >= 2:
+                last_part = parts[-1].strip()
+                if re.search(r'\d', last_part) and len(last_part) <= 10:
+                    parts = parts[:-1]
+
+            # Take first 2-3 parts for street address
+            street_parts = parts[:3] if len(parts) > 3 else parts
+            return ', '.join(street_parts)
+
+        except Exception:
+            return full_address
+
+    def _get_value(self, obj: Union[Dict[str, Any], Any], key: str, default: Any = None) -> Any:
+        """
+        Safely get value from either dictionary or dataclass object
+        """
+        try:
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            else:
+                return getattr(obj, key, default)
+        except Exception:
+            return default
+
+    def _clean_html_preserve_tags(self, text: str) -> str:
+        """
+        FIXED: Properly clean HTML content while preserving Telegram HTML tags
+
+        This was the main issue - the old method was escaping HTML first,
+        then trying to remove tags, which doesn't work.
+        """
         if not text:
             return ""
 
-        # Basic HTML escaping (only what's needed)
         text = str(text).strip()
-        text = escape(text, quote=False)  # Escape HTML but keep quotes
 
-        # Remove any remaining HTML tags
-        text = re.sub(r'<[^>]+>', '', text)
+        # Remove unwanted HTML tags but preserve Telegram-allowed tags (<b>, <i>, <a>, <code>, <pre>)
+        # This regex removes tags that are NOT in the Telegram-allowed list
+        text = re.sub(r'<(?!/?(?:b|i|a|code|pre|strong|em)(?:\s[^>]*)?)[^>]*>', '', text)
 
         # Replace multiple spaces with single space
         text = re.sub(r'\s+', ' ', text)
 
+        # Only escape ampersands that could break HTML parsing
+        # Don't escape < and > since we want to preserve valid Telegram HTML tags
+        text = re.sub(r'&(?!(?:amp|lt|gt|quot|#[0-9]+|#x[0-9a-fA-F]+);)', '&amp;', text)
+
         return text.strip()
 
-    def _no_results_message(self):
-        """Simple no results message"""
-        return ("<b>Sorry, no restaurant recommendations found for your search.</b>\n\n"
-                "Try rephrasing your query or searching for a different area.")
+    def _clean_html(self, text: str) -> str:
+        """Legacy method - redirects to the fixed version"""
+        return self._clean_html_preserve_tags(text)
+
+    def _truncate_message(self, full_message: str, message_parts: List[str], header: str, footer: str = "") -> str:
+        """Truncate message to fit Telegram limits"""
+        try:
+            # Calculate available space
+            available_space = self.MAX_MESSAGE_LENGTH - len(header) - len(footer) - 100  # Buffer
+
+            # Include as many restaurants as possible
+            truncated_parts = []
+            current_length = 0
+
+            for part in message_parts:
+                if current_length + len(part) <= available_space:
+                    truncated_parts.append(part)
+                    current_length += len(part)
+                else:
+                    break
+
+            # Add "more results" note if we truncated
+            if len(truncated_parts) < len(message_parts):
+                truncated_parts.append(f"\n<i>... and {len(message_parts) - len(truncated_parts)} more results</i>")
+
+            return header + "\n\n".join(truncated_parts) + footer
+
+        except Exception:
+            return header + "Found restaurants but had trouble formatting them." + footer

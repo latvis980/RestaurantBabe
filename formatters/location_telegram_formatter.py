@@ -1,4 +1,4 @@
-# location/location_telegram_formatter.py
+# formatters/location_telegram_formatter.py
 """
 Location-specific Telegram formatter - UPDATED with better formatting
 
