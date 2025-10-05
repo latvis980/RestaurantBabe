@@ -44,6 +44,7 @@ from agents.editor_agent import EditorAgent
 from agents.follow_up_search_agent import FollowUpSearchAgent
 
 # Location-specific agents (preserve their logic)
+from location.location_analyzer import LocationAnalyzer
 from location.location_utils import LocationUtils
 from location.database_search import LocationDatabaseService
 from location.filter_evaluator import LocationFilterEvaluator
@@ -133,6 +134,7 @@ class UnifiedRestaurantAgent:
     def _init_location_search_agents(self):
         """Initialize location search agents"""
         self.location_utils = LocationUtils()
+        self.location_analyzer = LocationAnalyzer(self.config)
         self.location_database_service = LocationDatabaseService(self.config)
         self.location_filter_evaluator = LocationFilterEvaluator(self.config)
         self.location_database_ai_editor = LocationDatabaseAIEditor(self.config)
@@ -493,7 +495,7 @@ class UnifiedRestaurantAgent:
             # Execute with timeout
             def generate():
                 response = self._confirmation_ai.invoke([HumanMessage(content=prompt)])
-                return response.content.strip()
+                return response.content.strip() if isinstance(response.content, str) else str(response.content).strip()
 
             with ThreadPoolExecutor() as executor:
                 future = executor.submit(generate)
@@ -666,24 +668,52 @@ class UnifiedRestaurantAgent:
 
     @traceable(name="detect_search_flow")
     async def _detect_search_flow(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """Detect search flow type"""
+        """
+        FIXED: AI-powered flow detection using LocationAnalyzer
+        """
         try:
             logger.info("🔍 Flow Detection")
 
             has_coordinates = bool(state.get("gps_coordinates"))
             has_location_data = bool(state.get("location_data"))
-            location_keywords = ["near me", "nearby", "close", "around here", "in my area"]
-            query_lower = state["query"].lower()
-            has_location_keywords = any(keyword in query_lower for keyword in location_keywords)
 
-            if has_coordinates or has_location_data or has_location_keywords:
+            # If we have coordinates or location data, it's definitely location search
+            if has_coordinates or has_location_data:
                 search_flow = "location_search"
-                logger.info("🗺️ Detected: Location-based search")
+                logger.info("🗺️ Detected: Location-based search (GPS/location data provided)")
             else:
-                search_flow = "city_search"
-                logger.info("🏙️ Detected: City-based search")
+                # Use AI-powered LocationAnalyzer instead of hardcoded keywords
+                query = state["query"]
+                logger.info(f"🤖 Using AI to analyze query: '{query}'")
+
+                try:
+                    location_analysis = self.location_analyzer.analyze_message(query)
+                    request_type = location_analysis.get("request_type", "GENERAL_SEARCH")
+                    confidence = location_analysis.get("confidence", 0.0)
+                    location_detected = location_analysis.get("location_detected")
+                    reasoning = location_analysis.get("reasoning", "No reasoning provided")
+
+                    logger.info(f"🤖 AI Analysis Result:")
+                    logger.info(f"   Request Type: {request_type}")
+                    logger.info(f"   Location Detected: {location_detected}")
+                    logger.info(f"   Confidence: {confidence}")
+                    logger.info(f"   Reasoning: {reasoning}")
+
+                    if request_type == "LOCATION_SEARCH":
+                        search_flow = "location_search"
+                        logger.info("🗺️ Detected: Location-based search (AI analysis)")
+                    else:
+                        search_flow = "city_search"
+                        logger.info("🏙️ Detected: City-based search (AI analysis)")
+
+                except Exception as ai_error:
+                    logger.error(f"❌ AI flow detection failed: {ai_error}")
+                    # Fallback to city search if AI fails
+                    search_flow = "city_search"
+                    logger.info("🏙️ Detected: City-based search (AI fallback)")
 
             return {**state, "search_flow": search_flow, "current_step": "flow_detected"}
+
         except Exception as e:
             logger.error(f"❌ Error in flow detection: {e}")
             return {**state, "search_flow": "city_search", "error_message": f"Flow detection failed: {str(e)}"}
