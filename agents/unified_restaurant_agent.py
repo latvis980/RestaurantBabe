@@ -215,11 +215,15 @@ class UnifiedRestaurantAgent:
         query: str,
         user_id: int,
         gps_coordinates: Optional[Tuple[float, float]] = None,
-        thread_id: Optional[str] = None
+        thread_id: Optional[str] = None,
+        telegram_bot=None,  # NEW: Accept telegram bot instance
+        chat_id: Optional[int] = None  # NEW: Accept chat_id for sending confirmation
     ) -> Dict[str, Any]:
         """
         NEW: Main entry point with AI Chat Layer integration
         This method handles conversation flow and only triggers search when ready.
+
+        ENHANCED: Now sends confirmation message with video when search is triggered
         """
         start_time = time.time()
 
@@ -260,7 +264,7 @@ class UnifiedRestaurantAgent:
                 }
 
             elif chat_decision.action in [ActionType.TRIGGER_CITY_SEARCH, ActionType.TRIGGER_LOCATION_SEARCH]:
-                # Ready to search! Execute the search pipeline
+                # Ready to search! 
                 logger.info(f"🚀 Triggering {chat_decision.search_type} search with accumulated context")
 
                 # Get the full conversation context for search
@@ -276,6 +280,29 @@ class UnifiedRestaurantAgent:
                         "processing_time": processing_time
                     }
 
+                # NEW: SEND CONFIRMATION MESSAGE WITH VIDEO BEFORE STARTING SEARCH
+                confirmation_msg = None
+                if telegram_bot and chat_id:
+                    try:
+                        # Determine search type
+                        search_type = "location_based" if chat_decision.action == ActionType.TRIGGER_LOCATION_SEARCH else "city_wide"
+
+                        # Get conversation context for message generation
+                        conversation_context = search_info.get('raw_query', query)
+
+                        # Send confirmation message with video
+                        confirmation_msg = self._send_search_confirmation_message(
+                            telegram_bot=telegram_bot,
+                            chat_id=chat_id,
+                            search_query=conversation_context,
+                            search_type=search_type
+                        )
+
+                        logger.info(f"✅ Sent confirmation message for {search_type} search")
+
+                    except Exception as e:
+                        logger.warning(f"⚠️ Could not send confirmation message: {e}")
+
                 search_type = chat_decision.search_type or "city_wide"
 
                 # Execute restaurant search with accumulated context - use [CONTEXT] prefix
@@ -285,6 +312,15 @@ class UnifiedRestaurantAgent:
                     gps_coordinates=gps_coordinates,
                     thread_id=thread_id
                 )
+
+                # Clean up confirmation message if it was sent
+                if telegram_bot and chat_id and confirmation_msg:
+                    try:
+                        # Give search a moment to start
+                        await asyncio.sleep(1)
+                        telegram_bot.delete_message(chat_id, confirmation_msg.message_id)
+                    except Exception:
+                        pass  # Message might already be deleted
 
                 # Add chat layer info to result
                 search_result["ai_chat_response"] = chat_decision.response_text
@@ -316,6 +352,237 @@ class UnifiedRestaurantAgent:
                 "search_triggered": False,
                 "processing_time": processing_time
             }
+
+    def _send_search_confirmation_message(
+        self,
+        telegram_bot,
+        chat_id: int,
+        search_query: str,
+        search_type: str
+    ) -> Optional[object]:
+        """
+        Send confirmation message with video before starting search
+        Uses AI generation with static fallback for reliability
+
+        Args:
+            telegram_bot: Telegram bot instance
+            chat_id: Chat ID to send message to
+            search_query: User's search query
+            search_type: "city_wide" or "location_based"
+
+        Returns:
+            Message object or None if failed
+        """
+        try:
+            # HYBRID: Try AI generation first, fallback to static
+            message = self._generate_confirmation_message_hybrid(search_query, search_type)
+
+            # Choose video and emoji based on search type
+            if search_type == "city_wide":
+                video_path = 'media/searching.mp4'
+                fallback_emoji = "🔍"
+            else:  # location_based
+                video_path = 'media/vicinity_search.mp4'
+                fallback_emoji = "📍"
+
+            # Try to send with video first
+            try:
+                import os
+                if os.path.exists(video_path):
+                    with open(video_path, 'rb') as video:
+                        return telegram_bot.send_video(
+                            chat_id,
+                            video,
+                            caption=f"{fallback_emoji} {message}",
+                            parse_mode='HTML'
+                        )
+                else:
+                    logger.warning(f"Video file not found: {video_path}")
+                    raise FileNotFoundError("Video not available")
+
+            except Exception as video_error:
+                logger.warning(f"Could not send video: {video_error}")
+                # Fallback to text message with emoji
+                return telegram_bot.send_message(
+                    chat_id,
+                    f"{fallback_emoji} {message}",
+                    parse_mode='HTML'
+                )
+
+        except Exception as e:
+            logger.error(f"Error sending confirmation message: {e}")
+            # Ultimate fallback
+            try:
+                return telegram_bot.send_message(
+                    chat_id,
+                    "🔍 <b>Searching for restaurants...</b>\n\nThis might take a moment.",
+                    parse_mode='HTML'
+                )
+            except Exception:
+                logger.error("Could not send any confirmation message")
+                return None
+
+
+    def _generate_confirmation_message_hybrid(self, search_query: str, search_type: str) -> str:
+        """
+        HYBRID: Generate confirmation message with AI + static fallback
+
+        Tries AI generation first with timeout, falls back to static messages for reliability
+
+        Args:
+            search_query: The accumulated user conversation context
+            search_type: "city_wide" or "location_based"
+
+        Returns:
+            HTML-formatted confirmation message
+        """
+        # First try AI generation (with timeout)
+        ai_message = self._try_ai_confirmation_message(search_query, search_type)
+
+        if ai_message:
+            logger.info(f"✅ Using AI-generated confirmation: {ai_message[:50]}...")
+            return ai_message
+
+        # Fallback to static messages
+        logger.info("📝 Using static confirmation message (AI failed/timeout)")
+        return self._get_static_confirmation_message(search_query, search_type)
+
+
+    def _try_ai_confirmation_message(self, search_query: str, search_type: str) -> Optional[str]:
+        """
+        Try to generate AI confirmation message with timeout and error handling
+
+        Returns:
+            AI-generated message or None if failed
+        """
+        try:
+            import asyncio
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError
+            from langchain_openai import ChatOpenAI
+            from langchain_core.messages import HumanMessage
+
+            # Initialize AI if not exists
+            if not hasattr(self, '_confirmation_ai'):
+                self._confirmation_ai = ChatOpenAI(
+                    model=getattr(self.config, 'AI_MESSAGE_MODEL', 'gpt-4o-mini'),
+                    temperature=0.7,
+                    max_tokens=80,  # Keep it short
+                    api_key=self.config.OPENAI_API_KEY,
+                    timeout=3  # 3 second timeout
+                )
+
+            # Create prompt
+            prompt = f"""Generate a brief confirmation message for a restaurant search bot.
+
+    User request: {search_query}
+    Search type: {search_type}
+
+    Requirements:
+    - 1-2 sentences max
+    - Enthusiastic but professional  
+    - Reference specific food/location if clear
+    - Use <b> tags for emphasis
+    - Mention it takes a moment
+
+    Examples:
+    - "sushi in Chiado" → "<b>Perfect! Searching for amazing sushi in Chiado.</b> Give me a moment to check my local contacts."
+    - "best pizza" → "<b>Excellent! Finding the top pizza places for you.</b> This might take a minute while I check my curated list."
+
+    Generate ONLY the message:"""
+
+            # Execute with timeout
+            def generate():
+                response = self._confirmation_ai.invoke([HumanMessage(content=prompt)])
+                return response.content.strip()
+
+            with ThreadPoolExecutor() as executor:
+                future = executor.submit(generate)
+                try:
+                    ai_message = future.result(timeout=2.5)  # 2.5 second timeout
+
+                    # Validate the response
+                    if ai_message and len(ai_message) > 10 and len(ai_message) < 200:
+                        # Ensure proper HTML formatting
+                        if not '<b>' in ai_message:
+                            # Add bold to first sentence
+                            sentences = ai_message.split('. ')
+                            if sentences:
+                                sentences[0] = f"<b>{sentences[0]}</b>"
+                                ai_message = '. '.join(sentences)
+
+                        return ai_message
+                    else:
+                        logger.warning(f"AI response invalid: {ai_message}")
+                        return None
+
+                except TimeoutError:
+                    logger.warning("AI confirmation message generation timed out")
+                    return None
+
+        except Exception as e:
+            logger.warning(f"AI confirmation message failed: {e}")
+            return None
+
+
+    def _get_static_confirmation_message(self, search_query: str, search_type: str) -> str:
+        """
+        Get static confirmation message with basic personalization
+
+        Args:
+            search_query: User's search query
+            search_type: "city_wide" or "location_based"
+
+        Returns:
+            Static confirmation message with light personalization
+        """
+        # Extract basic info for light personalization
+        query_lower = search_query.lower()
+
+        # Detect cuisine type for basic personalization
+        cuisine_detected = None
+        cuisines = {
+            'sushi': 'sushi', 'japanese': 'Japanese', 'ramen': 'ramen',
+            'pizza': 'pizza', 'italian': 'Italian', 'pasta': 'Italian',
+            'chinese': 'Chinese', 'thai': 'Thai', 'indian': 'Indian',
+            'mexican': 'Mexican', 'burger': 'burger', 'steak': 'steak',
+            'seafood': 'seafood', 'vegetarian': 'vegetarian', 'vegan': 'vegan'
+        }
+
+        for keyword, cuisine in cuisines.items():
+            if keyword in query_lower:
+                cuisine_detected = cuisine
+                break
+
+        # Detect location for basic personalization
+        location_detected = None
+        locations = {
+            'chiado': 'Chiado', 'bairro alto': 'Bairro Alto', 
+            'príncipe real': 'Príncipe Real', 'alfama': 'Alfama',
+            'downtown': 'downtown', 'center': 'the center'
+        }
+
+        for keyword, location in locations.items():
+            if keyword in query_lower:
+                location_detected = location
+                break
+
+        # Generate personalized static message
+        if search_type == "city_wide":
+            if cuisine_detected:
+                message = f"<b>Perfect! I'm searching for the best {cuisine_detected} places for you.</b>\n\nThis might take a minute while I check my curated collection."
+            else:
+                message = "<b>Perfect! I'm searching for the best restaurants for you.</b>\n\nThis might take a minute while I check my curated collection."
+        else:  # location_based
+            if cuisine_detected and location_detected:
+                message = f"<b>Great! I'm searching for amazing {cuisine_detected} spots in {location_detected}.</b>\n\nGive me a moment to check my local guides."
+            elif cuisine_detected:
+                message = f"<b>Great! I'm searching for amazing {cuisine_detected} places in that area.</b>\n\nGive me a moment to check my local contacts."
+            elif location_detected:
+                message = f"<b>Great! I'm searching for amazing restaurants in {location_detected}.</b>\n\nGive me a moment to check my local guides."
+            else:
+                message = "<b>Great! I'm searching for amazing restaurants in that area.</b>\n\nGive me a moment to check my local guides and contacts."
+
+        return message
 
     async def execute_restaurant_search_with_context(
         self,
@@ -873,7 +1140,8 @@ class UnifiedRestaurantAgent:
         query: str,
         user_id: int,
         gps_coordinates: Optional[Tuple[float, float]] = None,
-        thread_id: Optional[str] = None
+        thread_id: Optional[str] = None,
+        **kwargs  # NEW: To accept telegram_bot and chat_id
     ) -> Dict[str, Any]:
         """
         CRITICAL FIX: Main entry point now ALWAYS routes through AI Chat Layer
@@ -903,7 +1171,9 @@ class UnifiedRestaurantAgent:
                     query=query,
                     user_id=user_id,
                     gps_coordinates=gps_coordinates,
-                    thread_id=thread_id
+                    thread_id=thread_id,
+                    telegram_bot=kwargs.get('telegram_bot'),  # NEW
+                    chat_id=kwargs.get('chat_id')  # NEW
                 )
 
             # If we reach here, AI Chat Layer determined we're ready to search

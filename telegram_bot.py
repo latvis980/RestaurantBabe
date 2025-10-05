@@ -261,60 +261,37 @@ async def process_user_message(
     """
     ENHANCED ENTRY POINT: Process any user message through EXISTING AI Chat Layer
 
-    The EXISTING AI Chat Layer decides whether to:
-    1. Continue conversation to collect more info
-    2. Trigger city-wide search when ready  
-    3. Trigger location-based search when ready
-    4. Handle follow-up requests
-
-    THIS VERSION: Only adds video messages when searches are triggered
+    UPDATED: Now passes bot instance to unified agent for confirmation messages
     """
-    processing_msg = None
-
     try:
-        # 1. UPDATED: Show typing indicator instead of contextual processing message
+        # 1. Show typing indicator
         bot.send_chat_action(chat_id, 'typing')
 
         # 2. AI CHAT LAYER: All intelligence happens here (EXISTING SYSTEM)
         logger.info(f"🎯 Processing message for user {user_id}: '{message_text[:50]}...'")
 
+        # UPDATED: Pass bot instance and chat_id to unified agent
         result = await unified_agent.restaurant_search_with_memory(
             query=message_text,
             user_id=user_id,
             gps_coordinates=gps_coordinates,
-            thread_id=f"telegram_{user_id}_{int(time.time())}"
+            thread_id=f"telegram_{user_id}_{int(time.time())}",
+            telegram_bot=bot,  # NEW: Pass bot instance
+            chat_id=chat_id    # NEW: Pass chat_id
         )
 
-        # 3. UPDATED: Handle search-triggered results with videos
+        # 3. Handle the response
         search_triggered = result.get("search_triggered", False)
         action_taken = result.get("action_taken", "unknown")
 
-        if search_triggered:
-            # SEARCH WAS TRIGGERED - Send video based on search type
-
-            # Determine search type from the conversation context or action
-            conversation_context = result.get("conversation_context", message_text)
-
-            # Simple heuristic to determine search type
-            search_type = determine_search_type(conversation_context, action_taken)
-
-            # Send AI-generated video message
-            processing_msg = send_search_message_with_video(chat_id, conversation_context, search_type)
-
-            # Give the search a moment to start, then clean up the video message
-            await asyncio.sleep(1)
-
-            if processing_msg:
-                try:
-                    bot.delete_message(chat_id, processing_msg.message_id)
-                except Exception:
-                    pass  # Message might already be deleted
-
-        # 4. TELEGRAM CONCERN: Send the AI response (as before)
+        # 4. Send the AI response
         ai_response = result.get("ai_response") or result.get("formatted_message")
 
         if ai_response:
-            # Handle long messages
+            # For search results, send them after a slight delay to let confirmation message show
+            if search_triggered:
+                await asyncio.sleep(2)
+
             if len(ai_response) > 4000:
                 chunks = split_message_for_telegram(ai_response)
                 for chunk in chunks:
@@ -331,7 +308,7 @@ async def process_user_message(
                     parse_mode='HTML',
                     disable_web_page_preview=True
                 )
-        else:
+        elif not search_triggered:
             # Minimal fallback - should rarely happen
             bot.send_message(
                 chat_id,
@@ -353,13 +330,6 @@ async def process_user_message(
     except Exception as e:
         error_msg = f"Error processing message: {str(e)}"
         logger.error(error_msg)
-
-        # Clean up processing message
-        if processing_msg:
-            try:
-                bot.delete_message(chat_id, processing_msg.message_id)
-            except Exception:
-                pass
 
         # Send error response
         bot.send_message(
@@ -553,7 +523,9 @@ def main():
     logger.info("🤖 Starting Telegram bot with Enhanced AI Chat Layer integration")
     logger.info("✅ Enhanced unified agent with AI Chat Layer initialized")
     logger.info("🎯 All messages processed through AI Chat Layer for intelligent conversation flow")
-    logger.info("🔧 UPDATED: AI-generated search messages with videos")
+    logger.info("🔧 UPDATED: Confirmation messages sent from unified agent before search")
+    logger.info("🎬 Videos: City searches use media/searching.mp4")
+    logger.info("📍 Videos: Location searches use media/vicinity_search.mp4")
 
     try:
         # Initialize AI message generator
