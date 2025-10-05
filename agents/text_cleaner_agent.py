@@ -9,7 +9,7 @@ NEW WORKFLOW:
 3. Combine all individual files into master file
 4. Deduplicate restaurants (combine entries for same restaurant)
 5. Track ALL sources for each restaurant (comma-separated URLs)
-6. Upload final combined file to Supabase
+6. Upload final combined file to Supabase (ADDED!)
 """
 
 import re
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 class TextCleanerAgent:
     """
-    REFACTORED: Individual file processing with restaurant deduplication
+    REFACTORED: Individual file processing with restaurant deduplication + Supabase upload
     """
 
     def __init__(self, config, model_override=None):
@@ -48,7 +48,8 @@ class TextCleanerAgent:
             "avg_processing_time": 0.0,
             "current_model": self.current_model_type,
             "individual_files_saved": 0,
-            "combined_files_saved": 0
+            "combined_files_saved": 0,
+            "supabase_uploads": 0  # NEW: track uploads
         }
 
         # Create directories for individual and combined files
@@ -58,32 +59,43 @@ class TextCleanerAgent:
         """Initialize AI model with INCREASED token limits"""
         logger.info(f"🤖 Initializing REFACTORED Text Cleaner with {model_type} model")
 
-        if model_type.lower() == 'deepseek':
-            try:
-                from langchain_deepseek import ChatDeepSeek
-                return ChatDeepSeek(
-                    model=self.config.DEEPSEEK_CHAT_MODEL,
-                    temperature=self.config.DEEPSEEK_TEMPERATURE,
-                    max_tokens=self.config.DEEPSEEK_MAX_TOKENS_BY_COMPONENT.get('content_cleaning', 12288),  # INCREASED
-                    api_key=self.config.DEEPSEEK_API_KEY
-                )
-            except ImportError:
-                logger.warning("⚠️ DeepSeek not available, falling back to OpenAI")
-                model_type = 'openai'
-
-        if model_type.lower() == 'openai':
+        if model_type == 'openai':
             from langchain_openai import ChatOpenAI
             return ChatOpenAI(
-                model=self.config.OPENAI_MODEL,
-                temperature=self.config.OPENAI_TEMPERATURE,
-                max_tokens=self.config.OPENAI_MAX_TOKENS_BY_COMPONENT.get('content_cleaning', 12288),  # FIXED: max_tokens parameter
-                api_key=self.config.OPENAI_API_KEY
+                temperature=0.1,
+                model="gpt-4o-mini",
+                max_tokens=16000,  # INCREASED: was 8000, now 16000
+                max_retries=3
+            )
+        elif model_type == 'deepseek':
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(
+                temperature=0.1,
+                openai_api_base="https://api.deepseek.com",
+                openai_api_key=self.config.DEEPSEEK_API_KEY,
+                model="deepseek-chat",
+                max_tokens=16000,  # INCREASED: was 8000, now 16000
+                max_retries=3
+            )
+        elif model_type == 'claude':
+            from langchain_anthropic import ChatAnthropic
+            return ChatAnthropic(
+                temperature=0.1,
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=8000,  # INCREASED: was 4000, now 8000
+                max_retries=3
+            )
+        else:
+            logger.warning(f"Unknown model type: {model_type}, defaulting to OpenAI")
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(
+                temperature=0.1,
+                model="gpt-4o-mini",
+                max_tokens=16000
             )
 
-        raise ValueError(f"Unsupported model type: {model_type}")
-
     def _setup_directories(self):
-        """Create directories for individual and combined files"""
+        """Create necessary directories for individual and combined files"""
         try:
             individual_dir = Path(self.config.INDIVIDUAL_FILE_PROCESSING['individual_files_directory'])
             combined_dir = Path(self.config.INDIVIDUAL_FILE_PROCESSING['combined_files_directory'])
@@ -120,11 +132,121 @@ class TextCleanerAgent:
         # Step 4: Create final combined file
         final_file_path = self._create_final_combined_file(deduplicated_restaurants, query, scraped_results)
 
-        # Step 5: Update stats
+        # Step 5: Upload final combined file to Supabase (NEW!)
+        await self._upload_final_file_to_supabase(final_file_path, deduplicated_restaurants, query)
+
+        # Step 6: Update stats
         self._update_final_stats(individual_results, combined_restaurants, deduplicated_restaurants)
 
         logger.info(f"✅ REFACTORED: Individual processing complete. Final file: {final_file_path}")
         return final_file_path
+
+    async def _upload_final_file_to_supabase(self, final_file_path: str, restaurants: List[Dict[str, Any]], query: str) -> bool:
+        """
+        NEW METHOD: Upload the final combined file to Supabase storage
+
+        Args:
+            final_file_path: Path to the local final combined file
+            restaurants: List of deduplicated restaurants
+            query: Original search query
+
+        Returns:
+            bool: True if upload successful, False otherwise
+        """
+        try:
+            if not final_file_path or not os.path.exists(final_file_path):
+                logger.warning("⚠️ No final file to upload to Supabase")
+                return False
+
+            # Read the final combined file content
+            with open(final_file_path, 'r', encoding='utf-8') as f:
+                file_content = f.read()
+
+            if not file_content.strip():
+                logger.warning("⚠️ Final file is empty, skipping Supabase upload")
+                return False
+
+            # Extract city from restaurants for metadata
+            cities = set()
+            for restaurant in restaurants:
+                city = restaurant.get('City', '').strip()
+                if city and city.lower() not in ['n/a', 'not specified', 'unknown']:
+                    cities.add(city)
+
+            # Use first city found, or extract from query, or default to 'unknown'
+            primary_city = next(iter(cities)) if cities else self._extract_city_from_query(query)
+
+            # Prepare metadata for Supabase storage
+            metadata = {
+                'city': primary_city,
+                'country': self._extract_country_from_restaurants(restaurants),
+                'query': query,
+                'restaurants_count': len(restaurants),
+                'upload_source': 'text_cleaner_agent',
+                'processing_method': 'individual_file_processing_with_deduplication',
+                'timestamp': datetime.now().isoformat()
+            }
+
+            # Import and use the Supabase storage utility
+            from utils.supabase_storage import upload_content_to_bucket
+
+            logger.info(f"📤 Uploading final combined file to Supabase...")
+            logger.info(f"   📊 Content size: {len(file_content)} characters")
+            logger.info(f"   🍽️ Restaurants: {len(restaurants)}")
+            logger.info(f"   🏙️ Primary city: {primary_city}")
+
+            # Upload to Supabase with RB naming convention
+            success, uploaded_file_path = upload_content_to_bucket(
+                content=file_content,
+                metadata=metadata,
+                file_type="txt"
+            )
+
+            if success:
+                logger.info(f"✅ Successfully uploaded to Supabase: {uploaded_file_path}")
+                self.stats["supabase_uploads"] += 1
+                return True
+            else:
+                logger.error("❌ Failed to upload to Supabase")
+                return False
+
+        except Exception as e:
+            logger.error(f"❌ Error uploading to Supabase: {e}")
+            return False
+
+    def _extract_city_from_query(self, query: str) -> str:
+        """Extract city name from the original query as fallback"""
+        if not query:
+            return 'unknown'
+
+        # Simple city extraction - look for common patterns
+        # This is a basic implementation, you could make it more sophisticated
+        query_lower = query.lower()
+
+        # Common city patterns in restaurant queries
+        city_indicators = ['in ', 'at ', 'near ', 'around ']
+        for indicator in city_indicators:
+            if indicator in query_lower:
+                parts = query_lower.split(indicator)
+                if len(parts) > 1:
+                    potential_city = parts[1].split()[0]  # First word after indicator
+                    return potential_city.capitalize()
+
+        return 'unknown'
+
+    def _extract_country_from_restaurants(self, restaurants: List[Dict[str, Any]]) -> str:
+        """Extract most common country from restaurants"""
+        countries = {}
+        for restaurant in restaurants:
+            country = restaurant.get('Country', '').strip()
+            if country and country.lower() not in ['n/a', 'not specified', 'unknown']:
+                countries[country] = countries.get(country, 0) + 1
+
+        if countries:
+            # Return most common country
+            return max(countries.items(), key=lambda x: x[1])[0]
+
+        return 'unknown'
 
     async def _process_urls_individually(self, scraped_results: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
         """Process each URL individually with increased token limits"""
@@ -153,168 +275,119 @@ class TextCleanerAgent:
                     individual_file_path = self._save_individual_file(cleaned_result, idx, query)
                     cleaned_result['individual_file_path'] = individual_file_path
                     individual_results.append(cleaned_result)
-                    self.stats["individual_files_processed"] += 1
+
+                    restaurant_count = len(cleaned_result['restaurants'])
+                    logger.info(f"✅ Individual file {idx} processed: {restaurant_count} restaurants found")
+                else:
+                    logger.warning(f"⚠️ Individual file {idx} processed: no valid restaurants found")
 
             except Exception as e:
-                logger.error(f"❌ Error processing individual URL {idx}: {e}")
+                logger.error(f"❌ Error processing individual file {idx}: {e}")
                 continue
 
-        logger.info(f"✅ Individual processing complete: {len(individual_results)}/{len(scraped_results)} successful")
+        logger.info(f"🏁 Individual processing complete: {len(individual_results)}/{len(scraped_results)} files processed successfully")
         return individual_results
 
-    async def _clean_individual_source(self, content: str, url: str, content_format: str = 'text') -> Dict[str, Any]:
-        """Clean content from individual source with enhanced extraction"""
-        start_time = datetime.now()
+    async def _clean_individual_source(self, content: str, source_url: str, content_format: str = 'text') -> Optional[Dict[str, Any]]:
+        """Clean individual source content with INCREASED token limits"""
+        start_time = asyncio.get_event_loop().time()
 
         try:
             # Convert RTF to text if needed
-            if content_format == 'rtf' or content.startswith('{\\rtf'):
-                text_content = self._rtf_to_text(content)
+            if content_format == 'rtf':
+                content = self._rtf_to_text(content)
                 self.stats["rtf_files_processed"] += 1
-                logger.debug(f"📄 Converted RTF to text for {urlparse(url).netloc}")
-            else:
-                text_content = content
 
-            # Skip if content is too short
-            if len(text_content.strip()) < 100:
-                logger.warning(f"⚠️ Content too short to clean: {url}")
-                return {}
+            # Truncate content if too long (prevent token limits)
+            max_chars = 50000  # INCREASED: was 30000, now 50000 to handle more content
+            if len(content) > max_chars:
+                content = content[:max_chars] + "\n\n[Content truncated due to length...]"
+                logger.info(f"⚠️ Content truncated for {urlparse(source_url).netloc}: {len(content)} chars")
 
-            # Enhanced AI prompt for individual processing
-            cleaning_prompt = self._create_enhanced_individual_prompt()
-            content_with_metadata = f"SOURCE URL: {url}\n\n{text_content}"
+            # Enhanced cleaning prompt for individual processing
+            enhanced_prompt = f"""
+Extract restaurant information from this web content. Focus on finding complete restaurant details.
 
-            # Use AI with INCREASED token limits
-            from langchain.schema import HumanMessage
-            messages = [HumanMessage(content=cleaning_prompt.format(content=content_with_metadata))]
-            response = await self.model.ainvoke(messages)
-            cleaned_content = str(response.content).strip()  
+SOURCE URL: {source_url}
+CONTENT FORMAT: {content_format}
 
-            # Parse AI response into structured data
-            parsed_result = self._parse_individual_ai_response(cleaned_content, url)
-
-            # Update processing stats
-            processing_time = (datetime.now() - start_time).total_seconds()
-            self.stats["total_processing_time"] += processing_time
-            self.stats["files_processed"] += 1
-
-            if parsed_result.get('restaurants'):
-                restaurant_count = len(parsed_result['restaurants'])
-                self.stats["restaurants_extracted"] += restaurant_count
-                logger.info(f"✅ Extracted {restaurant_count} restaurants from {urlparse(url).netloc}")
-
-            return parsed_result
-
-        except Exception as e:
-            logger.error(f"❌ Error cleaning individual source {url}: {e}")
-            return {}
-
-    def _create_enhanced_individual_prompt(self) -> str:
-        """Enhanced prompt for individual file processing with source URL tracking"""
-        return """You are a restaurant extraction specialist. Extract ALL restaurants from this web content.
-
-**CRITICAL REQUIREMENTS:**
-1. Extract EVERY restaurant, cafe, bar, bistro mentioned
-2. Add the source URL to EACH restaurant entry  
-3. Include comprehensive descriptions with all available details
-4. Assign specific city/country to each restaurant
-5. Use the increased token limit to provide complete extractions
-
-**Content to process:**
+CONTENT:
 {content}
 
-**REQUIRED OUTPUT FORMAT:**
+INSTRUCTIONS:
+1. Extract ONLY restaurants (not cafes, bars, or food trucks unless specifically mentioned as restaurants)
+2. For each restaurant, provide:
+   - Name: Full restaurant name
+   - City: City where the restaurant is located
+   - Country: Country where the restaurant is located
+   - Description: Brief description (max 2-3 sentences)
+   - Address: Full address if available, otherwise "Not specified"
 
-METADATA:
-Original URL: [Extract from content header]
-Primary City: [Main city mentioned in content]
-Primary Country: [Main country mentioned in content]
-Total Restaurants Found: [Number]
+3. Return as JSON array with this exact format:
+[
+  {{
+    "Name": "Restaurant Name",
+    "City": "City Name",
+    "Country": "Country Name", 
+    "Description": "Brief description of the restaurant and cuisine",
+    "Address": "Full address or 'Not specified'"
+  }}
+]
 
-RESTAURANTS:
-Name: [Restaurant Name]
-City: [Specific city for this restaurant]
-Country: [Country for this restaurant] 
-Description: [Comprehensive description including cuisine, atmosphere, specialties, chef info, etc. If only name is available, use "Recommended by [source name]" or "Included in the list of...]
-Address: [Full address if available, or "Not specified"]
-Source: [Source URL from content header]
+4. QUALITY REQUIREMENTS:
+   - Only include restaurants with clear names
+   - Ensure city/country are properly identified
+   - Descriptions should be informative but concise
+   - Skip entries that are unclear or incomplete
 
-Name: [Next Restaurant Name]
-City: [Specific city]
-Country: [Country]
-Description: [Full description]
-Address: [Address or "Not specified"]
-Source: [Source URL]
+Return ONLY the JSON array, no other text.
+"""
 
-**EXTRACTION RULES:**
-- Extract restaurants even if only briefly mentioned
-- Translate non-English descriptions to English
-- For minimal info sources (like Michelin lists), use "Recommended by [source name]" as description
-- Include ALL details: cuisine type, price range, atmosphere, signature dishes, chef names
-- If address is partial, include what's available
-- NEVER skip restaurants due to minimal information
+            # Process with AI model
+            response = await self.model.ainvoke([{"role": "user", "content": enhanced_prompt}])
+            response_text = response.content.strip()
 
-Return ONLY the formatted data above, no other text."""
+            # Parse JSON response
+            try:
+                # Clean common JSON formatting issues
+                response_text = response_text.replace('```json', '').replace('```', '').strip()
+                restaurants = json.loads(response_text)
 
-    def _parse_individual_ai_response(self, ai_response: str, source_url: str) -> Dict[str, Any]:
-        """Parse AI response into structured restaurant data"""
-        try:
-            result = {
-                'source_url': source_url,
-                'restaurants': [],
-                'metadata': {}
-            }
+                if not isinstance(restaurants, list):
+                    logger.warning(f"⚠️ Invalid response format for {urlparse(source_url).netloc}")
+                    return None
 
-            lines = ai_response.strip().split('\n')
-            current_restaurant = {}
-            in_restaurants_section = False
+                # Add source URL to each restaurant
+                for restaurant in restaurants:
+                    restaurant['Source'] = source_url
 
-            for line in lines:
-                line = line.strip()
+                processing_time = asyncio.get_event_loop().time() - start_time
+                self.stats["total_processing_time"] += processing_time
+                self.stats["files_processed"] += 1
+                self.stats["restaurants_extracted"] += len(restaurants)
 
-                if not line:
-                    # End of restaurant entry
-                    if current_restaurant.get('Name') and current_restaurant.get('Description'):
-                        # Ensure source URL is set for each restaurant
-                        current_restaurant['Source'] = source_url
-                        result['restaurants'].append(current_restaurant.copy())
-                        current_restaurant = {}
-                    continue
+                logger.debug(f"🧹 Individual cleaning: {len(restaurants)} restaurants, {processing_time:.2f}s")
 
-                if line.startswith('RESTAURANTS:'):
-                    in_restaurants_section = True
-                    continue
+                return {
+                    'source_url': source_url,
+                    'restaurants': restaurants,
+                    'processing_time': processing_time,
+                    'content_format': content_format
+                }
 
-                if line.startswith('METADATA:'):
-                    in_restaurants_section = False
-                    continue
-
-                if not in_restaurants_section:
-                    # Parse metadata
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        result['metadata'][key.strip()] = value.strip()
-                else:
-                    # Parse restaurant fields
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        current_restaurant[key.strip()] = value.strip()
-
-            # Add final restaurant if exists
-            if current_restaurant.get('Name') and current_restaurant.get('Description'):
-                current_restaurant['Source'] = source_url
-                result['restaurants'].append(current_restaurant)
-
-            return result
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ JSON parsing error for {urlparse(source_url).netloc}: {e}")
+                logger.debug(f"Response was: {response_text[:200]}...")
+                return None
 
         except Exception as e:
-            logger.error(f"❌ Error parsing AI response: {e}")
-            return {'source_url': source_url, 'restaurants': [], 'metadata': {}}
+            logger.error(f"❌ Error cleaning individual source {urlparse(source_url).netloc}: {e}")
+            return None
 
     def _save_individual_file(self, cleaned_result: Dict[str, Any], file_index: int, query: str) -> str:
         """Save individual cleaned result to file"""
         try:
-            # Create filename
+            # Create safe filename
             safe_query = re.sub(r'[^\w\s-]', '', query)[:30]
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             domain = urlparse(cleaned_result['source_url']).netloc.replace('.', '_')
@@ -359,93 +432,97 @@ Return ONLY the formatted data above, no other text."""
         all_restaurants = []
 
         for result in individual_results:
-            for restaurant in result.get('restaurants', []):
-                # Ensure source URL is preserved
-                if 'Source' not in restaurant:
-                    restaurant['Source'] = result['source_url']
-                all_restaurants.append(restaurant)
+            restaurants = result.get('restaurants', [])
+            all_restaurants.extend(restaurants)
 
-        logger.info(f"✅ Combined into {len(all_restaurants)} total restaurant entries")
+        logger.info(f"📊 Combined total: {len(all_restaurants)} restaurants from all sources")
         return all_restaurants
 
     def _deduplicate_restaurants(self, restaurants: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Deduplicate restaurants and combine sources (ALL sources, comma-separated)"""
-        logger.info(f"🔍 Deduplicating {len(restaurants)} restaurant entries...")
+        """Deduplicate restaurants and combine sources"""
+        logger.info(f"🔍 Starting deduplication of {len(restaurants)} restaurants...")
+
+        if not restaurants:
+            return []
 
         deduplicated = []
         processed_names = set()
 
         for restaurant in restaurants:
-            name = restaurant.get('Name', '').strip().lower()
-            city = restaurant.get('City', '').strip().lower()
+            name = restaurant.get('Name', '').strip()
+            city = restaurant.get('City', '').strip()
 
-            # Create unique identifier
-            restaurant_id = f"{name}_{city}"
-
-            if not name:
+            if not name or not city:
                 continue
 
-            # Check for duplicates using similarity matching
-            existing_restaurant = None
+            # Create unique key for comparison
+            unique_key = f"{name.lower()}|{city.lower()}"
+
+            # Check for exact matches first
+            if unique_key in processed_names:
+                # Find existing restaurant and merge sources
+                for existing in deduplicated:
+                    if (existing.get('Name', '').lower() == name.lower() and 
+                        existing.get('City', '').lower() == city.lower()):
+
+                        # Combine sources
+                        existing_sources = existing.get('Source', '').split(', ')
+                        new_source = restaurant.get('Source', '')
+                        if new_source and new_source not in existing_sources:
+                            existing['Source'] = ', '.join(existing_sources + [new_source])
+
+                        # Merge other details if they're better
+                        self._merge_restaurant_details(existing, restaurant)
+                        self.stats["restaurants_deduplicated"] += 1
+                        break
+                continue
+
+            # Check for fuzzy matches (similar names)
+            similar_found = False
             for existing in deduplicated:
-                existing_name = existing.get('Name', '').strip().lower()
-                existing_city = existing.get('City', '').strip().lower()
-                existing_id = f"{existing_name}_{existing_city}"
+                existing_name = existing.get('Name', '')
+                existing_city = existing.get('City', '')
 
-                # Check name similarity
-                name_similarity = self._calculate_similarity(name, existing_name)
-                city_match = city == existing_city or not city or not existing_city
+                # Only compare restaurants in same city
+                if existing_city.lower() != city.lower():
+                    continue
 
-                if name_similarity >= self.config.RESTAURANT_DEDUPLICATION['name_similarity_threshold'] and city_match:
-                    existing_restaurant = existing
+                # Calculate similarity
+                similarity = SequenceMatcher(None, name.lower(), existing_name.lower()).ratio()
+
+                if similarity > 0.85:  # 85% similarity threshold
+                    # Merge with existing
+                    existing_sources = existing.get('Source', '').split(', ')
+                    new_source = restaurant.get('Source', '')
+                    if new_source and new_source not in existing_sources:
+                        existing['Source'] = ', '.join(existing_sources + [new_source])
+
+                    self._merge_restaurant_details(existing, restaurant)
+                    self.stats["restaurants_deduplicated"] += 1
+                    similar_found = True
                     break
 
-            if existing_restaurant:
-                # Merge with existing restaurant
-                self._merge_restaurant_entries(existing_restaurant, restaurant)
-                self.stats["restaurants_deduplicated"] += 1
-            else:
+            if not similar_found:
                 # Add as new restaurant
-                # Ensure Source is a string (convert list to comma-separated if needed)
-                if isinstance(restaurant.get('Source'), list):
-                    restaurant['Source'] = ', '.join(restaurant['Source'])
-                deduplicated.append(restaurant)
+                deduplicated.append(restaurant.copy())
+                processed_names.add(unique_key)
 
-        logger.info(f"✅ Deduplication complete: {len(deduplicated)} unique restaurants ({self.stats['restaurants_deduplicated']} duplicates merged)")
+        logger.info(f"✅ Deduplication complete: {len(deduplicated)} unique restaurants")
+        logger.info(f"🔄 Merged {self.stats['restaurants_deduplicated']} duplicate entries")
         return deduplicated
 
-    def _calculate_similarity(self, text1: str, text2: str) -> float:
-        """Calculate similarity between two text strings"""
-        if not text1 or not text2:
-            return 0.0
-        return SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
+    def _merge_restaurant_details(self, existing: Dict[str, Any], new: Dict[str, Any]):
+        """Merge details from new restaurant into existing one, keeping the best information"""
+        # Merge descriptions (combine if both are meaningful)
+        existing_desc = existing.get('Description', '').strip()
+        new_desc = new.get('Description', '').strip()
 
-    def _merge_restaurant_entries(self, existing: Dict[str, Any], new: Dict[str, Any]):
-        """Merge new restaurant entry into existing one (combine ALL sources)"""
-
-        # Combine sources (KEY REQUIREMENT: ALL sources, comma-separated)
-        existing_sources = existing.get('Source', '')
-        new_sources = new.get('Source', '')
-
-        # Convert to lists if needed
-        if isinstance(existing_sources, str):
-            existing_sources = [s.strip() for s in existing_sources.split(',') if s.strip()]
-        if isinstance(new_sources, str):
-            new_sources = [s.strip() for s in new_sources.split(',') if s.strip()]
-
-        # Combine unique sources
-        all_sources = list(set(existing_sources + new_sources))
-        existing['Source'] = ', '.join(all_sources[:self.config.RESTAURANT_DEDUPLICATION['max_sources_per_restaurant']])
-
-        # Combine descriptions if enabled
-        if self.config.RESTAURANT_DEDUPLICATION['combine_descriptions']:
-            existing_desc = existing.get('Description', '').strip()
-            new_desc = new.get('Description', '').strip()
-
-            if new_desc and new_desc not in existing_desc:
-                if existing_desc:
-                    existing['Description'] = f"{existing_desc} | {new_desc}"
-                else:
+        if new_desc and new_desc.lower() not in ['n/a', 'not specified']:
+            if not existing_desc or existing_desc.lower() in ['n/a', 'not specified']:
+                existing['Description'] = new_desc
+            elif existing_desc != new_desc and len(new_desc) > len(existing_desc):
+                # Use longer description if it's significantly longer
+                if len(new_desc) > len(existing_desc) * 1.5:
                     existing['Description'] = new_desc
 
         # Update other fields if they're more complete in new entry
@@ -511,6 +588,7 @@ Return ONLY the formatted data above, no other text."""
         logger.info(f"   🔄 Restaurants merged: {self.stats['restaurants_deduplicated']}")
         logger.info(f"   ⏱️ Average processing time per URL: {self.stats['avg_processing_time']:.2f}s")
         logger.info(f"   🤖 Model used: {self.current_model_type}")
+        logger.info(f"   📤 Supabase uploads: {self.stats['supabase_uploads']}")  # NEW
 
     # Keep existing RTF conversion and utility methods unchanged
     def _rtf_to_text(self, rtf_content: str) -> str:
@@ -523,44 +601,23 @@ Return ONLY the formatted data above, no other text."""
             text = re.sub(r'^{\s*\\rtf[^{]*?{[^}]*?}[^}]*?}', '', text, flags=re.DOTALL)
             text = re.sub(r'\\b\s*(.*?)\s*\\b0', r'**\1**', text, flags=re.DOTALL)
             text = re.sub(r'\\i\s*(.*?)\s*\\i0', r'*\1*', text, flags=re.DOTALL)
-            text = re.sub(r'\\par\s*', '\n\n', text)
-            text = re.sub(r'\\line\s*', '\n', text)
-            text = re.sub(r'\\f\d+', '', text)
-            text = re.sub(r'\\fs\d+', '', text)
-            text = re.sub(r'\\cf\d+', '', text)
-            text = re.sub(r'\\[a-zA-Z]+\d*\s*', ' ', text)
-            text = text.replace(r'\\', '\\')
-            text = text.replace(r'\{', '{')
-            text = text.replace(r'\}', '}')
+            text = re.sub(r'\\[a-z]+\d*\s*', ' ', text)
             text = re.sub(r'[{}]', '', text)
-            text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
-            text = re.sub(r' {2,}', ' ', text)
+            text = re.sub(r'\s+', ' ', text)
             text = text.strip()
+
             return text
+
         except Exception as e:
-            logger.error(f"❌ Error converting RTF to text: {e}")
+            logger.warning(f"⚠️ RTF conversion error: {e}")
             return rtf_content
 
-    def get_stats(self) -> Dict[str, Any]:
-        """Get enhanced cleaning statistics"""
-        return {
-            **self.stats,
-            "rtf_processing_rate": self.stats["rtf_files_processed"] / max(self.stats["files_processed"], 1),
-            "avg_restaurants_per_file": self.stats["restaurants_extracted"] / max(self.stats["individual_files_processed"], 1),
-            "deduplication_rate": self.stats["restaurants_deduplicated"] / max(self.stats["restaurants_extracted"], 1),
-            "model": self.current_model_type,
-            "processing_method": "individual_with_deduplication",
-            "input_format": "RTF/TEXT",
-            "output_format": "COMBINED_TEXT"
-        }
-
-    # Keep existing cleanup method unchanged but extend for new directories
-    def cleanup_old_files(self, max_age_hours: int = 48):
-        """Clean up old files from both individual and combined directories"""
+    def cleanup_old_files(self, days_to_keep: int = 3):
+        """Clean up old individual and combined files"""
         try:
             from datetime import timedelta
+            cutoff_time = datetime.now() - timedelta(days=days_to_keep)
             cleanup_count = 0
-            cutoff_time = datetime.now() - timedelta(hours=max_age_hours)
 
             # Clean individual files
             individual_dir = Path(self.config.INDIVIDUAL_FILE_PROCESSING['individual_files_directory'])
