@@ -219,12 +219,11 @@ class UnifiedRestaurantAgent:
     ) -> Dict[str, Any]:
         """
         NEW: Main entry point with AI Chat Layer integration
-
         This method handles conversation flow and only triggers search when ready.
         """
-        try:
-            start_time = time.time()
+        start_time = time.time()
 
+        try:
             if not thread_id:
                 thread_id = f"chat_{user_id}_{int(time.time())}"
 
@@ -267,10 +266,21 @@ class UnifiedRestaurantAgent:
                 # Get the full conversation context for search
                 search_info = self.ai_chat_layer.get_search_ready_info(user_id)
 
-                # Execute restaurant search with accumulated context
-                search_result = await self.execute_restaurant_search_with_context(
-                    search_context=search_info,
-                    search_type=chat_decision.search_type,
+                if search_info is None:
+                    processing_time = round(time.time() - start_time, 2)
+                    return {
+                        "success": False,
+                        "error_message": "No search context available",
+                        "ai_response": "I need more information to help you find restaurants.",
+                        "search_triggered": False,
+                        "processing_time": processing_time
+                    }
+
+                search_type = chat_decision.search_type or "city_wide"
+
+                # Execute restaurant search with accumulated context - use [CONTEXT] prefix
+                search_result = await self.restaurant_search_with_memory(
+                    query=f"[CONTEXT]{search_info.get('raw_query', query)}",
                     user_id=user_id,
                     gps_coordinates=gps_coordinates,
                     thread_id=thread_id
@@ -284,16 +294,27 @@ class UnifiedRestaurantAgent:
 
                 return search_result
 
-            # Handle other actions similarly...
+            else:
+                # Handle other actions
+                processing_time = round(time.time() - start_time, 2)
+                return {
+                    "success": True,
+                    "ai_response": chat_decision.response_text or "I'm here to help you find great restaurants!",
+                    "action_taken": chat_decision.action.value,
+                    "search_triggered": False,
+                    "processing_time": processing_time,
+                    "reasoning": chat_decision.reasoning
+                }
 
         except Exception as e:
             logger.error(f"❌ Error in AI chat processing: {e}")
+            processing_time = round(time.time() - start_time, 2)
             return {
                 "success": False,
                 "error_message": f"AI chat processing failed: {str(e)}",
                 "ai_response": "I'm having a bit of trouble right now. Could you try asking again?",
                 "search_triggered": False,
-                "processing_time": round(time.time() - start_time, 2)
+                "processing_time": processing_time
             }
 
     async def execute_restaurant_search_with_context(
@@ -308,6 +329,25 @@ class UnifiedRestaurantAgent:
         Execute restaurant search with full conversation context
         """
         try:
+            # FIXED: Validate parameters before use
+            if not search_context:
+                logger.error("❌ No search context provided")
+                return {
+                    "success": False,
+                    "error_message": "No search context provided",
+                    "final_restaurants": [],
+                    "processing_time": 0
+                }
+
+            if not search_type:
+                logger.error("❌ No search type provided")
+                return {
+                    "success": False,
+                    "error_message": "No search type provided", 
+                    "final_restaurants": [],
+                    "processing_time": 0
+                }
+
             # Get the accumulated raw query and context
             raw_query = search_context.get('raw_query', '')
             collected_info = search_context.get('collected_info', {})
@@ -837,13 +877,7 @@ class UnifiedRestaurantAgent:
         thread_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Main entry point for restaurant search with memory integration and AI Chat Layer
-
-        This method:
-        1. Routes new conversations through AI Chat Layer for intelligent flow management
-        2. Executes searches when AI Chat Layer determines readiness
-        3. Integrates memory for personalized results
-        4. Filters already recommended restaurants
+        CRITICAL FIX: Main entry point now ALWAYS routes through AI Chat Layer
         """
         try:
             start_time = time.time()
@@ -851,13 +885,20 @@ class UnifiedRestaurantAgent:
             if not thread_id:
                 thread_id = f"search_{user_id}_{int(time.time())}"
 
-            # Check if this is a direct search execution (from AI Chat Layer) or new conversation
-            # AI Chat Layer prefixes accumulated queries with [CONTEXT] to indicate readiness
+            # CRITICAL: Check if this is from AI Chat Layer
             is_from_ai_chat = query.startswith('[CONTEXT]')
 
-            if not is_from_ai_chat and hasattr(self, 'ai_chat_layer'):
-                # This is a new user message - route through AI Chat Layer first
-                logger.info(f"🔄 Routing to AI Chat Layer for conversation management: user {user_id}")
+            # FORCE AI Chat Layer routing for ALL new messages
+            if not is_from_ai_chat:
+                # This is a new user message - MUST route through AI Chat Layer first
+                logger.info(f"🔄 FORCING route to AI Chat Layer for conversation management: user {user_id}")
+
+                # Initialize AI Chat Layer if not exists (CRITICAL)
+                if not hasattr(self, 'ai_chat_layer'):
+                    from utils.ai_chat_layer import AIChatLayer
+                    self.ai_chat_layer = AIChatLayer(self.config)
+                    logger.info("✅ AI Chat Layer initialized on-demand")
+
                 return await self.process_user_message_with_ai_chat(
                     query=query,
                     user_id=user_id,
@@ -865,16 +906,11 @@ class UnifiedRestaurantAgent:
                     thread_id=thread_id
                 )
 
-            # If we reach here, either:
-            # 1. AI Chat Layer determined we're ready to search and passed accumulated context
-            # 2. This is a direct call bypassing AI Chat Layer
+            # If we reach here, AI Chat Layer determined we're ready to search
+            query = query[9:]  # Remove '[CONTEXT]' prefix
+            logger.info(f"🚀 Executing search with AI Chat context for user {user_id}: '{query[:50]}...'")
 
-            # Clean the query if it came from AI Chat Layer
-            if is_from_ai_chat:
-                query = query[9:]  # Remove '[CONTEXT]' prefix
-                logger.info(f"🚀 Executing search with AI Chat context for user {user_id}: '{query[:50]}...'")
-            else:
-                logger.info(f"🧠 Starting direct memory-enhanced search for user {user_id}: '{query}'")
+            # Continue with the rest of your existing method...
 
             # 1. Learn from user query
             await self.learn_from_user_query(user_id, query)
@@ -1179,8 +1215,6 @@ class UnifiedRestaurantAgent:
         except Exception as e:
             logger.error(f"Error getting personalized context: {e}")
             return {}
-        
-
 
 def create_unified_restaurant_agent(config):
     """Factory function to create the unified restaurant agent"""
