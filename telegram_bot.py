@@ -1,20 +1,15 @@
 # telegram_bot.py
 """
-CLEAN Telegram Bot - AI Chat Integration Only
+UPDATED Telegram Bot - Enhanced AI Chat Integration
 
-This version removes ALL old conversation handling and connects directly
-to the AI Chat Layer with LangGraph orchestration.
+This version uses the enhanced AI Chat Layer that:
+- Manages conversation flow intelligently
+- Collects information before triggering search
+- Provides natural conversation responses
+- Only routes to search pipeline when ready
 
-NO MORE:
-- conversation_handler
-- process_text_message fallbacks
-- city search fallbacks
-- complex routing logic
-
-ONLY:
-- Direct AI chat responses
-- Memory-enhanced conversations  
-- LangGraph orchestration
+KEY IMPROVEMENT: Fixes the flow so messages go through AI Chat Layer first,
+not directly to the query analyzer.
 """
 
 import telebot
@@ -24,7 +19,7 @@ import time
 from typing import Optional, List
 from threading import Event
 
-# Import the memory-enhanced unified agent (SINGLE SOURCE OF TRUTH)
+# Import the enhanced unified agent
 from agents.unified_restaurant_agent import create_unified_restaurant_agent
 from utils.voice_handler import VoiceMessageHandler
 from utils.database import initialize_database
@@ -42,7 +37,7 @@ bot = telebot.TeleBot(config.TELEGRAM_BOT_TOKEN)
 # Initialize database FIRST
 initialize_database(config)
 
-# Initialize memory-enhanced unified agent (SINGLE SOURCE OF TRUTH)
+# Initialize enhanced unified agent with AI Chat Layer
 unified_agent = create_unified_restaurant_agent(config)
 
 # Initialize voice handler for transcription only
@@ -62,7 +57,7 @@ WELCOME_MESSAGE = (
 
 
 # ============================================================================
-# CORE MESSAGE PROCESSING (AI Chat Layer Only)
+# CORE MESSAGE PROCESSING (Enhanced AI Chat Layer)
 # ============================================================================
 
 async def process_user_message(
@@ -73,10 +68,13 @@ async def process_user_message(
     message_type: str = "text"
 ) -> None:
     """
-    SINGLE ENTRY POINT: Process any user message through AI Chat Layer
+    ENHANCED ENTRY POINT: Process any user message through AI Chat Layer
 
-    This provides intelligent, contextual responses and LangGraph orchestration.
-    No fallbacks to old systems.
+    The AI Chat Layer now decides whether to:
+    1. Continue conversation to collect more info
+    2. Trigger city-wide search when ready  
+    3. Trigger location-based search when ready
+    4. Handle follow-up requests
     """
     processing_msg = None
 
@@ -103,6 +101,8 @@ async def process_user_message(
 
         # 4. TELEGRAM CONCERN: Send the AI response
         ai_response = result.get("ai_response") or result.get("formatted_message")
+        search_triggered = result.get("search_triggered", False)
+        action_taken = result.get("action_taken", "unknown")
 
         if ai_response:
             # Handle long messages
@@ -132,7 +132,14 @@ async def process_user_message(
 
         # 5. Log success
         processing_time = result.get("processing_time", 0)
-        logger.info(f"✅ Message processed successfully in {processing_time}s")
+        reasoning = result.get("reasoning", "No reasoning provided")
+
+        if search_triggered:
+            restaurants_count = len(result.get("final_restaurants", []))
+            logger.info(f"✅ Search triggered and completed in {processing_time}s - Found {restaurants_count} restaurants")
+        else:
+            logger.info(f"✅ Conversation continued in {processing_time}s - Action: {action_taken}")
+            logger.info(f"🤖 AI Reasoning: {reasoning}")
 
     except Exception as e:
         error_msg = f"Error processing message: {str(e)}"
@@ -185,6 +192,29 @@ def handle_cancel(message):
         bot.send_message(chat_id, "🛑 Search cancelled.", parse_mode='HTML')
     else:
         bot.send_message(chat_id, "No active search to cancel.", parse_mode='HTML')
+
+
+@bot.message_handler(commands=['reset'])
+def handle_reset(message):
+    """Handle /reset command - clear conversation history"""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    try:
+        # Clear AI Chat Layer session
+        if hasattr(unified_agent, 'ai_chat_layer'):
+            unified_agent.ai_chat_layer.clear_session(user_id)
+
+        bot.send_message(
+            chat_id, 
+            "🔄 Conversation reset! Let's start fresh. What restaurants are you looking for?",
+            parse_mode='HTML'
+        )
+        logger.info(f"🔄 Reset conversation for user {user_id}")
+
+    except Exception as e:
+        logger.error(f"Error resetting conversation: {e}")
+        bot.send_message(chat_id, "Reset completed!", parse_mode='HTML')
 
 
 @bot.message_handler(content_types=['location'])
@@ -258,7 +288,7 @@ def handle_text_message(message):
 
     logger.info(f"📝 Text message from user {user_id}: '{message_text[:50]}...'")
 
-    # Delegate to AI Chat Layer
+    # Delegate to Enhanced AI Chat Layer
     asyncio.run(process_user_message(user_id, chat_id, message_text, message_type="text"))
 
 
@@ -352,10 +382,11 @@ def split_message_for_telegram(message: str, max_length: int = 4000) -> List[str
 # ============================================================================
 
 def main():
-    """Start the Telegram bot with AI Chat Layer integration"""
-    logger.info("🤖 Starting Telegram bot with AI Chat Layer integration")
-    logger.info("✅ Memory-enhanced unified agent initialized")
-    logger.info("🎯 All messages processed through AI Chat Layer - NO FALLBACKS")
+    """Start the Telegram bot with Enhanced AI Chat Layer integration"""
+    logger.info("🤖 Starting Telegram bot with Enhanced AI Chat Layer integration")
+    logger.info("✅ Enhanced unified agent with AI Chat Layer initialized")
+    logger.info("🎯 All messages processed through AI Chat Layer for intelligent conversation flow")
+    logger.info("🔧 Fixed: No more direct routing to query analyzer - conversation managed intelligently")
 
     try:
         bot.infinity_polling(timeout=10, long_polling_timeout=5)
