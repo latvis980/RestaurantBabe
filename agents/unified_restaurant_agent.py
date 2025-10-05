@@ -449,8 +449,7 @@ class UnifiedRestaurantAgent:
                 raise ValueError("No query analysis available")
 
             db_results = await sync_to_async(self.database_search_agent.search_and_evaluate)(
-                query_analysis=query_analysis,
-                original_query=state["query"]
+                query_analysis=query_analysis
             )
 
             return {**state, "database_results": db_results, "current_step": "database_searched"}
