@@ -879,8 +879,9 @@ class UnifiedRestaurantAgent:
         """
         CRITICAL FIX: Main entry point now ALWAYS routes through AI Chat Layer
         """
+        start_time = time.time()
+        
         try:
-            start_time = time.time()
 
             if not thread_id:
                 thread_id = f"search_{user_id}_{int(time.time())}"
@@ -909,8 +910,6 @@ class UnifiedRestaurantAgent:
             # If we reach here, AI Chat Layer determined we're ready to search
             query = query[9:]  # Remove '[CONTEXT]' prefix
             logger.info(f"🚀 Executing search with AI Chat context for user {user_id}: '{query[:50]}...'")
-
-            # Continue with the rest of your existing method...
 
             # 1. Learn from user query
             await self.learn_from_user_query(user_id, query)
