@@ -1,25 +1,25 @@
-# telegram_bot.py
+# telegram_bot.py - UPDATED: AI-Generated Search Videos with Existing AI Chat Layer
 """
-UPDATED Telegram Bot - Enhanced AI Chat Integration
+Telegram Bot with Enhanced Search Messages
 
-This version uses the enhanced AI Chat Layer that:
-- Manages conversation flow intelligently
-- Collects information before triggering search
-- Provides natural conversation responses
-- Only routes to search pipeline when ready
-
-KEY IMPROVEMENT: Fixes the flow so messages go through AI Chat Layer first,
-not directly to the query analyzer.
+IMPORTANT: This version works with the EXISTING AI Chat Layer in unified_restaurant_agent.py
+- Keeps the existing AI chat architecture 
+- ONLY adds AI-generated search messages with videos when searches are triggered
+- Removes automated "let me think about that" messages
+- Replaces with typing indicator for non-search interactions
 """
 
 import telebot
 import asyncio
 import logging
 import time
+import os
 from typing import Optional, List
 from threading import Event
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
 
-# Import the enhanced unified agent
+# Import the enhanced unified agent (with existing AI Chat Layer)
 from agents.unified_restaurant_agent import create_unified_restaurant_agent
 from utils.voice_handler import VoiceMessageHandler
 from utils.database import initialize_database
@@ -37,8 +37,11 @@ bot = telebot.TeleBot(config.TELEGRAM_BOT_TOKEN)
 # Initialize database FIRST
 initialize_database(config)
 
-# Initialize enhanced unified agent with AI Chat Layer
+# Initialize enhanced unified agent with EXISTING AI Chat Layer
 unified_agent = create_unified_restaurant_agent(config)
+
+# Initialize AI for search message generation
+ai_message_generator = None
 
 # Initialize voice handler for transcription only
 voice_handler = VoiceMessageHandler() if hasattr(config, 'OPENAI_API_KEY') and config.OPENAI_API_KEY else None
@@ -57,7 +60,135 @@ WELCOME_MESSAGE = (
 
 
 # ============================================================================
-# CORE MESSAGE PROCESSING (Enhanced AI Chat Layer)
+# AI MESSAGE GENERATION FOR SEARCH VIDEOS
+# ============================================================================
+
+def generate_search_message(search_query: str, search_type: str = "city_wide") -> str:
+    """
+    Generate AI-powered search message for Restaurant Babe
+
+    Args:
+        search_query: The user's restaurant search query
+        search_type: Either "city_wide" or "location_based"
+
+    Returns:
+        AI-generated message string
+    """
+    global ai_message_generator
+
+    try:
+        if ai_message_generator is None:
+            logger.warning("AI message generator not initialized, using fallback")
+            return get_fallback_search_message(search_type)
+
+        # Create context-aware prompt for Restaurant Babe
+        if search_type == "city_wide":
+            context = "searching across an entire city for the best restaurants"
+            action_desc = "checking my curated collection, consulting my foodie network, and reviewing recent press coverage"
+        else:  # location_based
+            context = "searching for restaurants in the specific area you mentioned"
+            action_desc = "checking what's in that vicinity, calling my local contacts, and reviewing neighborhood guides"
+
+        prompt = f"""You are Restaurant Babe, a sophisticated AI restaurant expert. You're about to start {context} based on this query: "{search_query}"
+
+Generate a brief, engaging message (2-3 lines max) that:
+1. Confirms you're starting the search
+2. Mentions it might take a minute 
+3. References that you're {action_desc}
+4. Keep the tone warm, professional, and enthusiastic like a knowledgeable foodie friend
+
+Use HTML formatting with <b> for emphasis. Don't use emojis in the text (they'll be added to the video caption).
+
+Examples of the style:
+- "Perfect! I'm searching for amazing [cuisine] spots in [location]. This might take a minute while I check my notes and reach out to my foodie contacts."
+- "Great choice! Let me find you the best restaurants in that area. I'm consulting my curated guides and checking with local food critics."
+
+Generate the message now:"""
+
+        # Generate the message
+        response = ai_message_generator.invoke([HumanMessage(content=prompt)])
+        message = response.content.strip()
+
+        # Clean up any unwanted characters
+        message = message.replace('"', '').replace('*', '').strip()
+
+        logger.info(f"✅ Generated AI search message: {message[:50]}...")
+        return message
+
+    except Exception as e:
+        logger.error(f"❌ Error generating AI search message: {e}")
+        return get_fallback_search_message(search_type)
+
+
+def get_fallback_search_message(search_type: str) -> str:
+    """Fallback messages when AI generation fails"""
+    if search_type == "city_wide":
+        return ("<b>Perfect! I'm searching for the best restaurants for you.</b>\n\n"
+                "This might take a minute while I check my curated collection and consult with my foodie network.")
+    else:  # location_based
+        return ("<b>Great! I'm searching for amazing restaurants in that area.</b>\n\n"
+                "Give me a moment to check my local guides and reach out to my contacts in the vicinity.")
+
+
+def send_search_message_with_video(chat_id: int, search_query: str, search_type: str) -> Optional[telebot.types.Message]:
+    """
+    Send search message with appropriate video
+
+    Args:
+        chat_id: Telegram chat ID
+        search_query: User's search query
+        search_type: "city_wide" or "location_based"
+
+    Returns:
+        Message object or None if failed
+    """
+    try:
+        # Generate AI message
+        ai_message = generate_search_message(search_query, search_type)
+
+        # Choose appropriate video
+        if search_type == "city_wide":
+            video_path = 'media/searching.mp4'
+            fallback_emoji = "🔍"
+        else:  # location_based
+            video_path = 'media/vicinity_search.mp4'
+            fallback_emoji = "📍"
+
+        # Try to send with video first
+        try:
+            if os.path.exists(video_path):
+                with open(video_path, 'rb') as video:
+                    return bot.send_video(
+                        chat_id,
+                        video,
+                        caption=f"{fallback_emoji} {ai_message}",
+                        parse_mode='HTML'
+                    )
+            else:
+                logger.warning(f"Video file not found: {video_path}")
+                raise FileNotFoundError("Video not available")
+
+        except Exception as video_error:
+            logger.warning(f"Could not send video: {video_error}")
+            # Fallback to text message with emoji
+            return bot.send_message(
+                chat_id,
+                f"{fallback_emoji} {ai_message}",
+                parse_mode='HTML'
+            )
+
+    except Exception as e:
+        logger.error(f"Error sending search message: {e}")
+        # Ultimate fallback
+        return bot.send_message(
+            chat_id,
+            "🔍 <b>Searching for restaurants...</b>\n\nThis might take a moment.",
+            parse_mode='HTML'
+        )
+
+
+# ============================================================================
+# CORE MESSAGE PROCESSING (Enhanced AI Chat Layer Integration)
 # ============================================================================
 
 async def process_user_message(
@@ -68,21 +199,23 @@ async def process_user_message(
     message_type: str = "text"
 ) -> None:
     """
-    ENHANCED ENTRY POINT: Process any user message through AI Chat Layer
+    ENHANCED ENTRY POINT: Process any user message through EXISTING AI Chat Layer
 
-    The AI Chat Layer now decides whether to:
+    The EXISTING AI Chat Layer decides whether to:
     1. Continue conversation to collect more info
     2. Trigger city-wide search when ready  
     3. Trigger location-based search when ready
     4. Handle follow-up requests
+
+    THIS VERSION: Only adds video messages when searches are triggered
     """
     processing_msg = None
 
     try:
-        # 1. TELEGRAM CONCERN: Show contextual processing message
-        processing_msg = show_contextual_processing_message(chat_id, message_text)
+        # 1. UPDATED: Show typing indicator instead of contextual processing message
+        bot.send_chat_action(chat_id, 'typing')
 
-        # 2. AI CHAT LAYER: All intelligence happens here
+        # 2. AI CHAT LAYER: All intelligence happens here (EXISTING SYSTEM)
         logger.info(f"🎯 Processing message for user {user_id}: '{message_text[:50]}...'")
 
         result = await unified_agent.restaurant_search_with_memory(
@@ -92,17 +225,33 @@ async def process_user_message(
             thread_id=f"telegram_{user_id}_{int(time.time())}"
         )
 
-        # 3. TELEGRAM CONCERN: Clean up processing message
-        if processing_msg:
-            try:
-                bot.delete_message(chat_id, processing_msg.id)
-            except Exception:
-                pass  # Message might already be deleted
-
-        # 4. TELEGRAM CONCERN: Send the AI response
-        ai_response = result.get("ai_response") or result.get("formatted_message")
+        # 3. UPDATED: Handle search-triggered results with videos
         search_triggered = result.get("search_triggered", False)
         action_taken = result.get("action_taken", "unknown")
+
+        if search_triggered:
+            # SEARCH WAS TRIGGERED - Send video based on search type
+
+            # Determine search type from the conversation context or action
+            conversation_context = result.get("conversation_context", message_text)
+
+            # Simple heuristic to determine search type
+            search_type = determine_search_type(conversation_context, action_taken)
+
+            # Send AI-generated video message
+            processing_msg = send_search_message_with_video(chat_id, conversation_context, search_type)
+
+            # Give the search a moment to start, then clean up the video message
+            await asyncio.sleep(1)
+
+            if processing_msg:
+                try:
+                    bot.delete_message(chat_id, processing_msg.message_id)
+                except Exception:
+                    pass  # Message might already be deleted
+
+        # 4. TELEGRAM CONCERN: Send the AI response (as before)
+        ai_response = result.get("ai_response") or result.get("formatted_message")
 
         if ai_response:
             # Handle long messages
@@ -148,7 +297,7 @@ async def process_user_message(
         # Clean up processing message
         if processing_msg:
             try:
-                bot.delete_message(chat_id, processing_msg.id)
+                bot.delete_message(chat_id, processing_msg.message_id)
             except Exception:
                 pass
 
@@ -158,6 +307,49 @@ async def process_user_message(
             "I'm having a bit of trouble right now. Could you try asking again in a moment?",
             parse_mode='HTML'
         )
+
+
+def determine_search_type(conversation_context: str, action_taken: str) -> str:
+    """
+    Determine if this is a city-wide or location-based search
+
+    Args:
+        conversation_context: The accumulated conversation context
+        action_taken: The action taken by AI chat layer
+
+    Returns:
+        "city_wide" or "location_based"
+    """
+    context_lower = conversation_context.lower()
+
+    # Location-based indicators
+    location_indicators = [
+        'near me', 'nearby', 'around here', 'in this area', 'close to', 
+        'vicinity', 'neighborhood', 'local', 'walking distance'
+    ]
+
+    # City-wide indicators
+    city_indicators = [
+        'best in', 'top restaurants', 'finest', 'must-visit', 'famous',
+        'recommended in', 'popular in', 'well-known'
+    ]
+
+    # Check for location-based search
+    if any(indicator in context_lower for indicator in location_indicators):
+        return "location_based"
+
+    # Check for city-wide search 
+    if any(indicator in context_lower for indicator in city_indicators):
+        return "city_wide"
+
+    # Check action type
+    if "location" in action_taken.lower():
+        return "location_based"
+    elif "city" in action_taken.lower():
+        return "city_wide"
+
+    # Default to city_wide for general searches
+    return "city_wide"
 
 
 # ============================================================================
@@ -218,65 +410,74 @@ def handle_reset(message):
 
 
 @bot.message_handler(content_types=['location'])
-def handle_location(message):
+def handle_gps_location(message):
     """Handle GPS location sharing"""
-    user_id = message.from_user.id
-    chat_id = message.chat.id
+    try:
+        user_id = message.from_user.id
+        chat_id = message.chat.id
 
-    if message.location:
-        coordinates = (message.location.latitude, message.location.longitude)
-        logger.info(f"📍 GPS location from user {user_id}: {coordinates}")
+        latitude = message.location.latitude
+        longitude = message.location.longitude
 
-        # Process with location context
+        logger.info(f"📍 Received GPS location from user {user_id}: ({latitude:.4f}, {longitude:.4f})")
+
+        # Process through AI Chat Layer with GPS coordinates
         asyncio.run(process_user_message(
             user_id, chat_id, 
-            "Find restaurants near my current location",
-            gps_coordinates=coordinates,
+            "restaurants near my current location",
+            gps_coordinates=(latitude, longitude),
             message_type="location"
         ))
-    else:
-        bot.send_message(chat_id, "I couldn't get your location. Could you try again?", parse_mode='HTML')
+
+    except Exception as e:
+        logger.error(f"Error handling GPS location: {e}")
+        bot.reply_to(
+            message,
+            "😔 I had trouble processing your location. Could you try again?",
+            parse_mode='HTML')
 
 
 @bot.message_handler(content_types=['voice'])
 def handle_voice_message(message):
-    """Handle voice messages"""
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-
-    logger.info(f"🎤 Voice message from user {user_id}")
-
-    if not voice_handler:
-        bot.send_message(chat_id, "Voice processing is not available. Please send a text message.", parse_mode='HTML')
-        return
-
-    # Show processing message
-    processing_msg = bot.send_message(chat_id, "🎤 <b>Processing your voice message...</b>", parse_mode='HTML')
-
+    """Handle voice messages - Convert to text and process"""
     try:
-        # Transcribe voice
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+
+        logger.info(f"🎤 Received voice message from user {user_id}")
+
+        # Check if voice handler is available
+        if voice_handler is None:
+            bot.reply_to(
+                message,
+                "😔 Voice processing is not available right now. Please send a text message.",
+                parse_mode='HTML')
+            return
+
+        # Show typing indicator
+        bot.send_chat_action(chat_id, 'typing')
+
+        # Transcribe voice message
         transcribed_text = voice_handler.process_voice_message(bot, message.voice)
 
-        # Clean up processing message
-        try:
-            bot.delete_message(chat_id, processing_msg.message_id)
-        except Exception:
-            pass
+        if not transcribed_text:
+            bot.send_message(
+                chat_id,
+                "😔 I couldn't understand your voice message. Could you try again or send a text message?",
+                parse_mode='HTML')
+            return
 
-        if transcribed_text:
-            logger.info(f"✅ Voice transcribed: '{transcribed_text[:100]}...'")
-            # Process as text message
-            asyncio.run(process_user_message(user_id, chat_id, transcribed_text, message_type="voice"))
-        else:
-            bot.send_message(chat_id, "I couldn't understand your voice message. Could you try again?", parse_mode='HTML')
+        logger.info(f"✅ Voice transcribed for user {user_id}: '{transcribed_text[:100]}...'")
+
+        # Process transcribed text through AI Chat Layer
+        asyncio.run(process_user_message(user_id, chat_id, transcribed_text, message_type="voice"))
 
     except Exception as e:
-        logger.error(f"Voice processing error: {e}")
-        try:
-            bot.delete_message(chat_id, processing_msg.message_id)
-        except Exception:
-            pass
-        bot.send_message(chat_id, "Error processing voice message. Please try again.", parse_mode='HTML')
+        logger.error(f"Error handling voice message: {e}")
+        bot.reply_to(
+            message,
+            "😔 Sorry, I had trouble processing your voice message. Could you try again?",
+            parse_mode='HTML')
 
 
 @bot.message_handler(func=lambda message: True)
@@ -295,25 +496,6 @@ def handle_text_message(message):
 # ============================================================================
 # TELEGRAM UTILITY FUNCTIONS
 # ============================================================================
-
-def show_contextual_processing_message(chat_id: int, message_text: str) -> Optional[telebot.types.Message]:
-    """Show contextual processing message based on user input"""
-    try:
-        message_lower = message_text.lower()
-
-        if any(word in message_lower for word in ['help', 'start', 'hello', 'hi']):
-            return bot.send_message(chat_id, "👋 One moment...")
-        elif any(word in message_lower for word in ['near', 'nearby', 'around', 'location']):
-            return bot.send_message(chat_id, "📍 Looking for restaurants nearby...")
-        elif any(word in message_lower for word in ['restaurant', 'food', 'eat', 'dining', 'lunch', 'dinner']):
-            return bot.send_message(chat_id, "🔍 Searching for restaurants...")
-        else:
-            return bot.send_message(chat_id, "🤔 Let me think about that...")
-
-    except Exception as e:
-        logger.error(f"Error showing processing message: {e}")
-        return None
-
 
 def fix_telegram_html(text: str) -> str:
     """Fix HTML formatting for Telegram"""
@@ -383,12 +565,30 @@ def split_message_for_telegram(message: str, max_length: int = 4000) -> List[str
 
 def main():
     """Start the Telegram bot with Enhanced AI Chat Layer integration"""
+    global ai_message_generator
+
     logger.info("🤖 Starting Telegram bot with Enhanced AI Chat Layer integration")
     logger.info("✅ Enhanced unified agent with AI Chat Layer initialized")
     logger.info("🎯 All messages processed through AI Chat Layer for intelligent conversation flow")
-    logger.info("🔧 Fixed: No more direct routing to query analyzer - conversation managed intelligently")
+    logger.info("🔧 UPDATED: AI-generated search messages with videos")
 
     try:
+        # Initialize AI message generator
+        try:
+            ai_message_generator = ChatOpenAI(
+                model=getattr(config, 'AI_MESSAGE_MODEL', 'gpt-4o-mini'),
+                temperature=0.7,
+                max_tokens=200,
+                api_key=config.OPENAI_API_KEY
+            )
+            logger.info("✅ AI message generator initialized")
+        except Exception as e:
+            logger.warning(f"⚠️ AI message generator failed to initialize: {e}. Using fallback messages.")
+            ai_message_generator = None
+
+        logger.info("🎬 Videos: City searches use media/searching.mp4")
+        logger.info("📍 Videos: Location searches use media/vicinity_search.mp4")
+
         bot.infinity_polling(timeout=10, long_polling_timeout=5)
     except Exception as e:
         logger.error(f"❌ Bot polling error: {e}")
