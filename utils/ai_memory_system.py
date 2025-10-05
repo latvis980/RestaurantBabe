@@ -20,13 +20,6 @@ from typing import Dict, List, Any, Optional, Tuple, Union
 from dataclasses import dataclass, asdict
 from enum import Enum
 
-# Try PostgreSQL first, fallback to in-memory
-try:
-    from langgraph.store.postgres import PostgresStore
-    POSTGRES_AVAILABLE = True
-except ImportError:
-    POSTGRES_AVAILABLE = False
-
 from langgraph.store.memory import InMemoryStore
 from langchain_core.documents import Document
 
@@ -119,26 +112,9 @@ class AIMemorySystem:
     def __init__(self, config):
         self.config = config
 
-        # Initialize LangGraph memory store with PostgreSQL support
-        if (POSTGRES_AVAILABLE and 
-            hasattr(config, 'DATABASE_URL') and 
-            config.DATABASE_URL and 
-            getattr(config, 'MEMORY_STORE_TYPE', 'in_memory') == 'postgresql'):
-
-            try:
-                self.memory_store = PostgresStore(
-                    connection_string=config.DATABASE_URL,
-                    schema="memory_store"
-                )
-                logger.info("✅ Using PostgreSQL memory store for persistence")
-            except Exception as e:
-                logger.error(f"Failed to initialize PostgreSQL memory store: {e}")
-                logger.info("Falling back to in-memory store")
-                self.memory_store = InMemoryStore()
-        else:
-            # Use in-memory store for development or when PostgreSQL not available
-            self.memory_store = InMemoryStore()
-            logger.info("✅ Using in-memory store (data won't persist between restarts)")
+        # Initialize LangGraph memory store
+        # In production, this would be a persistent store like PostgreSQL or MongoDB
+        self.memory_store = InMemoryStore()
 
         logger.info("✅ AI Memory System initialized")
 
@@ -146,13 +122,13 @@ class AIMemorySystem:
     # USER NAMESPACE MANAGEMENT
     # =====================================================================
 
-    def _get_user_namespace(self, user_id: int) -> str:
+    def _get_user_namespace(self, user_id: int) -> tuple[str, ...]:
         """Get namespace for user's long-term memory"""
-        return f"user_{user_id}"
+        return (f"user_{user_id}",)
 
-    def _get_session_namespace(self, user_id: int, thread_id: str) -> str:
+    def _get_session_namespace(self, user_id: int, thread_id: str) -> tuple[str, ...]:
         """Get namespace for session-specific memory"""
-        return f"session_{user_id}_{thread_id}"
+        return (f"session_{user_id}_{thread_id}",)
 
     # =====================================================================
     # SEMANTIC MEMORY (User Preferences)
@@ -164,10 +140,11 @@ class AIMemorySystem:
             namespace = self._get_user_namespace(user_id)
 
             # Try to get existing preferences
-            stored_items = await self.memory_store.aget(namespace, "preferences")
+            stored_item = await self.memory_store.aget(namespace, "preferences")
 
-            if stored_items:
-                preferences_data = stored_items[0].value
+            if stored_item:
+                # FIXED: aget returns single Item object, not list
+                preferences_data = stored_item.value
                 return UserPreferences.from_dict(preferences_data)
             else:
                 # Return default preferences
@@ -187,7 +164,7 @@ class AIMemorySystem:
                 preferred_cities=[],
                 preferred_cuisines=[],
                 dietary_restrictions=[],
-                budget_range="mid-range",
+                budget_range="mid-range", 
                 preferred_ambiance=[],
                 meal_times=[],
                 group_size_typical="couple"
@@ -202,9 +179,10 @@ class AIMemorySystem:
         try:
             namespace = self._get_user_namespace(user_id)
 
+            # Store preferences
             await self.memory_store.aput(
-                namespace, 
-                "preferences", 
+                namespace,
+                "preferences",
                 preferences.to_dict()
             )
 
@@ -212,118 +190,152 @@ class AIMemorySystem:
             return True
 
         except Exception as e:
-            logger.error(f"Error updating user preferences: {e}")
+            logger.error(f"Error updating preferences for user {user_id}: {e}")
+            return False
+
+    async def learn_preferences_from_message(
+        self, 
+        user_id: int, 
+        message: str,
+        current_city: Optional[str] = None
+    ) -> bool:
+        """
+        Extract and learn preferences from user's message
+        This would typically use an LLM to extract structured information
+        """
+        try:
+            current_prefs = await self.get_user_preferences(user_id)
+            updated = False
+
+            # Simple keyword-based learning (in production, use LLM)
+            message_lower = message.lower()
+
+            # Learn cuisine preferences
+            cuisines = ["italian", "chinese", "japanese", "mexican", "indian", 
+                       "french", "thai", "korean", "mediterranean", "american",
+                       "ceviche", "sushi", "pizza", "ramen", "tacos"]
+
+            for cuisine in cuisines:
+                if cuisine in message_lower and cuisine not in current_prefs.preferred_cuisines:
+                    current_prefs.preferred_cuisines.append(cuisine)
+                    updated = True
+
+            # Learn dietary restrictions
+            restrictions = ["vegetarian", "vegan", "gluten-free", "dairy-free", "keto"]
+            for restriction in restrictions:
+                if restriction in message_lower and restriction not in current_prefs.dietary_restrictions:
+                    current_prefs.dietary_restrictions.append(restriction)
+                    updated = True
+
+            # Learn city preferences
+            if current_city and current_city not in current_prefs.preferred_cities:
+                current_prefs.preferred_cities.append(current_city)
+                updated = True
+
+            # Learn budget preferences
+            if any(word in message_lower for word in ["cheap", "budget", "affordable"]):
+                current_prefs.budget_range = "budget"
+                updated = True
+            elif any(word in message_lower for word in ["expensive", "upscale", "fine dining"]):
+                current_prefs.budget_range = "upscale"
+                updated = True
+
+            if updated:
+                await self.update_user_preferences(user_id, current_prefs)
+                logger.info(f"Learned new preferences for user {user_id} from message")
+
+            return updated
+
+        except Exception as e:
+            logger.error(f"Error learning preferences from message: {e}")
             return False
 
     # =====================================================================
     # EPISODIC MEMORY (Restaurant History)
     # =====================================================================
 
-    async def save_restaurant_memory(
+    async def add_restaurant_memory(
         self, 
         user_id: int, 
         restaurant_memory: RestaurantMemory
     ) -> bool:
-        """Save a restaurant recommendation to episodic memory"""
+        """Add a restaurant to user's memory"""
         try:
             namespace = self._get_user_namespace(user_id)
 
-            # Get existing memories
-            stored_items = await self.memory_store.aget(namespace, "restaurant_memories")
-            memories = []
+            # Get existing restaurant memories
+            restaurants = await self.get_restaurant_history(user_id)
 
-            if stored_items:
-                memories = stored_items[0].value
+            # Add new restaurant
+            restaurants.append(restaurant_memory)
 
-            # Add new memory
-            memories.append(restaurant_memory.to_dict())
+            # Keep only last 100 restaurant memories to prevent bloat
+            if len(restaurants) > 100:
+                restaurants = restaurants[-100:]
 
-            # Keep only the most recent N memories
-            max_memories = getattr(self.config, 'MAX_RESTAURANT_MEMORIES', 100)
-            if len(memories) > max_memories:
-                memories = memories[-max_memories:]
+            # Store updated list - FIXED: Store as dict with list inside
+            restaurant_data = {
+                "restaurants": [r.to_dict() for r in restaurants]
+            }
+            await self.memory_store.aput(
+                namespace,
+                "restaurant_history", 
+                restaurant_data
+            )
 
-            await self.memory_store.aput(namespace, "restaurant_memories", memories)
-
-            logger.info(f"Saved restaurant memory for user {user_id}: {restaurant_memory.restaurant_name}")
+            logger.info(f"Added restaurant memory for user {user_id}: {restaurant_memory.restaurant_name}")
             return True
 
         except Exception as e:
-            logger.error(f"Error saving restaurant memory: {e}")
+            logger.error(f"Error adding restaurant memory: {e}")
             return False
 
-    async def get_restaurant_memories(
-        self, 
-        user_id: int, 
-        city: Optional[str] = None,
-        limit: int = 10
-    ) -> List[RestaurantMemory]:
+    async def get_restaurant_history(self, user_id: int) -> List[RestaurantMemory]:
         """Get user's restaurant recommendation history"""
         try:
             namespace = self._get_user_namespace(user_id)
 
-            stored_items = await self.memory_store.aget(namespace, "restaurant_memories")
+            stored_item = await self.memory_store.aget(namespace, "restaurant_history")
 
-            if not stored_items:
+            if stored_item:
+                # FIXED: aget returns single Item object, not list
+                restaurant_data = stored_item.value
+                restaurant_dicts = restaurant_data.get("restaurants", [])
+                return [RestaurantMemory.from_dict(r) for r in restaurant_dicts]
+            else:
                 return []
 
-            memories = stored_items[0].value
-            restaurant_memories = [RestaurantMemory.from_dict(m) for m in memories]
+        except Exception as e:
+            logger.error(f"Error getting restaurant history for {user_id}: {e}")
+            return []
 
-            # Filter by city if specified
-            if city:
-                restaurant_memories = [
-                    m for m in restaurant_memories 
-                    if m.city.lower() == city.lower()
-                ]
-
-            # Return most recent memories first
-            restaurant_memories.sort(key=lambda x: x.recommended_date, reverse=True)
-
-            return restaurant_memories[:limit]
+    async def get_restaurants_for_city(self, user_id: int, city: str) -> List[RestaurantMemory]:
+        """Get restaurants recommended for a specific city"""
+        try:
+            all_restaurants = await self.get_restaurant_history(user_id)
+            return [r for r in all_restaurants if r.city.lower() == city.lower()]
 
         except Exception as e:
-            logger.error(f"Error getting restaurant memories: {e}")
+            logger.error(f"Error getting restaurants for city {city}: {e}")
             return []
 
     # =====================================================================
     # PROCEDURAL MEMORY (Conversation Patterns)
     # =====================================================================
 
-    async def learn_conversation_pattern(
-        self, 
-        user_id: int, 
-        pattern: ConversationPattern
-    ) -> bool:
-        """Learn and update user's conversation patterns"""
+    async def get_conversation_patterns(self, user_id: int) -> ConversationPattern:
+        """Get user's conversation patterns"""
         try:
             namespace = self._get_user_namespace(user_id)
 
-            await self.memory_store.aput(
-                namespace, 
-                "conversation_pattern", 
-                pattern.to_dict()
-            )
+            stored_item = await self.memory_store.aget(namespace, "conversation_patterns")
 
-            logger.info(f"Updated conversation pattern for user {user_id}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error learning conversation pattern: {e}")
-            return False
-
-    async def get_conversation_pattern(self, user_id: int) -> ConversationPattern:
-        """Get user's learned conversation patterns"""
-        try:
-            namespace = self._get_user_namespace(user_id)
-
-            stored_items = await self.memory_store.aget(namespace, "conversation_pattern")
-
-            if stored_items:
-                pattern_data = stored_items[0].value
+            if stored_item:
+                # FIXED: aget returns single Item object, not list
+                pattern_data = stored_item.value
                 return ConversationPattern.from_dict(pattern_data)
             else:
-                # Return default pattern
+                # Return default patterns
                 return ConversationPattern(
                     user_communication_style="casual",
                     preferred_response_length="medium",
@@ -334,7 +346,7 @@ class AIMemorySystem:
                 )
 
         except Exception as e:
-            logger.error(f"Error getting conversation pattern: {e}")
+            logger.error(f"Error getting conversation patterns for {user_id}: {e}")
             return ConversationPattern(
                 user_communication_style="casual",
                 preferred_response_length="medium",
@@ -344,8 +356,43 @@ class AIMemorySystem:
                 typical_search_times=[]
             )
 
+    async def learn_conversation_patterns(
+        self, 
+        user_id: int,
+        message: str,
+        response_time: Optional[float] = None
+    ) -> bool:
+        """Learn user's conversation patterns"""
+        try:
+            patterns = await self.get_conversation_patterns(user_id)
+
+            # Analyze message characteristics
+            # Learn communication style
+            if len(message.split()) > 20:
+                patterns.user_communication_style = "detailed"
+            elif len(message.split()) < 5:
+                patterns.user_communication_style = "brief"
+
+            # Learn if user likes follow-up questions
+            if "?" in message:
+                patterns.likes_follow_up_questions = True
+
+            # Store updated patterns
+            namespace = self._get_user_namespace(user_id)
+            await self.memory_store.aput(
+                namespace,
+                "conversation_patterns",
+                patterns.to_dict()
+            )
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error learning conversation patterns: {e}")
+            return False
+
     # =====================================================================
-    # SESSION MEMORY (Current Conversation State)
+    # SESSION MEMORY (Temporary State)
     # =====================================================================
 
     async def set_session_state(
@@ -355,7 +402,7 @@ class AIMemorySystem:
         state: ConversationState,
         context: Optional[Dict[str, Any]] = None
     ) -> bool:
-        """Set current session state and context"""
+        """Set current conversation state"""
         try:
             namespace = self._get_session_namespace(user_id, thread_id)
 
@@ -365,23 +412,28 @@ class AIMemorySystem:
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
 
-            await self.memory_store.aput(namespace, "session_state", session_data)
+            await self.memory_store.aput(namespace, "session", session_data)
             return True
 
         except Exception as e:
             logger.error(f"Error setting session state: {e}")
             return False
 
-    async def get_session_state(self, user_id: int, thread_id: str) -> Tuple[ConversationState, Dict[str, Any]]:
-        """Get current session state and context"""
+    async def get_session_state(
+        self, 
+        user_id: int, 
+        thread_id: str
+    ) -> Tuple[ConversationState, Dict[str, Any]]:
+        """Get current conversation state"""
         try:
             namespace = self._get_session_namespace(user_id, thread_id)
 
-            stored_items = await self.memory_store.aget(namespace, "session_state")
+            stored_item = await self.memory_store.aget(namespace, "session")
 
-            if stored_items:
-                session_data = stored_items[0].value
-                state = ConversationState(session_data["state"])
+            if stored_item:
+                # FIXED: aget returns single Item object, not list
+                session_data = stored_item.value
+                state = ConversationState(session_data.get("state", "idle"))
                 context = session_data.get("context", {})
                 return state, context
             else:
@@ -391,131 +443,148 @@ class AIMemorySystem:
             logger.error(f"Error getting session state: {e}")
             return ConversationState.IDLE, {}
 
+    async def set_current_city(
+        self, 
+        user_id: int, 
+        thread_id: str, 
+        city: str
+    ) -> bool:
+        """Set current search city for this session"""
+        try:
+            state, context = await self.get_session_state(user_id, thread_id)
+            context["current_city"] = city
+            return await self.set_session_state(user_id, thread_id, state, context)
+
+        except Exception as e:
+            logger.error(f"Error setting current city: {e}")
+            return False
+
+    async def get_current_city(
+        self, 
+        user_id: int, 
+        thread_id: str
+    ) -> Optional[str]:
+        """Get current search city for this session"""
+        try:
+            _, context = await self.get_session_state(user_id, thread_id)
+            return context.get("current_city")
+
+        except Exception as e:
+            logger.error(f"Error getting current city: {e}")
+            return None
+
     # =====================================================================
-    # COMPREHENSIVE USER CONTEXT
+    # MEMORY RETRIEVAL AND CONTEXT
     # =====================================================================
 
     async def get_user_context(self, user_id: int, thread_id: str) -> Dict[str, Any]:
         """Get comprehensive user context for AI decision making"""
         try:
-            # Get all memory components
+            # Get all types of memory
             preferences = await self.get_user_preferences(user_id)
+            restaurant_history = await self.get_restaurant_history(user_id)
             session_state, session_context = await self.get_session_state(user_id, thread_id)
-            conversation_pattern = await self.get_conversation_pattern(user_id)
+            conversation_patterns = await self.get_conversation_patterns(user_id)
+            current_city = await self.get_current_city(user_id, thread_id)
 
-            # Get current city from session
-            current_city = session_context.get("current_city")
-            recent_restaurants = await self.get_restaurant_memories(user_id, current_city, limit=5)
-
-            return {
+            # Build comprehensive context
+            context = {
                 "user_id": user_id,
                 "thread_id": thread_id,
                 "current_city": current_city,
                 "session_state": session_state.value,
                 "session_context": session_context,
                 "preferences": preferences.to_dict(),
-                "conversation_pattern": conversation_pattern.to_dict(),
-                "recent_restaurants": [r.to_dict() for r in recent_restaurants],
-                "total_restaurant_memories": len(await self.get_restaurant_memories(user_id))
+                "conversation_patterns": conversation_patterns.to_dict(),
+                "restaurant_count": len(restaurant_history),
+                "recent_restaurants": [
+                    r.to_dict() for r in restaurant_history[-5:]  # Last 5 restaurants
+                ]
             }
+
+            # Add city-specific context if current city is set
+            if current_city:
+                city_restaurants = await self.get_restaurants_for_city(user_id, current_city)
+                context["city_restaurant_count"] = len(city_restaurants)
+                context["city_recent_restaurants"] = [
+                    r.to_dict() for r in city_restaurants[-3:]  # Last 3 for this city
+                ]
+
+            return context
 
         except Exception as e:
             logger.error(f"Error getting user context: {e}")
-            return {
-                "user_id": user_id,
-                "thread_id": thread_id,
-                "current_city": None,
-                "session_state": "idle",
-                "session_context": {},
-                "preferences": {},
-                "conversation_pattern": {},
-                "recent_restaurants": [],
-                "total_restaurant_memories": 0
-            }
+            return {"user_id": user_id, "thread_id": thread_id, "error": str(e)}
 
     # =====================================================================
-    # AI LEARNING FUNCTIONS
+    # MEMORY UTILITIES
     # =====================================================================
 
-    async def learn_preferences_from_message(
+    async def filter_already_recommended(
         self, 
         user_id: int, 
-        message: str, 
-        current_city: Optional[str] = None
-    ) -> bool:
-        """Extract and learn preferences from user messages"""
+        restaurants: List[Dict[str, Any]], 
+        city: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Filter out restaurants already recommended to user"""
         try:
-            # Get current preferences
-            preferences = await self.get_user_preferences(user_id)
+            if city:
+                recommended_restaurants = await self.get_restaurants_for_city(user_id, city)
+            else:
+                recommended_restaurants = await self.get_restaurant_history(user_id)
 
-            # Simple keyword-based learning (could be enhanced with NLP)
-            message_lower = message.lower()
+            recommended_names = {r.restaurant_name.lower() for r in recommended_restaurants}
 
-            # Learn cuisine preferences
-            cuisines = ["italian", "japanese", "chinese", "thai", "indian", "french", "mexican", "korean"]
-            for cuisine in cuisines:
-                if cuisine in message_lower and cuisine not in preferences.preferred_cuisines:
-                    preferences.preferred_cuisines.append(cuisine)
+            filtered_restaurants = []
+            for restaurant in restaurants:
+                name = restaurant.get("name", "").lower()
+                if name not in recommended_names:
+                    filtered_restaurants.append(restaurant)
 
-            # Learn dietary restrictions
-            restrictions = ["vegetarian", "vegan", "gluten-free", "halal", "kosher"]
-            for restriction in restrictions:
-                if restriction in message_lower and restriction not in preferences.dietary_restrictions:
-                    preferences.dietary_restrictions.append(restriction)
-
-            # Learn cities
-            if current_city and current_city not in preferences.preferred_cities:
-                preferences.preferred_cities.append(current_city)
-
-            # Update preferences if we learned something
-            return await self.update_user_preferences(user_id, preferences)
+            logger.info(f"Filtered {len(restaurants) - len(filtered_restaurants)} already recommended restaurants")
+            return filtered_restaurants
 
         except Exception as e:
-            logger.error(f"Error learning from message: {e}")
+            logger.error(f"Error filtering already recommended restaurants: {e}")
+            return restaurants  # Return original list if filtering fails
+
+    async def cleanup_old_sessions(self, days: int = 30) -> bool:
+        """Clean up old session data (for maintenance)"""
+        try:
+            # This would implement cleanup logic for old sessions
+            # For InMemoryStore, this is not needed, but for persistent stores it would be
+            logger.info(f"Cleanup initiated for sessions older than {days} days")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error cleaning up old sessions: {e}")
             return False
-
-    async def set_current_city(self, user_id: int, thread_id: str, city: str) -> bool:
-        """Set user's current city for this session"""
-        try:
-            state, context = await self.get_session_state(user_id, thread_id)
-            context["current_city"] = city
-            return await self.set_session_state(user_id, thread_id, state, context)
-        except Exception as e:
-            logger.error(f"Error setting current city: {e}")
-            return False
-
-    async def get_current_city(self, user_id: int, thread_id: str) -> Optional[str]:
-        """Get user's current city for this session"""
-        try:
-            _, context = await self.get_session_state(user_id, thread_id)
-            return context.get("current_city")
-        except Exception as e:
-            logger.error(f"Error getting current city: {e}")
-            return None
-
-    # =====================================================================
-    # MEMORY CLEANUP AND MAINTENANCE
-    # =====================================================================
-
-    async def cleanup_old_sessions(self, days: int = 30) -> int:
-        """Clean up old session data"""
-        # This would be implemented for production cleanup
-        # For now, return 0 as placeholder
-        return 0
 
     async def get_memory_stats(self, user_id: int) -> Dict[str, Any]:
-        """Get memory usage statistics for a user"""
+        """Get memory statistics for debugging"""
         try:
             preferences = await self.get_user_preferences(user_id)
-            restaurants = await self.get_restaurant_memories(user_id)
+            restaurant_history = await self.get_restaurant_history(user_id)
+            conversation_patterns = await self.get_conversation_patterns(user_id)
 
             return {
-                "preferred_cities_count": len(preferences.preferred_cities),
-                "preferred_cuisines_count": len(preferences.preferred_cuisines),
-                "dietary_restrictions_count": len(preferences.dietary_restrictions),
-                "total_restaurant_memories": len(restaurants),
-                "has_conversation_pattern": True  # We always return a pattern
+                "user_id": user_id,
+                "restaurant_count": len(restaurant_history),
+                "cities_visited": len(preferences.preferred_cities),
+                "cuisines_tried": len(preferences.preferred_cuisines),
+                "dietary_restrictions": len(preferences.dietary_restrictions),
+                "communication_style": conversation_patterns.user_communication_style,
+                "memory_created": True
             }
+
         except Exception as e:
             logger.error(f"Error getting memory stats: {e}")
-            return {}
+            return {"user_id": user_id, "error": str(e)}
+
+# =====================================================================
+# FACTORY FUNCTION
+# =====================================================================
+
+def create_ai_memory_system(config) -> AIMemorySystem:
+    """Factory function to create AI memory system"""
+    return AIMemorySystem(config)
