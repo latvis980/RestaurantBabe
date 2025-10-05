@@ -19,7 +19,7 @@ from typing import Optional, Dict, Any, List
 from threading import Event
 import time
 
-# Import the memory-enhanced unified agent
+# Import existing components
 from agents.unified_restaurant_agent import create_unified_restaurant_agent
 from utils.voice_handler import VoiceMessageHandler
 from utils.database import initialize_database
@@ -40,6 +40,18 @@ initialize_database(config)
 # Initialize memory-enhanced unified agent (single source of truth)
 unified_agent = create_unified_restaurant_agent(config)
 
+# Initialize AI Chat Layer AFTER config is loaded
+try:
+    from utils.ai_chat_layer import AIChatLayer, ActionType
+    ai_chat_layer = AIChatLayer(config)
+    logger.info("✅ AI Chat Layer initialized successfully")
+    USE_AI_CHAT_LAYER = True
+except Exception as e:
+    logger.error(f"❌ Failed to initialize AI Chat Layer: {e}")
+    logger.info("⚠️ Falling back to direct unified agent")
+    ai_chat_layer = None
+    USE_AI_CHAT_LAYER = False
+
 # Initialize voice handler for transcription only
 voice_handler = VoiceMessageHandler() if hasattr(config, 'OPENAI_API_KEY') and config.OPENAI_API_KEY else None
 
@@ -57,7 +69,7 @@ WELCOME_MESSAGE = (
 
 
 # ============================================================================
-# CORE MESSAGE PROCESSING (Delegates to Memory-Enhanced Agent)
+# CORE MESSAGE PROCESSING - AI CHAT LAYER INTEGRATION
 # ============================================================================
 
 async def process_user_message(
@@ -68,66 +80,54 @@ async def process_user_message(
     message_type: str = "text"
 ) -> None:
     """
-    CORE FUNCTION: Process any user message through memory-enhanced agent
+    CORE FUNCTION: Process any user message with AI Chat Layer intelligence
 
-    This now provides intelligent, contextual responses instead of 
-    automated search messages.
+    This provides intelligent, contextual responses and routes to search when needed.
     """
     processing_msg = None
 
     try:
-        # 1. TELEGRAM CONCERN: Show initial processing (brief)
+        # 1. Show intelligent processing message
         processing_msg = show_brief_processing_message(chat_id, message_text)
 
-        # 2. DELEGATE TO MEMORY-ENHANCED AGENT: All intelligence happens here
-        logger.info(f"🎯 Processing message for user {user_id}: '{message_text[:50]}...'")
+        if USE_AI_CHAT_LAYER and ai_chat_layer:
+            # 2. NEW: Use AI Chat Layer for intelligent routing
+            logger.info(f"🧠 Processing with AI Chat Layer for user {user_id}")
 
-        result = await unified_agent.restaurant_search_with_memory(
-            query=message_text,
-            user_id=user_id,
-            gps_coordinates=gps_coordinates,
-            thread_id=f"telegram_{user_id}_{int(time.time())}"
-        )
-
-        # 3. TELEGRAM CONCERN: Clean up processing message
-        try:
-            bot.delete_message(chat_id, processing_msg.message_id)
-        except Exception:
-            pass  # Message might already be deleted
-
-        # 4. TELEGRAM CONCERN: Send the AI response
-        ai_response = result.get("ai_response") or result.get("formatted_message")
-
-        if ai_response:
-            # Split long messages for Telegram
-            if len(ai_response) > 4000:
-                # Send in chunks
-                chunks = split_message_for_telegram(ai_response)
-                for chunk in chunks:
-                    bot.send_message(
-                        chat_id,
-                        fix_telegram_html(chunk),
-                        parse_mode='HTML',
-                        disable_web_page_preview=True
-                    )
-            else:
-                bot.send_message(
-                    chat_id,
-                    fix_telegram_html(ai_response),
-                    parse_mode='HTML',
-                    disable_web_page_preview=True
-                )
-        else:
-            # Fallback response
-            bot.send_message(
-                chat_id,
-                "I'm here to help you find amazing restaurants! What are you looking for?",
-                parse_mode='HTML'
+            decision = await ai_chat_layer.process_message(
+                user_id=user_id,
+                thread_id=f"telegram_{chat_id}",
+                user_message=message_text
             )
 
-        # 5. Log success
-        processing_time = result.get("processing_time", 0)
-        logger.info(f"✅ Message processed successfully in {processing_time}s")
+            # 3. Clean up processing message
+            try:
+                bot.delete_message(chat_id, processing_msg.message_id)
+            except Exception:
+                pass
+
+            # 4. Handle AI decision
+            await handle_ai_decision(user_id, chat_id, decision, gps_coordinates)
+
+        else:
+            # Fallback to direct unified agent (old behavior)
+            logger.info(f"🔄 Fallback: Using unified agent directly for user {user_id}")
+
+            result = await unified_agent.restaurant_search_with_memory(
+                query=message_text,
+                user_id=user_id,
+                gps_coordinates=gps_coordinates,
+                thread_id=f"telegram_{user_id}_{int(time.time())}"
+            )
+
+            # Clean up processing message
+            try:
+                bot.delete_message(chat_id, processing_msg.message_id)
+            except Exception:
+                pass
+
+            # Send result
+            await send_search_result(chat_id, result)
 
     except Exception as e:
         error_msg = f"Error processing message: {str(e)}"
@@ -148,9 +148,196 @@ async def process_user_message(
         )
 
 
+async def handle_ai_decision(
+    user_id: int, 
+    chat_id: int, 
+    decision, 
+    gps_coordinates: Optional[tuple] = None
+) -> None:
+    """Handle the AI Chat Layer's decision"""
+    try:
+        logger.info(f"🎯 AI Decision: {decision.action.value} (confidence: {decision.confidence})")
+
+        if decision.action == ActionType.CHAT_RESPONSE:
+            # Just send the AI response - no search needed
+            bot.send_message(
+                chat_id, 
+                fix_telegram_html(decision.response_text), 
+                parse_mode='HTML'
+            )
+
+        elif decision.action == ActionType.TRIGGER_SEARCH:
+            # Send AI response first, then trigger search
+            bot.send_message(
+                chat_id, 
+                fix_telegram_html(decision.response_text), 
+                parse_mode='HTML'
+            )
+
+            # Extract search parameters and trigger restaurant search
+            search_params = decision.search_params or {}
+            query = search_params.get('query', decision.response_text)
+
+            # Call unified agent for actual search
+            result = await unified_agent.restaurant_search_with_memory(
+                query=query,
+                user_id=user_id,
+                gps_coordinates=gps_coordinates,
+                thread_id=f"telegram_{chat_id}_{int(time.time())}"
+            )
+
+            # Send search results
+            await send_search_result(chat_id, result)
+
+            # Save results to memory if successful
+            if result.get("success") and result.get("final_restaurants"):
+                city = search_params.get('city', 'Unknown')
+                await save_search_results_to_memory(user_id, result["final_restaurants"], query, city)
+
+        elif decision.action == ActionType.FOLLOW_UP_SEARCH:
+            # Continue existing search with more results
+            bot.send_message(
+                chat_id, 
+                fix_telegram_html(decision.response_text), 
+                parse_mode='HTML'
+            )
+
+            # Get search params from decision
+            search_params = decision.search_params or {}
+            query = search_params.get('query', 'more restaurants')
+
+            # Trigger search for more results
+            result = await unified_agent.restaurant_search_with_memory(
+                query=query,
+                user_id=user_id,
+                gps_coordinates=gps_coordinates,
+                thread_id=f"telegram_{chat_id}_{int(time.time())}"
+            )
+
+            await send_search_result(chat_id, result)
+
+        elif decision.action == ActionType.CLARIFY_REQUEST:
+            # Ask for clarification
+            bot.send_message(
+                chat_id, 
+                fix_telegram_html(decision.response_text), 
+                parse_mode='HTML'
+            )
+
+        elif decision.action == ActionType.SHOW_RECOMMENDATIONS:
+            # Show past recommendations
+            bot.send_message(
+                chat_id, 
+                fix_telegram_html(decision.response_text), 
+                parse_mode='HTML'
+            )
+
+            # Get and show user's restaurant history
+            if ai_chat_layer:
+                history = await ai_chat_layer.get_user_restaurant_history(user_id)
+                if history:
+                    history_text = format_restaurant_history(history[:5])  # Show last 5
+                    bot.send_message(chat_id, history_text, parse_mode='HTML')
+
+        else:
+            # Default: just send the response
+            bot.send_message(
+                chat_id, 
+                fix_telegram_html(decision.response_text), 
+                parse_mode='HTML'
+            )
+
+    except Exception as e:
+        logger.error(f"Error handling AI decision: {e}")
+        bot.send_message(
+            chat_id,
+            "I had some trouble processing that. Could you try asking again?",
+            parse_mode='HTML'
+        )
+
+
+async def send_search_result(chat_id: int, result: Dict[str, Any]) -> None:
+    """Send search result to user"""
+    try:
+        ai_response = result.get("ai_response") or result.get("formatted_message")
+
+        if ai_response:
+            # Split long messages for Telegram
+            if len(ai_response) > 4000:
+                chunks = split_message_for_telegram(ai_response)
+                for chunk in chunks:
+                    bot.send_message(
+                        chat_id,
+                        fix_telegram_html(chunk),
+                        parse_mode='HTML',
+                        disable_web_page_preview=True
+                    )
+            else:
+                bot.send_message(
+                    chat_id,
+                    fix_telegram_html(ai_response),
+                    parse_mode='HTML',
+                    disable_web_page_preview=True
+                )
+        else:
+            # Fallback response
+            bot.send_message(
+                chat_id,
+                "I couldn't find specific restaurants right now, but I'm here to help! What are you looking for?",
+                parse_mode='HTML'
+            )
+    except Exception as e:
+        logger.error(f"Error sending search result: {e}")
+
+
+async def save_search_results_to_memory(
+    user_id: int, 
+    restaurants: List[Dict[str, Any]], 
+    query: str, 
+    city: str
+) -> None:
+    """Save successful search results to user's memory"""
+    try:
+        if not ai_chat_layer:
+            return
+
+        for restaurant in restaurants[:5]:  # Save top 5 results
+            restaurant_name = restaurant.get('name', 'Unknown Restaurant')
+            cuisine = restaurant.get('cuisine', 'Unknown')
+
+            await ai_chat_layer.save_restaurant_recommendation(
+                user_id=user_id,
+                restaurant_name=restaurant_name,
+                city=city,
+                cuisine=cuisine,
+                source='search'
+            )
+
+        logger.info(f"Saved {len(restaurants[:5])} restaurants to memory for user {user_id}")
+
+    except Exception as e:
+        logger.error(f"Error saving search results to memory: {e}")
+
+
+def format_restaurant_history(history: List[Dict[str, Any]]) -> str:
+    """Format user's restaurant history for display"""
+    if not history:
+        return "You haven't received any restaurant recommendations yet!"
+
+    text = "🍽️ <b>Your Recent Restaurant Recommendations:</b>\n\n"
+
+    for i, restaurant in enumerate(history, 1):
+        name = restaurant.get('restaurant_name', 'Unknown')
+        city = restaurant.get('city', 'Unknown')
+        cuisine = restaurant.get('cuisine', 'Unknown')
+        text += f"{i}. <b>{name}</b> ({cuisine}) in {city}\n"
+
+    text += f"\nI've recommended {len(history)} restaurants to you recently! 🎉"
+    return text
+
+
 def show_brief_processing_message(chat_id: int, message_text: str) -> Any:
     """Show a brief, intelligent processing message"""
-
     # Quick analysis to show appropriate processing message
     if any(word in message_text.lower() for word in ["restaurant", "food", "eat", "dining"]):
         processing_text = "🔍 Finding the perfect spots for you..."
@@ -270,7 +457,10 @@ def handle_memory_summary(message):
 
     async def get_memory():
         try:
-            summary = await unified_agent.get_user_memory_summary(user_id)
+            if USE_AI_CHAT_LAYER and ai_chat_layer:
+                summary = await ai_chat_layer.get_user_memory_summary(user_id)
+            else:
+                summary = await unified_agent.get_user_memory_summary(user_id)
 
             memory_data = summary.get("memory_summary", {})
             response = f"🧠 <b>Your Memory Summary:</b>\n\n"
@@ -324,7 +514,7 @@ def handle_voice_message(message):
         if transcribed_text:
             logger.info(f"🎙️ Voice transcribed for user {user_id}: '{transcribed_text[:50]}...'")
 
-            # Delegate transcribed text to memory-enhanced agent
+            # Delegate transcribed text to AI Chat Layer
             asyncio.run(process_user_message(user_id, chat_id, transcribed_text, message_type="voice"))
         else:
             bot.send_message(chat_id, "😔 Couldn't understand your voice message. Please try again.")
@@ -348,7 +538,7 @@ def handle_location_message(message):
 
     logger.info(f"📍 Location from user {user_id}: {latitude:.4f}, {longitude:.4f}")
 
-    # Delegate to memory-enhanced agent with coordinates
+    # Delegate to AI Chat Layer with coordinates
     asyncio.run(process_user_message(
         user_id=user_id,
         chat_id=chat_id,
@@ -366,7 +556,7 @@ def handle_text_message(message):
 
     logger.info(f"📝 Text message from user {user_id}: '{message_text[:50]}...'")
 
-    # Delegate to memory-enhanced agent
+    # Delegate to AI Chat Layer
     asyncio.run(process_user_message(user_id, chat_id, message_text, message_type="text"))
 
 
@@ -435,7 +625,11 @@ def main():
     """Initialize and start the memory-enhanced bot"""
     try:
         logger.info("🚀 Starting Memory-Enhanced Restaurant Bot...")
-        logger.info("✨ Features: AI Chat Layer + Memory System + Natural Conversations")
+
+        if USE_AI_CHAT_LAYER:
+            logger.info("✨ Features: AI Chat Layer + Memory System + Natural Conversations")
+        else:
+            logger.info("⚠️ Running with Unified Agent only (AI Chat Layer disabled)")
 
         # Test agent initialization
         logger.info("🧪 Testing agent initialization...")

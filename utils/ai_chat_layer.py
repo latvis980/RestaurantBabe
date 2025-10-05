@@ -24,7 +24,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 
-from utils.ai_memory_system import (
+from ai_memory_system import (
     AIMemorySystem, ConversationState, UserPreferences, 
     RestaurantMemory, ConversationPattern
 )
@@ -69,8 +69,9 @@ class AIChatLayer:
 
         # Initialize AI model for chat decisions
         self.llm = ChatOpenAI(
-            model=config.OPENAI_MODEL,
-            temperature=0.3,  # Slightly creative but focused
+            model=getattr(config, 'AI_CHAT_LAYER_MODEL', 'gpt-4o-mini'),
+            temperature=getattr(config, 'AI_CHAT_TEMPERATURE', 0.3),
+            max_tokens=getattr(config, 'AI_CHAT_MAX_TOKENS', 1000),
             api_key=config.OPENAI_API_KEY
         )
 
@@ -87,83 +88,7 @@ class AIChatLayer:
 
         # Main chat routing prompt
         self.chat_router_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are Restaurant Babe, an intelligent AI that helps users find amazing restaurants worldwide. 
-
-Your personality:
-- Friendly, knowledgeable, and enthusiastic about food
-- You remember user preferences and past conversations
-- You provide natural, conversational responses
-- You're proactive in helping users discover great dining experiences
-
-CRITICAL: You must decide what action to take based on the user's message and context.
-
-Available Actions:
-1. CHAT_RESPONSE: Respond conversationally (greetings, thanks, general chat)
-2. TRIGGER_SEARCH: Start a new restaurant search (user wants recommendations)
-3. FOLLOW_UP_SEARCH: Continue/modify existing search (ask for more, different cuisine, etc.)
-4. CLARIFY_REQUEST: Ask for clarification (vague request)
-5. SHOW_RECOMMENDATIONS: Show previous recommendations for a city
-6. UPDATE_PREFERENCES: Learn user preferences without taking other action
-
-User Context:
-{user_context}
-
-Guidelines:
-- If user greets you or chats casually → CHAT_RESPONSE
-- If user asks for restaurant recommendations → TRIGGER_SEARCH or FOLLOW_UP_SEARCH
-- If request is vague or missing key info → CLARIFY_REQUEST  
-- If user asks about previous recommendations → SHOW_RECOMMENDATIONS
-- If user mentions preferences (cuisine, dietary needs) → UPDATE_PREFERENCES + other action
-- Always be memory-aware: reference past conversations naturally
-
-Respond with JSON only:
-{{
-    "action": "ACTION_TYPE",
-    "response_text": "Your natural response to the user",
-    "search_params": {{"city": "...", "cuisine": "...", "query": "..."}},
-    "confidence": 0.85,
-    "reasoning": "Why you chose this action",
-    "memory_updates": ["preference learned", "city noted"]
-}}"""),
-            ("human", "User message: {user_message}")
-        ])
-
-        # Search refinement prompt
-        self.search_refiner_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You help refine restaurant search parameters based on user context and preferences.
-
-User Context: {user_context}
-Current Search State: {search_context}
-
-Extract and structure search parameters from the user's message:
-- City/location (required)
-- Cuisine type (optional)
-- Price range (optional) 
-- Ambiance/vibe (optional)
-- Special requirements (optional)
-
-Consider the user's:
-- Past preferences
-- Current city (if set)
-- Previous searches
-- Dietary restrictions
-
-Respond with JSON only:
-{{
-    "city": "extracted or inferred city",
-    "cuisine": "specific cuisine or null",
-    "query": "natural language query for search",
-    "filters": {{"budget": "...", "ambiance": "...", "dietary": [...]}},
-    "confidence": 0.9,
-    "needs_clarification": false,
-    "clarification_question": null
-}}"""),
-            ("human", "User message: {user_message}")
-        ])
-
-        # Conversation response prompt
-        self.conversation_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are Restaurant Babe, responding conversationally to the user.
+            ("system", """You are Restaurant Babe, an intelligent AI that helps users find amazing restaurants worldwide.
 
 Your personality:
 - Warm, enthusiastic, and knowledgeable about food
@@ -177,7 +102,26 @@ User Context:
 Recent conversation:
 {recent_messages}
 
-Respond naturally as Restaurant Babe. Reference user's preferences, past recommendations, or context when relevant. Keep the tone conversational and helpful."""),
+Based on the user's message and context, decide what action to take:
+
+1. CHAT_RESPONSE: Just have a conversational response (greetings, questions about food, etc.)
+2. TRIGGER_SEARCH: User wants to find restaurants (clear search intent)
+3. FOLLOW_UP_SEARCH: User wants more options from current search
+4. CLARIFY_REQUEST: Need more information to help them
+5. SHOW_RECOMMENDATIONS: User asks about past recommendations
+6. UPDATE_PREFERENCES: Learn from what they said about preferences
+
+Respond with a JSON object:
+{{
+    "action": "action_type",
+    "response_text": "natural response text",
+    "search_params": {{"city": "...", "cuisine": "...", "requirements": "..."}},
+    "confidence": 0.85,
+    "reasoning": "why you chose this action",
+    "memory_updates": ["preference learned", "city noted"]
+}}
+
+IMPORTANT: Always provide a natural, conversational response_text that fits your warm, enthusiastic personality."""),
             ("human", "{user_message}")
         ])
 
@@ -229,307 +173,281 @@ Respond naturally as Restaurant Babe. Reference user's preferences, past recomme
                 response_text="I'm having a bit of trouble right now. Could you try asking again?",
                 search_params=None,
                 confidence=0.1,
-                reasoning=f"Error fallback: {str(e)}",
+                reasoning="Error fallback",
                 memory_updates=[]
             )
 
     async def _make_chat_decision(
-        self, 
-        user_message: str, 
+        self,
+        user_message: str,
         user_context: Dict[str, Any],
         message_history: List[Dict[str, str]]
     ) -> ChatDecision:
-        """Use AI to decide what action to take"""
+        """Use AI to decide what action to take based on user message and context"""
         try:
-            # Format context for prompt
-            context_str = json.dumps(user_context, indent=2)
+            # Format recent messages for context
+            recent_messages = self._format_message_history(message_history)
 
-            # Get AI decision
-            response = await self.llm.ainvoke(
-                self.chat_router_prompt.format_messages(
-                    user_context=context_str,
-                    user_message=user_message
-                )
+            # Create prompt with context
+            prompt = self.chat_router_prompt.format(
+                user_context=json.dumps(user_context, indent=2),
+                recent_messages=recent_messages,
+                user_message=user_message
             )
 
+            # Get AI decision
+            response = await self.llm.ainvoke([HumanMessage(content=prompt)])
+
             # Parse JSON response
-            decision_data = json.loads(response.content)
+            try:
+                decision_data = json.loads(response.content)
+            except json.JSONDecodeError:
+                # If AI doesn't return valid JSON, create a fallback decision
+                logger.warning("AI returned invalid JSON, creating fallback decision")
+                return self._create_fallback_decision(user_message, user_context)
 
             # Create ChatDecision object
             decision = ChatDecision(
-                action=ActionType(decision_data["action"]),
-                response_text=decision_data.get("response_text"),
+                action=ActionType(decision_data.get("action", "chat_response")),
+                response_text=decision_data.get("response_text", "I'm here to help you find great restaurants!"),
                 search_params=decision_data.get("search_params"),
-                confidence=decision_data.get("confidence", 0.5),
-                reasoning=decision_data.get("reasoning", ""),
+                confidence=float(decision_data.get("confidence", 0.5)),
+                reasoning=decision_data.get("reasoning", "AI decision"),
                 memory_updates=decision_data.get("memory_updates", [])
             )
-
-            # If it's a search action, refine the search parameters
-            if decision.action in [ActionType.TRIGGER_SEARCH, ActionType.FOLLOW_UP_SEARCH]:
-                refined_params = await self._refine_search_parameters(
-                    user_message, user_context
-                )
-                decision.search_params = refined_params
 
             return decision
 
         except Exception as e:
-            logger.error(f"Error making chat decision: {e}")
-            # Fallback to clarification
+            logger.error(f"Error making AI decision: {e}")
+            return self._create_fallback_decision(user_message, user_context)
+
+    def _create_fallback_decision(self, user_message: str, user_context: Dict[str, Any]) -> ChatDecision:
+        """Create a simple fallback decision when AI fails"""
+        # Simple keyword-based fallback
+        message_lower = user_message.lower()
+
+        # Look for restaurant search keywords
+        search_keywords = ["restaurant", "food", "eat", "hungry", "dinner", "lunch", "breakfast"]
+        if any(keyword in message_lower for keyword in search_keywords):
             return ChatDecision(
-                action=ActionType.CLARIFY_REQUEST,
-                response_text="I'd love to help you find great restaurants! Could you tell me what city you're looking for and what type of cuisine interests you?",
+                action=ActionType.TRIGGER_SEARCH,
+                response_text="I'd love to help you find a great restaurant! Let me search for options based on what you're looking for.",
+                search_params={"query": user_message},
+                confidence=0.6,
+                reasoning="Keyword-based fallback search",
+                memory_updates=[]
+            )
+        else:
+            return ChatDecision(
+                action=ActionType.CHAT_RESPONSE,
+                response_text="Hi! I'm Restaurant Babe, and I love helping people find amazing restaurants. What kind of food are you in the mood for?",
                 search_params=None,
-                confidence=0.3,
-                reasoning=f"Error fallback: {str(e)}",
+                confidence=0.7,
+                reasoning="General chat fallback",
                 memory_updates=[]
             )
 
-    async def _refine_search_parameters(
-        self, 
-        user_message: str, 
-        user_context: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Refine search parameters using AI and user context"""
-        try:
-            # Get current session context for search refinement
-            search_context = user_context.get("session_context", {})
+    def _format_message_history(self, message_history: List[Dict[str, str]]) -> str:
+        """Format message history for AI context"""
+        if not message_history:
+            return "No recent conversation history."
 
-            response = await self.llm.ainvoke(
-                self.search_refiner_prompt.format_messages(
-                    user_context=json.dumps(user_context, indent=2),
-                    search_context=json.dumps(search_context, indent=2),
-                    user_message=user_message
-                )
-            )
+        # Take last 5 messages for context
+        recent = message_history[-5:]
+        formatted = []
 
-            return json.loads(response.content)
+        for msg in recent:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            formatted.append(f"{role}: {content}")
 
-        except Exception as e:
-            logger.error(f"Error refining search parameters: {e}")
-            # Fallback search parameters
-            return {
-                "city": user_context.get("current_city", ""),
-                "cuisine": None,
-                "query": user_message,
-                "filters": {},
-                "confidence": 0.3,
-                "needs_clarification": True,
-                "clarification_question": "Could you specify which city you're interested in?"
-            }
+        return "\n".join(formatted)
 
     async def _update_session_state(
-        self, 
-        user_id: int, 
-        thread_id: str, 
+        self,
+        user_id: int,
+        thread_id: str,
         decision: ChatDecision,
         user_context: Dict[str, Any]
-    ):
+    ) -> None:
         """Update session state based on AI decision"""
         try:
-            # Determine new conversation state
-            if decision.action == ActionType.TRIGGER_SEARCH:
-                new_state = ConversationState.SEARCHING
-                context = {
-                    "search_started_at": datetime.now().isoformat(),
-                    "search_params": decision.search_params
-                }
-            elif decision.action == ActionType.FOLLOW_UP_SEARCH:
-                new_state = ConversationState.SEARCHING
-                # Preserve existing context and update
-                context = user_context.get("session_context", {})
-                context.update({
-                    "follow_up_search": True,
-                    "search_params": decision.search_params
-                })
-            elif decision.action in [ActionType.CHAT_RESPONSE, ActionType.CLARIFY_REQUEST]:
-                new_state = ConversationState.CASUAL_CHAT
-                context = user_context.get("session_context", {})
-            else:
-                # Keep current state
-                current_state, context = await self.memory_system.get_session_state(user_id, thread_id)
-                new_state = current_state
+            # Map decision to conversation state
+            state_mapping = {
+                ActionType.CHAT_RESPONSE: ConversationState.CASUAL_CHAT,
+                ActionType.TRIGGER_SEARCH: ConversationState.SEARCHING,
+                ActionType.FOLLOW_UP_SEARCH: ConversationState.SEARCHING,
+                ActionType.CLARIFY_REQUEST: ConversationState.SEARCHING,
+                ActionType.SHOW_RECOMMENDATIONS: ConversationState.PRESENTING_RESULTS,
+                ActionType.UPDATE_PREFERENCES: ConversationState.CASUAL_CHAT
+            }
 
-            # Update city if mentioned in search params
-            if decision.search_params and decision.search_params.get("city"):
-                await self.memory_system.set_current_city(
-                    user_id, thread_id, decision.search_params["city"]
-                )
+            new_state = state_mapping.get(decision.action, ConversationState.IDLE)
+
+            # Get current context and update
+            current_context = user_context.get("session_context", {})
+
+            # Add decision info to context
+            current_context["last_decision"] = {
+                "action": decision.action.value,
+                "confidence": decision.confidence,
+                "timestamp": datetime.now().isoformat()
+            }
+
+            # If it's a search decision, store search params
+            if decision.search_params:
+                current_context["pending_search"] = decision.search_params
 
             # Update session state
-            await self.memory_system.set_session_state(user_id, thread_id, new_state, context)
+            await self.memory_system.set_session_state(
+                user_id, thread_id, new_state, current_context
+            )
 
         except Exception as e:
             logger.error(f"Error updating session state: {e}")
 
     # =====================================================================
-    # RESPONSE GENERATION
+    # UTILITY FUNCTIONS
     # =====================================================================
 
-    async def generate_conversational_response(
-        self, 
-        user_id: int,
-        thread_id: str,
-        user_message: str,
-        context_message: str = None
-    ) -> str:
-        """Generate a natural conversational response"""
+    async def get_user_memory_summary(self, user_id: int) -> Dict[str, Any]:
+        """Get a summary of user's memory for debugging/display"""
         try:
-            user_context = await self.memory_system.get_user_context(user_id, thread_id)
-
-            # Format recent conversation history if available
-            recent_messages = []  # This would come from conversation history
-
-            response = await self.llm.ainvoke(
-                self.conversation_prompt.format_messages(
-                    user_context=json.dumps(user_context, indent=2),
-                    recent_messages=json.dumps(recent_messages, indent=2),
-                    user_message=user_message
-                )
-            )
-
-            return response.content
-
-        except Exception as e:
-            logger.error(f"Error generating conversational response: {e}")
-            return "I'm here to help you find amazing restaurants! What are you in the mood for?"
-
-    # =====================================================================
-    # RESTAURANT RESULT PROCESSING
-    # =====================================================================
-
-    async def process_search_results(
-        self, 
-        user_id: int,
-        thread_id: str,
-        search_results: Dict[str, Any]
-    ) -> str:
-        """
-        Process restaurant search results and generate intelligent response
-        This replaces the automated search messages with contextual AI responses
-        """
-        try:
-            user_context = await self.memory_system.get_user_context(user_id, thread_id)
-
-            # Store restaurants in memory
-            if search_results.get("success") and search_results.get("final_restaurants"):
-                restaurants = search_results["final_restaurants"]
-                current_city = await self.memory_system.get_current_city(user_id, thread_id)
-
-                for restaurant in restaurants[:5]:  # Store top 5
-                    restaurant_memory = RestaurantMemory(
-                        restaurant_name=restaurant.get("name", "Unknown"),
-                        city=current_city or "Unknown",
-                        cuisine=restaurant.get("cuisine", "Unknown"),
-                        recommended_date=datetime.now().isoformat(),
-                        user_feedback=None,
-                        rating_given=None,
-                        notes=None,
-                        source=search_results.get("source", "search")
-                    )
-                    await self.memory_system.add_restaurant_memory(user_id, restaurant_memory)
-
-            # Update session state to presenting results
-            await self.memory_system.set_session_state(
-                user_id, thread_id, ConversationState.PRESENTING_RESULTS,
-                {"search_results": search_results, "results_shown_at": datetime.now().isoformat()}
-            )
-
-            # Generate contextual intro message
-            if search_results.get("success"):
-                restaurant_count = len(search_results.get("final_restaurants", []))
-                city = await self.memory_system.get_current_city(user_id, thread_id)
-
-                intro_messages = [
-                    f"Perfect! I found {restaurant_count} amazing spots in {city} for you! 🍽️",
-                    f"Great news! I've discovered {restaurant_count} fantastic restaurants in {city}! ✨",
-                    f"Excellent! Here are {restaurant_count} top-rated places I think you'll love in {city}! 🌟"
-                ]
-
-                # Choose based on user's conversation patterns
-                patterns = await self.memory_system.get_conversation_patterns(user_id)
-                if patterns.preferred_response_length == "short":
-                    return f"Found {restaurant_count} great spots in {city}! 🍽️"
-                else:
-                    return intro_messages[0]  # Default to first option
-            else:
-                return "I had some trouble finding restaurants for that search. Could you try a different city or cuisine? 😔"
-
-        except Exception as e:
-            logger.error(f"Error processing search results: {e}")
-            return "I found some restaurants for you! 🍽️"
-
-    async def generate_follow_up_suggestions(
-        self, 
-        user_id: int,
-        thread_id: str
-    ) -> Optional[str]:
-        """Generate intelligent follow-up suggestions after showing results"""
-        try:
-            user_context = await self.memory_system.get_user_context(user_id, thread_id)
+            stats = await self.memory_system.get_memory_stats(user_id)
             preferences = await self.memory_system.get_user_preferences(user_id)
-            current_city = await self.memory_system.get_current_city(user_id, thread_id)
 
-            suggestions = []
-
-            # Suggest based on preferences
-            if len(preferences.preferred_cuisines) > 1:
-                other_cuisines = [c for c in preferences.preferred_cuisines if c != "recent_cuisine"]
-                if other_cuisines:
-                    suggestions.append(f"Want to try {other_cuisines[0]} places instead?")
-
-            # Suggest different budget range
-            if preferences.budget_range == "mid-range":
-                suggestions.append("Looking for budget-friendly options?")
-
-            # Suggest nearby cities if they have preferences for multiple cities
-            if len(preferences.preferred_cities) > 1:
-                other_cities = [c for c in preferences.preferred_cities if c != current_city]
-                if other_cities:
-                    suggestions.append(f"Want recommendations for {other_cities[0]}?")
-
-            if suggestions:
-                return f"\n\n💡 {suggestions[0]}"
-
-            return None
-
+            return {
+                "memory_stats": stats,
+                "preferences": preferences.to_dict(),
+                "status": "active"
+            }
         except Exception as e:
-            logger.error(f"Error generating follow-up suggestions: {e}")
-            return None
+            logger.error(f"Error getting memory summary: {e}")
+            return {"status": "error", "error": str(e)}
+
+    async def handle_city_change(self, user_id: int, thread_id: str, new_city: str) -> bool:
+        """Handle when user changes to a different city"""
+        try:
+            return await self.memory_system.set_current_city(user_id, thread_id, new_city)
+        except Exception as e:
+            logger.error(f"Error handling city change: {e}")
+            return False
+
+    async def save_restaurant_recommendation(
+        self,
+        user_id: int,
+        restaurant_name: str,
+        city: str,
+        cuisine: str,
+        source: str = "search"
+    ) -> bool:
+        """Save a restaurant recommendation to user's memory"""
+        try:
+            memory = RestaurantMemory(
+                restaurant_name=restaurant_name,
+                city=city,
+                cuisine=cuisine,
+                recommended_date=datetime.now().isoformat(),
+                user_feedback=None,
+                rating_given=None,
+                notes=None,
+                source=source
+            )
+
+            return await self.memory_system.save_restaurant_memory(user_id, memory)
+        except Exception as e:
+            logger.error(f"Error saving restaurant recommendation: {e}")
+            return False
+
+    async def get_user_restaurant_history(
+        self, 
+        user_id: int, 
+        city: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Get user's restaurant recommendation history"""
+        try:
+            memories = await self.memory_system.get_restaurant_memories(user_id, city)
+            return [memory.to_dict() for memory in memories]
+        except Exception as e:
+            logger.error(f"Error getting restaurant history: {e}")
+            return []
 
     # =====================================================================
-    # HELPER FUNCTIONS
+    # SPECIALIZED RESPONSE HANDLERS
     # =====================================================================
 
-    async def should_trigger_search(self, user_message: str, user_context: Dict[str, Any]) -> bool:
-        """Quick check if message likely needs restaurant search"""
-        search_keywords = [
-            "restaurant", "food", "eat", "dining", "cuisine", "meal",
-            "lunch", "dinner", "breakfast", "coffee", "bar", "cafe"
-        ]
+    async def handle_greeting(self, user_id: int, thread_id: str) -> ChatDecision:
+        """Handle greeting messages with personalized response"""
+        try:
+            preferences = await self.memory_system.get_user_preferences(user_id)
 
-        return any(keyword in user_message.lower() for keyword in search_keywords)
+            # Personalize greeting based on known preferences
+            if preferences.preferred_cities:
+                city_text = f"I remember you like exploring restaurants in {', '.join(preferences.preferred_cities[:2])}!"
+            else:
+                city_text = "I'd love to learn about your favorite dining spots!"
 
-    async def extract_city_from_message(self, user_message: str) -> Optional[str]:
-        """Extract city name from user message using simple patterns"""
-        # This is a simplified version - in production you'd use NER or LLM
-        city_indicators = ["in ", "at ", "near ", "around "]
+            response_text = f"Hey there! 🍸 Great to see you again. {city_text} What kind of culinary adventure are you in the mood for today?"
 
-        for indicator in city_indicators:
-            if indicator in user_message.lower():
-                parts = user_message.lower().split(indicator)
-                if len(parts) > 1:
-                    potential_city = parts[1].split()[0].title()
-                    return potential_city
+            return ChatDecision(
+                action=ActionType.CHAT_RESPONSE,
+                response_text=response_text,
+                search_params=None,
+                confidence=0.9,
+                reasoning="Personalized greeting",
+                memory_updates=[]
+            )
+        except Exception as e:
+            logger.error(f"Error handling greeting: {e}")
+            return ChatDecision(
+                action=ActionType.CHAT_RESPONSE,
+                response_text="Hello! I'm Restaurant Babe, and I'm excited to help you discover amazing restaurants! What are you in the mood for?",
+                search_params=None,
+                confidence=0.8,
+                reasoning="Fallback greeting",
+                memory_updates=[]
+            )
 
-        return None
+    async def handle_more_options_request(
+        self, 
+        user_id: int, 
+        thread_id: str
+    ) -> ChatDecision:
+        """Handle requests for more restaurant options"""
+        try:
+            # Get session context to see if there's a current search
+            _, session_context = await self.memory_system.get_session_state(user_id, thread_id)
 
+            if "pending_search" in session_context:
+                # Continue with existing search parameters
+                search_params = session_context["pending_search"]
 
-# =====================================================================
-# FACTORY FUNCTION
-# =====================================================================
-
-def create_ai_chat_layer(config) -> AIChatLayer:
-    """Factory function to create AI chat layer"""
-    return AIChatLayer(config)
+                return ChatDecision(
+                    action=ActionType.FOLLOW_UP_SEARCH,
+                    response_text="Let me find some more great options for you! 🔍",
+                    search_params=search_params,
+                    confidence=0.9,
+                    reasoning="Continue existing search",
+                    memory_updates=[]
+                )
+            else:
+                # No current search, ask for clarification
+                return ChatDecision(
+                    action=ActionType.CLARIFY_REQUEST,
+                    response_text="I'd love to find more options for you! What type of restaurant or cuisine are you looking for?",
+                    search_params=None,
+                    confidence=0.8,
+                    reasoning="Need search parameters",
+                    memory_updates=[]
+                )
+        except Exception as e:
+            logger.error(f"Error handling more options request: {e}")
+            return ChatDecision(
+                action=ActionType.CLARIFY_REQUEST,
+                response_text="I'd be happy to help you find more restaurants! What are you looking for?",
+                search_params=None,
+                confidence=0.7,
+                reasoning="Error fallback",
+                memory_updates=[]
+            )
