@@ -2,7 +2,7 @@
 """
 Telegram Bot with Enhanced Search Messages
 
-IMPORTANT: This version works with the EXISTING AI Chat Layer in unified_restaurant_agent.py
+IMPORTANT: This version works with the EXISTING AI Chat Layer in langgraph_orchestrator.py
 - Keeps the existing AI chat architecture 
 - ONLY adds AI-generated search messages with videos when searches are triggered
 - Removes automated "let me think about that" messages
@@ -24,7 +24,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 
 # Import the enhanced unified agent (with existing AI Chat Layer)
-from agents.unified_restaurant_agent import create_unified_restaurant_agent
+from langgraph_orchestrator import create_unified_restaurant_agent
 from utils.voice_handler import VoiceMessageHandler
 from utils.database import initialize_database
 import config

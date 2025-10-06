@@ -73,7 +73,7 @@ def setup_ai_chat_system():
 
     try:
         # Import and create the unified restaurant agent
-        from agents.unified_restaurant_agent import create_unified_restaurant_agent
+        from langgraph_orchestrator import create_unified_restaurant_agent
         unified_agent = create_unified_restaurant_agent(config)
         logger.info("✅ Memory-enhanced unified agent initialized")
         return unified_agent
