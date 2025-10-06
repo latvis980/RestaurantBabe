@@ -1,4 +1,4 @@
-# agents/optimized_browserless_scraper.py
+# agents/browserless_scraper.py
 """
 OPTIMIZED: Enhanced Restaurant Scraper with Persistent Browser Sessions
 KEY OPTIMIZATIONS:
@@ -21,7 +21,7 @@ from utils.database import get_database
 logger = logging.getLogger(__name__)
 
 
-class OptimizedBrowserlessRestaurantScraper:
+class BrowserlessRestaurantScraper:
     """
     OPTIMIZED: Enhanced Restaurant Scraper with persistent Railway Browserless sessions
     - Maintains browser sessions across multiple URLs
