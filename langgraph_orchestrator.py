@@ -160,6 +160,7 @@ class UnifiedRestaurantAgent:
         graph.add_node("city_scrape_content", self._city_scrape_content)
         graph.add_node("city_clean_content", self._city_clean_content)
         graph.add_node("city_edit_content", self._city_edit_content)
+        graph.add_node("city_follow_up_search", self._city_follow_up_search)
         graph.add_node("city_format_results", self._city_format_results)
         graph.add_node("location_geocode", self._location_geocode)
         graph.add_node("location_search_database", self._location_search_database)
@@ -190,7 +191,8 @@ class UnifiedRestaurantAgent:
         graph.add_edge("city_web_search", "city_scrape_content")
         graph.add_edge("city_scrape_content", "city_clean_content")
         graph.add_edge("city_clean_content", "city_edit_content")
-        graph.add_edge("city_edit_content", "city_format_results")
+        graph.add_edge("city_edit_content", "city_follow_up_search")
+        graph.add_edge("city_follow_up_search", "city_format_results")
         graph.add_edge("city_format_results", END)
 
         # Location search flow
@@ -891,6 +893,73 @@ class UnifiedRestaurantAgent:
             logger.error(f"❌ Error in city content editing: {e}")
             return {**state, "error_message": f"Content editing failed: {str(e)}", "success": False}
 
+    @traceable(name="city_follow_up_search")
+    async def _city_follow_up_search(self, state: UnifiedSearchState) -> Dict[str, Any]:
+        """
+        Perform follow-up Google Maps verification and enhancement
+
+        This integrates the existing FollowUpSearchAgent to:
+        - Verify all restaurant addresses using Google Maps API
+        - Add coordinates and proper Google Maps URLs with place_id format
+        - Filter out low-rated or closed restaurants
+        - Extract countries from formatted addresses
+        - Update database with coordinates and corrected data
+        """
+        try:
+            logger.info("🔍 City Follow-up Search (Google Maps verification)")
+
+            edited_results = state.get("edited_results")
+            destination = state.get("destination", "Unknown")
+
+            if not edited_results:
+                logger.warning("No edited results available for follow-up search")
+                return {**state, "current_step": "follow_up_completed"}
+
+            # Extract the actual restaurant data from the edited_results structure
+            restaurants_data = edited_results
+            if isinstance(edited_results, dict):
+                if "edited_results" in edited_results:
+                    restaurants_data = edited_results["edited_results"]
+                elif "main_list" in edited_results:
+                    restaurants_data = {"main_list": edited_results["main_list"]}
+
+            logger.info(f"📊 Processing {len(restaurants_data.get('main_list', []))} restaurants for follow-up verification")
+
+            # Perform the follow-up search using existing agent
+            # This will verify addresses, add Google Maps URLs, filter low ratings, etc.
+            enhanced_results = await sync_to_async(self.follow_up_search_agent.enhance)(
+                edited_results=restaurants_data,
+                follow_up_queries=None,  # Not needed for Google Maps verification
+                destination=destination
+            )
+
+            logger.info("✅ Follow-up search completed - restaurants now have Google Maps URLs and verified data")
+
+            # Update the state with enhanced results
+            # Maintain the same structure as before but with enhanced restaurant data
+            updated_state = {**state}
+            if isinstance(edited_results, dict) and "edited_results" in edited_results:
+                updated_state["edited_results"] = {
+                    **edited_results,
+                    "edited_results": enhanced_results
+                }
+            else:
+                updated_state["edited_results"] = enhanced_results
+
+            updated_state["current_step"] = "follow_up_completed"
+
+            return updated_state
+
+        except Exception as e:
+            logger.error(f"❌ Error in city follow-up search: {e}")
+            # Continue with unenhanced results rather than failing
+            logger.warning("⚠️ Continuing with unenhanced results due to follow-up search error")
+            return {
+                **state, 
+                "current_step": "follow_up_completed",
+                "error_message": f"Follow-up search failed but continuing: {str(e)}"
+            }
+    
     @traceable(name="city_format_results")
     async def _city_format_results(self, state: UnifiedSearchState) -> Dict[str, Any]:
         """CORRECTED: Use TelegramFormatter.format_recommendations()"""
