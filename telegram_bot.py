@@ -7,6 +7,8 @@ IMPORTANT: This version works with the EXISTING AI Chat Layer in unified_restaur
 - ONLY adds AI-generated search messages with videos when searches are triggered
 - Removes automated "let me think about that" messages
 - Replaces with typing indicator for non-search interactions
+
+FIXED: fix_telegram_html function now preserves HTML formatting instead of escaping it
 """
 
 import telebot
@@ -14,6 +16,8 @@ import asyncio
 import logging
 import time
 import os
+import re
+import tempfile
 from typing import Optional, List
 from threading import Event
 from langchain_openai import ChatOpenAI
@@ -63,8 +67,54 @@ WELCOME_MESSAGE = (
 # ============================================================================
 
 def fix_telegram_html(text: str) -> str:
-    """Fix HTML formatting for Telegram"""
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    """
+    FIXED: Fix HTML formatting for Telegram - preserve HTML tags for proper formatting
+
+    The previous version was escaping HTML which caused raw HTML to show in Telegram.
+    This version preserves HTML formatting while ensuring balanced tags.
+    """
+    if not text:
+        return text
+
+    # Don't escape HTML tags! We want Telegram to parse them for formatting.
+    # Just clean up any problematic characters that aren't part of HTML tags
+
+    # Only escape & that aren't part of HTML entities
+    text = re.sub(r'&(?!amp;|lt;|gt;|quot;|#\d+;|#x[0-9a-fA-F]+;)', '&amp;', text)
+
+    # Clean up any malformed HTML tags (basic cleanup)
+    # Remove any unclosed tags at the end
+    open_tags = []
+    result = []
+
+    tag_pattern = r'<(/?)(\w+)(?:[^>]*)>'
+    last_pos = 0
+
+    for match in re.finditer(tag_pattern, text):
+        result.append(text[last_pos:match.start()])
+
+        is_closing = bool(match.group(1))
+        tag_name = match.group(2).lower()
+
+        if is_closing:
+            if open_tags and open_tags[-1] == tag_name:
+                open_tags.pop()
+                result.append(match.group(0))
+        else:
+            # Only track tags that need closing
+            if tag_name in ['b', 'i', 'a', 'code', 'pre']:
+                open_tags.append(tag_name)
+            result.append(match.group(0))
+
+        last_pos = match.end()
+
+    result.append(text[last_pos:])
+
+    # Close any unclosed tags
+    for tag in reversed(open_tags):
+        result.append(f'</{tag}>')
+
+    return ''.join(result)
 
 def create_cancel_event(user_id: int, chat_id: int) -> Event:
     """Create cancellation event for search"""
@@ -483,25 +533,40 @@ def handle_voice_message(message):
         file_info = bot.get_file(message.voice.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
 
-        # Transcribe voice message
-        transcription = voice_handler.transcribe_voice(downloaded_file)
+        # Save the downloaded bytes to a temporary file for transcription
+        import tempfile
+        import os
 
-        if transcription:
-            logger.info(f"🎙️ Transcribed: '{transcription[:50]}...'")
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.ogg') as temp_file:
+            temp_file.write(downloaded_file)
+            temp_file_path = temp_file.name
 
-            # Process transcribed text through AI Chat Layer
-            asyncio.run(process_user_message(
-                user_id=user_id,
-                chat_id=chat_id,
-                message_text=transcription,
-                message_type="voice"
-            ))
-        else:
-            bot.send_message(
-                chat_id,
-                "I couldn't understand your voice message. Could you try typing instead?",
-                parse_mode='HTML'
-            )
+        try:
+            # Transcribe voice message using the file path
+            transcription = voice_handler.transcribe_voice_message(temp_file_path)
+
+            if transcription:
+                logger.info(f"🎙️ Transcribed: '{transcription[:50]}...'")
+
+                # Process transcribed text through AI Chat Layer
+                asyncio.run(process_user_message(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    message_text=transcription,
+                    message_type="voice"
+                ))
+            else:
+                bot.send_message(
+                    chat_id,
+                    "I couldn't understand your voice message. Could you try typing instead?",
+                    parse_mode='HTML'
+                )
+        finally:
+            # Clean up temporary file
+            try:
+                os.unlink(temp_file_path)
+            except Exception:
+                pass
 
     except Exception as e:
         logger.error(f"Error processing voice message: {e}")
