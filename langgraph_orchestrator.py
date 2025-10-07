@@ -46,7 +46,7 @@ from agents.follow_up_search_agent import FollowUpSearchAgent
 # Location-specific agents (preserve their logic)
 from location.location_analyzer import LocationAnalyzer
 from location.location_utils import LocationUtils
-from location.database_search import LocationDatabaseService
+from location.location_database_search import LocationDatabaseService
 from location.filter_evaluator import LocationFilterEvaluator
 from location.location_database_ai_editor import LocationDatabaseAIEditor
 from location.location_map_search_ai_editor import LocationMapSearchAIEditor
