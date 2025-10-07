@@ -1199,7 +1199,7 @@ class UnifiedRestaurantAgent:
 
     @traceable(name="location_maps_search")
     def _location_maps_search(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """CORRECTED: Use LocationMapSearchAgent.search_venues_with_ai_analysis()"""
+        """FIXED: Properly handle async search_venues_with_ai_analysis()"""
         try:
             logger.info("🗺️ Location Maps Search")
 
@@ -1209,9 +1209,12 @@ class UnifiedRestaurantAgent:
 
             query = state.get("query", "restaurant")
 
-            maps_results = self.location_map_search_agent.search_venues_with_ai_analysis(
-                coordinates=coordinates,
-                query=query
+            # FIXED: Run async method using asyncio.run()
+            maps_results = asyncio.run(
+                self.location_map_search_agent.search_venues_with_ai_analysis(
+                    coordinates=coordinates,
+                    query=query
+                )
             )
 
             return {**state, "maps_results": maps_results, "current_step": "location_maps_searched"}
@@ -1221,7 +1224,7 @@ class UnifiedRestaurantAgent:
 
     @traceable(name="location_media_verification")
     def _location_media_verification(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """CORRECTED: Use LocationMediaVerificationAgent.verify_venues_media_coverage()"""
+        """FIXED: Properly handle async verify_venues_media_coverage()"""
         try:
             logger.info("📱 Location Media Verification")
 
@@ -1229,18 +1232,32 @@ class UnifiedRestaurantAgent:
             if not maps_results:
                 raise ValueError("No maps results available for verification")
 
-            venues = maps_results.get("venues", [])
+            # FIXED: maps_results is now a list of VenueSearchResult objects, not a dict
+            # The async method returns a list directly
+            venues = maps_results if isinstance(maps_results, list) else []
             query = state.get("query", "")
 
-            verification_results = self.location_media_verification_agent.verify_venues_media_coverage(
-                venues=venues,
-                query=query
+            if not venues:
+                logger.warning("⚠️ No venues to verify")
+                return {
+                    **state, 
+                    "media_verification_results": [], 
+                    "current_step": "location_media_verified"
+                }
+
+            # FIXED: Run async method using asyncio.run()
+            verification_results = asyncio.run(
+                self.location_media_verification_agent.verify_venues_media_coverage(
+                    venues=venues,
+                    query=query
+                )
             )
 
             return {**state, "media_verification_results": verification_results, "current_step": "location_media_verified"}
         except Exception as e:
             logger.error(f"❌ Error in location media verification: {e}")
             return {**state, "error_message": f"Location media verification failed: {str(e)}", "success": False}
+
 
     @traceable(name="location_format_results")
     def _location_format_results(self, state: UnifiedSearchState) -> Dict[str, Any]:
