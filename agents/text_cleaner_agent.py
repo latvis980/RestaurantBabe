@@ -643,38 +643,78 @@ Return ONLY the JSON array, no other text.
 
         return 'unknown'
 
-    async def _upload_final_file_to_supabase(self, file_path: str, restaurants: List[Dict[str, Any]], query: str):
-        """Upload final combined file to Supabase storage"""
+    async def _upload_final_file_to_supabase(self, final_file_path: str, restaurants: List[Dict[str, Any]], query: str) -> bool:
+        """
+        Upload the final combined file to Supabase storage with RB naming convention
+
+        Args:
+            final_file_path: Path to the local final combined file
+            restaurants: List of deduplicated restaurants
+            query: Original search query
+
+        Returns:
+            bool: True if upload successful, False otherwise
+        """
         try:
-            if not file_path or not os.path.exists(file_path):
-                logger.warning("⚠️ No file to upload to Supabase")
-                return
+            if not final_file_path or not os.path.exists(final_file_path):
+                logger.warning("⚠️ No final file to upload to Supabase")
+                return False
 
-            # Import Supabase utilities
-            from utils.database import get_database
-
-            database = get_database()
-
-            # Read file content
-            with open(file_path, 'r', encoding='utf-8') as f:
+            # Read the final combined file content
+            with open(final_file_path, 'r', encoding='utf-8') as f:
                 file_content = f.read()
 
-            # Create filename for Supabase
-            filename = os.path.basename(file_path)
-            storage_path = f"cleaned_results/{filename}"
+            if not file_content.strip():
+                logger.warning("⚠️ Final file is empty, skipping Supabase upload")
+                return False
 
-            # Upload to Supabase
-            logger.info(f"📤 Uploading file to Supabase: {storage_path}")
+            # Extract city from restaurants for metadata
+            cities = set()
+            for restaurant in restaurants:
+                city = restaurant.get('City', '').strip()
+                if city and city.lower() not in ['n/a', 'not specified', 'unknown']:
+                    cities.add(city)
 
-            # Upload file (implementation depends on your Supabase setup)
-            # This is a placeholder - adjust based on your actual Supabase client
-            # database.storage.from_('restaurant-content').upload(storage_path, file_content.encode())
+            # Use first city found, or extract from query, or default to 'unknown'
+            primary_city = next(iter(cities)) if cities else self._extract_city_from_query(query)
 
-            self.stats["supabase_uploads"] += 1
-            logger.info(f"✅ File uploaded to Supabase successfully")
+            # Prepare metadata for Supabase storage with cleanedRB naming
+            metadata = {
+                'city': primary_city,
+                'country': self._extract_country_from_restaurants(restaurants),
+                'query': query,
+                'restaurants_count': len(restaurants),
+                'upload_source': 'text_cleaner_agent',
+                'processing_method': 'individual_file_processing_with_deduplication',
+                'timestamp': datetime.now().isoformat()
+            }
+
+            # Import and use the Supabase storage utility with RB naming convention
+            from utils.supabase_storage import upload_content_to_bucket
+
+            logger.info(f"📤 Uploading final combined file to Supabase with cleanedRB naming...")
+            logger.info(f"   📊 Content size: {len(file_content)} characters")
+            logger.info(f"   🍽️ Restaurants: {len(restaurants)}")
+            logger.info(f"   🏙️ Primary city: {primary_city}")
+
+            # Upload to Supabase with cleanedRB_ prefix naming convention
+            success, uploaded_file_path = upload_content_to_bucket(
+                content=file_content,
+                metadata=metadata,
+                file_type="txt"
+            )
+
+            if success:
+                logger.info(f"✅ Successfully uploaded to Supabase with RB suffix: {uploaded_file_path}")
+                self.stats["supabase_uploads"] += 1
+                return True
+            else:
+                logger.error("❌ Failed to upload to Supabase")
+                return False
 
         except Exception as e:
             logger.error(f"❌ Error uploading to Supabase: {e}")
+            return False
 
     def _update_final_stats(self, individual_results: List[Dict], combined_restaurants: List[Dict], deduplicated_restaurants: List[Dict]):
         """Update final processing statistics"""
