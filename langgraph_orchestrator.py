@@ -1027,24 +1027,70 @@ class UnifiedRestaurantAgent:
 
     @traceable(name="location_geocode")
     def _location_geocode(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """Location geocoding"""
+        """
+        FIXED: Location geocoding with proper description handling
+
+        This method now:
+        1. Checks for existing GPS coordinates first
+        2. Checks location_data for coordinates (but verifies they're not None)
+        3. If coordinates are None but description exists, geocodes the description
+        4. Falls back to geocoding the query if all else fails
+        """
         try:
             logger.info("🗺️ Location Geocoding")
 
             location_data = state.get("location_data")
             gps_coords = state.get("gps_coordinates")
+            coordinates = None
 
+            # Priority 1: Use GPS coordinates if provided
             if gps_coords:
                 coordinates = gps_coords
-            elif location_data and hasattr(location_data, 'latitude'):
-                coordinates = (location_data.latitude, location_data.longitude)
-            else:
+                logger.info(f"✅ Using GPS coordinates: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+
+            # Priority 2: Check location_data for existing coordinates (verify not None)
+            elif location_data and hasattr(location_data, 'latitude') and hasattr(location_data, 'longitude'):
+                if location_data.latitude is not None and location_data.longitude is not None:
+                    coordinates = (location_data.latitude, location_data.longitude)
+                    logger.info(f"✅ Using location_data coordinates: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+
+                # Priority 3: Geocode from location_data.description if coordinates are None
+                elif hasattr(location_data, 'description') and location_data.description:
+                    logger.info(f"🌍 Geocoding location from description: {location_data.description}")
+                    geocoded_coords = self.location_utils.geocode_location(location_data.description)
+
+                    if geocoded_coords:
+                        coordinates = geocoded_coords
+                        # Update location_data with geocoded coordinates
+                        location_data.latitude = coordinates[0]
+                        location_data.longitude = coordinates[1]
+                        logger.info(f"✅ Geocoded to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+                    else:
+                        raise ValueError(f"Failed to geocode location: {location_data.description}")
+
+            # Priority 4: Fallback to geocoding the query itself
+            if not coordinates:
+                logger.info(f"🌍 Geocoding from query: {state['query']}")
                 coordinates = self.location_utils.geocode_location(state["query"])
 
-            return {**state, "location_coordinates": coordinates, "current_step": "location_geocoded"}
+                if not coordinates:
+                    raise ValueError(f"Failed to geocode query: {state['query']}")
+
+                logger.info(f"✅ Geocoded query to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+
+            return {
+                **state, 
+                "location_coordinates": coordinates, 
+                "current_step": "location_geocoded"
+            }
+
         except Exception as e:
             logger.error(f"❌ Error in location geocoding: {e}")
-            return {**state, "error_message": f"Location geocoding failed: {str(e)}", "success": False}
+            return {
+                **state, 
+                "error_message": f"Location geocoding failed: {str(e)}", 
+                "success": False
+            }
 
     @traceable(name="location_search_database")
     def _location_search_database(self, state: UnifiedSearchState) -> Dict[str, Any]:
