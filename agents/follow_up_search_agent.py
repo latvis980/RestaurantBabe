@@ -816,9 +816,18 @@ class FollowUpSearchAgent:
 
     def _update_database_with_geodata(self, restaurant_name: str, city: str, maps_info: Dict[str, Any], extracted_country: Optional[str] = None) -> bool:
         """
-        ENHANCED: Save address, coordinates, and country back to the Supabase database
+        Save address, coordinates, and country back to the Supabase database
 
-        Handles encoding issues and provides better error reporting.
+        NOTE: This method should ONLY be called for restaurants that passed all filters:
+        - Still open (business_status not CLOSED)
+        - Rating meets threshold
+        - Has valid coordinates
+
+        Args:
+            restaurant_name: Name of the restaurant
+            city: City name
+            maps_info: Google Maps information
+            extracted_country: Country extracted from formatted address (optional)
         """
         try:
             from utils.database import get_database
@@ -827,68 +836,56 @@ class FollowUpSearchAgent:
             # Extract coordinates from Google Maps geometry
             geometry = maps_info.get("geometry", {})
             location = geometry.get("location", {})
-            latitude = location.get("lat")
-            longitude = location.get("lng")
 
-            if not latitude or not longitude:
-                logger.debug(f"No coordinates available for {restaurant_name}")
+            if not (location.get("lat") and location.get("lng")):
+                logger.warning(f"No valid coordinates found for {restaurant_name}")
                 return False
 
-            # Build update data
-            update_data = {
-                'latitude': float(latitude),
-                'longitude': float(longitude),
-                'coordinates': [float(latitude), float(longitude)],
-                'last_updated': datetime.now(timezone.utc).isoformat()
-            }
+            coordinates = (float(location["lat"]), float(location["lng"]))
+            address = maps_info.get("formatted_address", "")
 
-            # Add country if extracted
-            if extracted_country:
-                update_data['country'] = extracted_country
-
-            # Add other Google Maps data if available
-            if maps_info.get("formatted_address"):
-                update_data['address'] = maps_info["formatted_address"]
-
-            if maps_info.get("place_id"):
-                update_data['place_id'] = maps_info["place_id"]
-
-            if maps_info.get("rating"):
-                update_data['rating'] = float(maps_info["rating"])
-
-            if maps_info.get("user_ratings_total"):
-                update_data['user_ratings_total'] = int(maps_info["user_ratings_total"])
-
-            if maps_info.get("business_status"):
-                update_data['business_status'] = maps_info["business_status"]
-
-            # First try exact match
-            update_result = db.supabase.table('restaurants')\
-                .update(update_data)\
+            # Find the restaurant in database
+            existing_restaurants = db.supabase.table('restaurants')\
+                .select('id, name, country')\
                 .eq('name', restaurant_name)\
                 .eq('city', city)\
                 .execute()
 
-            if update_result.data:
-                logger.info(f"💾 Saved coordinates and data to database for {restaurant_name}")
+            if not existing_restaurants.data:
+                logger.warning(f"Restaurant not found in database: {restaurant_name} in {city}")
+                return False
+
+            restaurant_id = existing_restaurants.data[0]['id']
+            current_country = existing_restaurants.data[0].get('country', '').strip()
+
+            # Prepare update data - ONLY database columns
+            update_data = {
+                'address': address,
+                'latitude': coordinates[0],
+                'longitude': coordinates[1],
+                'last_updated': datetime.now().isoformat()
+            }
+
+            # Update country if we extracted one and current is missing/Unknown
+            if (extracted_country and 
+                (not current_country or current_country.lower() in ['unknown', '', 'null'])):
+                update_data['country'] = extracted_country
+                logger.info(f"🌍 Updating country: {restaurant_name} -> {extracted_country}")
+
+            # Update the restaurant
+            result = db.supabase.table('restaurants')\
+                .update(update_data)\
+                .eq('id', restaurant_id)\
+                .execute()
+
+            if result.data:
+                logger.info(f"📍 Updated database: {restaurant_name} at {coordinates}")
+                if extracted_country:
+                    logger.info(f"🌍 Country set to: {extracted_country}")
                 return True
             else:
-                # Try with normalized name if exact match fails
-                import unicodedata
-                normalized_name = unicodedata.normalize('NFD', restaurant_name).encode('ascii', 'ignore').decode('utf-8')
-
-                update_result = db.supabase.table('restaurants')\
-                    .update(update_data)\
-                    .ilike('name', f'%{normalized_name}%')\
-                    .eq('city', city)\
-                    .execute()
-
-                if update_result.data:
-                    logger.info(f"💾 Saved coordinates and data to database for {restaurant_name} (normalized match)")
-                    return True
-                else:
-                    logger.warning(f"⚠️ Failed to update database for {restaurant_name} in {city}")
-                    return False
+                logger.error(f"❌ Failed to update restaurant in database: {restaurant_name}")
+                return False
 
         except Exception as e:
             logger.error(f"❌ Error saving coordinates for {restaurant_name}: {e}")
