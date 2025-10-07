@@ -1030,11 +1030,11 @@ class UnifiedRestaurantAgent:
         """
         FIXED: Location geocoding with proper description handling
 
-        This method now:
-        1. Checks for existing GPS coordinates first
-        2. Checks location_data for coordinates (but verifies they're not None)
-        3. If coordinates are None but description exists, geocodes the description
-        4. Falls back to geocoding the query if all else fails
+        Priority order:
+        1. GPS coordinates from state
+        2. Existing coordinates in location_data (if not None)
+        3. Geocode location_data.description
+        4. Use LocationAnalyzer to extract location from query, then geocode
         """
         try:
             logger.info("🗺️ Location Geocoding")
@@ -1049,34 +1049,60 @@ class UnifiedRestaurantAgent:
                 logger.info(f"✅ Using GPS coordinates: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
 
             # Priority 2: Check location_data for existing coordinates (verify not None)
-            elif location_data and hasattr(location_data, 'latitude') and hasattr(location_data, 'longitude'):
-                if location_data.latitude is not None and location_data.longitude is not None:
-                    coordinates = (location_data.latitude, location_data.longitude)
-                    logger.info(f"✅ Using location_data coordinates: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+            elif location_data:
+                if hasattr(location_data, 'latitude') and hasattr(location_data, 'longitude'):
+                    if location_data.latitude is not None and location_data.longitude is not None:
+                        coordinates = (location_data.latitude, location_data.longitude)
+                        logger.info(f"✅ Using location_data coordinates: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
 
-                # Priority 3: Geocode from location_data.description if coordinates are None
-                elif hasattr(location_data, 'description') and location_data.description:
-                    logger.info(f"🌍 Geocoding location from description: {location_data.description}")
-                    geocoded_coords = self.location_utils.geocode_location(location_data.description)
+                    # Priority 3: Geocode from location_data.description if coordinates are None
+                    elif hasattr(location_data, 'description') and location_data.description:
+                        logger.info(f"🌍 Geocoding location from description: {location_data.description}")
+                        geocoded_coords = self.location_utils.geocode_location(location_data.description)
 
-                    if geocoded_coords:
-                        coordinates = geocoded_coords
-                        # Update location_data with geocoded coordinates
-                        location_data.latitude = coordinates[0]
-                        location_data.longitude = coordinates[1]
-                        logger.info(f"✅ Geocoded to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
-                    else:
-                        raise ValueError(f"Failed to geocode location: {location_data.description}")
+                        if geocoded_coords:
+                            coordinates = geocoded_coords
+                            # Update location_data with geocoded coordinates
+                            location_data.latitude = coordinates[0]
+                            location_data.longitude = coordinates[1]
+                            logger.info(f"✅ Geocoded to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+                        else:
+                            logger.warning(f"❌ Failed to geocode description: {location_data.description}")
 
-            # Priority 4: Fallback to geocoding the query itself
+            # Priority 4: Extract location from query using AI, then geocode
             if not coordinates:
-                logger.info(f"🌍 Geocoding from query: {state['query']}")
-                coordinates = self.location_utils.geocode_location(state["query"])
+                logger.info(f"🤖 Extracting location from query using AI: {state['query']}")
 
-                if not coordinates:
-                    raise ValueError(f"Failed to geocode query: {state['query']}")
+                try:
+                    # Use LocationAnalyzer to extract just the location name
+                    analysis_result = self.location_analyzer.analyze_message(state['query'])
+                    location_detected = analysis_result.get("location_detected", "")
 
-                logger.info(f"✅ Geocoded query to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+                    if location_detected:
+                        logger.info(f"🌍 AI extracted location: '{location_detected}', attempting to geocode")
+                        coordinates = self.location_utils.geocode_location(location_detected)
+
+                        if coordinates:
+                            logger.info(f"✅ Geocoded extracted location to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+
+                            # Update location_data if it exists
+                            if location_data:
+                                location_data.latitude = coordinates[0]
+                                location_data.longitude = coordinates[1]
+                                if not hasattr(location_data, 'description') or not location_data.description:
+                                    location_data.description = location_detected
+                        else:
+                            raise ValueError(f"Failed to geocode extracted location: {location_detected}")
+                    else:
+                        raise ValueError(f"Could not extract location from query: {state['query']}")
+
+                except Exception as extract_error:
+                    logger.error(f"❌ Location extraction/geocoding failed: {extract_error}")
+                    raise ValueError(f"Location geocoding failed: {str(extract_error)}")
+
+            # Final validation
+            if not coordinates:
+                raise ValueError("Could not obtain coordinates from any source")
 
             return {
                 **state, 
