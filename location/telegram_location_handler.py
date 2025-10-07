@@ -107,7 +107,7 @@ class TelegramLocationHandler:
     RULES:
     1. Extract the most specific location mentioned (neighborhood > street > landmark > city)
     2. Return ONLY the location keywords that will work best with Google Maps
-    3. Include city context if helpful for disambiguation
+    3. Always include city context
     4. Remove food/restaurant words - only return location
     5. If multiple locations, choose the most specific one
 
