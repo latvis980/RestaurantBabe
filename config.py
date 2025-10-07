@@ -134,6 +134,29 @@ INDIVIDUAL_FILE_CLEANUP = {
     'max_individual_files_per_query': 50        # Prevent file system overflow
 }
 
+
+# ============================================================================
+# OPTIMIZED: CONCURRENT PROCESSING CONFIGURATION
+# ============================================================================
+
+# Individual file processing settings with CONCURRENT PROCESSING
+INDIVIDUAL_FILE_PROCESSING = {
+    'enabled': True,
+    'max_files_per_batch': 10,           # Process up to 10 files in a single query
+
+    # NEW: CONCURRENT PROCESSING SETTINGS (2-3x SPEEDUP!)
+    'max_concurrent_files': 3,           # Process 3 files concurrently (adjustable: 2-5)
+    'concurrent_processing_enabled': True, # Enable concurrent processing
+
+    # Existing settings (keep these)
+    'individual_timeout': 120,           # 2 minutes per individual file
+    'combination_timeout': 180,          # 3 minutes for combining files
+    'deduplication_enabled': True,       # Enable restaurant deduplication
+    'save_individual_files': True,       # Keep individual cleaned files
+    'individual_files_directory': 'scraped_content/individual',
+    'combined_files_directory': 'scraped_content/combined'
+}
+
 # ============================================================================
 # SEARCH CONFIGURATION
 # ============================================================================
@@ -238,7 +261,7 @@ ACTIVE_AGENTS = [
     'follow_up_search_agent',
     'location_analyzer',
     'location_search_agent',
-    'media_search_agent'  # FIXED: Corrected typo from 'media_serach_agent'
+    'media_search_agent' 
 ]
 
 # Components that use each model
