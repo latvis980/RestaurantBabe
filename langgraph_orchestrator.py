@@ -98,7 +98,6 @@ class UnifiedSearchState(TypedDict):
     error_message: Optional[str]
     processing_time: Optional[float]
 
-
 class UnifiedRestaurantAgent:
     """Unified LangGraph agent with ALL correct method names"""
 
@@ -213,6 +212,31 @@ class UnifiedRestaurantAgent:
         graph.add_edge("location_format_results", END)
 
         return graph.compile(checkpointer=self.checkpointer)
+
+    def _detect_needs_location_button(self, query: str) -> bool:
+        """
+        Detect if query requires GPS coordinates but user hasn't provided them
+
+        Keywords indicating user needs location button:
+        - "near me", "nearby", "around here", "close to me"
+        - "where I am", "my location", "around me"
+        """
+        query_lower = query.lower()
+
+        location_keywords = [
+            "near me",
+            "nearby",
+            "around here",
+            "close to me",
+            "around me",
+            "where i am",
+            "my location",
+            "in my area",
+            "in the area"
+        ]
+
+        return any(keyword in query_lower for keyword in location_keywords)
+
 
     async def process_user_message_with_ai_chat(
         self,
@@ -769,8 +793,17 @@ class UnifiedRestaurantAgent:
             if not database_results:
                 raise ValueError("No database results available")
 
+            # ✅ FIX: Use correct key "database_restaurants" instead of "restaurants"
+            database_restaurants = database_results.get("database_restaurants", [])
+
+            # Log what we received for debugging
+            logger.info(f"📊 Database restaurants extracted: {len(database_restaurants)}")
+            if not database_restaurants:
+                logger.warning("⚠️ No database_restaurants found in database_results. Available keys: " 
+                             f"{list(database_results.keys())}")
+
             pipeline_data = {
-                "database_restaurants": database_results.get("restaurants", []),
+                "database_restaurants": database_restaurants,
                 "query_analysis": query_analysis,
                 "destination": destination,
                 "raw_query": state["query"]
@@ -867,7 +900,7 @@ class UnifiedRestaurantAgent:
             database_restaurants = None
             if database_results:
                 if isinstance(database_results, dict):
-                    database_restaurants = database_results.get("restaurants", [])
+                    database_restaurants = database_results.get("database_restaurants", [])
                 elif isinstance(database_results, list):
                     database_restaurants = database_results
 
@@ -1036,25 +1069,39 @@ class UnifiedRestaurantAgent:
 
     @traceable(name="location_filter_results")
     def _location_filter_results(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """CORRECTED: Use LocationFilterEvaluator.filter_and_evaluate() with all required parameters"""
+        """CORRECTED: Handle proximity_results as a LIST, not a dict"""
         try:
             logger.info("🔍 Location Results Filtering")
 
             proximity_results = state.get("proximity_results")
+
+            # ✅ FIX: proximity_results is a LIST of restaurants, not a dict!
+            # The location database service returns a list directly
             if not proximity_results:
+                logger.info("📊 No proximity results to filter")
                 return {
                     **state,
                     "filtered_results": {"enhancement_needed": True, "restaurants": []},
                     "current_step": "location_filtered"
                 }
 
-            restaurants = proximity_results.get("restaurants", [])
-            if not isinstance(restaurants, list):
-                raise ValueError("Invalid proximity results format")
+            # ✅ FIX: Treat proximity_results as a list directly
+            if not isinstance(proximity_results, list):
+                logger.error(f"❌ Invalid proximity results format: expected list, got {type(proximity_results)}")
+                return {
+                    **state,
+                    "filtered_results": {"enhancement_needed": True, "restaurants": []},
+                    "current_step": "location_filtered"
+                }
+
+            restaurants = proximity_results  # It's already the list of restaurants!
+
+            logger.info(f"📊 Location restaurants extracted: {len(restaurants)}")
 
             query = state.get("query", "restaurant")
             location_description = f"Location search: {query}"
 
+            # Now pass the actual list to the filter evaluator
             filtered_results = self.location_filter_evaluator.filter_and_evaluate(
                 restaurants=restaurants,
                 query=query,
@@ -1065,6 +1112,8 @@ class UnifiedRestaurantAgent:
         except Exception as e:
             logger.error(f"❌ Error in location filtering: {e}")
             return {**state, "error_message": f"Location filtering failed: {str(e)}", "success": False}
+
+
 
     @traceable(name="location_human_decision")
     def _location_human_decision(self, state: UnifiedSearchState) -> Dict[str, Any]:
@@ -1183,6 +1232,20 @@ class UnifiedRestaurantAgent:
         try:
             logger.info(f"🚀 UNIFIED SEARCH: '{query}' (user: {user_id})")
 
+            # ✅ NEW: Pre-check for location button requirement
+            if self._detect_needs_location_button(query):
+                if not gps_coordinates and not location_data:
+                    logger.info(f"🔘 Query needs location but none provided: '{query}'")
+                    return {
+                        "success": False,
+                        "needs_location_button": True,
+                        "action": "REQUEST_LOCATION",
+                        "query": query,
+                        "message": "I'd love to help you find great restaurants nearby!",
+                        "processing_time": round(time.time() - start_time, 2)
+                    }
+
+            # Continue with normal graph execution...
             initial_state: UnifiedSearchState = {
                 "query": query,
                 "raw_query": query,
@@ -1226,10 +1289,10 @@ class UnifiedRestaurantAgent:
             return result
 
         except Exception as e:
-            logger.error(f"❌ Error in unified restaurant search: {e}")
+            logger.error(f"❌ Error in unified search: {e}")
             return {
                 "success": False,
-                "error_message": f"Search failed: {str(e)}",
+                "error_message": str(e),
                 "final_restaurants": [],
                 "processing_time": round(time.time() - start_time, 2)
             }

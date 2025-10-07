@@ -1,14 +1,14 @@
-# telegram_bot.py - UPDATED: AI-Generated Search Videos with Existing AI Chat Layer
+# telegram_bot.py - COMPLETE: AI Chat Layer + Location Button + All Features
 """
-Telegram Bot with Enhanced Search Messages
+Telegram Bot with Enhanced Search Messages and Location Button Support
 
-IMPORTANT: This version works with the EXISTING AI Chat Layer in langgraph_orchestrator.py
-- Keeps the existing AI chat architecture 
-- ONLY adds AI-generated search messages with videos when searches are triggered
-- Removes automated "let me think about that" messages
-- Replaces with typing indicator for non-search interactions
-
-FIXED: fix_telegram_html function now preserves HTML formatting instead of escaping it
+Features:
+- AI Chat Layer for intelligent conversation flow
+- AI-generated search messages with videos
+- Location button for "near me" queries
+- Voice message support
+- Confirmation messages before searches
+- Memory and conversation context
 """
 
 import telebot
@@ -18,12 +18,12 @@ import time
 import os
 import re
 import tempfile
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from threading import Event
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 
-# Import the enhanced unified agent (with existing AI Chat Layer)
+# Import the enhanced unified agent
 from langgraph_orchestrator import create_unified_restaurant_agent
 from utils.voice_handler import VoiceMessageHandler
 from utils.database import initialize_database
@@ -41,17 +41,20 @@ bot = telebot.TeleBot(config.TELEGRAM_BOT_TOKEN)
 # Initialize database FIRST
 initialize_database(config)
 
-# Initialize enhanced unified agent with EXISTING AI Chat Layer
+# Initialize enhanced unified agent with AI Chat Layer
 unified_agent = create_unified_restaurant_agent(config)
 
 # Initialize AI for search message generation
 ai_message_generator = None
 
-# Initialize voice handler for transcription only
+# Initialize voice handler
 voice_handler = VoiceMessageHandler() if hasattr(config, 'OPENAI_API_KEY') and config.OPENAI_API_KEY else None
 
-# Simple cancellation tracking (Telegram-specific concern)
+# Cancellation tracking
 active_searches = {}  # user_id -> Event
+
+# Location tracking
+users_awaiting_location = {}  # user_id -> {"query": str, "timestamp": float}
 
 # Welcome message
 WELCOME_MESSAGE = (
@@ -68,25 +71,16 @@ WELCOME_MESSAGE = (
 
 def fix_telegram_html(text: str) -> str:
     """
-    FIXED: Fix HTML formatting for Telegram - preserve HTML tags for proper formatting
-
-    The previous version was escaping HTML which caused raw HTML to show in Telegram.
-    This version preserves HTML formatting while ensuring balanced tags.
+    Fix HTML formatting for Telegram - preserve HTML tags for proper formatting
     """
     if not text:
         return text
 
-    # Don't escape HTML tags! We want Telegram to parse them for formatting.
-    # Just clean up any problematic characters that aren't part of HTML tags
-
-    # Only escape & that aren't part of HTML entities
+    # Preserve HTML, just ensure balanced tags
     text = re.sub(r'&(?!amp;|lt;|gt;|quot;|#\d+;|#x[0-9a-fA-F]+;)', '&amp;', text)
 
-    # Clean up any malformed HTML tags (basic cleanup)
-    # Remove any unclosed tags at the end
     open_tags = []
     result = []
-
     tag_pattern = r'<(/?)(\w+)(?:[^>]*)>'
     last_pos = 0
 
@@ -101,7 +95,6 @@ def fix_telegram_html(text: str) -> str:
                 open_tags.pop()
                 result.append(match.group(0))
         else:
-            # Only track tags that need closing
             if tag_name in ['b', 'i', 'a', 'code', 'pre']:
                 open_tags.append(tag_name)
             result.append(match.group(0))
@@ -116,7 +109,7 @@ def fix_telegram_html(text: str) -> str:
 
     return ''.join(result)
 
-def create_cancel_event(user_id: int, chat_id: int) -> Event:
+def create_cancel_event(user_id: int) -> Event:
     """Create cancellation event for search"""
     cancel_event = Event()
     active_searches[user_id] = cancel_event
@@ -131,78 +124,73 @@ def is_search_cancelled(user_id: int) -> bool:
     event = active_searches.get(user_id)
     return event.is_set() if event else False
 
+def create_location_button():
+    """Create reply keyboard with location sharing button"""
+    markup = telebot.types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+    location_button = telebot.types.KeyboardButton("📍 Share My Location", request_location=True)
+    markup.add(location_button)
+    markup.add(telebot.types.KeyboardButton("❌ Cancel"))
+    return markup
+
+def remove_location_button():
+    """Remove reply keyboard"""
+    return telebot.types.ReplyKeyboardRemove()
+
 def determine_search_type(conversation_context: str, action_taken: str) -> str:
     """
     Determine search type based on conversation context and AI action
-
-    Args:
-        conversation_context: The accumulated conversation context
-        action_taken: The action taken by AI Chat Layer
-
-    Returns:
-        "city_wide" or "location_based"
     """
     try:
-        # First check the action taken by AI Chat Layer
+        # Check action from AI Chat Layer
         if action_taken == "trigger_city_search":
             return "city_wide"
         elif action_taken == "trigger_location_search":
             return "location_based"
 
-        # Fallback: analyze conversation context for location indicators
+        # Fallback: analyze conversation context
         context_lower = conversation_context.lower()
 
-        # Location-based indicators
         location_indicators = [
             "around", "near", "close to", "in the area", "nearby", 
             "chiado", "bairro alto", "príncipe real", "cais do sodré",
-            "here", "vicinity", "my location", "current location"
+            "here", "vicinity", "my location"
         ]
 
-        # City-wide indicators  
         city_indicators = [
             "best", "top", "favorite", "recommended", "must try",
             "in lisbon", "in porto", "in madrid", "in barcelona",
             "city", "downtown", "famous"
         ]
 
-        # Check for location-based search
         if any(indicator in context_lower for indicator in location_indicators):
-            logger.info(f"🗺️ Detected location-based search from context: {context_lower[:100]}")
+            logger.info(f"🗺️ Detected location-based search")
             return "location_based"
 
-        # Check for city-wide search  
         if any(indicator in context_lower for indicator in city_indicators):
-            logger.info(f"🏙️ Detected city-wide search from context: {context_lower[:100]}")
+            logger.info(f"🏙️ Detected city-wide search")
             return "city_wide"
 
-        # Default fallback based on length and specificity
-        if len(context_lower.split()) > 8:
-            # Longer, more specific queries tend to be location-based
-            return "location_based"
-        else:
-            # Shorter queries tend to be city-wide
-            return "city_wide"
+        # Default based on length
+        return "location_based" if len(context_lower.split()) > 8 else "city_wide"
 
     except Exception as e:
         logger.warning(f"Error determining search type: {e}")
-        return "city_wide"  # Safe fallback
+        return "city_wide"
 
 def generate_search_message(search_query: str, search_type: str) -> str:
     """Generate AI-powered search message"""
     global ai_message_generator
 
     if not ai_message_generator:
-        # Fallback to static messages
+        # Fallback messages
         if search_type == "city_wide":
             return ("<b>I'm searching for the best restaurants for you.</b>\n\n"
                     "This might take a minute while I check my curated collection and consult with my foodie network.")
-        else:  # location_based
+        else:
             return ("<b>Great! I'm searching for amazing restaurants in that area.</b>\n\n"
                     "Give me a moment to check my local guides and reach out to my contacts in the vicinity.")
 
     try:
-        # Create AI prompt for generating search message
         prompt = f"""Generate a short, enthusiastic search message for a restaurant bot. 
 
 Search type: {search_type}
@@ -223,7 +211,6 @@ Let me check my local network and curated recommendations."""
         response = ai_message_generator.invoke([HumanMessage(content=prompt)])
         ai_message = response.content.strip()
 
-        # Ensure proper HTML formatting
         if not ai_message.startswith('<b>'):
             ai_message = f"<b>{ai_message}</b>"
 
@@ -231,40 +218,27 @@ Let me check my local network and curated recommendations."""
 
     except Exception as e:
         logger.warning(f"AI message generation failed: {e}")
-        # Fallback to static messages
         if search_type == "city_wide":
             return ("<b>I'm searching for the best restaurants for you.</b>\n\n"
-                    "This might take a minute while I check my curated collection and consult with my foodie network.")
-        else:  # location_based
+                    "This might take a minute while I check my curated collection.")
+        else:
             return ("<b>Great! I'm searching for amazing restaurants in that area.</b>\n\n"
-                    "Give me a moment to check my local guides and reach out to my contacts in the vicinity.")
-
+                    "Give me a moment to check my local guides.")
 
 def send_search_message_with_video(chat_id: int, search_query: str, search_type: str) -> Optional[telebot.types.Message]:
     """
     Send search message with appropriate video
-
-    Args:
-        chat_id: Telegram chat ID
-        search_query: User's search query
-        search_type: "city_wide" or "location_based"
-
-    Returns:
-        Message object or None if failed
     """
     try:
-        # Generate AI message
         ai_message = generate_search_message(search_query, search_type)
 
-        # Choose appropriate video
         if search_type == "city_wide":
             video_path = 'media/searching.mp4'
             fallback_emoji = "🔍"
-        else:  # location_based
+        else:
             video_path = 'media/vicinity_search.mp4'
             fallback_emoji = "📍"
 
-        # Try to send with video first
         try:
             if os.path.exists(video_path):
                 with open(video_path, 'rb') as video:
@@ -280,7 +254,6 @@ def send_search_message_with_video(chat_id: int, search_query: str, search_type:
 
         except Exception as video_error:
             logger.warning(f"Could not send video: {video_error}")
-            # Fallback to text message with emoji
             return bot.send_message(
                 chat_id,
                 f"{fallback_emoji} {ai_message}",
@@ -289,105 +262,11 @@ def send_search_message_with_video(chat_id: int, search_query: str, search_type:
 
     except Exception as e:
         logger.error(f"Error sending search message: {e}")
-        # Ultimate fallback
         return bot.send_message(
             chat_id,
             "🔍 <b>Searching for restaurants...</b>\n\nThis might take a moment.",
             parse_mode='HTML'
         )
-
-
-# ============================================================================
-# CORE MESSAGE PROCESSING (Enhanced AI Chat Layer Integration)
-# ============================================================================
-
-async def process_user_message(
-    user_id: int,
-    chat_id: int, 
-    message_text: str,
-    gps_coordinates: Optional[tuple] = None,
-    message_type: str = "text"
-) -> None:
-    """
-    ENHANCED ENTRY POINT: Process any user message through EXISTING AI Chat Layer
-
-    UPDATED: Now passes bot instance to unified agent for confirmation messages
-    """
-    try:
-        # 1. Show typing indicator
-        bot.send_chat_action(chat_id, 'typing')
-
-        # 2. AI CHAT LAYER: All intelligence happens here (EXISTING SYSTEM)
-        logger.info(f"🎯 Processing message for user {user_id}: '{message_text[:50]}...'")
-
-        # UPDATED: Pass bot instance and chat_id to unified agent
-        result = await unified_agent.restaurant_search_with_memory(
-            query=message_text,
-            user_id=user_id,
-            gps_coordinates=gps_coordinates,
-            thread_id=f"telegram_{user_id}_{int(time.time())}",
-            telegram_bot=bot,  # NEW: Pass bot instance
-            chat_id=chat_id    # NEW: Pass chat_id
-        )
-
-        # 3. Handle the response
-        search_triggered = result.get("search_triggered", False)
-        action_taken = result.get("action_taken", "unknown")
-
-        # 4. Send the AI response
-        ai_response = result.get("ai_response") or result.get("formatted_message")
-
-        if ai_response:
-            # For search results, send them after a slight delay to let confirmation message show
-            if search_triggered:
-                await asyncio.sleep(2)
-
-            if len(ai_response) > 4000:
-                chunks = split_message_for_telegram(ai_response)
-                for chunk in chunks:
-                    bot.send_message(
-                        chat_id,
-                        fix_telegram_html(chunk),
-                        parse_mode='HTML',
-                        disable_web_page_preview=True
-                    )
-            else:
-                bot.send_message(
-                    chat_id,
-                    fix_telegram_html(ai_response),
-                    parse_mode='HTML',
-                    disable_web_page_preview=True
-                )
-        elif not search_triggered:
-            # Minimal fallback - should rarely happen
-            bot.send_message(
-                chat_id,
-                "I'm here to help you find amazing restaurants! What are you looking for?",
-                parse_mode='HTML'
-            )
-
-        # 5. Log success
-        processing_time = result.get("processing_time", 0)
-        reasoning = result.get("reasoning", "No reasoning provided")
-
-        if search_triggered:
-            restaurants_count = len(result.get("final_restaurants", []))
-            logger.info(f"✅ Search triggered and completed in {processing_time}s - Found {restaurants_count} restaurants")
-        else:
-            logger.info(f"✅ Conversation continued in {processing_time}s - Action: {action_taken}")
-            logger.info(f"🤖 AI Reasoning: {reasoning}")
-
-    except Exception as e:
-        error_msg = f"Error processing message: {str(e)}"
-        logger.error(error_msg)
-
-        # Send error response
-        bot.send_message(
-            chat_id,
-            "I'm having a bit of trouble right now. Could you try asking again in a moment?",
-            parse_mode='HTML'
-        )
-
 
 def split_message_for_telegram(message: str, max_length: int = 4096) -> List[str]:
     """Split long messages for Telegram's character limit"""
@@ -397,7 +276,6 @@ def split_message_for_telegram(message: str, max_length: int = 4096) -> List[str
     chunks = []
     current_chunk = ""
 
-    # Try to split by paragraphs first
     paragraphs = message.split('\n\n')
     for paragraph in paragraphs:
         if len(current_chunk) + len(paragraph) + 2 <= max_length:
@@ -432,11 +310,122 @@ def split_message_for_telegram(message: str, max_length: int = 4096) -> List[str
                         final_chunks.append(current_chunk)
                     current_chunk = sentence
 
-    if current_chunk:
-        final_chunks.append(current_chunk)
+            if current_chunk:
+                final_chunks.append(current_chunk)
 
     return final_chunks
 
+# ============================================================================
+# CORE MESSAGE PROCESSING
+# ============================================================================
+
+async def process_user_message(
+    user_id: int,
+    chat_id: int, 
+    message_text: str,
+    gps_coordinates: Optional[Tuple[float, float]] = None,
+    message_type: str = "text"
+) -> None:
+    """
+    Process any user message through AI Chat Layer with location button support
+    """
+    try:
+        # Show typing indicator
+        bot.send_chat_action(chat_id, 'typing')
+
+        logger.info(f"🎯 Processing message for user {user_id}: '{message_text[:50]}...'")
+
+        # Call unified agent with bot instance for confirmation messages
+        result = await unified_agent.restaurant_search_with_memory(
+            query=message_text,
+            user_id=user_id,
+            gps_coordinates=gps_coordinates,
+            thread_id=f"telegram_{user_id}_{int(time.time())}",
+            telegram_bot=bot,
+            chat_id=chat_id
+        )
+
+        # Check if location button is needed
+        if result.get("needs_location_button"):
+            logger.info(f"🔘 Location button needed for user {user_id}")
+
+            users_awaiting_location[user_id] = {
+                "query": message_text,
+                "timestamp": time.time()
+            }
+
+            location_msg = (
+                f"📍 <b>I'd love to help you find great {message_text} near you!</b>\n\n"
+                "To give you the best recommendations, I need to know where you are:\n\n"
+                "🗺️ <b>Option 1:</b> Tell me your neighborhood, street, or nearby landmark\n"
+                "📍 <b>Option 2:</b> Use the button below to send your exact coordinates\n\n"
+                "<i>Examples: \"I'm in Chinatown\", \"Near Times Square\", \"On Rua da Rosa in Lisbon\"</i>\n\n"
+                "💡 <b>Don't worry:</b> I only use your location to find nearby places. I don't store it."
+            )
+
+            bot.send_message(
+                chat_id,
+                location_msg,
+                parse_mode='HTML',
+                reply_markup=create_location_button()
+            )
+            return
+
+        # Handle normal responses
+        search_triggered = result.get("search_triggered", False)
+        action_taken = result.get("action_taken", "unknown")
+
+        # Send AI response
+        ai_response = result.get("ai_response") or result.get("formatted_message")
+
+        if ai_response:
+            # For search results, add slight delay after confirmation message
+            if search_triggered:
+                await asyncio.sleep(2)
+
+            if len(ai_response) > 4000:
+                chunks = split_message_for_telegram(ai_response)
+                for chunk in chunks:
+                    bot.send_message(
+                        chat_id,
+                        fix_telegram_html(chunk),
+                        parse_mode='HTML',
+                        disable_web_page_preview=True
+                    )
+            else:
+                bot.send_message(
+                    chat_id,
+                    fix_telegram_html(ai_response),
+                    parse_mode='HTML',
+                    disable_web_page_preview=True
+                )
+        elif not search_triggered:
+            bot.send_message(
+                chat_id,
+                "I'm here to help you find amazing restaurants! What are you looking for?",
+                parse_mode='HTML'
+            )
+
+        # Log success
+        processing_time = result.get("processing_time", 0)
+        reasoning = result.get("reasoning", "No reasoning provided")
+
+        if search_triggered:
+            restaurants_count = len(result.get("final_restaurants", []))
+            logger.info(f"✅ Search completed in {processing_time}s - Found {restaurants_count} restaurants")
+        else:
+            logger.info(f"✅ Conversation continued in {processing_time}s - Action: {action_taken}")
+            logger.info(f"🤖 AI Reasoning: {reasoning}")
+
+    except Exception as e:
+        error_msg = f"Error processing message: {str(e)}"
+        logger.error(error_msg)
+
+        bot.send_message(
+            chat_id,
+            "I'm having a bit of trouble right now. Could you try asking again in a moment?",
+            parse_mode='HTML'
+        )
 
 # ============================================================================
 # TELEGRAM BOT HANDLERS
@@ -467,15 +456,78 @@ def handle_cancel(message):
     if event:
         event.set()
         cleanup_search(user_id)
+
+    # Cancel location request
+    if user_id in users_awaiting_location:
+        del users_awaiting_location[user_id]
         bot.send_message(
             chat_id,
-            "🛑 Search cancelled! What else can I help you find?",
-            parse_mode='HTML'
+            "🛑 Cancelled! What else can I help you find?",
+            parse_mode='HTML',
+            reply_markup=remove_location_button()
         )
     else:
         bot.send_message(
             chat_id,
-            "No active search to cancel. What are you looking for?",
+            "🛑 No active search to cancel. What are you looking for?",
+            parse_mode='HTML'
+        )
+
+@bot.message_handler(func=lambda message: message.text == "❌ Cancel")
+def handle_location_cancel_button(message):
+    """Handle location cancel button press"""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    if user_id in users_awaiting_location:
+        del users_awaiting_location[user_id]
+
+    bot.send_message(
+        chat_id,
+        "No problem! What would you like to know about restaurants?",
+        parse_mode='HTML',
+        reply_markup=remove_location_button()
+    )
+
+@bot.message_handler(content_types=['location'])
+def handle_location_message(message):
+    """Handle GPS location messages"""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    latitude = message.location.latitude
+    longitude = message.location.longitude
+
+    logger.info(f"📍 Location message from user {user_id}: {latitude}, {longitude}")
+
+    # Check if user was awaiting location
+    awaiting_data = users_awaiting_location.get(user_id)
+
+    if awaiting_data:
+        # User was asked for location - use original query
+        original_query = awaiting_data.get("query", "restaurants")
+        del users_awaiting_location[user_id]
+
+        bot.send_message(
+            chat_id,
+            f"📍 <b>Perfect! Searching for {original_query} near your location...</b>",
+            parse_mode='HTML',
+            reply_markup=remove_location_button()
+        )
+
+        # Process with coordinates
+        asyncio.run(process_user_message(
+            user_id=user_id,
+            chat_id=chat_id,
+            message_text=original_query,
+            gps_coordinates=(latitude, longitude),
+            message_type="location"
+        ))
+    else:
+        # Unsolicited location - ask what they're looking for
+        bot.send_message(
+            chat_id,
+            "📍 Got your location! What kind of restaurants are you looking for nearby?",
             parse_mode='HTML'
         )
 
@@ -488,33 +540,37 @@ def handle_text_message(message):
 
     logger.info(f"📝 Text message from user {user_id}: '{message_text[:50]}...'")
 
-    # Process through enhanced AI Chat Layer
-    asyncio.run(process_user_message(
-        user_id=user_id,
-        chat_id=chat_id,
-        message_text=message_text,
-        message_type="text"
-    ))
+    # Check if user is providing location as text
+    if user_id in users_awaiting_location:
+        # User providing text location instead of GPS
+        awaiting_data = users_awaiting_location[user_id]
+        original_query = awaiting_data.get("query", "restaurants")
+        del users_awaiting_location[user_id]
 
-@bot.message_handler(content_types=['location'])
-def handle_location_message(message):
-    """Handle location messages"""
-    user_id = message.from_user.id
-    chat_id = message.chat.id
+        # Combine original query with location
+        combined_query = f"{original_query} in {message_text}"
 
-    latitude = message.location.latitude
-    longitude = message.location.longitude
+        bot.send_message(
+            chat_id,
+            f"📍 <b>Got it! Searching for {original_query} in {message_text}...</b>",
+            parse_mode='HTML',
+            reply_markup=remove_location_button()
+        )
 
-    logger.info(f"📍 Location message from user {user_id}: {latitude}, {longitude}")
-
-    # Process location with AI Chat Layer
-    asyncio.run(process_user_message(
-        user_id=user_id,
-        chat_id=chat_id,
-        message_text="[USER SHARED LOCATION]",
-        gps_coordinates=(latitude, longitude),
-        message_type="location"
-    ))
+        asyncio.run(process_user_message(
+            user_id=user_id,
+            chat_id=chat_id,
+            message_text=combined_query,
+            message_type="text"
+        ))
+    else:
+        # Normal message processing through AI Chat Layer
+        asyncio.run(process_user_message(
+            user_id=user_id,
+            chat_id=chat_id,
+            message_text=message_text,
+            message_type="text"
+        ))
 
 @bot.message_handler(content_types=['voice'])
 def handle_voice_message(message):
@@ -533,16 +589,13 @@ def handle_voice_message(message):
         file_info = bot.get_file(message.voice.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
 
-        # Save the downloaded bytes to a temporary file for transcription
-        import tempfile
-        import os
-
+        # Save to temporary file for transcription
         with tempfile.NamedTemporaryFile(delete=False, suffix='.ogg') as temp_file:
             temp_file.write(downloaded_file)
             temp_file_path = temp_file.name
 
         try:
-            # Transcribe voice message using the file path
+            # Transcribe voice message
             transcription = voice_handler.transcribe_voice_message(temp_file_path)
 
             if transcription:
@@ -576,21 +629,19 @@ def handle_voice_message(message):
             parse_mode='HTML'
         )
 
-
 # ============================================================================
 # MAIN ENTRY POINT
 # ============================================================================
 
 def main():
-    """Start the Telegram bot with Enhanced AI Chat Layer integration"""
+    """Start the Telegram bot with all features"""
     global ai_message_generator
 
-    logger.info("🤖 Starting Telegram bot with Enhanced AI Chat Layer integration")
+    logger.info("🤖 Starting Telegram bot with AI Chat Layer + Location Button")
     logger.info("✅ Enhanced unified agent with AI Chat Layer initialized")
-    logger.info("🎯 All messages processed through AI Chat Layer for intelligent conversation flow")
-    logger.info("🔧 UPDATED: Confirmation messages sent from unified agent before search")
-    logger.info("🎬 Videos: City searches use media/searching.mp4")
-    logger.info("📍 Videos: Location searches use media/vicinity_search.mp4")
+    logger.info("📍 Location button support enabled for 'near me' queries")
+    logger.info("🎯 All messages processed through AI Chat Layer")
+    logger.info("🔧 Confirmation messages sent before searches")
 
     try:
         # Initialize AI message generator
@@ -613,7 +664,6 @@ def main():
     except Exception as e:
         logger.error(f"❌ Bot polling error: {e}")
         raise
-
 
 if __name__ == "__main__":
     main()
