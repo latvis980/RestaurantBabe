@@ -3,6 +3,7 @@
 import logging
 import googlemaps
 import re
+import unicodedata
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timezone
 from langsmith import traceable
@@ -70,13 +71,16 @@ class FollowUpSearchAgent:
             "address_component"  # FIXED: Singular form for Google Places API
         ]
 
-    def _determine_venue_type(self, restaurant: Dict[str, Any]) -> str:
+    def _determine_venue_type(self, restaurant: Optional[Dict[str, Any]]) -> str:
         """
         Intelligently determine venue type from restaurant data
 
         Analyzes cuisine_tags, description, and name to determine
         the most appropriate venue type for search query
         """
+        if not restaurant:
+            return 'restaurant'
+            
         # Get cuisine tags and description
         cuisine_tags = restaurant.get('cuisine_tags', [])
         description = restaurant.get('description', '').lower()
@@ -150,7 +154,6 @@ class FollowUpSearchAgent:
         else:
             return self.gmaps_secondary, "secondary"
     
-    @log_function_call
     def perform_follow_up_searches(
         self,
             edited_results: Dict[str, List[Dict[str, Any]]],
@@ -176,6 +179,20 @@ class FollowUpSearchAgent:
         coordinates_saved_count = 0
         country_extracted_count = 0
 
+        # CACHE STATUS LOGGING (moved before the loop)
+        logger.info(f"🔍 Starting follow-up search for {len(main_list)} restaurants")
+        fresh_count = 0
+        stale_count = 0
+
+        for restaurant in main_list:
+            if self._is_restaurant_data_fresh(restaurant):
+                fresh_count += 1
+            else:
+                stale_count += 1
+
+        logger.info(f"📊 Cache status: {fresh_count} fresh (will use cache), {stale_count} stale (will call API)")
+
+        # MAIN PROCESSING LOOP (FIXED - no early return)
         for restaurant in main_list:
             result = self._verify_and_filter_restaurant(restaurant, destination)
 
@@ -196,8 +213,7 @@ class FollowUpSearchAgent:
                 if result.get("country_extracted_from_address"):
                     country_extracted_count += 1
 
-        final_result = {"enhanced_results": {"main_list": verified_restaurants}}
-
+        # LOGGING AND STATISTICS (after the loop completes)
         logger.info(f"✅ Comprehensive verification complete for {destination}")
         logger.info(f"   - Original count: {len(main_list)}")
         logger.info(f"   - Passed filter: {len(verified_restaurants)}")
@@ -218,8 +234,9 @@ class FollowUpSearchAgent:
             "min_rating": self.min_acceptable_rating
         })
 
+        # FINAL RETURN (correct structure for LangGraph orchestrator)
+        return {"main_list": verified_restaurants}
 
-        return final_result
 
     def _verify_and_filter_restaurant(self, restaurant: Dict[str, Any], destination: str) -> Optional[Dict[str, Any]]:
         """
@@ -288,9 +305,9 @@ class FollowUpSearchAgent:
                 # Keep temporarily closed restaurants in database (they might reopen)
                 if business_status == "CLOSED_PERMANENTLY":
                     self._delete_closed_restaurant_from_database(restaurant_name, destination, business_status)
-                    logger.info(f"🗑️ Permanently closed restaurant will be deleted from database")
+                    logger.info("🗑️ Permanently closed restaurant will be deleted from database")
                 else:
-                    logger.info(f"📋 Temporarily closed restaurant kept in database (might reopen)")
+                    logger.info("📋 Temporarily closed restaurant kept in database (might reopen)")
 
                 updated_restaurant["is_closed"] = True
                 updated_restaurant["closure_reason"] = business_status
@@ -390,9 +407,14 @@ class FollowUpSearchAgent:
                 "saved_to_database": coordinates_saved
             })
 
-            # 📅 Update verification timestamp after successful API call (not for cached data)
             if not used_cached_data:
-                self._update_verification_timestamp(restaurant_name, destination)
+                timestamp_updated = self._update_verification_timestamp(restaurant_name, destination)
+                if timestamp_updated:
+                    logger.debug(f"✅ Verification timestamp updated for {restaurant_name}")
+                else:
+                    logger.warning(f"⚠️ Could not update verification timestamp for {restaurant_name}")
+
+
 
         else:
             # No Maps data found - keep restaurant but log it
@@ -573,13 +595,22 @@ class FollowUpSearchAgent:
         """
         # Build geometry object if coordinates available
         geometry = {}
-        if restaurant.get("latitude") and restaurant.get("longitude"):
-            geometry = {
-                "location": {
-                    "lat": float(restaurant.get("latitude")),
-                    "lng": float(restaurant.get("longitude"))
+
+        # Add proper type checking and conversion
+        lat = restaurant.get("latitude")
+        lng = restaurant.get("longitude")
+
+        if lat is not None and lng is not None:
+            try:
+                geometry = {
+                    "location": {
+                        "lat": float(lat),
+                        "lng": float(lng)
+                    }
                 }
-            }
+            except (ValueError, TypeError):
+                # If conversion fails, skip geometry
+                geometry = {}
         
         cached_info = {
             "formatted_address": restaurant.get("address"),
@@ -597,30 +628,51 @@ class FollowUpSearchAgent:
 
     def _update_verification_timestamp(self, restaurant_name: str, city: str):
         """
-        Update last_updated timestamp after successful Google Maps verification.
-        
-        Args:
-            restaurant_name: Name of the restaurant
-            city: City where the restaurant is located
+        ENHANCED: Update last_updated timestamp after successful Google Maps verification.
+
+        Handles encoding issues and provides better error reporting.
         """
         try:
             from utils.database import get_database
             db = get_database()
-            
-            # Update last_updated to current UTC time
-            update_result = db.supabase.table('restaurants')\
-                .update({'last_updated': datetime.now(timezone.utc).isoformat()})\
+
+            # First, try to find the restaurant to ensure it exists
+            search_result = db.supabase.table('restaurants')\
+                .select('id, name, city')\
                 .eq('name', restaurant_name)\
                 .eq('city', city)\
                 .execute()
-            
+
+            if not search_result.data:
+                # Try with normalized names (remove accents, normalize case)
+                import unicodedata
+                normalized_name = unicodedata.normalize('NFD', restaurant_name).encode('ascii', 'ignore').decode('utf-8')
+
+                search_result = db.supabase.table('restaurants')\
+                    .select('id, name, city')\
+                    .ilike('name', f'%{normalized_name}%')\
+                    .eq('city', city)\
+                    .execute()
+
+                if not search_result.data:
+                    logger.warning(f"⚠️ Restaurant not found for timestamp update: {restaurant_name} in {city}")
+                    return False
+
+            # Update last_updated to current UTC time
+            current_time = datetime.now(timezone.utc).isoformat()
+            update_result = db.supabase.table('restaurants')\
+                .update({'last_updated': current_time})\
+                .eq('name', restaurant_name)\
+                .eq('city', city)\
+                .execute()
+
             if update_result.data:
-                logger.info(f"📅 Updated verification timestamp for {restaurant_name}")
+                logger.info(f"📅 Updated verification timestamp for {restaurant_name} to {current_time}")
                 return True
             else:
                 logger.warning(f"⚠️ Failed to update verification timestamp for {restaurant_name}")
                 return False
-                
+
         except Exception as e:
             logger.error(f"❌ Error updating verification timestamp for {restaurant_name}: {e}")
             return False
@@ -629,11 +681,11 @@ class FollowUpSearchAgent:
     def _search_google_maps(self, restaurant_name: str, city: str, restaurant_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """
         OPTIMIZED: Search Google Maps for restaurant info with place_id optimization.
-        
+
         For restaurants from database (with existing place_id):
         - Skip expensive text search (saves quota)
         - Go directly to cheap place details API
-        
+
         For new restaurants (no place_id):
         - Fall back to expensive text search + place details
         """
@@ -645,44 +697,48 @@ class FollowUpSearchAgent:
             existing_place_id = None
             if restaurant_data:
                 existing_place_id = restaurant_data.get('place_id') or restaurant_data.get('google_maps_place_id')
-            
+
             place_id = None
-            
+            result_data = {}  # 🔧 FIX: Initialize result_data at the top level
+
             if existing_place_id:
                 # FAST PATH: Try using existing place_id first
                 logger.info(f"💰 QUOTA SAVING: Attempting to use existing place_id for {restaurant_name}")
-                
+
                 try:
                     # Get detailed place information using existing place_id
                     place_details = gmaps_client.place(
                         place_id=existing_place_id,
                         fields=self.place_fields
                     )
-                    
+
                     # Update usage counter for place details call
                     self.api_usage[key_name] += 1
-                    
-                    result_data = place_details.get("result", {})
-                    
+
+                    result_data = place_details.get("result", {})  # 🔧 FIX: Assign result_data here
+
                     # Check if place details returned valid data
                     if result_data and result_data.get("place_id"):
                         place_id = existing_place_id
                         logger.info(f"✅ Successfully used existing place_id for {restaurant_name}")
                     else:
                         logger.warning(f"⚠️ Existing place_id invalid/stale for {restaurant_name}, falling back to text search")
-                        
+                        result_data = {}  # 🔧 FIX: Reset result_data for fallback
+
                 except googlemaps.exceptions.ApiError as e:
                     if "NOT_FOUND" in str(e):
                         logger.warning(f"⚠️ Existing place_id not found for {restaurant_name}, falling back to text search")
                     else:
                         logger.error(f"Place details API error for existing place_id: {e}")
+                    result_data = {}  # 🔧 FIX: Reset result_data on error
                 except Exception as e:
                     logger.error(f"Unexpected error using existing place_id: {e}")
-            
+                    result_data = {}  # 🔧 FIX: Reset result_data on error
+
             # FALLBACK PATH: If fast path failed or no existing place_id
             if not place_id:
                 logger.info(f"💸 Using expensive text search for {restaurant_name}")
-                
+
                 # Determine venue type intelligently
                 venue_type = self._determine_venue_type(restaurant_data)
 
@@ -714,11 +770,17 @@ class FollowUpSearchAgent:
                     place_id=place_id,
                     fields=self.place_fields
                 )
-                
+
                 # Update usage counter for place details call
                 self.api_usage[key_name] += 1
 
-                result_data = place_details.get("result", {})
+                result_data = place_details.get("result", {})  # 🔧 FIX: Assign result_data here
+
+            # 🔧 FIX: Now result_data is guaranteed to be defined
+            # Check if we have valid result_data before proceeding
+            if not result_data:
+                logger.warning(f"No valid result data obtained for {restaurant_name}")
+                return None
 
             formatted_address = result_data.get("formatted_address")
             rating = result_data.get("rating")
@@ -729,7 +791,7 @@ class FollowUpSearchAgent:
             # Generate 2025 universal format URL
             if restaurant_name and restaurant_name.strip():
                     google_maps_url = build_google_maps_url(place_id, restaurant_name)
-                
+
             else:
                     google_maps_url = build_google_maps_url(place_id)
 
@@ -754,75 +816,80 @@ class FollowUpSearchAgent:
 
     def _update_database_with_geodata(self, restaurant_name: str, city: str, maps_info: Dict[str, Any], extracted_country: Optional[str] = None) -> bool:
         """
-        Save address, coordinates, and country back to the Supabase database
+        ENHANCED: Save address, coordinates, and country back to the Supabase database
 
-        Args:
-            restaurant_name: Name of the restaurant
-            city: City name
-            maps_info: Google Maps information
-            extracted_country: Country extracted from formatted address (optional)
+        Handles encoding issues and provides better error reporting.
         """
         try:
-            # Use the database interface
             from utils.database import get_database
             db = get_database()
 
             # Extract coordinates from Google Maps geometry
             geometry = maps_info.get("geometry", {})
             location = geometry.get("location", {})
+            latitude = location.get("lat")
+            longitude = location.get("lng")
 
-            if location.get("lat") and location.get("lng"):
-                coordinates = (float(location["lat"]), float(location["lng"]))
-                address = maps_info.get("formatted_address", "")
+            if not latitude or not longitude:
+                logger.debug(f"No coordinates available for {restaurant_name}")
+                return False
 
-                # Find the restaurant in database
-                existing_restaurants = db.supabase.table('restaurants')\
-                    .select('id, name, country')\
-                    .eq('name', restaurant_name)\
+            # Build update data
+            update_data = {
+                'latitude': float(latitude),
+                'longitude': float(longitude),
+                'coordinates': [float(latitude), float(longitude)],
+                'last_updated': datetime.now(timezone.utc).isoformat()
+            }
+
+            # Add country if extracted
+            if extracted_country:
+                update_data['country'] = extracted_country
+
+            # Add other Google Maps data if available
+            if maps_info.get("formatted_address"):
+                update_data['address'] = maps_info["formatted_address"]
+
+            if maps_info.get("place_id"):
+                update_data['place_id'] = maps_info["place_id"]
+
+            if maps_info.get("rating"):
+                update_data['rating'] = float(maps_info["rating"])
+
+            if maps_info.get("user_ratings_total"):
+                update_data['user_ratings_total'] = int(maps_info["user_ratings_total"])
+
+            if maps_info.get("business_status"):
+                update_data['business_status'] = maps_info["business_status"]
+
+            # First try exact match
+            update_result = db.supabase.table('restaurants')\
+                .update(update_data)\
+                .eq('name', restaurant_name)\
+                .eq('city', city)\
+                .execute()
+
+            if update_result.data:
+                logger.info(f"💾 Saved coordinates and data to database for {restaurant_name}")
+                return True
+            else:
+                # Try with normalized name if exact match fails
+                import unicodedata
+                normalized_name = unicodedata.normalize('NFD', restaurant_name).encode('ascii', 'ignore').decode('utf-8')
+
+                update_result = db.supabase.table('restaurants')\
+                    .update(update_data)\
+                    .ilike('name', f'%{normalized_name}%')\
                     .eq('city', city)\
                     .execute()
 
-                if existing_restaurants.data:
-                    restaurant_id = existing_restaurants.data[0]['id']
-                    current_country = existing_restaurants.data[0].get('country', '').strip()
-
-                    # Prepare update data
-                    update_data = {
-                        'address': address,
-                        'latitude': coordinates[0],
-                        'longitude': coordinates[1],
-                        'last_updated': datetime.now().isoformat()
-                    }
-
-                    # Update country if we extracted one and current is missing/Unknown
-                    if (extracted_country and 
-                        (not current_country or current_country.lower() in ['unknown', '', 'null'])):
-                        update_data['country'] = extracted_country
-                        logger.info(f"🌍 Updating country: {restaurant_name} -> {extracted_country}")
-
-                    # Update the restaurant
-                    result = db.supabase.table('restaurants')\
-                        .update(update_data)\
-                        .eq('id', restaurant_id)\
-                        .execute()
-
-                    if result.data:
-                        logger.info(f"📍 Updated database: {restaurant_name} at {coordinates}")
-                        if extracted_country:
-                            logger.info(f"🌍 Country set to: {extracted_country}")
-                        return True
-                    else:
-                        logger.error(f"❌ Failed to update restaurant in database: {restaurant_name}")
-                        return False
-
+                if update_result.data:
+                    logger.info(f"💾 Saved coordinates and data to database for {restaurant_name} (normalized match)")
+                    return True
                 else:
-                    logger.warning(f"Restaurant not found in database: {restaurant_name} in {city}")
+                    logger.warning(f"⚠️ Failed to update database for {restaurant_name} in {city}")
                     return False
 
-            else:
-                logger.warning(f"No valid coordinates found for {restaurant_name}")
-                return False
-
         except Exception as e:
-            logger.error(f"Error updating database with geodata: {e}")
+            logger.error(f"❌ Error saving coordinates for {restaurant_name}: {e}")
             return False
