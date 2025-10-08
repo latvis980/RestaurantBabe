@@ -1,15 +1,15 @@
 # utils/ai_memory_system.py
 """
-AI Memory System for Restaurant Bot
+AI Memory System for Restaurant Bot with Supabase Support
 
-This module implements a comprehensive memory system using LangGraph's memory store
-to provide both short-term (conversation) and long-term (cross-session) memory
-for intelligent restaurant recommendations and chat behavior.
+This module implements a comprehensive memory system that can use either:
+- InMemoryStore (temporary, for testing)
+- Supabase PostgreSQL (persistent, for production)
 
-Memory Types:
-- Semantic: User preferences, dietary restrictions, facts
-- Episodic: Past restaurant recommendations, search history
-- Procedural: Learned conversation patterns, response styles
+Manages three types of memory:
+1. Short-term: Current conversation context (thread-scoped)
+2. Long-term: User preferences and history (cross-thread)
+3. Session: Active search state and temporary data
 """
 
 import json
@@ -101,7 +101,7 @@ class ConversationPattern:
 
 class AIMemorySystem:
     """
-    Comprehensive memory system for the restaurant bot using LangGraph memory store
+    Comprehensive memory system with Supabase support
 
     Manages three types of memory:
     1. Short-term: Current conversation context (thread-scoped)
@@ -112,11 +112,27 @@ class AIMemorySystem:
     def __init__(self, config):
         self.config = config
 
-        # Initialize LangGraph memory store
-        # In production, this would be a persistent store like PostgreSQL or MongoDB
-        self.memory_store = InMemoryStore()
+        # Determine which memory store to use
+        memory_store_type = getattr(config, 'MEMORY_STORE_TYPE', 'in_memory')
 
-        logger.info("✅ AI Memory System initialized")
+        if memory_store_type == 'supabase':
+            # Use Supabase for persistent storage
+            from utils.supabase_memory_system import create_supabase_memory_store
+            self.memory_store = create_supabase_memory_store(config)
+            self.is_persistent = True
+            logger.info("✅ AI Memory System initialized with Supabase backend")
+        elif memory_store_type == 'postgresql':
+            # Use PostgreSQL (Railway) for persistent storage
+            from utils.postgres_memory_system import create_postgres_memory_store
+            self.memory_store = create_postgres_memory_store(config)
+            self.is_persistent = True
+            logger.info("✅ AI Memory System initialized with PostgreSQL backend")
+        else:
+            # Use InMemoryStore (default)
+            from langgraph.store.memory import InMemoryStore
+            self.memory_store = InMemoryStore()
+            self.is_persistent = False
+            logger.info("✅ AI Memory System initialized with InMemory backend")
 
     # =====================================================================
     # USER NAMESPACE MANAGEMENT
@@ -137,26 +153,27 @@ class AIMemorySystem:
     async def get_user_preferences(self, user_id: int) -> UserPreferences:
         """Get user's dining preferences"""
         try:
-            namespace = self._get_user_namespace(user_id)
-
-            # Try to get existing preferences
-            stored_item = await self.memory_store.aget(namespace, "preferences")
-
-            if stored_item:
-                # FIXED: aget returns single Item object, not list
-                preferences_data = stored_item.value
-                return UserPreferences.from_dict(preferences_data)
+            if self.is_persistent:
+                # Supabase/PostgreSQL backend
+                return await self.memory_store.get_user_preferences(user_id)
             else:
-                # Return default preferences
-                return UserPreferences(
-                    preferred_cities=[],
-                    preferred_cuisines=[],
-                    dietary_restrictions=[],
-                    budget_range="mid-range",
-                    preferred_ambiance=[],
-                    meal_times=[],
-                    group_size_typical="couple"
-                )
+                # InMemory backend (original code)
+                namespace = self._get_user_namespace(user_id)
+                stored_item = await self.memory_store.aget(namespace, "preferences")
+
+                if stored_item:
+                    preferences_data = stored_item.value
+                    return UserPreferences.from_dict(preferences_data)
+                else:
+                    return UserPreferences(
+                        preferred_cities=[],
+                        preferred_cuisines=[],
+                        dietary_restrictions=[],
+                        budget_range="mid-range",
+                        preferred_ambiance=[],
+                        meal_times=[],
+                        group_size_typical="couple"
+                    )
 
         except Exception as e:
             logger.error(f"Error getting user preferences for {user_id}: {e}")
@@ -177,17 +194,19 @@ class AIMemorySystem:
     ) -> bool:
         """Update user's dining preferences"""
         try:
-            namespace = self._get_user_namespace(user_id)
-
-            # Store preferences
-            await self.memory_store.aput(
-                namespace,
-                "preferences",
-                preferences.to_dict()
-            )
-
-            logger.info(f"Updated preferences for user {user_id}")
-            return True
+            if self.is_persistent:
+                # Supabase/PostgreSQL backend
+                return await self.memory_store.update_user_preferences(user_id, preferences)
+            else:
+                # InMemory backend (original code)
+                namespace = self._get_user_namespace(user_id)
+                await self.memory_store.aput(
+                    namespace,
+                    "preferences",
+                    preferences.to_dict()
+                )
+                logger.info(f"Updated preferences for user {user_id}")
+                return True
 
         except Exception as e:
             logger.error(f"Error updating preferences for user {user_id}: {e}")
@@ -261,49 +280,58 @@ class AIMemorySystem:
     ) -> bool:
         """Add a restaurant to user's memory"""
         try:
-            namespace = self._get_user_namespace(user_id)
+            if self.is_persistent:
+                # Supabase/PostgreSQL backend
+                return await self.memory_store.add_restaurant_memory(user_id, restaurant_memory)
+            else:
+                # InMemory backend (original code)
+                namespace = self._get_user_namespace(user_id)
+                restaurants = await self.get_restaurant_history(user_id)
+                restaurants.append(restaurant_memory)
 
-            # Get existing restaurant memories
-            restaurants = await self.get_restaurant_history(user_id)
+                # Keep only last 100 restaurant memories to prevent bloat
+                if len(restaurants) > 100:
+                    restaurants = restaurants[-100:]
 
-            # Add new restaurant
-            restaurants.append(restaurant_memory)
+                # Store updated list
+                restaurant_data = {
+                    "restaurants": [r.to_dict() for r in restaurants]
+                }
+                await self.memory_store.aput(
+                    namespace,
+                    "restaurant_history", 
+                    restaurant_data
+                )
 
-            # Keep only last 100 restaurant memories to prevent bloat
-            if len(restaurants) > 100:
-                restaurants = restaurants[-100:]
-
-            # Store updated list - FIXED: Store as dict with list inside
-            restaurant_data = {
-                "restaurants": [r.to_dict() for r in restaurants]
-            }
-            await self.memory_store.aput(
-                namespace,
-                "restaurant_history", 
-                restaurant_data
-            )
-
-            logger.info(f"Added restaurant memory for user {user_id}: {restaurant_memory.restaurant_name}")
-            return True
+                logger.info(f"Added restaurant memory for user {user_id}: {restaurant_memory.restaurant_name}")
+                return True
 
         except Exception as e:
             logger.error(f"Error adding restaurant memory: {e}")
             return False
 
-    async def get_restaurant_history(self, user_id: int) -> List[RestaurantMemory]:
+    async def get_restaurant_history(self, user_id: int, city: Optional[str] = None) -> List[RestaurantMemory]:
         """Get user's restaurant recommendation history"""
         try:
-            namespace = self._get_user_namespace(user_id)
-
-            stored_item = await self.memory_store.aget(namespace, "restaurant_history")
-
-            if stored_item:
-                # FIXED: aget returns single Item object, not list
-                restaurant_data = stored_item.value
-                restaurant_dicts = restaurant_data.get("restaurants", [])
-                return [RestaurantMemory.from_dict(r) for r in restaurant_dicts]
+            if self.is_persistent:
+                # Supabase/PostgreSQL backend
+                return await self.memory_store.get_restaurant_history(user_id, city)
             else:
-                return []
+                # InMemory backend (original code)
+                namespace = self._get_user_namespace(user_id)
+                stored_item = await self.memory_store.aget(namespace, "restaurant_history")
+
+                if stored_item:
+                    restaurant_data = stored_item.value
+                    restaurant_dicts = restaurant_data.get("restaurants", [])
+                    all_restaurants = [RestaurantMemory.from_dict(r) for r in restaurant_dicts]
+
+                    # Filter by city if specified
+                    if city:
+                        return [r for r in all_restaurants if r.city.lower() == city.lower()]
+                    return all_restaurants
+                else:
+                    return []
 
         except Exception as e:
             logger.error(f"Error getting restaurant history for {user_id}: {e}")
@@ -326,24 +354,26 @@ class AIMemorySystem:
     async def get_conversation_patterns(self, user_id: int) -> ConversationPattern:
         """Get user's conversation patterns"""
         try:
-            namespace = self._get_user_namespace(user_id)
-
-            stored_item = await self.memory_store.aget(namespace, "conversation_patterns")
-
-            if stored_item:
-                # FIXED: aget returns single Item object, not list
-                pattern_data = stored_item.value
-                return ConversationPattern.from_dict(pattern_data)
+            if self.is_persistent:
+                # Supabase/PostgreSQL backend
+                return await self.memory_store.get_conversation_patterns(user_id)
             else:
-                # Return default patterns
-                return ConversationPattern(
-                    user_communication_style="casual",
-                    preferred_response_length="medium",
-                    likes_follow_up_questions=True,
-                    prefers_immediate_results=False,
-                    timezone=None,
-                    typical_search_times=[]
-                )
+                # InMemory backend (original code)
+                namespace = self._get_user_namespace(user_id)
+                stored_item = await self.memory_store.aget(namespace, "conversation_patterns")
+
+                if stored_item:
+                    pattern_data = stored_item.value
+                    return ConversationPattern.from_dict(pattern_data)
+                else:
+                    return ConversationPattern(
+                        user_communication_style="casual",
+                        preferred_response_length="medium",
+                        likes_follow_up_questions=True,
+                        prefers_immediate_results=False,
+                        timezone=None,
+                        typical_search_times=[]
+                    )
 
         except Exception as e:
             logger.error(f"Error getting conversation patterns for {user_id}: {e}")
@@ -431,7 +461,6 @@ class AIMemorySystem:
             stored_item = await self.memory_store.aget(namespace, "session")
 
             if stored_item:
-                # FIXED: aget returns single Item object, not list
                 session_data = stored_item.value
                 state = ConversationState(session_data.get("state", "idle"))
                 context = session_data.get("context", {})
@@ -495,51 +524,42 @@ class AIMemorySystem:
                 "session_state": session_state.value,
                 "session_context": session_context,
                 "preferences": preferences.to_dict(),
-                "conversation_patterns": conversation_patterns.to_dict(),
-                "restaurant_count": len(restaurant_history),
-                "recent_restaurants": [
-                    r.to_dict() for r in restaurant_history[-5:]  # Last 5 restaurants
-                ]
+                "restaurant_history": [r.to_dict() for r in restaurant_history],
+                "conversation_patterns": patterns.to_dict()
             }
-
-            # Add city-specific context if current city is set
-            if current_city:
-                city_restaurants = await self.get_restaurants_for_city(user_id, current_city)
-                context["city_restaurant_count"] = len(city_restaurants)
-                context["city_recent_restaurants"] = [
-                    r.to_dict() for r in city_restaurants[-3:]  # Last 3 for this city
-                ]
 
             return context
 
         except Exception as e:
             logger.error(f"Error getting user context: {e}")
-            return {"user_id": user_id, "thread_id": thread_id, "error": str(e)}
+            return {}
 
     # =====================================================================
-    # MEMORY UTILITIES
+    # FILTERING AND RECOMMENDATIONS
     # =====================================================================
 
     async def filter_already_recommended(
         self, 
-        user_id: int, 
-        restaurants: List[Dict[str, Any]], 
+        user_id: int,
+        restaurants: List[Dict[str, Any]],
         city: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Filter out restaurants already recommended to user"""
         try:
-            if city:
-                recommended_restaurants = await self.get_restaurants_for_city(user_id, city)
-            else:
-                recommended_restaurants = await self.get_restaurant_history(user_id)
+            # Get user's restaurant history
+            history = await self.get_restaurant_history(user_id, city)
 
-            recommended_names = {r.restaurant_name.lower() for r in recommended_restaurants}
+            if not history:
+                return restaurants
 
-            filtered_restaurants = []
-            for restaurant in restaurants:
-                name = restaurant.get("name", "").lower()
-                if name not in recommended_names:
-                    filtered_restaurants.append(restaurant)
+            # Create set of restaurant names user has seen
+            seen_restaurants = {r.restaurant_name.lower() for r in history}
+
+            # Filter out already recommended restaurants
+            filtered_restaurants = [
+                r for r in restaurants 
+                if r.get('name', '').lower() not in seen_restaurants
+            ]
 
             logger.info(f"Filtered {len(restaurants) - len(filtered_restaurants)} already recommended restaurants")
             return filtered_restaurants
@@ -551,10 +571,13 @@ class AIMemorySystem:
     async def cleanup_old_sessions(self, days: int = 30) -> bool:
         """Clean up old session data (for maintenance)"""
         try:
-            # This would implement cleanup logic for old sessions
-            # For InMemoryStore, this is not needed, but for persistent stores it would be
-            logger.info(f"Cleanup initiated for sessions older than {days} days")
-            return True
+            if self.is_persistent:
+                # Call cleanup on persistent store
+                return await self.memory_store.cleanup_expired_sessions()
+            else:
+                # For InMemoryStore, no cleanup needed
+                logger.info(f"Cleanup initiated for sessions older than {days} days")
+                return True
 
         except Exception as e:
             logger.error(f"Error cleaning up old sessions: {e}")
@@ -574,12 +597,14 @@ class AIMemorySystem:
                 "cuisines_tried": len(preferences.preferred_cuisines),
                 "dietary_restrictions": len(preferences.dietary_restrictions),
                 "communication_style": conversation_patterns.user_communication_style,
-                "memory_created": True
+                "memory_created": True,
+                "backend": "supabase" if self.is_persistent else "in_memory"
             }
 
         except Exception as e:
             logger.error(f"Error getting memory stats: {e}")
             return {"user_id": user_id, "error": str(e)}
+
 
 # =====================================================================
 # FACTORY FUNCTION

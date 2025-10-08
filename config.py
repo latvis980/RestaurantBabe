@@ -418,7 +418,7 @@ AI_CHAT_TEMPERATURE = 0.3  # Temperature for chat responses
 AI_CHAT_MAX_TOKENS = 1000  # Max tokens for chat responses
 
 # Memory system settings  
-MEMORY_STORE_TYPE = "in_memory"  # "in_memory", "postgresql", "mongodb"
+MEMORY_STORE_TYPE = "supabase"  # "in_memory", "postgresql", "mongodb"
 ENABLE_LONG_TERM_MEMORY = True  # Cross-conversation memory
 ENABLE_SHORT_TERM_MEMORY = True  # Within-conversation memory
 MAX_RESTAURANT_MEMORIES = 100  # Max restaurants to remember per user
