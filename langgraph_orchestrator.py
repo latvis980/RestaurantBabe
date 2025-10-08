@@ -22,9 +22,8 @@ CORRECTED METHOD NAMES FROM PROJECT FILES:
 import logging
 import asyncio
 import time
-from typing import Dict, List, Any, Optional, TypedDict, Tuple, cast
+from typing import TypedDict, Optional, Any, List, Dict, Tuple
 from langchain_core.runnables import RunnableConfig
-from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langsmith import traceable
@@ -53,13 +52,16 @@ from location.location_map_search_ai_editor import LocationMapSearchAIEditor
 from location.location_map_search import LocationMapSearchAgent
 from location.location_media_verification import LocationMediaVerificationAgent
 
+from utils.handoff_protocol import HandoffMessage, SearchContext, SearchType, HandoffCommand
+from utils.ai_chat_layer import AIChatLayer
+
 # Formatters
 from formatters.telegram_formatter import TelegramFormatter
 from formatters.location_telegram_formatter import LocationTelegramFormatter
 
 logger = logging.getLogger(__name__)
 
-class UnifiedSearchState(TypedDict):
+class UnifiedSearchState(TypedDict, total=False):
     """Unified state schema for both city and location searches"""
     # Input
     query: str
@@ -67,6 +69,7 @@ class UnifiedSearchState(TypedDict):
     user_id: Optional[int]
     gps_coordinates: Optional[Tuple[float, float]]
     location_data: Optional[Any]
+    search_context: Optional[SearchContext]  # NEW: Structured handoff context
 
     # Flow control
     search_flow: str
@@ -244,142 +247,193 @@ class UnifiedRestaurantAgent:
         user_id: int,
         gps_coordinates: Optional[Tuple[float, float]] = None,
         thread_id: Optional[str] = None,
-        telegram_bot=None,  # NEW: Accept telegram bot instance
-        chat_id: Optional[int] = None  # NEW: Accept chat_id for sending confirmation
+        telegram_bot=None,
+        chat_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        NEW: Main entry point with AI Chat Layer integration
-        This method handles conversation flow and only triggers search when ready.
+        Process user message with structured handoffs and video confirmation
 
-        ENHANCED: Now sends confirmation message with video when search is triggered
+        This is the main entry point that:
+        1. Gets structured handoff from AI Chat Layer
+        2. Routes by command (conversation vs search)
+        3. Sends video confirmation for searches
+        4. Executes search with structured context
+
+        Args:
+            query: User's message
+            user_id: User ID
+            gps_coordinates: Optional GPS coordinates
+            thread_id: Thread ID for state management
+            telegram_bot: Telegram bot instance for sending messages
+            chat_id: Chat ID for sending messages
+
+        Returns:
+            Dict with success, ai_response, search results, etc.
         """
         start_time = time.time()
 
         try:
+            # Generate thread ID if needed
             if not thread_id:
                 thread_id = f"chat_{user_id}_{int(time.time())}"
 
-            logger.info(f"💬 Processing message with AI Chat Layer for user {user_id}: '{query[:50]}...'")
-
-            # Import AI Chat Layer here to avoid circular imports
-            from utils.ai_chat_layer import AIChatLayer, ActionType
+            logger.info(f"💬 Processing with AI Chat Layer: '{query[:50]}...'")
 
             # Initialize AI Chat Layer if not exists
             if not hasattr(self, 'ai_chat_layer'):
                 self.ai_chat_layer = AIChatLayer(self.config)
+                logger.info("✅ AI Chat Layer initialized")
 
-            # 1. Process message through AI Chat Layer
-            chat_decision = await self.ai_chat_layer.process_message(
+            # 1. Get structured handoff from supervisor
+            handoff: HandoffMessage = await self.ai_chat_layer.process_message(
                 user_id=user_id,
                 user_message=query,
-                gps_coordinates=gps_coordinates
+                gps_coordinates=gps_coordinates,
+                thread_id=thread_id
             )
 
-            logger.info(f"🎯 AI Chat Decision: {chat_decision.action.value} - {chat_decision.reasoning}")
+            logger.info(f"🎯 Handoff Command: {handoff.command.value}")
+            logger.info(f"📝 Reasoning: {handoff.reasoning}")
 
-            # 2. Handle different actions
-            if chat_decision.action in [ActionType.CHAT_RESPONSE, ActionType.COLLECT_INFO, ActionType.CLARIFY_REQUEST]:
-                # Continue conversation - no search needed
+            # 2. Route by command
+            if handoff.command == HandoffCommand.CONTINUE_CONVERSATION:
+                # Just conversation - no search
                 processing_time = round(time.time() - start_time, 2)
                 return {
                     "success": True,
-                    "ai_response": chat_decision.response_text,
-                    "action_taken": chat_decision.action.value,
-                    "conversation_state": chat_decision.new_state.value if chat_decision.new_state else "unknown",
+                    "ai_response": handoff.conversation_response,
+                    "action_taken": "conversation",
                     "search_triggered": False,
                     "processing_time": processing_time,
-                    "reasoning": chat_decision.reasoning
+                    "reasoning": handoff.reasoning
                 }
 
-            elif chat_decision.action in [ActionType.TRIGGER_CITY_SEARCH, ActionType.TRIGGER_LOCATION_SEARCH]:
-                # Ready to search! 
-                logger.info(f"🚀 Triggering {chat_decision.search_type} search with accumulated context")
+            elif handoff.command == HandoffCommand.EXECUTE_SEARCH:
+                # Type guard: Ensure search_context exists
+                search_ctx = handoff.search_context
 
-                # Get the full conversation context for search
-                search_info = self.ai_chat_layer.get_search_ready_info(user_id)
-
-                if search_info is None:
+                if search_ctx is None:
+                    logger.error("❌ EXECUTE_SEARCH command but no search_context provided")
                     processing_time = round(time.time() - start_time, 2)
                     return {
                         "success": False,
-                        "error_message": "No search context available",
-                        "ai_response": "I need more information to help you find restaurants.",
+                        "error_message": "No search context in handoff",
+                        "ai_response": "I encountered an error processing your search. Please try again.",
                         "search_triggered": False,
                         "processing_time": processing_time
                     }
 
-                # NEW: SEND CONFIRMATION MESSAGE WITH VIDEO BEFORE STARTING SEARCH
+                # Now safe to access search_ctx properties
+                logger.info("🚀 Search Context:")
+                logger.info(f"   📍 Destination: {search_ctx.destination}")
+                logger.info(f"   🍽️  Cuisine: {search_ctx.cuisine}")
+                logger.info(f"   🔍 Type: {search_ctx.search_type.value}")
+                logger.info(f"   🧹 Clear previous: {search_ctx.clear_previous_context}")
+                logger.info(f"   🆕 New destination: {search_ctx.is_new_destination}")
+
+                # Send confirmation WITH VIDEO
                 confirmation_msg = None
                 if telegram_bot and chat_id:
+                    confirmation_msg = await self._send_search_confirmation(
+                        telegram_bot, chat_id, search_ctx
+                    )
+
+                # Clear context if signaled
+                if search_ctx.clear_previous_context:
+                    logger.info("🧹 Clearing previous search context as requested")
+                    # Add your context clearing logic here if needed
+                    # For example: self.clear_user_context(user_id)
+
+                # Build query from context
+                search_query = self._build_search_query_from_context(search_ctx)
+
+                # Execute search with structured context
+                try:
+                    search_result = await self.search_restaurants(
+                        query=search_query,
+                        user_id=user_id,
+                        gps_coordinates=search_ctx.gps_coordinates,
+                        thread_id=thread_id,
+                        search_context=search_ctx
+                    )
+                except Exception as search_error:
+                    logger.error(f"❌ Search execution failed: {search_error}")
+                    search_result = {
+                        "success": False,
+                        "error_message": str(search_error),
+                        "final_restaurants": []
+                    }
+
+                # Delete confirmation message after search completes
+                if confirmation_msg is not None and telegram_bot and chat_id:
                     try:
-                        # Determine search type
-                        search_type = "location_based" if chat_decision.action == ActionType.TRIGGER_LOCATION_SEARCH else "city_wide"
-
-                        # Get conversation context for message generation
-                        conversation_context = search_info.get('raw_query', query)
-
-                        # Send confirmation message with video
-                        confirmation_msg = self._send_search_confirmation_message(
-                            telegram_bot=telegram_bot,
-                            chat_id=chat_id,
-                            search_query=conversation_context,
-                            search_type=search_type
-                        )
-
-                        logger.info(f"✅ Sent confirmation message for {search_type} search")
-
-                    except Exception as e:
-                        logger.warning(f"⚠️ Could not send confirmation message: {e}")
-
-                search_type = chat_decision.search_type or "city_wide"
-
-                # Execute restaurant search with accumulated context - use [CONTEXT] prefix
-                search_result = await self.restaurant_search_with_memory(
-                    query=f"[CONTEXT]{search_info.get('raw_query', query)}",
-                    user_id=user_id,
-                    gps_coordinates=gps_coordinates,
-                    thread_id=thread_id
-                )
-
-                # Clean up confirmation message if it was sent
-                if telegram_bot and chat_id and confirmation_msg:
-                    try:
-                        # Give search a moment to start
-                        await asyncio.sleep(1)
                         telegram_bot.delete_message(chat_id, confirmation_msg.message_id)
-                    except Exception:
-                        pass  # Message might already be deleted
+                    except Exception as delete_error:
+                        logger.warning(f"Could not delete confirmation message: {delete_error}")
 
-                # Add chat layer info to result
-                search_result["ai_chat_response"] = chat_decision.response_text
-                search_result["search_triggered"] = True
-                search_result["conversation_context"] = search_info.get('raw_query', query)
-                search_result["action_taken"] = chat_decision.action.value
+                # Add processing time and return
+                processing_time = round(time.time() - start_time, 2)
+                search_result['processing_time'] = processing_time
+                search_result['action_taken'] = 'search'
+                search_result['search_triggered'] = True
 
                 return search_result
 
             else:
-                # Handle other actions
+                # Unknown command
+                logger.warning(f"Unknown handoff command: {handoff.command}")
                 processing_time = round(time.time() - start_time, 2)
                 return {
-                    "success": True,
-                    "ai_response": chat_decision.response_text or "I'm here to help you find great restaurants!",
-                    "action_taken": chat_decision.action.value,
+                    "success": False,
+                    "error_message": f"Unknown command: {handoff.command}",
+                    "ai_response": "I encountered an unexpected error. Please try again.",
                     "search_triggered": False,
-                    "processing_time": processing_time,
-                    "reasoning": chat_decision.reasoning
+                    "processing_time": processing_time
                 }
 
         except Exception as e:
-            logger.error(f"❌ Error in AI chat processing: {e}")
+            logger.error(f"❌ Error in AI chat processing: {e}", exc_info=True)
             processing_time = round(time.time() - start_time, 2)
             return {
                 "success": False,
-                "error_message": f"AI chat processing failed: {str(e)}",
-                "ai_response": "I'm having a bit of trouble right now. Could you try asking again?",
+                "error_message": str(e),
+                "ai_response": "I encountered an error processing your request. Please try again.",
                 "search_triggered": False,
                 "processing_time": processing_time
             }
+
+    """
+    HELPER METHOD - Build search query from structured context:
+    """
+    def _build_search_query_from_context(self, ctx: SearchContext) -> str:
+        """
+        Build search query string from structured context
+
+        Args:
+            ctx: SearchContext with search parameters
+
+        Returns:
+            Query string for search execution
+        """
+        parts = []
+
+        # Add requirements
+        if ctx.requirements:
+            parts.extend(ctx.requirements)
+
+        # Add cuisine
+        if ctx.cuisine:
+            parts.append(ctx.cuisine)
+
+        # Add destination
+        if ctx.destination:
+            parts.append(f"in {ctx.destination}")
+
+        # Build query
+        query = " ".join(parts) if parts else ctx.user_query
+
+        logger.info(f"📝 Built query from context: '{query}'")
+        return query
 
     def _send_search_confirmation_message(
         self,
@@ -448,6 +502,90 @@ class UnifiedRestaurantAgent:
                 )
             except Exception:
                 logger.error("Could not send any confirmation message")
+                return None
+
+    async def _send_search_confirmation(
+        self, 
+        telegram_bot, 
+        chat_id: int, 
+        ctx: SearchContext
+    ) -> Optional[object]:
+        """
+        Send confirmation WITH VIDEO before search
+
+        Args:
+            telegram_bot: Telegram bot instance
+            chat_id: Chat ID
+            ctx: SearchContext with search details
+
+        Returns:
+            Message object or None if failed
+        """
+        try:
+            cuisine_text = ctx.cuisine or "restaurants"
+            destination_text = ctx.destination
+
+            # Determine video and message based on context
+            if ctx.is_new_destination:
+                # Destination change
+                message = (
+                    f"🔄 <b>Switching to {destination_text}! "
+                    f"Searching for {cuisine_text}...</b>\n\n"
+                    f"⏱ This might take a minute while I check with my sources."
+                )
+                video_path = 'media/searching.mp4'
+                emoji = "🔄"
+            elif ctx.search_type == SearchType.LOCATION_SEARCH:
+                # Location-based
+                message = (
+                    f"📍 <b>Searching for {cuisine_text} in {destination_text}...</b>\n\n"
+                    f"⏱ Checking my curated collection and finding the best places nearby."
+                )
+                video_path = 'media/vicinity_search.mp4'
+                emoji = "📍"
+            else:
+                # City-wide
+                message = (
+                    f"🔍 <b>Searching for {cuisine_text} in {destination_text}...</b>\n\n"
+                    f"⏱ This might take a minute while I check with my sources."
+                )
+                video_path = 'media/searching.mp4'
+                emoji = "🔍"
+
+            # Try video first
+            try:
+                import os
+                if os.path.exists(video_path):
+                    with open(video_path, 'rb') as video:
+                        return telegram_bot.send_video(
+                            chat_id,
+                            video,
+                            caption=message,
+                            parse_mode='HTML'
+                        )
+                else:
+                    logger.warning(f"Video not found: {video_path}")
+                    raise FileNotFoundError("Video not available")
+
+            except Exception as video_error:
+                logger.warning(f"Could not send video: {video_error}")
+                # Fallback to text
+                return telegram_bot.send_message(
+                    chat_id,
+                    f"{emoji} {message}",
+                    parse_mode='HTML'
+                )
+
+        except Exception as e:
+            logger.error(f"Confirmation failed: {e}")
+            # Ultimate fallback
+            try:
+                return telegram_bot.send_message(
+                    chat_id,
+                    "🔍 <b>Searching...</b>",
+                    parse_mode='HTML'
+                )
+            except Exception:
                 return None
 
 
@@ -719,7 +857,7 @@ class UnifiedRestaurantAgent:
                     location_detected = location_analysis.get("location_detected")
                     reasoning = location_analysis.get("reasoning", "No reasoning provided")
 
-                    logger.info(f"🤖 AI Analysis Result:")
+                    logger.info("🤖 AI Analysis Result:")
                     logger.info(f"   Request Type: {request_type}")
                     logger.info(f"   Location Detected: {location_detected}")
                     logger.info(f"   Confidence: {confidence}")
@@ -790,17 +928,24 @@ class UnifiedRestaurantAgent:
             query_analysis = state.get("query_analysis")
             destination = state.get("destination", "Unknown")
 
+            # Type guard: Check database_results exists
             if not database_results:
                 raise ValueError("No database results available")
 
-            # ✅ FIX: Use correct key "database_restaurants" instead of "restaurants"
-            database_restaurants = database_results.get("database_restaurants", [])
+            # Extract database_restaurants with proper type checking
+            if isinstance(database_results, dict):
+                database_restaurants = database_results.get("database_restaurants", [])
+            elif isinstance(database_results, list):
+                database_restaurants = database_results
+            else:
+                logger.error(f"Unexpected database_results type: {type(database_results)}")
+                database_restaurants = []
 
             # Log what we received for debugging
             logger.info(f"📊 Database restaurants extracted: {len(database_restaurants)}")
             if not database_restaurants:
                 logger.warning("⚠️ No database_restaurants found in database_results. Available keys: " 
-                             f"{list(database_results.keys())}")
+                             f"{list(database_results.keys()) if isinstance(database_results, dict) else 'N/A'}")
 
             pipeline_data = {
                 "database_restaurants": database_restaurants,
@@ -1307,21 +1452,49 @@ class UnifiedRestaurantAgent:
     # PUBLIC API
     # ============================================================================
 
+    """
+    Complete search_restaurants method for langgraph_orchestrator.py
+    With structured handoff support
+    """
+
     async def search_restaurants(
         self,
         query: str,
         user_id: Optional[int] = None,
         gps_coordinates: Optional[Tuple[float, float]] = None,
         location_data: Optional[Any] = None,
-        thread_id: Optional[str] = None
+        thread_id: Optional[str] = None,
+        search_context: Optional[SearchContext] = None  # NEW: Structured context
     ) -> Dict[str, Any]:
-        """Unified public API for all restaurant searches"""
+        """
+        Unified search method with structured handoff support
+
+        Args:
+            query: Search query string
+            user_id: User ID
+            gps_coordinates: GPS coordinates if available
+            location_data: LocationData object if available
+            thread_id: Thread ID for state management
+            search_context: NEW - Structured SearchContext from AI Chat Layer
+
+        Returns:
+            Dict with search results, restaurants, formatted message
+        """
         start_time = time.time()
 
         try:
             logger.info(f"🚀 UNIFIED SEARCH: '{query}' (user: {user_id})")
 
-            # ✅ NEW: Pre-check for location button requirement
+            # Log structured context if available
+            if search_context:
+                logger.info("📦 Using structured context:")
+                logger.info(f"   Destination: {search_context.destination}")
+                logger.info(f"   Cuisine: {search_context.cuisine}")
+                logger.info(f"   Type: {search_context.search_type.value}")
+                logger.info(f"   Clear previous: {search_context.clear_previous_context}")
+                logger.info(f"   New destination: {search_context.is_new_destination}")
+
+            # Check for location button requirement
             if self._detect_needs_location_button(query):
                 if not gps_coordinates and not location_data:
                     logger.info(f"🔘 Query needs location but none provided: '{query}'")
@@ -1330,17 +1503,18 @@ class UnifiedRestaurantAgent:
                         "needs_location_button": True,
                         "action": "REQUEST_LOCATION",
                         "query": query,
-                        "message": "I'd love to help you find great restaurants nearby!",
+                        "message": "I'd love to help you find great restaurants nearby! Please share your location.",
                         "processing_time": round(time.time() - start_time, 2)
                     }
 
-            # Continue with normal graph execution...
+            # Initialize state
             initial_state: UnifiedSearchState = {
                 "query": query,
                 "raw_query": query,
                 "user_id": user_id,
                 "gps_coordinates": gps_coordinates,
                 "location_data": location_data,
+                "search_context": search_context,  # Pass structured context
                 "search_flow": "",
                 "current_step": "initialized",
                 "human_decision_pending": False,
@@ -1365,12 +1539,17 @@ class UnifiedRestaurantAgent:
                 "processing_time": None
             }
 
+            # Generate thread ID if needed
             if not thread_id:
                 thread_id = f"search_{user_id}_{int(time.time())}"
 
+            # Configure LangGraph
             config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+
+            # Execute graph
             result = await self.graph.ainvoke(initial_state, config)
 
+            # Add processing time
             processing_time = round(time.time() - start_time, 2)
             result["processing_time"] = processing_time
 
@@ -1378,7 +1557,7 @@ class UnifiedRestaurantAgent:
             return result
 
         except Exception as e:
-            logger.error(f"❌ Error in unified search: {e}")
+            logger.error(f"❌ Error in unified search: {e}", exc_info=True)
             return {
                 "success": False,
                 "error_message": str(e),
