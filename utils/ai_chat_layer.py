@@ -80,59 +80,73 @@ class AIChatLayer:
         logger.info("✅ AI Chat Layer V2 (Complete) initialized")
 
     def _build_prompts(self):
-        """Build AI prompts"""
+        """Build AI prompts for conversation management"""
 
-        self.chat_router_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a conversation manager for a restaurant bot.
+        self.conversation_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a conversation manager for a restaurant recommendation bot.
 
-GOALS:
-1. Have natural conversations
-2. Collect: destination + cuisine
-3. Decide WHEN to search
-4. Detect destination changes
+    Your job is to:
+    1. Have natural conversations
+    2. Collect necessary information (destination + cuisine)
+    3. Decide WHEN enough info is gathered to search
+    4. Detect when user changes destination
 
-REQUIRED FOR SEARCH:
-- Destination: city/neighborhood/area
-- Cuisine: type of food
+    REQUIRED FOR SEARCH:
+    - Destination: city, neighborhood, or area name
+    - Cuisine/Type: what food they want
 
-CONVERSATION STATES:
-- greeting: Initial interaction
-- collecting_cuisine: Need cuisine info
-- collecting_location: Need location info
-- collecting_preferences: Gathering preferences
-- ready_to_search: Can search now
-- showing_results: Just showed results
-- follow_up: User wants more
+    CONVERSATION STATES:
+    - greeting: Initial interaction
+    - collecting: Gathering information
+    - ready_to_search: Have enough to search
+    - showing_results: Just showed results
 
-DESTINATION CHANGE DETECTION:
-Compare user's message to current_destination.
-If different location mentioned → is_new_destination = true
+    DESTINATION CHANGE DETECTION:
+    - If user mentions a NEW location different from current session
+    - Signal: clear_previous_context = True
 
-Previous conversation:
-{conversation_context}
+    Current Session:
+    - Current destination: {current_destination}
+    - Current cuisine: {current_cuisine}
+    - Conversation state: {conversation_state}
 
-Current Session:
-- Destination: {current_destination}
-- Cuisine: {current_cuisine}
-- State: {current_state}
+    User's NEW message: {user_message}
 
-User's NEW message: {user_message}
+    Respond with JSON. CRITICAL: Choose exactly ONE action:
+    {{
+        "action": "chat_response",
+        "response_text": "natural conversational response",
+        "destination": "extracted destination or keep current",
+        "cuisine": "extracted cuisine or keep current",
+        "requirements": ["quality", "local", "modern"],
+        "is_new_destination": true,
+        "new_state": "conversation_state",
+        "confidence": 0.85,
+        "reasoning": "why you chose this action"
+    }}
 
-Respond with JSON:
-{{
-    "action": "chat_response|collect_info|trigger_search",
-    "response_text": "natural warm response",
-    "destination": "extracted or current",
-    "cuisine": "extracted or current", 
-    "requirements": ["quality", "local"],
-    "preferences": {{"price": "moderate"}},
-    "is_new_destination": true|false,
-    "new_state": "conversation_state",
-    "confidence": 0.85,
-    "reasoning": "why this action"
-}}
+    OR
 
-Be conversational and warm."""),
+    {{
+        "action": "trigger_search",
+        "response_text": "Great! Let me find those restaurants for you.",
+        "destination": "city name",
+        "cuisine": "food type",
+        "requirements": ["quality"],
+        "is_new_destination": false,
+        "new_state": "ready_to_search",
+        "confidence": 0.9,
+        "reasoning": "Have both destination and cuisine"
+    }}
+
+    VALID ACTIONS (choose ONE):
+    - "chat_response" - Continue conversation, need more info
+    - "collect_info" - Ask for missing information
+    - "trigger_search" - Ready to search (have destination + cuisine)
+
+    DO NOT use pipes or multiple actions. Choose the SINGLE best action.
+
+    Be conversational, warm, and natural. Don't interrogate users."""),
             ("human", "{user_message}")
         ])
 
@@ -146,7 +160,7 @@ Be conversational and warm."""),
         user_message: str,
         gps_coordinates: Optional[Tuple[float, float]] = None,
         thread_id: Optional[str] = None,
-        message_history: List[Dict[str, str]] = None
+        message_history: Optional[List[Dict[str, str]]] = None  # Fix: Changed from List[Dict[str, str]] to Optional
     ) -> HandoffMessage:
         """
         Process user message and return structured handoff
@@ -186,27 +200,44 @@ Be conversational and warm."""),
             # Format context for AI
             conversation_context = self._format_conversation_context(session)
 
+            # Get current state safely with type checking
+            current_state = session.get('state', ConversationState.GREETING)
+            if isinstance(current_state, ConversationState):
+                current_state_value = current_state.value
+            else:
+                current_state_value = str(current_state) if current_state else 'greeting'
+
             # Prepare prompt variables
             prompt_vars = {
                 'conversation_context': conversation_context,
                 'current_destination': session.get('current_destination') or 'None',
                 'current_cuisine': session.get('current_cuisine') or 'None',
-                'current_state': session.get('state', ConversationState.GREETING).value if isinstance(session.get('state'), ConversationState) else session.get('state', 'greeting'),
+                'conversation_state': current_state_value,
                 'user_message': user_message
             }
 
             # Get AI decision
+            # Get AI decision
             response = await self.llm.ainvoke(
-                self.chat_router_prompt.format_messages(**prompt_vars)
+                self.conversation_prompt.format_messages(**prompt_vars)
             )
 
-            # Parse response
+            # Parse response - handle both string and BaseMessage
+            if hasattr(response, 'content'):
+                response_content = response.content
+                # Ensure it's a string (CRITICAL FIX)
+                if not isinstance(response_content, str):
+                    response_content = str(response_content)
+            else:
+                response_content = str(response)
+
+            # Now response_content is guaranteed to be str
             try:
-                decision = self._parse_ai_response(response.content)
+                decision = self._parse_ai_response(response_content)
             except json.JSONDecodeError:
-                logger.error(f"JSON parse error: {response.content}")
+                logger.error(f"JSON parse error: {response_content}")
                 return create_conversation_handoff(
-                    response=response.content,
+                    response="How can I help you find restaurants?",
                     reasoning="JSON parse error - using fallback"
                 )
 
@@ -263,7 +294,7 @@ Be conversational and warm."""),
 
                 # Create search handoff
                 return create_search_handoff(
-                    destination=destination,
+                    destination=destination or "unknown",  # Fix: Provide default
                     cuisine=cuisine,
                     search_type=search_type_hint,
                     user_query=user_message,
@@ -427,7 +458,7 @@ if __name__ == "__main__":
     async def test_conversation():
         """Test conversation flow"""
         config = MockConfig()
-        chat_layer = AIChatLayerV2(config)
+        chat_layer = AIChatLayer(config)
 
         user_id = 176556234
 
