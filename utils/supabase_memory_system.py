@@ -1,4 +1,4 @@
-# utils/postgres_memory_system.py
+# utils/supabase_memory_system.py
 """
 PostgreSQL-based Memory System for Restaurant Bot
 
@@ -496,6 +496,6 @@ class PostgresMemoryStore:
 # FACTORY FUNCTION
 # =====================================================================
 
-def create_postgres_memory_store(config) -> PostgresMemoryStore:
-    """Factory function to create PostgreSQL memory store"""
+def create_supabase_memory_store(config) -> PostgresMemoryStore:
+    """Factory function to create Supabase memory store"""
     return PostgresMemoryStore(config)

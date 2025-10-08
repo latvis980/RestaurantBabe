@@ -123,8 +123,8 @@ class AIMemorySystem:
             logger.info("✅ AI Memory System initialized with Supabase backend")
         elif memory_store_type == 'postgresql':
             # Use PostgreSQL (Railway) for persistent storage
-            from utils.postgres_memory_system import create_postgres_memory_store
-            self.memory_store = create_postgres_memory_store(config)
+            from utils.supabase_memory_system import create_supabase_memory_store
+            self.memory_store = create_supabase_memory_store(config)
             self.is_persistent = True
             logger.info("✅ AI Memory System initialized with PostgreSQL backend")
         else:
