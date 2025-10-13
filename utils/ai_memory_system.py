@@ -155,11 +155,11 @@ class AIMemorySystem:
         try:
             if self.is_persistent:
                 # PostgreSQL backend - use its own method
-                return await self.memory_store.get_user_preferences(user_id)
+                return await self.memory_store.get_user_preferences(user_id)  # type: ignore[attr-defined]
             else:
                 # InMemory backend - use aget
                 namespace = self._get_user_namespace(user_id)
-                stored_item = await self.memory_store.aget(namespace, "preferences")
+                stored_item = await self.memory_store.aget(namespace, "preferences")  # type: ignore[attr-defined]
 
                 if stored_item:
                     preferences_data = stored_item.value
@@ -196,11 +196,11 @@ class AIMemorySystem:
         try:
             if self.is_persistent:
                 # PostgreSQL backend - use its own method
-                return await self.memory_store.update_user_preferences(user_id, preferences)
+                return await self.memory_store.update_user_preferences(user_id, preferences)  # type: ignore[attr-defined]
             else:
                 # InMemory backend - use aput
                 namespace = self._get_user_namespace(user_id)
-                await self.memory_store.aput(
+                await self.memory_store.aput(  # type: ignore[attr-defined]
                     namespace,
                     "preferences",
                     preferences.to_dict()
@@ -352,7 +352,7 @@ class AIMemorySystem:
                 restaurant_data = {
                     "restaurants": [r.to_dict() for r in restaurants]
                 }
-                await self.memory_store.aput(
+                await self.memory_store.aput(  # type: ignore[attr-defined]
                     namespace,
                     "restaurant_history", 
                     restaurant_data
@@ -370,11 +370,11 @@ class AIMemorySystem:
         try:
             if self.is_persistent:
                 # PostgreSQL backend - use its own method
-                return await self.memory_store.get_restaurant_history(user_id, city)
+                return await self.memory_store.get_restaurant_history(user_id, city)  # type: ignore[attr-defined]
             else:
                 # InMemory backend - use aget
                 namespace = self._get_user_namespace(user_id)
-                stored_item = await self.memory_store.aget(namespace, "restaurant_history")
+                stored_item = await self.memory_store.aget(namespace, "restaurant_history")  # type: ignore[attr-defined]
 
                 if stored_item:
                     restaurant_data = stored_item.value
@@ -411,11 +411,11 @@ class AIMemorySystem:
         try:
             if self.is_persistent:
                 # PostgreSQL backend - use its own method
-                return await self.memory_store.get_conversation_patterns(user_id)
+                return await self.memory_store.get_conversation_patterns(user_id)  # type: ignore[attr-defined]
             else:
                 # InMemory backend - use aget
                 namespace = self._get_user_namespace(user_id)
-                stored_item = await self.memory_store.aget(namespace, "conversation_patterns")
+                stored_item = await self.memory_store.aget(namespace, "conversation_patterns")  # type: ignore[attr-defined]
 
                 if stored_item:
                     pattern_data = stored_item.value
@@ -464,11 +464,11 @@ class AIMemorySystem:
 
             if self.is_persistent:
                 # PostgreSQL backend - use its own method
-                return await self.memory_store.update_conversation_patterns(user_id, patterns)
+                return await self.memory_store.update_conversation_patterns(user_id, patterns)  # type: ignore[attr-defined]
             else:
                 # InMemory backend - use aput
                 namespace = self._get_user_namespace(user_id)
-                await self.memory_store.aput(
+                await self.memory_store.aput(  # type: ignore[attr-defined]
                     namespace,
                     "conversation_patterns",
                     patterns.to_dict()
@@ -499,7 +499,7 @@ class AIMemorySystem:
                     "context": context or {},
                     "updated_at": datetime.now(timezone.utc).isoformat()
                 }
-                return await self.memory_store.update_session_data(user_id, thread_id, session_data)
+                return await self.memory_store.update_session_data(user_id, thread_id, session_data)  # type: ignore[attr-defined]
             else:
                 # InMemory backend - use aput
                 namespace = self._get_session_namespace(user_id, thread_id)
@@ -508,7 +508,7 @@ class AIMemorySystem:
                     "context": context or {},
                     "updated_at": datetime.now(timezone.utc).isoformat()
                 }
-                await self.memory_store.aput(namespace, "session", session_data)
+                await self.memory_store.aput(namespace, "session", session_data)  # type: ignore[attr-defined]
                 return True
 
         except Exception as e:
@@ -524,7 +524,7 @@ class AIMemorySystem:
         try:
             if self.is_persistent:
                 # PostgreSQL backend - use its own method
-                session_data = await self.memory_store.get_session_data(user_id, thread_id)
+                session_data = await self.memory_store.get_session_data(user_id, thread_id)  # type: ignore[attr-defined]
                 if session_data:
                     state = ConversationState(session_data.get("state", "idle"))
                     context = session_data.get("context", {})
@@ -534,7 +534,7 @@ class AIMemorySystem:
             else:
                 # InMemory backend - use aget
                 namespace = self._get_session_namespace(user_id, thread_id)
-                stored_item = await self.memory_store.aget(namespace, "session")
+                stored_item = await self.memory_store.aget(namespace, "session")  # type: ignore[attr-defined]
 
                 if stored_item:
                     session_data = stored_item.value
@@ -649,7 +649,7 @@ class AIMemorySystem:
         try:
             if self.is_persistent:
                 # Call cleanup on persistent store
-                return await self.memory_store.cleanup_expired_sessions()
+                return await self.memory_store.cleanup_expired_sessions()  # type: ignore[attr-defined, return-value]
             else:
                 # For InMemoryStore, no cleanup needed
                 logger.info(f"Cleanup initiated for sessions older than {days} days")
