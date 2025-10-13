@@ -154,10 +154,10 @@ class AIMemorySystem:
         """Get user's dining preferences"""
         try:
             if self.is_persistent:
-                # Supabase/PostgreSQL backend
+                # PostgreSQL backend - use its own method
                 return await self.memory_store.get_user_preferences(user_id)
             else:
-                # InMemory backend (original code)
+                # InMemory backend - use aget
                 namespace = self._get_user_namespace(user_id)
                 stored_item = await self.memory_store.aget(namespace, "preferences")
 
@@ -195,10 +195,10 @@ class AIMemorySystem:
         """Update user's dining preferences"""
         try:
             if self.is_persistent:
-                # Supabase/PostgreSQL backend
+                # PostgreSQL backend - use its own method
                 return await self.memory_store.update_user_preferences(user_id, preferences)
             else:
-                # InMemory backend (original code)
+                # InMemory backend - use aput
                 namespace = self._get_user_namespace(user_id)
                 await self.memory_store.aput(
                     namespace,
@@ -216,52 +216,107 @@ class AIMemorySystem:
         self, 
         user_id: int, 
         message: str,
-        current_city: Optional[str] = None
+        current_city: Optional[str] = None,
+        extracted_cuisine: Optional[str] = None,
+        extracted_requirements: Optional[List[str]] = None,
+        extracted_preferences: Optional[Dict[str, Any]] = None
     ) -> bool:
         """
-        Extract and learn preferences from user's message
-        This would typically use an LLM to extract structured information
+        Learn user preferences from message using AI-extracted information
+
+        This method should be called with data already extracted by the AI Chat Layer.
+        The AI Chat Layer uses LLM to extract structured information, which is then
+        passed here to update the user's long-term preferences.
+
+        Args:
+            user_id: User ID
+            message: Raw user message (for logging/fallback only)
+            current_city: City being searched
+            extracted_cuisine: Cuisine extracted by AI Chat Layer
+            extracted_requirements: Requirements extracted by AI (e.g., ["romantic", "quiet"])
+            extracted_preferences: Preferences extracted by AI (e.g., {"price": "moderate"})
         """
         try:
             current_prefs = await self.get_user_preferences(user_id)
             updated = False
 
-            # Simple keyword-based learning (in production, use LLM)
-            message_lower = message.lower()
-
-            # Learn cuisine preferences
-            cuisines = ["italian", "chinese", "japanese", "mexican", "indian", 
-                       "french", "thai", "korean", "mediterranean", "american",
-                       "ceviche", "sushi", "pizza", "ramen", "tacos"]
-
-            for cuisine in cuisines:
-                if cuisine in message_lower and cuisine not in current_prefs.preferred_cuisines:
-                    current_prefs.preferred_cuisines.append(cuisine)
+            # Learn from AI-extracted cuisine
+            if extracted_cuisine:
+                cuisine_normalized = extracted_cuisine.lower().strip()
+                if cuisine_normalized and cuisine_normalized not in current_prefs.preferred_cuisines:
+                    current_prefs.preferred_cuisines.append(cuisine_normalized)
                     updated = True
+                    logger.info(f"Learned cuisine preference: {cuisine_normalized}")
 
-            # Learn dietary restrictions
-            restrictions = ["vegetarian", "vegan", "gluten-free", "dairy-free", "keto"]
-            for restriction in restrictions:
-                if restriction in message_lower and restriction not in current_prefs.dietary_restrictions:
-                    current_prefs.dietary_restrictions.append(restriction)
-                    updated = True
+            # Learn from AI-extracted requirements (ambiance, meal times, etc.)
+            if extracted_requirements:
+                for requirement in extracted_requirements:
+                    req_lower = requirement.lower().strip()
+
+                    # Map requirements to appropriate preference categories
+                    # Ambiance
+                    ambiance_keywords = ["romantic", "casual", "family-friendly", "quiet", "trendy", "cozy"]
+                    if any(keyword in req_lower for keyword in ambiance_keywords):
+                        if req_lower not in current_prefs.preferred_ambiance:
+                            current_prefs.preferred_ambiance.append(req_lower)
+                            updated = True
+
+                    # Meal times
+                    meal_keywords = ["breakfast", "brunch", "lunch", "dinner", "late-night"]
+                    if any(keyword in req_lower for keyword in meal_keywords):
+                        if req_lower not in current_prefs.meal_times:
+                            current_prefs.meal_times.append(req_lower)
+                            updated = True
+
+                    # Dietary restrictions
+                    dietary_keywords = ["vegetarian", "vegan", "gluten-free", "dairy-free", "keto", "halal", "kosher"]
+                    if any(keyword in req_lower for keyword in dietary_keywords):
+                        if req_lower not in current_prefs.dietary_restrictions:
+                            current_prefs.dietary_restrictions.append(req_lower)
+                            updated = True
+
+            # Learn from AI-extracted preferences
+            if extracted_preferences:
+                # Budget/price preferences
+                if "price" in extracted_preferences or "budget" in extracted_preferences:
+                    price_pref = extracted_preferences.get("price") or extracted_preferences.get("budget")
+                    if price_pref:
+                        price_lower = str(price_pref).lower()
+                        if any(word in price_lower for word in ["cheap", "budget", "affordable", "inexpensive"]):
+                            current_prefs.budget_range = "budget"
+                            updated = True
+                        elif any(word in price_lower for word in ["expensive", "upscale", "fine", "luxury", "high-end"]):
+                            current_prefs.budget_range = "upscale"
+                            updated = True
+                        elif any(word in price_lower for word in ["mid", "moderate", "average"]):
+                            current_prefs.budget_range = "mid-range"
+                            updated = True
+
+                # Group size preferences
+                if "group_size" in extracted_preferences:
+                    group_size = str(extracted_preferences["group_size"]).lower()
+                    if "solo" in group_size or "alone" in group_size:
+                        current_prefs.group_size_typical = "solo"
+                        updated = True
+                    elif "couple" in group_size or "two" in group_size or "date" in group_size:
+                        current_prefs.group_size_typical = "couple"
+                        updated = True
+                    elif "family" in group_size or "large" in group_size:
+                        current_prefs.group_size_typical = "large-group"
+                        updated = True
 
             # Learn city preferences
-            if current_city and current_city not in current_prefs.preferred_cities:
-                current_prefs.preferred_cities.append(current_city)
-                updated = True
+            if current_city:
+                city_normalized = current_city.lower().strip()
+                if city_normalized and city_normalized not in current_prefs.preferred_cities:
+                    current_prefs.preferred_cities.append(city_normalized)
+                    updated = True
+                    logger.info(f"Learned city preference: {city_normalized}")
 
-            # Learn budget preferences
-            if any(word in message_lower for word in ["cheap", "budget", "affordable"]):
-                current_prefs.budget_range = "budget"
-                updated = True
-            elif any(word in message_lower for word in ["expensive", "upscale", "fine dining"]):
-                current_prefs.budget_range = "upscale"
-                updated = True
-
+            # Update preferences if anything changed
             if updated:
                 await self.update_user_preferences(user_id, current_prefs)
-                logger.info(f"Learned new preferences for user {user_id} from message")
+                logger.info(f"✅ Updated preferences for user {user_id} from AI-extracted data")
 
             return updated
 
@@ -281,10 +336,10 @@ class AIMemorySystem:
         """Add a restaurant to user's memory"""
         try:
             if self.is_persistent:
-                # Supabase/PostgreSQL backend
+                # PostgreSQL backend - use its own method
                 return await self.memory_store.add_restaurant_memory(user_id, restaurant_memory)
             else:
-                # InMemory backend (original code)
+                # InMemory backend - use aput
                 namespace = self._get_user_namespace(user_id)
                 restaurants = await self.get_restaurant_history(user_id)
                 restaurants.append(restaurant_memory)
@@ -314,10 +369,10 @@ class AIMemorySystem:
         """Get user's restaurant recommendation history"""
         try:
             if self.is_persistent:
-                # Supabase/PostgreSQL backend
+                # PostgreSQL backend - use its own method
                 return await self.memory_store.get_restaurant_history(user_id, city)
             else:
-                # InMemory backend (original code)
+                # InMemory backend - use aget
                 namespace = self._get_user_namespace(user_id)
                 stored_item = await self.memory_store.aget(namespace, "restaurant_history")
 
@@ -355,10 +410,10 @@ class AIMemorySystem:
         """Get user's conversation patterns"""
         try:
             if self.is_persistent:
-                # Supabase/PostgreSQL backend
+                # PostgreSQL backend - use its own method
                 return await self.memory_store.get_conversation_patterns(user_id)
             else:
-                # InMemory backend (original code)
+                # InMemory backend - use aget
                 namespace = self._get_user_namespace(user_id)
                 stored_item = await self.memory_store.aget(namespace, "conversation_patterns")
 
@@ -407,15 +462,18 @@ class AIMemorySystem:
             if "?" in message:
                 patterns.likes_follow_up_questions = True
 
-            # Store updated patterns
-            namespace = self._get_user_namespace(user_id)
-            await self.memory_store.aput(
-                namespace,
-                "conversation_patterns",
-                patterns.to_dict()
-            )
-
-            return True
+            if self.is_persistent:
+                # PostgreSQL backend - use its own method
+                return await self.memory_store.update_conversation_patterns(user_id, patterns)
+            else:
+                # InMemory backend - use aput
+                namespace = self._get_user_namespace(user_id)
+                await self.memory_store.aput(
+                    namespace,
+                    "conversation_patterns",
+                    patterns.to_dict()
+                )
+                return True
 
         except Exception as e:
             logger.error(f"Error learning conversation patterns: {e}")
@@ -434,16 +492,24 @@ class AIMemorySystem:
     ) -> bool:
         """Set current conversation state"""
         try:
-            namespace = self._get_session_namespace(user_id, thread_id)
-
-            session_data = {
-                "state": state.value,
-                "context": context or {},
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            }
-
-            await self.memory_store.aput(namespace, "session", session_data)
-            return True
+            if self.is_persistent:
+                # PostgreSQL backend - use its own method
+                session_data = {
+                    "state": state.value,
+                    "context": context or {},
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }
+                return await self.memory_store.update_session_data(user_id, thread_id, session_data)
+            else:
+                # InMemory backend - use aput
+                namespace = self._get_session_namespace(user_id, thread_id)
+                session_data = {
+                    "state": state.value,
+                    "context": context or {},
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }
+                await self.memory_store.aput(namespace, "session", session_data)
+                return True
 
         except Exception as e:
             logger.error(f"Error setting session state: {e}")
@@ -456,17 +522,27 @@ class AIMemorySystem:
     ) -> Tuple[ConversationState, Dict[str, Any]]:
         """Get current conversation state"""
         try:
-            namespace = self._get_session_namespace(user_id, thread_id)
-
-            stored_item = await self.memory_store.aget(namespace, "session")
-
-            if stored_item:
-                session_data = stored_item.value
-                state = ConversationState(session_data.get("state", "idle"))
-                context = session_data.get("context", {})
-                return state, context
+            if self.is_persistent:
+                # PostgreSQL backend - use its own method
+                session_data = await self.memory_store.get_session_data(user_id, thread_id)
+                if session_data:
+                    state = ConversationState(session_data.get("state", "idle"))
+                    context = session_data.get("context", {})
+                    return state, context
+                else:
+                    return ConversationState.IDLE, {}
             else:
-                return ConversationState.IDLE, {}
+                # InMemory backend - use aget
+                namespace = self._get_session_namespace(user_id, thread_id)
+                stored_item = await self.memory_store.aget(namespace, "session")
+
+                if stored_item:
+                    session_data = stored_item.value
+                    state = ConversationState(session_data.get("state", "idle"))
+                    context = session_data.get("context", {})
+                    return state, context
+                else:
+                    return ConversationState.IDLE, {}
 
         except Exception as e:
             logger.error(f"Error getting session state: {e}")
@@ -525,7 +601,7 @@ class AIMemorySystem:
                 "session_context": session_context,
                 "preferences": preferences.to_dict(),
                 "restaurant_history": [r.to_dict() for r in restaurant_history],
-                "conversation_patterns": patterns.to_dict()
+                "conversation_patterns": conversation_patterns.to_dict()
             }
 
             return context
@@ -598,7 +674,7 @@ class AIMemorySystem:
                 "dietary_restrictions": len(preferences.dietary_restrictions),
                 "communication_style": conversation_patterns.user_communication_style,
                 "memory_created": True,
-                "backend": "supabase" if self.is_persistent else "in_memory"
+                "backend": "postgresql" if self.is_persistent else "in_memory"
             }
 
         except Exception as e:
