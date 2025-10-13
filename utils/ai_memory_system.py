@@ -337,7 +337,7 @@ class AIMemorySystem:
         try:
             if self.is_persistent:
                 # PostgreSQL backend - use its own method
-                return await self.memory_store.add_restaurant_memory(user_id, restaurant_memory)
+                return await self.memory_store.add_restaurant_memory(user_id, restaurant_memory)  # type: ignore[attr-defined]
             else:
                 # InMemory backend - use aput
                 namespace = self._get_user_namespace(user_id)
