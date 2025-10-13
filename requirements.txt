@@ -28,7 +28,7 @@ langsmith>=0.1.0
 
 # Supabase Integration
 supabase>=2.10.0
-psycopg2
+psycopg2-binary>=2.9.9
 
 # Data Structures and Serialization
 dataclasses-json>=0.6.0
