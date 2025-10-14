@@ -76,93 +76,105 @@ class AIChatLayer:
         logger.info("✅ AI Chat Layer V2 with Context Enrichment initialized")
 
     def _build_prompts(self):
-        """Build AI prompts for conversation management"""
+        """Build AI prompts with state tracking"""
 
         self.conversation_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a conversation manager for a restaurant recommendation bot with location context enrichment.
+            ("system", """You are a conversation manager for a restaurant bot with Dialog State Tracking.
 
-    Your job is to:
-    1. Have natural conversations
-    2. Collect necessary information (destination + cuisine)
-    3. Enrich partial locations with stored city context
-    4. Decide WHEN enough info is gathered to search
-    5. Detect destination changes
+    Your job is to ACCUMULATE information across multiple turns and decide when you have enough to search.
 
-    CONTEXT ENRICHMENT RULES:
-    - If user mentions ONLY a neighborhood/district (e.g., "Lapa", "Alfama", "SoHo")
-    - AND there's a stored city from recent search
-    - AND it's the SAME destination (not a change)
-    - ENRICH: "Lapa" → "Lapa, [stored_city]"
-    - Document this in reasoning
+    DIALOG STATE TRACKING:
+    - You maintain an accumulated_state that builds across ALL turns
+    - Each turn, you CRUD (Create/Read/Update/Delete) the state
+    - You decide when state is "complete" enough to trigger search
 
-    DESTINATION CHANGE DETECTION:
-    - New city mentioned = NEW destination (clear context)
-    - Same city, different neighborhood = SAME destination (enrich context)
-    - No location, just cuisine change = SAME destination
+    STATE STRUCTURE:
+    {{
+        "location_parts": ["Lapa", "Lisbon"],  // Accumulates location fragments
+        "destination": "Lapa, Lisbon",         // Combined when complete
+        "cuisine": "specialty coffee",
+        "requirements": ["specialty"],
+        "preferences": {{}},
+        "is_complete": true                    // You decide this!
+    }}
 
-    ACTIONS:
-    - chat_response: Continue conversation, need more info
-    - collect_info: Explicitly asking for missing info
-    - trigger_search: Have enough info to search
+    EXAMPLES OF STATE ACCUMULATION:
 
-    RESPONSE FORMAT (JSON only):
+    Turn 1: "specialty coffee in Lapa"
+    → {{
+        "state_update": {{
+            "location_parts": ["Lapa"],
+            "cuisine": "specialty coffee",
+            "is_complete": false
+        }},
+        "action": "collect_info",
+        "response_text": "I can help with that! Could you tell me which city Lapa is in?",
+        "reasoning": "Need city to complete location. Added 'Lapa' to location_parts."
+    }}
+
+    Turn 2: "Lisbon"
+    → {{
+        "state_update": {{
+            "location_parts": ["Lapa", "Lisbon"],  // ACCUMULATED!
+            "destination": "Lapa, Lisbon",         // COMBINED!
+            "cuisine": "specialty coffee",         // PRESERVED!
+            "is_complete": true                    // READY!
+        }},
+        "action": "trigger_search",
+        "response_text": "Perfect! I'll find specialty coffee in Lapa, Lisbon.",
+        "reasoning": "User provided city. Combined with neighborhood. State complete."
+    }}
+
+    ALTERNATIVE: One-shot query
+    Turn 1: "best ramen in Tokyo"
+    → {{
+        "state_update": {{
+            "location_parts": ["Tokyo"],
+            "destination": "Tokyo",
+            "cuisine": "ramen",
+            "requirements": ["best"],
+            "is_complete": true
+        }},
+        "action": "trigger_search",
+        "response_text": "Great! Searching for the best ramen in Tokyo.",
+        "reasoning": "Complete info in first message. State immediately complete."
+    }}
+
+    RESPONSE FORMAT:
     {{
         "action": "chat_response" | "collect_info" | "trigger_search",
-        "response_text": "what to say to user",
-        "destination": "enriched location if clear" | null,
-        "cuisine": "cuisine type if mentioned" | null,
-        "is_new_destination": true | false,
-        "requirements": ["quality", "modern", "local"],
-        "preferences": {{"price": "moderate"}},
-        "new_state": "greeting" | "collecting_cuisine" | "collecting_location" | "ready_to_search",
-        "reasoning": "explanation of decision including enrichment if applied"
+        "response_text": "what to say",
+        "state_update": {{
+            "location_parts": [...],  // ADD new location fragments
+            "destination": "combined location" | null,
+            "cuisine": "cuisine" | null,
+            "requirements": [...],
+            "preferences": {{}},
+            "is_complete": true | false
+        }},
+        "reasoning": "explain state changes"
     }}
 
-    EXAMPLES:
-
-    Previous: "restaurants in Lisbon"
-    Current: "coffee places in Lapa"
-    Stored city: "Lisbon"
-    →
-    {{
-        "action": "trigger_search",
-        "response_text": "Great! I'll find coffee places in Lapa, Lisbon for you.",
-        "destination": "Lapa, Lisbon",
-        "cuisine": "coffee places",
-        "is_new_destination": false,
-        "requirements": [],
-        "preferences": {{}},
-        "new_state": "ready_to_search",
-        "reasoning": "Enriched 'Lapa' with stored city context 'Lisbon' - same destination"
-    }}
-
-    Previous: "restaurants in Lisbon"
-    Current: "bars in Tokyo"
-    →
-    {{
-        "action": "trigger_search",
-        "response_text": "Switching to Tokyo! I'll find bars there for you.",
-        "destination": "Tokyo",
-        "cuisine": "bars",
-        "is_new_destination": true,
-        "requirements": [],
-        "preferences": {{}},
-        "new_state": "ready_to_search",
-        "reasoning": "New city Tokyo - different from stored Lisbon - destination changed"
-    }}
+    RULES:
+    1. ALWAYS include state_update with ALL fields (even if unchanged)
+    2. ADD to location_parts, don't replace (accumulation!)
+    3. Set is_complete=true ONLY when you have enough to search
+    4. Can be ready in 1 turn OR 10 turns - YOU decide based on state
+    5. Don't ask for info already in accumulated_state
     """),
             ("human", """CONVERSATION HISTORY:
-{conversation_history}
+    {conversation_history}
 
-STORED CONTEXT:
-- Current destination: {current_destination}
-- Current cuisine: {current_cuisine}
-- Last searched city: {last_searched_city}
-- Conversation state: {conversation_state}
+    CURRENT ACCUMULATED STATE:
+    {accumulated_state}
 
-USER MESSAGE: {user_message}
+    STORED CONTEXT:
+    - Last searched city: {last_searched_city}
+    - Conversation state: {conversation_state}
 
-Analyze the message and determine action. Remember to enrich partial locations with stored city context when appropriate.""")
+    USER MESSAGE: {user_message}
+
+    Update the state and decide next action.""")
         ])
 
         self.conversation_chain = self.conversation_prompt | self.llm
@@ -373,7 +385,7 @@ Analyze the message and determine action. Remember to enrich partial locations w
         return json.loads(cleaned)
 
     def _get_or_create_session(self, user_id: int, thread_id: str) -> Dict[str, Any]:
-        """Get or create user session"""
+        """Get or create user session with proper state tracking"""
         if user_id not in self.user_sessions:
             self.user_sessions[user_id] = {
                 'user_id': user_id,
@@ -381,15 +393,20 @@ Analyze the message and determine action. Remember to enrich partial locations w
                 'created_at': time.time(),
                 'state': ConversationState.GREETING,
                 'conversation_history': [],
-                'current_destination': None,
-                'current_cuisine': None,
-                'last_searched_city': None,  # NEW: Store city for enrichment
-                'collected_info': {
-                    'location': None,
+
+                # ACCUMULATED STATE - builds across turns
+                'accumulated_state': {
+                    'location_parts': [],  # ["Lapa"] → ["Lapa", "Lisbon"] → "Lapa, Lisbon"
+                    'destination': None,   # Final combined destination
                     'cuisine': None,
                     'requirements': [],
-                    'preferences': {}
+                    'preferences': {},
+                    'is_complete': False   # AI decides this
                 },
+
+                'current_destination': None,
+                'current_cuisine': None,
+                'last_searched_city': None,
                 'gps_coordinates': None,
                 'last_search_time': None
             }
