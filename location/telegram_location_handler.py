@@ -1,11 +1,16 @@
 # location/telegram_location_handler.py
 """
-Telegram Location Handler - MOVED to location folder
+Telegram Location Handler - FIXED VERSION
 
 Handles location-based messages from Telegram users:
 1. GPS coordinates (location pins)
 2. Natural location descriptions
 3. Location request prompts
+
+FIXES:
+- Prompt examples now ALWAYS include city context
+- Added Portugal/Lisbon defaults for ambiguous locations
+- Consistent city preservation across all examples
 """
 
 import logging
@@ -91,7 +96,7 @@ class TelegramLocationHandler:
     def _ai_extract_location(self, message_text: str) -> str:
         """
         Use AI to extract the best location keywords for Google geocoding
-        FIXED: Proper template parameter handling
+        FIXED: Prompt examples now ALWAYS include city context
         """
         try:
             if not self.ai:
@@ -100,35 +105,40 @@ class TelegramLocationHandler:
 
             from langchain_core.prompts import ChatPromptTemplate
 
-            # FIXED: Create prompt with proper parameter syntax
+            # FIXED: Create prompt with consistent examples that ALWAYS include city context
             extraction_prompt = ChatPromptTemplate.from_messages([
                 ("system", """You are a location extraction specialist. Extract the most specific location from restaurant queries for Google Maps geocoding.
 
     RULES:
     1. Extract the most specific location mentioned (neighborhood > street > landmark > city)
     2. Return ONLY the location keywords that will work best with Google Maps
-    3. Always include city context
+    3. ALWAYS include city context when extracting neighborhoods or districts
     4. Remove food/restaurant words - only return location
     5. If multiple locations, choose the most specific one
+    6. For Portugal locations, default to Lisbon unless another city is explicitly mentioned
 
-    EXAMPLES:
-    "restaurants in Alcantara" → "Alcantara, Lisbon"
-    "wine bars in SoHo" → "SoHo, New York"
-    "sushi on Rua Augusta" → "Rua Augusta, Lisbon"
-    "coffee near Times Square" → "Times Square, New York"
-    "bars in Chinatown" → "Chinatown"
-    "places in downtown" → "downtown"
+    EXAMPLES WITH CITY CONTEXT (ALWAYS FOLLOW THIS PATTERN):
+    "restaurants in Alcantara, Lisbon" → "Alcantara, Lisbon"
+    "wine bars in SoHo, New York" → "SoHo, New York"
+    "sushi on Rua Augusta, Lisbon" → "Rua Augusta, Lisbon"
+    "coffee near Times Square, New York" → "Times Square, New York"
+    "bars in Chinatown, San Francisco" → "Chinatown, San Francisco"
+    "places in downtown Manhattan" → "downtown Manhattan, New York"
     "food in the Mission district" → "Mission district, San Francisco"
-    "restaurants in Belem" → "Belem"
+    "restaurants in Belem" → "Belem, Lisbon"
+    "coffee in Lapa, Lisbon" → "Lapa, Lisbon"
+    "specialty coffee in Lapa" → "Lapa, Lisbon"
+    "bars in Alfama" → "Alfama, Lisbon"
+    "restaurants in Chiado" → "Chiado, Lisbon"
 
     Return only the location string, nothing else."""),
-                ("human", "Extract location from: {user_message}")  # FIXED: Single curly braces
+                ("human", "Extract location from: {user_message}")
             ])
 
             # Create chain and get result
             chain = extraction_prompt | self.ai
 
-            # FIXED: Pass parameters properly 
+            # Pass parameters properly 
             response = chain.invoke({"user_message": message_text})
 
             # Extract the location from AI response

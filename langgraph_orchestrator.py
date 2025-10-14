@@ -370,7 +370,7 @@ class UnifiedRestaurantAgent:
                     try:
                         # Check if confirmation_msg has message_id attribute
                         if hasattr(confirmation_msg, 'message_id'):
-                            telegram_bot.delete_message(chat_id, confirmation_msg.message_id)  # type: ignore[attr-defined]
+                            telegram_bot.delete_message(chat_id, confirmation_msg.message_id)
                             logger.info("✅ Deleted confirmation message")
                         else:
                             logger.warning("⚠️ Confirmation message object has no message_id attribute")
@@ -1220,14 +1220,32 @@ class UnifiedRestaurantAgent:
                         else:
                             logger.warning(f"❌ Failed to geocode description: {location_data.description}")
 
-            # Priority 4: Extract location from query using AI, then geocode
+            # Priority 4: Extract location from query using AI with context enrichment
             if not coordinates:
                 logger.info(f"🤖 Extracting location from query using AI: {state['query']}")
 
                 try:
-                    # Use LocationAnalyzer to extract just the location name
-                    analysis_result = self.location_analyzer.analyze_message(state['query'])
+                    # NEW: Get stored city context from AI Chat Layer if available
+                    stored_city = None
+                    if hasattr(self, 'ai_chat_layer') and self.ai_chat_layer:
+                        user_id = state.get('user_id')
+                        if user_id:
+                            session_info = self.ai_chat_layer.get_session_info(user_id)
+                            if session_info:
+                                stored_city = session_info.get('last_searched_city')
+                                if stored_city:
+                                    logger.info(f"   📍 Using stored city context for enrichment: {stored_city}")
+
+                    # Use LocationAnalyzer with context enrichment
+                    analysis_result = self.location_analyzer.analyze_message(
+                        state['query'],
+                        stored_city_context=stored_city  # Pass stored city!
+                    )
                     location_detected = analysis_result.get("location_detected", "")
+
+                    # Log if context enrichment was applied
+                    if analysis_result.get("context_enrichment_applied"):
+                        logger.info(f"   ✨ Location enriched: {location_detected}")
 
                     if location_detected:
                         logger.info(f"🌍 AI extracted location: '{location_detected}', attempting to geocode")

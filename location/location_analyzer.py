@@ -1,9 +1,15 @@
-# agents/location_analyzer.py
+# location/location_analyzer.py
 """
-Location Analyzer Agent
+Location Analyzer Agent - FIXED VERSION
 
 Works with the existing conversation AI to detect and analyze location-based requests.
 Integrates with the current LangChain pipeline architecture.
+
+FIXES:
+- Examples now ALWAYS include city context
+- Added stored_city_context parameter for context enrichment
+- Better handling of Portugal/Lisbon locations
+- Consistent city preservation
 """
 
 import logging
@@ -18,6 +24,8 @@ class LocationAnalyzer:
     """
     Analyzes messages to determine if they're location-based requests
     and extracts relevant information for the location search pipeline
+
+    ENHANCED: Can use stored city context to enrich partial locations
     """
 
     def __init__(self, config):
@@ -33,18 +41,23 @@ class LocationAnalyzer:
         # Location analysis prompt
         self.analysis_prompt = ChatPromptTemplate.from_messages([
             ("system", self._get_analysis_system_prompt()),
-            ("human", "User message: {user_message}")
+            ("human", """User message: {user_message}
+
+CONTEXT ENRICHMENT:
+Stored city context from recent search: {stored_city_context}
+
+If the user mentions only a neighborhood/district and there's stored city context, enrich the location with the city.""")
         ])
 
         # Create the analysis chain
         self.analysis_chain = self.analysis_prompt | self.ai
 
-        logger.info("✅ Location Analyzer initialized")
+        logger.info("✅ Location Analyzer initialized with context enrichment")
 
     def _get_analysis_system_prompt(self) -> str:
         """Get the enhanced system prompt for location analysis with ambiguity detection"""
         return """
-    You are a location request analyzer for a restaurant recommendation system with ambiguity detection.
+    You are a location request analyzer for a restaurant recommendation system with ambiguity detection and context enrichment.
 
     Your job is to determine if a user message is requesting location-based (GPS/proximity/neighbourhood/street/landmark) search vs. general city-wide search, 
     AND detect if the location mentioned is ambiguous.
@@ -66,6 +79,16 @@ class LocationAnalyzer:
     - Countries: "in France", "in Italy"
     - Vast areas, though not formally cities: "in Manhattan", "in Barcelona", "in Tuscany", "around Lake Como"
 
+    CONTEXT ENRICHMENT RULES:
+    - If user mentions ONLY a neighborhood/district (e.g., "Lapa", "Alfama", "Chiado")
+    - AND there's stored city context from a recent search (e.g., "Lisbon")
+    - ENRICH the location: "Lapa" → "Lapa, Lisbon"
+    - Document this in the reasoning field
+
+    DEFAULT CITY CONTEXT:
+    - For Portugal neighborhoods without city context: Default to Lisbon
+    - Examples: "Lapa" → "Lapa, Lisbon", "Belem" → "Belem, Lisbon", "Alfama" → "Alfama, Lisbon"
+
     AMBIGUITY DETECTION:
     Detect if the location mentioned could refer to multiple places:
     - Common neighborhood names that exist in multiple cities
@@ -81,23 +104,53 @@ class LocationAnalyzer:
         "ambiguity_reason": "why ambiguous" | null,
         "cuisine_preference": "extracted cuisine/type preference" | null,
         "confidence": 0.1-1.0,
-        "reasoning": "brief explanation",
-        "suggested_response": "what bot should ask user next"
+        "reasoning": "brief explanation including context enrichment if applied",
+        "suggested_response": "what bot should ask user next",
+        "context_enrichment_applied": true | false
     }}
 
-    EXAMPLES:
+    EXAMPLES WITH CITY CONTEXT (ALWAYS PRESERVE/ADD CITY):
 
-    "natural wine bars in SoHo" →
+    "natural wine bars in SoHo, New York" →
     {{
         "request_type": "LOCATION_SEARCH",
-        "location_detected": "SoHo", 
+        "location_detected": "SoHo, New York", 
         "city_context": "New York",
         "is_ambiguous": false,
         "ambiguity_reason": null,
         "cuisine_preference": "natural wine bars",
         "confidence": 0.9,
-        "reasoning": "SoHo typically refers to NYC neighborhood",
-        "suggested_response": "I'll search for natural wine bars in SoHo, NYC for you!"
+        "reasoning": "SoHo with city context - clear location",
+        "suggested_response": "I'll search for natural wine bars in SoHo, NYC for you!",
+        "context_enrichment_applied": false
+    }}
+
+    "restaurants in Lapa" (with stored_city_context: "Lisbon") →
+    {{
+        "request_type": "LOCATION_SEARCH",
+        "location_detected": "Lapa, Lisbon",
+        "city_context": "Lisbon",
+        "is_ambiguous": false,
+        "ambiguity_reason": null,
+        "cuisine_preference": "restaurants",
+        "confidence": 0.9,
+        "reasoning": "Lapa enriched with stored city context (Lisbon) from recent search",
+        "suggested_response": "I'll find restaurants in Lapa, Lisbon for you!",
+        "context_enrichment_applied": true
+    }}
+
+    "coffee places in Lapa" (NO stored context) →
+    {{
+        "request_type": "LOCATION_SEARCH",
+        "location_detected": "Lapa, Lisbon",
+        "city_context": "Lisbon",
+        "is_ambiguous": false,
+        "ambiguity_reason": null,
+        "cuisine_preference": "coffee places",
+        "confidence": 0.85,
+        "reasoning": "Lapa defaulted to Lisbon (Portugal neighborhood)",
+        "suggested_response": "I'll search for coffee places in Lapa, Lisbon!",
+        "context_enrichment_applied": true
     }}
 
     "restaurants in Springfield" →
@@ -110,90 +163,105 @@ class LocationAnalyzer:
         "cuisine_preference": "restaurants",
         "confidence": 0.8,
         "reasoning": "Springfield exists in many US states - needs clarification",
-        "suggested_response": "I think there are multiple places called Springfield. Which state or country did you mean?"
+        "suggested_response": "There are multiple places called Springfield. Which state or country did you mean?",
+        "context_enrichment_applied": false
     }}
 
-    "coffee shops near Piccadilly Circus" →
+    "specialty coffee in Alfama" (with stored_city_context: "Lisbon") →
     {{
         "request_type": "LOCATION_SEARCH",
-        "location_detected": "Piccadilly Circus",
-        "city_context": "London",
+        "location_detected": "Alfama, Lisbon",
+        "city_context": "Lisbon",
         "is_ambiguous": false,
         "ambiguity_reason": null,
-        "cuisine_preference": "coffee shops",
-        "confidence": 0.9,
-        "reasoning": "Piccadilly Circus is clearly London landmark",
-        "suggested_response": "Sure, let's find coffee shops near Piccadilly Circus in London!"
-    }}
-
-    "bars in Cambridge" →
-    {{
-        "request_type": "LOCATION_SEARCH",
-        "location_detected": "Cambridge",
-        "city_context": null,
-        "is_ambiguous": true,
-        "ambiguity_reason": "could be Cambridge UK or Cambridge Massachusetts",
-        "cuisine_preference": "bars",
-        "confidence": 0.8,
-        "reasoning": "Cambridge could refer to UK or Massachusetts",
-        "suggested_response": "Which Cambridge did you mean - the one in England or Massachusetts?"
+        "cuisine_preference": "specialty coffee",
+        "confidence": 0.95,
+        "reasoning": "Alfama enriched with stored Lisbon context",
+        "suggested_response": "I'll find specialty coffee places in Alfama, Lisbon!",
+        "context_enrichment_applied": true
     }}
     """
 
-    def analyze_message(self, message: str) -> Dict[str, Any]:
+    def analyze_message(self, user_message: str, stored_city_context: Optional[str] = None) -> Dict[str, Any]:
         """
-        Analyze a user message to determine if it's a location-based request
-        CLEAN: Pure AI approach without hardcoded fallbacks
+        Analyze user message to determine request type and extract location
 
         Args:
-            message: User's message text
+            user_message: The user's message text
+            stored_city_context: Optional city from recent searches for context enrichment
+                                Example: "Lisbon", "New York", "Tokyo"
 
         Returns:
-            Dict with analysis results including ambiguity detection
+            Dict with analysis results including enriched location
         """
         try:
-            response = self.analysis_chain.invoke({"user_message": message})
-            content = response.content.strip()
+            logger.info(f"🔍 Analyzing message: '{user_message}'")
+            if stored_city_context:
+                logger.info(f"   📍 Stored city context: '{stored_city_context}'")
 
-            # Clean up JSON if wrapped in markdown
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
+            # Prepare context for enrichment
+            context_str = stored_city_context or "None"
 
-            analysis_result = json.loads(content)
-            analysis_result["original_message"] = message
+            # Get AI analysis
+            response = self.analysis_chain.invoke({
+                "user_message": user_message,
+                "stored_city_context": context_str
+            })
 
-            logger.debug(f"Location analysis result: {analysis_result}")
-            return analysis_result
+            # Parse JSON response
+            analysis = self._parse_response(response.content)
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse location analysis JSON: {e}")
+            # Log if context enrichment was applied
+            if analysis.get("context_enrichment_applied"):
+                original_loc = user_message
+                enriched_loc = analysis.get("location_detected")
+                logger.info(f"✨ Context enrichment: '{original_loc}' → '{enriched_loc}'")
 
+            # Add original message for reference
+            analysis["original_message"] = user_message
 
-            # CLEAN: Return safe default that won't break the flow
-            return self._create_safe_default(message)
+            logger.info(f"✅ Analysis complete: {analysis.get('request_type')} - {analysis.get('location_detected')}")
+
+            return analysis
 
         except Exception as e:
-            logger.error(f"Error in location analysis: {e}")
+            logger.error(f"❌ Error analyzing message: {e}", exc_info=True)
+            return {
+                "request_type": "NOT_RESTAURANT",
+                "location_detected": None,
+                "city_context": None,
+                "is_ambiguous": False,
+                "ambiguity_reason": None,
+                "cuisine_preference": None,
+                "confidence": 0.0,
+                "reasoning": f"Error: {str(e)}",
+                "suggested_response": "I had trouble understanding that. Could you rephrase?",
+                "original_message": user_message,
+                "context_enrichment_applied": false
+            }
 
-            # CLEAN: Return safe default that won't break the flow  
-            return self._create_safe_default(message)
+    def _parse_response(self, response_text: str) -> Dict[str, Any]:
+        """Parse AI response (handles markdown code blocks)"""
+        try:
+            # Remove markdown code blocks if present
+            cleaned = response_text.strip()
+            if cleaned.startswith("```json"):
+                cleaned = cleaned[7:]
+            if cleaned.startswith("```"):
+                cleaned = cleaned[3:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
 
-    def _create_safe_default(self, message: str) -> Dict[str, Any]:
-        """
-        Create a safe default response when AI analysis fails
-        Routes to general search to maintain app flow
-        """
-        return {
-            "request_type": "GENERAL_SEARCH",  # Safe default - use existing pipeline
-            "location_detected": None,
-            "city_context": None,
-            "is_ambiguous": False,
-            "ambiguity_reason": None,
-            "cuisine_preference": None,
-            "confidence": 0.1,  # Low confidence indicates fallback
-            "reasoning": "AI analysis failed - defaulting to general search",
-            "suggested_response": "I can help you find restaurants! Could you be more specific about what you're looking for?",
-            "original_message": message
-        }
+            # Parse JSON
+            return json.loads(cleaned)
+
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parse error: {e}\nResponse: {response_text}")
+            raise
+
+
+    def validate_analysis(self, analysis: Dict[str, Any]) -> bool:
+        """Validate analysis result has required fields"""
+        required_fields = ["request_type", "location_detected", "confidence", "reasoning"]
+        return all(field in analysis for field in required_fields)

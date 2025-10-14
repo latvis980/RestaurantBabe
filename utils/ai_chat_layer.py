@@ -1,19 +1,14 @@
 # utils/ai_chat_layer.py
 """
-COMPLETE V2: AI Chat Layer with Structured Handoff Protocol
+ENHANCED V2: AI Chat Layer with Location Context Enrichment
 
-Includes all original functionality:
-- Session management
-- Conversation history
-- GPS coordinates
-- Collected info tracking
-- Memory-aware (ready for integration)
+NEW FEATURE:
+- Enriches partial locations with stored city context
+- Example: User searched "restaurants in Lisbon" yesterday
+          Today: "coffee in Lapa" → enriched to "Lapa, Lisbon"
 
-New features:
-- Structured HandoffMessage output
-- Destination change detection
-- Context clearing signals
-- No raw query accumulation
+CRITICAL IMPORT NOTE:
+This file must be copied to: utils/ai_chat_layer.py
 """
 
 import json
@@ -46,19 +41,20 @@ class ConversationState(Enum):
 
 class AIChatLayer:
     """
-    COMPLETE V2: Supervisor agent with structured handoffs
+    ENHANCED V2: Supervisor agent with location context enrichment
+
+    NEW FEATURE:
+    - Tracks last_searched_city for each user
+    - Enriches partial locations (neighborhoods) with stored city context
+    - Example: "Lapa" becomes "Lapa, Lisbon" if user recently searched Lisbon
 
     Responsibilities:
     - Manage conversation flow
     - Collect destination + cuisine
+    - Enrich locations with context
     - Decide WHEN to search
     - Detect destination changes
     - Return structured HandoffMessage
-
-    NOT Responsible For:
-    - Deciding HOW to search (city vs location)
-    - Raw query accumulation
-    - Detailed location analysis
     """
 
     def __init__(self, config):
@@ -77,112 +73,120 @@ class AIChatLayer:
         # Build prompts
         self._build_prompts()
 
-        logger.info("✅ AI Chat Layer V2 (Complete) initialized")
+        logger.info("✅ AI Chat Layer V2 with Context Enrichment initialized")
 
     def _build_prompts(self):
         """Build AI prompts for conversation management"""
 
         self.conversation_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a conversation manager for a restaurant recommendation bot.
+            ("system", """You are a conversation manager for a restaurant recommendation bot with location context enrichment.
 
     Your job is to:
     1. Have natural conversations
     2. Collect necessary information (destination + cuisine)
-    3. Decide WHEN enough info is gathered to search
-    4. Detect when user changes destination
+    3. Enrich partial locations with stored city context
+    4. Decide WHEN enough info is gathered to search
+    5. Detect destination changes
 
-    REQUIRED FOR SEARCH:
-    - Destination: city, neighborhood, or area name
-    - Cuisine/Type: what food they want
-
-    CONVERSATION STATES:
-    - greeting: Initial interaction
-    - collecting: Gathering information
-    - ready_to_search: Have enough to search
-    - showing_results: Just showed results
+    CONTEXT ENRICHMENT RULES:
+    - If user mentions ONLY a neighborhood/district (e.g., "Lapa", "Alfama", "SoHo")
+    - AND there's a stored city from recent search
+    - AND it's the SAME destination (not a change)
+    - ENRICH: "Lapa" → "Lapa, {stored_city}"
+    - Document this in reasoning
 
     DESTINATION CHANGE DETECTION:
-    - If user mentions a NEW location different from current session
-    - Signal: clear_previous_context = True
+    - New city mentioned = NEW destination (clear context)
+    - Same city, different neighborhood = SAME destination (enrich context)
+    - No location, just cuisine change = SAME destination
 
-    Current Session:
-    - Current destination: {current_destination}
-    - Current cuisine: {current_cuisine}
-    - Conversation state: {conversation_state}
+    ACTIONS:
+    - chat_response: Continue conversation, need more info
+    - collect_info: Explicitly asking for missing info
+    - trigger_search: Have enough info to search
 
-    User's NEW message: {user_message}
-
-    Respond with JSON. CRITICAL: Choose exactly ONE action:
+    RESPONSE FORMAT (JSON only):
     {{
-        "action": "chat_response",
-        "response_text": "natural conversational response",
-        "destination": "extracted destination or keep current",
-        "cuisine": "extracted cuisine or keep current",
-        "requirements": ["quality", "local", "modern"],
-        "is_new_destination": true,
-        "new_state": "conversation_state",
-        "confidence": 0.85,
-        "reasoning": "why you chose this action"
+        "action": "chat_response" | "collect_info" | "trigger_search",
+        "response_text": "what to say to user",
+        "destination": "enriched location if clear" | null,
+        "cuisine": "cuisine type if mentioned" | null,
+        "is_new_destination": true | false,
+        "requirements": ["quality", "modern", "local"],
+        "preferences": {{"price": "moderate"}},
+        "new_state": "greeting" | "collecting_cuisine" | "collecting_location" | "ready_to_search",
+        "reasoning": "explanation of decision including enrichment if applied"
     }}
 
-    OR
+    EXAMPLES:
 
+    Previous: "restaurants in Lisbon"
+    Current: "coffee places in Lapa"
+    Stored city: "Lisbon"
+    →
     {{
         "action": "trigger_search",
-        "response_text": "Great! Let me find those restaurants for you.",
-        "destination": "city name",
-        "cuisine": "food type",
-        "requirements": ["quality"],
+        "response_text": "Great! I'll find coffee places in Lapa, Lisbon for you.",
+        "destination": "Lapa, Lisbon",
+        "cuisine": "coffee places",
         "is_new_destination": false,
+        "requirements": [],
+        "preferences": {{}},
         "new_state": "ready_to_search",
-        "confidence": 0.9,
-        "reasoning": "Have both destination and cuisine"
+        "reasoning": "Enriched 'Lapa' with stored city context 'Lisbon' - same destination"
     }}
 
-    VALID ACTIONS (choose ONE):
-    - "chat_response" - Continue conversation, need more info
-    - "collect_info" - Ask for missing information
-    - "trigger_search" - Ready to search (have destination + cuisine)
+    Previous: "restaurants in Lisbon"
+    Current: "bars in Tokyo"
+    →
+    {{
+        "action": "trigger_search",
+        "response_text": "Switching to Tokyo! I'll find bars there for you.",
+        "destination": "Tokyo",
+        "cuisine": "bars",
+        "is_new_destination": true,
+        "requirements": [],
+        "preferences": {{}},
+        "new_state": "ready_to_search",
+        "reasoning": "New city Tokyo - different from stored Lisbon - destination changed"
+    }}
+    """),
+            ("human", """CONVERSATION HISTORY:
+{conversation_history}
 
-    DO NOT use pipes or multiple actions. Choose the SINGLE best action.
+STORED CONTEXT:
+- Current destination: {current_destination}
+- Current cuisine: {current_cuisine}
+- Last searched city: {last_searched_city}
+- Conversation state: {conversation_state}
 
-    Be conversational, warm, and natural. Don't interrogate users."""),
-            ("human", "{user_message}")
+USER MESSAGE: {user_message}
+
+Analyze the message and determine action. Remember to enrich partial locations with stored city context when appropriate.""")
         ])
 
-    # =========================================================================
-    # MAIN PROCESSING METHOD
-    # =========================================================================
+        self.conversation_chain = self.conversation_prompt | self.llm
 
     async def process_message(
         self,
         user_id: int,
         user_message: str,
         gps_coordinates: Optional[Tuple[float, float]] = None,
-        thread_id: Optional[str] = None,
-        message_history: Optional[List[Dict[str, str]]] = None  # Fix: Changed from List[Dict[str, str]] to Optional
+        thread_id: Optional[str] = None
     ) -> HandoffMessage:
         """
-        Process user message and return structured handoff
+        Process user message with context enrichment
 
-        Args:
-            user_id: User ID
-            user_message: Current user message
-            gps_coordinates: Optional GPS coordinates
-            thread_id: Thread ID
-            message_history: Optional external message history
-
-        Returns:
-            HandoffMessage with command and context
+        Returns structured HandoffMessage with enriched location
         """
         try:
+            # Get or create session
             if not thread_id:
                 thread_id = f"chat_{user_id}_{int(time.time())}"
 
-            # Get or create session
             session = self._get_or_create_session(user_id, thread_id)
 
-            # Update GPS if provided
+            # Store GPS if provided
             if gps_coordinates:
                 session['gps_coordinates'] = gps_coordinates
 
@@ -193,45 +197,31 @@ class AIChatLayer:
                 'timestamp': time.time()
             })
 
-            # Keep history manageable
-            if len(session['conversation_history']) > 20:
-                session['conversation_history'] = session['conversation_history'][-15:]
-
-            # Format context for AI
-            conversation_context = self._format_conversation_context(session)
-
-            # Get current state safely with type checking
+            # Get current state
             current_state = session.get('state', ConversationState.GREETING)
-            if isinstance(current_state, ConversationState):
-                current_state_value = current_state.value
-            else:
-                current_state_value = str(current_state) if current_state else 'greeting'
+            current_state_value = current_state.value if isinstance(current_state, ConversationState) else str(current_state)
 
             # Prepare prompt variables
             prompt_vars = {
-                'conversation_context': conversation_context,
+                'conversation_history': self._format_conversation_context(session),
                 'current_destination': session.get('current_destination') or 'None',
                 'current_cuisine': session.get('current_cuisine') or 'None',
+                'last_searched_city': session.get('last_searched_city') or 'None',
                 'conversation_state': current_state_value,
                 'user_message': user_message
             }
 
             # Get AI decision
-            # Get AI decision
             response = await self.llm.ainvoke(
                 self.conversation_prompt.format_messages(**prompt_vars)
             )
 
-            # Parse response - handle both string and BaseMessage
+            # Parse response
             if hasattr(response, 'content'):
-                response_content = response.content
-                # Ensure it's a string (CRITICAL FIX)
-                if not isinstance(response_content, str):
-                    response_content = str(response_content)
+                response_content = str(response.content)
             else:
                 response_content = str(response)
 
-            # Now response_content is guaranteed to be str
             try:
                 decision = self._parse_ai_response(response_content)
             except json.JSONDecodeError:
@@ -253,6 +243,14 @@ class AIChatLayer:
             # Update session
             session['current_destination'] = destination
             session['current_cuisine'] = cuisine
+
+            # ENHANCED: Extract and store city for context enrichment
+            if destination and is_new_destination:
+                # Extract city from destination for future enrichment
+                city = self._extract_city_from_destination(destination)
+                if city:
+                    session['last_searched_city'] = city
+                    logger.info(f"💾 Stored city context for user {user_id}: {city}")
 
             # Update state
             new_state_str = decision.get('new_state', 'greeting')
@@ -292,9 +290,9 @@ class AIChatLayer:
                     else SearchType.CITY_SEARCH
                 )
 
-                # Create search handoff
+                # Create search handoff with enriched location
                 return create_search_handoff(
-                    destination=destination or "unknown",  # Fix: Provide default
+                    destination=destination or "unknown",
                     cuisine=cuisine,
                     search_type=search_type_hint,
                     user_query=user_message,
@@ -322,9 +320,57 @@ class AIChatLayer:
                 reasoning=f"Error: {str(e)}"
             )
 
-    # =========================================================================
-    # SESSION MANAGEMENT
-    # =========================================================================
+    def _extract_city_from_destination(self, destination: str) -> Optional[str]:
+        """
+        Extract city name from destination string for context storage
+
+        Examples:
+        "Lapa, Lisbon" → "Lisbon"
+        "SoHo, New York" → "New York"
+        "Paris" → "Paris"
+        "Rua Augusta, Lisbon" → "Lisbon"
+        """
+        if not destination:
+            return None
+
+        # Split by comma and take the last part (usually the city)
+        parts = [p.strip() for p in destination.split(',')]
+
+        # If multiple parts, last one is usually city
+        if len(parts) > 1:
+            return parts[-1]
+
+        # If single part, it might be a city itself
+        return parts[0]
+
+    def _format_conversation_context(self, session: Dict[str, Any]) -> str:
+        """Format conversation history for AI"""
+        history = session.get('conversation_history', [])
+        if not history:
+            return "No previous conversation."
+
+        # Format last 10 messages
+        recent = history[-10:]
+        formatted = []
+        for msg in recent:
+            role = msg.get('role', 'user')
+            message = msg.get('message', '')
+            formatted.append(f"{role.capitalize()}: {message}")
+
+        return "\n".join(formatted)
+
+    def _parse_ai_response(self, response_text: str) -> Dict[str, Any]:
+        """Parse AI response (handles markdown code blocks)"""
+        cleaned = response_text.strip()
+        if cleaned.startswith("```json"):
+            cleaned = cleaned[7:]
+        if cleaned.startswith("```"):
+            cleaned = cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
+
+        return json.loads(cleaned)
 
     def _get_or_create_session(self, user_id: int, thread_id: str) -> Dict[str, Any]:
         """Get or create user session"""
@@ -337,6 +383,7 @@ class AIChatLayer:
                 'conversation_history': [],
                 'current_destination': None,
                 'current_cuisine': None,
+                'last_searched_city': None,  # NEW: Store city for enrichment
                 'collected_info': {
                     'location': None,
                     'cuisine': None,
@@ -348,85 +395,30 @@ class AIChatLayer:
             }
         return self.user_sessions[user_id]
 
-    def _format_conversation_context(self, session: Dict[str, Any]) -> str:
-        """Format conversation history for AI"""
-        history = session.get('conversation_history', [])
-        if not history:
-            return "No previous conversation."
-
-        formatted = []
-        for msg in history[-6:]:  # Last 6 messages
-            role = "User" if msg['role'] == 'user' else "Assistant"
-            formatted.append(f"{role}: {msg['message']}")
-
-        return "\n".join(formatted)
-
-    def _update_collected_info(
-        self, 
-        session: Dict[str, Any],
-        destination: Optional[str],
-        cuisine: Optional[str],
-        requirements: List[str],
-        preferences: Dict[str, Any]
-    ):
+    def _update_collected_info(self, session: Dict[str, Any], destination: Optional[str], 
+                               cuisine: Optional[str], requirements: List[str], 
+                               preferences: Dict[str, Any]):
         """Update collected information in session"""
-        collected = session['collected_info']
+        collected = session.get('collected_info', {})
 
         if destination:
             collected['location'] = destination
         if cuisine:
             collected['cuisine'] = cuisine
         if requirements:
-            collected['requirements'] = list(set(collected['requirements'] + requirements))
+            collected['requirements'] = requirements
         if preferences:
-            collected['preferences'].update(preferences)
+            collected['preferences'] = preferences
 
-    def _parse_ai_response(self, response_content: str) -> Dict[str, Any]:
-        """Parse AI response, handle JSON formatting"""
-        try:
-            # Extract JSON from markdown if present
-            if "```json" in response_content:
-                json_start = response_content.find("```json") + 7
-                json_end = response_content.find("```", json_start)
-                json_content = response_content[json_start:json_end].strip()
-            else:
-                json_content = response_content.strip()
-
-            return json.loads(json_content)
-
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON parse error: {e}")
-            logger.error(f"Content: {response_content[:200]}")
-            raise
-
-    # =========================================================================
-    # UTILITY METHODS (for compatibility with existing code)
-    # =========================================================================
-
-    def get_search_ready_info(self, user_id: int) -> Optional[Dict[str, Any]]:
-        """
-        Get collected information (for backward compatibility)
-
-        NOTE: With structured handoffs, this is less needed since
-        SearchContext contains all info. Kept for gradual migration.
-        """
-        session = self.user_sessions.get(user_id)
-        if not session:
-            return None
-
-        return {
-            'collected_info': session.get('collected_info', {}),
-            'gps_coordinates': session.get('gps_coordinates'),
-            'conversation_history': session.get('conversation_history', []),
-            'current_destination': session.get('current_destination'),
-            'current_cuisine': session.get('current_cuisine')
-        }
+        session['collected_info'] = collected
 
     def clear_session(self, user_id: int):
-        """Clear user session"""
+        """Clear user session but keep last_searched_city for enrichment"""
         if user_id in self.user_sessions:
             session = self.user_sessions[user_id]
-            # Keep thread_id and created_at, clear rest
+            last_city = session.get('last_searched_city')  # Preserve this!
+
+            # Clear everything else
             session['current_destination'] = None
             session['current_cuisine'] = None
             session['state'] = ConversationState.GREETING
@@ -437,52 +429,12 @@ class AIChatLayer:
                 'preferences': {}
             }
             session['last_search_time'] = None
-            logger.info(f"🧹 Cleared session for user {user_id}")
+
+            # Restore city context
+            session['last_searched_city'] = last_city
+
+            logger.info(f"🧹 Cleared session for user {user_id} (kept city context: {last_city})")
 
     def get_session_info(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get current session info"""
         return self.user_sessions.get(user_id)
-
-
-# =============================================================================
-# EXAMPLE USAGE
-# =============================================================================
-
-if __name__ == "__main__":
-    import asyncio
-
-    class MockConfig:
-        OPENAI_API_KEY = "sk-test"
-        OPENAI_MODEL = "gpt-4o-mini"
-
-    async def test_conversation():
-        """Test conversation flow"""
-        config = MockConfig()
-        chat_layer = AIChatLayer(config)
-
-        user_id = 176556234
-
-        # Test 1: Initial request
-        print("\n=== Test 1: Initial Request ===")
-        handoff1 = await chat_layer.process_message(
-            user_id=user_id,
-            user_message="find restaurants in Bermeo, modern Basque cuisine"
-        )
-        print(f"Command: {handoff1.command.value}")
-        if handoff1.search_context:
-            print(f"Destination: {handoff1.search_context.destination}")
-            print(f"Cuisine: {handoff1.search_context.cuisine}")
-
-        # Test 2: Destination change
-        print("\n=== Test 2: Destination Change ===")
-        handoff2 = await chat_layer.process_message(
-            user_id=user_id,
-            user_message="actually, find restaurants in Lisbon instead"
-        )
-        print(f"Command: {handoff2.command.value}")
-        if handoff2.search_context:
-            print(f"Destination: {handoff2.search_context.destination}")
-            print(f"Clear previous: {handoff2.search_context.clear_previous_context}")
-            print(f"New destination: {handoff2.search_context.is_new_destination}")
-
-    # asyncio.run(test_conversation())
