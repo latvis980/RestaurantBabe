@@ -22,12 +22,13 @@ CORRECTED METHOD NAMES FROM PROJECT FILES:
 import logging
 import asyncio
 import time
-from typing import TypedDict, Optional, Any, List, Dict, Tuple
+from typing import TypedDict, Optional, Any, List, Dict, Tuple, cast
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langsmith import traceable
 from datetime import datetime, timezone
+from collections import Counter
 
 from utils.async_utils import sync_to_async
 from utils.ai_memory_system import AIMemorySystem, RestaurantMemory, ConversationState
@@ -239,7 +240,6 @@ class UnifiedRestaurantAgent:
         ]
 
         return any(keyword in query_lower for keyword in location_keywords)
-
 
     async def process_user_message_with_ai_chat(
         self,
@@ -806,7 +806,7 @@ class UnifiedRestaurantAgent:
 
     # Routing functions
     def _route_by_flow(self, state: UnifiedSearchState) -> str:
-        return state["search_flow"]
+        return state.get("search_flow", "city_search")
 
     def _route_after_evaluation(self, state: UnifiedSearchState) -> str:
         evaluation_results = state.get("evaluation_results")
@@ -1480,7 +1480,10 @@ class UnifiedRestaurantAgent:
         Returns:
             Dict with search results, restaurants, formatted message
         """
+
         start_time = time.time()
+
+        self._current_search_context = search_context
 
         try:
             logger.info(f"🚀 UNIFIED SEARCH: '{query}' (user: {user_id})")
@@ -1564,6 +1567,9 @@ class UnifiedRestaurantAgent:
                 "final_restaurants": [],
                 "processing_time": round(time.time() - start_time, 2)
             }
+
+        finally:
+            self._current_search_context = None
 
     async def restaurant_search_with_memory(
         self,
@@ -1793,64 +1799,169 @@ class UnifiedRestaurantAgent:
             logger.error(f"❌ Error handling human decision: {e}")
             return {"success": False, "error_message": f"Decision handling failed: {str(e)}"}
 
-    async def store_search_results_in_memory(
-        self, 
-        user_id: int, 
-        results: List[Dict[str, Any]], 
-        query: str,
-        city: str
-    ) -> bool:
-        """Store successful search results in user's memory"""
-        try:
-            for restaurant_data in results:
-                restaurant_memory = RestaurantMemory(
-                    restaurant_name=restaurant_data.get('name', 'Unknown'),
-                    city=city,
-                    cuisine=restaurant_data.get('cuisine', 'Unknown'),
-                    recommended_date=datetime.now(timezone.utc).isoformat(),
-                    user_feedback=None,
-                    rating_given=None,
-                    notes=f"Recommended for query: {query}",
-                    source=restaurant_data.get('source', 'unified_search')
-                )
-
-                await self.memory_system.add_restaurant_memory(user_id, restaurant_memory)
-
-            logger.info(f"Stored {len(results)} restaurants in memory for user {user_id}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error storing search results in memory: {e}")
-            return False
-
     async def filter_already_recommended(
         self, 
         user_id: int, 
         restaurants: List[Dict[str, Any]], 
         city: str
     ) -> List[Dict[str, Any]]:
-        """Filter out restaurants that have already been recommended to the user"""
+        """
+        Filter out restaurants that have already been recommended to the user
+
+        FIXED: Delegates to AIMemorySystem.filter_already_recommended()
+        """
         try:
-            filtered_restaurants = []
-
-            for restaurant in restaurants:
-                restaurant_name = restaurant.get('name', '')
-                if restaurant_name:
-                    already_recommended = await self.memory_system.has_restaurant_been_recommended(
-                        user_id, restaurant_name, city
-                    )
-
-                    if not already_recommended:
-                        filtered_restaurants.append(restaurant)
-                    else:
-                        logger.info(f"Filtered out already recommended restaurant: {restaurant_name}")
-
-            logger.info(f"Filtered {len(restaurants) - len(filtered_restaurants)} already recommended restaurants")
-            return filtered_restaurants
+            # Delegate to the memory system's built-in filtering
+            return await self.memory_system.filter_already_recommended(
+                user_id=user_id,
+                restaurants=restaurants,
+                city=city
+            )
 
         except Exception as e:
             logger.error(f"Error filtering already recommended restaurants: {e}")
             return restaurants  # Return original list if filtering fails
+
+    # FINAL CORRECTED CODE - store_search_results_in_memory method
+    # Complete working version with ALL fixes applied
+    # Replace lines ~1833-1930 in langgraph_orchestrator.py
+
+    async def store_search_results_in_memory(
+        self,
+        user_id: int,
+        restaurants: List[Dict[str, Any]],
+        query: str,
+        city: str
+    ) -> bool:
+        """
+        Store search results in memory using AI-extracted preferences
+
+        FIXED: All parameter errors, undefined variables, and type issues resolved
+        """
+        try:
+            if not restaurants:
+                logger.info(f"No restaurants to store for user {user_id}")
+                return True
+
+            logger.info(f"💾 Storing {len(restaurants)} restaurants for user {user_id}")
+
+            # Step 1: Store each restaurant via AIMemorySystem
+            stored_count = 0
+            for restaurant in restaurants:
+                try:
+                    # FIXED: Convert cuisine list to string
+                    cuisine = restaurant.get('cuisine', [])
+                    if isinstance(cuisine, list):
+                        cuisine_str = ', '.join(cuisine) if cuisine else 'Unknown'
+                    else:
+                        cuisine_str = str(cuisine) if cuisine else 'Unknown'
+
+                    # FIXED: Create notes with all context info (BEFORE RestaurantMemory instantiation)
+                    notes_parts = [f"Query: {query}"]
+
+                    # Safe subscripting - get values first, check, then use
+                    description = restaurant.get('description')
+                    if description:
+                        notes_parts.append(f"Description: {description[:200]}")
+
+                    address = restaurant.get('address')
+                    if address:
+                        notes_parts.append(f"Address: {address}")
+
+                    url = restaurant.get('url')
+                    if url:
+                        notes_parts.append(f"URL: {url}")
+
+                    notes_str = ' | '.join(notes_parts)
+
+                    # FIXED: All correct parameters for RestaurantMemory
+                    restaurant_memory = RestaurantMemory(
+                        restaurant_name=restaurant.get('name', 'Unknown'),
+                        city=city,
+                        cuisine=cuisine_str,                                      # ✅ String, not list
+                        recommended_date=datetime.now(timezone.utc).isoformat(),  # ✅ ISO string format
+                        user_feedback=None,                                       # ✅ Required parameter
+                        rating_given=restaurant.get('rating'),                    # ✅ Correct parameter name
+                        notes=notes_str,                                          # ✅ Required parameter with context
+                        source=restaurant.get('source', 'web')                    # ✅ Correct parameter
+                    )
+
+                    # Delegate to AIMemorySystem
+                    success = await self.memory_system.add_restaurant_memory(
+                        user_id, restaurant_memory
+                    )
+
+                    if success:
+                        stored_count += 1
+
+                except Exception as e:
+                    logger.error(f"Error storing restaurant {restaurant.get('name')}: {e}")
+                    continue
+
+            logger.info(f"✅ Stored {stored_count}/{len(restaurants)} restaurants")
+
+            # Step 2: Learn preferences
+            if not getattr(self.config, 'AUTO_UPDATE_USER_PREFERENCES', True):
+                return stored_count > 0
+
+            # Check if we have AI-extracted preferences from SearchContext
+            extracted_cuisine = None
+            extracted_requirements = []
+            extracted_preferences = {}
+
+            # Try to get SearchContext from current processing
+            if hasattr(self, '_current_search_context') and self._current_search_context:
+                ctx = self._current_search_context
+                extracted_cuisine = ctx.cuisine
+                extracted_requirements = ctx.requirements or []
+                extracted_preferences = ctx.preferences or {}
+
+                logger.info(f"📦 Using AI-extracted preferences from SearchContext:")
+                logger.info(f"   Cuisine: {extracted_cuisine}")
+                logger.info(f"   Requirements: {extracted_requirements}")
+                logger.info(f"   Preferences: {extracted_preferences}")
+
+            # Fallback: Extract cuisine from restaurant list if AI didn't extract it
+            if not extracted_cuisine:
+                cuisine_list = []
+                for restaurant in restaurants[:3]:
+                    if restaurant.get('cuisine'):
+                        if isinstance(restaurant['cuisine'], list):
+                            cuisine_list.extend(restaurant['cuisine'])
+                        else:
+                            cuisine_list.append(restaurant['cuisine'])
+
+                if cuisine_list:
+                    from collections import Counter
+                    cuisine_counts = Counter(cuisine_list)
+                    extracted_cuisine = cuisine_counts.most_common(1)[0][0] if cuisine_counts else None
+                    logger.info(f"📊 Extracted cuisine from restaurants: {extracted_cuisine}")
+
+            # Step 3: Delegate preference learning to AIMemorySystem
+            preference_learned = await self.memory_system.learn_preferences_from_message(
+                user_id=user_id,
+                message=query,
+                current_city=city,
+                extracted_cuisine=extracted_cuisine,
+                extracted_requirements=extracted_requirements,
+                extracted_preferences=extracted_preferences
+            )
+
+            if preference_learned:
+                logger.info(f"✅ Preferences learned for user {user_id}")
+
+            # Step 4: Delegate conversation pattern learning to AIMemorySystem
+            if getattr(self.config, 'LEARN_CONVERSATION_PATTERNS', True):
+                await self.memory_system.learn_conversation_patterns(
+                    user_id=user_id,
+                    message=query
+                )
+
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Error storing results in memory: {e}")
+            return False
 
     async def learn_from_user_query(self, user_id: int, query: str, city: Optional[str] = None) -> bool:
         """Learn user preferences from their search query"""
