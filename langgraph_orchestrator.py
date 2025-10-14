@@ -1580,6 +1580,12 @@ class UnifiedRestaurantAgent:
             processing_time = round(time.time() - start_time, 2)
             result["processing_time"] = processing_time
 
+            # CRITICAL FIX: Map formatted_message to langchain_formatted_results for BOTH flows
+            # The telegram bot expects 'langchain_formatted_results', but the state has 'formatted_message'
+            if result.get("formatted_message") and not result.get("langchain_formatted_results"):
+                result["langchain_formatted_results"] = result["formatted_message"]
+                logger.info(f"✅ Mapped formatted_message to langchain_formatted_results ({len(result['formatted_message'])} chars)")
+
             logger.info(f"✅ UNIFIED SEARCH COMPLETE: {processing_time}s")
             return result
 
