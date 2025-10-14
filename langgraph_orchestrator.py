@@ -270,6 +270,7 @@ class UnifiedRestaurantAgent:
         Returns:
             Dict with success, ai_response, search results, etc.
         """
+
         start_time = time.time()
 
         try:
@@ -364,12 +365,17 @@ class UnifiedRestaurantAgent:
                         "final_restaurants": []
                     }
 
-                # Delete confirmation message after search completes
+                # 🔧 FIX: Delete confirmation message with proper type checking
                 if confirmation_msg is not None and telegram_bot and chat_id:
                     try:
-                        telegram_bot.delete_message(chat_id, confirmation_msg.message_id)
+                        # Check if confirmation_msg has message_id attribute
+                        if hasattr(confirmation_msg, 'message_id'):
+                            telegram_bot.delete_message(chat_id, confirmation_msg.message_id)  # type: ignore[attr-defined]
+                            logger.info("✅ Deleted confirmation message")
+                        else:
+                            logger.warning("⚠️ Confirmation message object has no message_id attribute")
                     except Exception as delete_error:
-                        logger.warning(f"Could not delete confirmation message: {delete_error}")
+                        logger.warning(f"⚠️ Could not delete confirmation message: {delete_error}")
 
                 # Add processing time and return
                 processing_time = round(time.time() - start_time, 2)
