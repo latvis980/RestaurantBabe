@@ -162,19 +162,21 @@ class AIChatLayer:
     4. Can be ready in 1 turn OR 10 turns - YOU decide based on state
     5. Don't ask for info already in accumulated_state
     """),
-            ("human", """CONVERSATION HISTORY:
+        ("human", """CONVERSATION HISTORY:
     {conversation_history}
 
     CURRENT ACCUMULATED STATE:
     {accumulated_state}
 
     STORED CONTEXT:
+    - Current destination: {current_destination}
+    - Current cuisine: {current_cuisine}
     - Last searched city: {last_searched_city}
     - Conversation state: {conversation_state}
 
     USER MESSAGE: {user_message}
 
-    Update the state and decide next action.""")
+    Analyze the message and determine action.""")
         ])
 
         self.conversation_chain = self.conversation_prompt | self.llm
@@ -213,9 +215,12 @@ class AIChatLayer:
             current_state = session.get('state', ConversationState.GREETING)
             current_state_value = current_state.value if isinstance(current_state, ConversationState) else str(current_state)
 
+            accumulated_state = session.get('accumulated_state', {})
+
             # Prepare prompt variables
             prompt_vars = {
                 'conversation_history': self._format_conversation_context(session),
+                'accumulated_state': json.dumps(accumulated_state, indent=2),
                 'current_destination': session.get('current_destination') or 'None',
                 'current_cuisine': session.get('current_cuisine') or 'None',
                 'last_searched_city': session.get('last_searched_city') or 'None',
@@ -245,12 +250,20 @@ class AIChatLayer:
 
             logger.info(f"🤖 AI Decision: {decision.get('action')} - {decision.get('reasoning')}")
 
-            # Extract info from decision
-            destination = decision.get('destination', session.get('current_destination'))
-            cuisine = decision.get('cuisine', session.get('current_cuisine'))
+            # UPDATE ACCUMULATED STATE
+            state_update = decision.get('state_update', {})
+            if state_update:
+                accumulated_state.update(state_update)
+                session['accumulated_state'] = accumulated_state
+                logger.info(f"📊 Updated state: {accumulated_state}")
+
+            # Extract info from accumulated state (not decision)
+            destination = accumulated_state.get('destination') or session.get('current_destination')
+            cuisine = accumulated_state.get('cuisine') or session.get('current_cuisine')
+            is_complete = accumulated_state.get('is_complete', False)
+            requirements = accumulated_state.get('requirements', [])
+            preferences = accumulated_state.get('preferences', {})
             is_new_destination = decision.get('is_new_destination', False)
-            requirements = decision.get('requirements', [])
-            preferences = decision.get('preferences', {})
 
             # Update session
             session['current_destination'] = destination
@@ -292,7 +305,7 @@ class AIChatLayer:
                     reasoning=decision.get('reasoning', '')
                 )
 
-            elif action == 'trigger_search':
+            elif action == 'trigger_search' and is_complete:
                 # Track search time
                 session['last_search_time'] = time.time()
 
