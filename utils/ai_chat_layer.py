@@ -92,7 +92,7 @@ class AIChatLayer:
     - If user mentions ONLY a neighborhood/district (e.g., "Lapa", "Alfama", "SoHo")
     - AND there's a stored city from recent search
     - AND it's the SAME destination (not a change)
-    - ENRICH: "Lapa" → "Lapa, {stored_city}"
+    - ENRICH: "Lapa" → "Lapa, [stored_city]"
     - Document this in reasoning
 
     DESTINATION CHANGE DETECTION:
