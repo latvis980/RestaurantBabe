@@ -22,13 +22,7 @@ from psycopg2.pool import SimpleConnectionPool
 logger = logging.getLogger(__name__)
 
 # Import data classes from original memory system
-from utils.ai_memory_system import (
-    UserPreferences,
-    RestaurantMemory,
-    ConversationPattern,
-    MemoryType,
-    ConversationState
-)
+from utils.ai_memory_system import UserPreferences, RestaurantMemory, ConversationPattern, MemoryType, ConversationState
 
 
 class PostgresMemoryStore:
@@ -43,18 +37,26 @@ class PostgresMemoryStore:
         self.config = config
 
         # Use Supabase PostgreSQL connection
-        # Supabase provides this in: Settings > Database > Connection string
         self.database_url = os.getenv('SUPABASE_DB_URL') or os.getenv('DATABASE_URL')
 
         if not self.database_url:
             # Fallback: Use Supabase URL and key to construct
-            # Get from: Settings > API > Project URL and Connection Pooling
             supabase_url = os.getenv('SUPABASE_URL', '')
-            # Extract host from URL (e.g., abcdefg.supabase.co)
             host = supabase_url.replace('https://', '').replace('http://', '')
-
             self.database_url = f"postgresql://postgres.{host.split('.')[0]}:{os.getenv('SUPABASE_DB_PASSWORD')}@{host}:5432/postgres"
 
+        # Create connection pool
+        pool_size = getattr(config, 'MEMORY_STORE_POOL_SIZE', 10)
+        try:
+            self.pool = SimpleConnectionPool(
+                minconn=1,
+                maxconn=pool_size,
+                dsn=self.database_url
+            )
+            logger.info(f"✅ PostgreSQL connection pool created (size: {pool_size})")
+        except Exception as e:
+            logger.error(f"❌ Failed to create connection pool: {e}")
+            raise
 
     def _get_connection(self):
         """Get a connection from the pool"""
