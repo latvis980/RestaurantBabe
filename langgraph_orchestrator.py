@@ -88,6 +88,10 @@ class UnifiedSearchState(TypedDict, total=False):
     cleaned_file_path: Optional[str]
     edited_results: Optional[Dict[str, Any]]
 
+    # CRITICAL FIX: Separate tracking for hybrid mode
+    database_restaurants_hybrid: Optional[List[Dict[str, Any]]]  # Preserved DB results for hybrid
+    is_hybrid_mode: bool  # Flag to indicate hybrid mode
+
     # Location search pipeline data
     location_coordinates: Optional[Tuple[float, float]]
     proximity_results: Optional[Dict[str, Any]]
@@ -815,9 +819,30 @@ class UnifiedRestaurantAgent:
         return state.get("search_flow", "city_search")
 
     def _route_after_evaluation(self, state: UnifiedSearchState) -> str:
+        """
+        FIXED: Route after database evaluation
+
+        Returns 'sufficient' for database-only, 'needs_search' for both hybrid and web-only.
+        The distinction between hybrid and web-only is handled via state flags.
+        """
         evaluation_results = state.get("evaluation_results")
-        if evaluation_results and evaluation_results.get("database_sufficient"):
+
+        if not evaluation_results:
+            logger.warning("⚠️ No evaluation results, defaulting to web search")
+            return "needs_search"
+
+        database_sufficient = evaluation_results.get("evaluation_result", {}).get("database_sufficient", False)
+        is_hybrid = state.get("is_hybrid_mode", False)
+
+        if database_sufficient:
+            logger.info("✅ Database sufficient - routing to editor (database-only mode)")
             return "sufficient"
+
+        if is_hybrid:
+            logger.info("🔀 Hybrid mode - routing to web search (will merge with DB results)")
+        else:
+            logger.info("🌐 Database insufficient - routing to web search (web-only mode)")
+
         return "needs_search"
 
     def _route_after_filtering(self, state: UnifiedSearchState) -> str:
@@ -926,7 +951,12 @@ class UnifiedRestaurantAgent:
 
     @traceable(name="city_evaluate_content")
     async def _city_evaluate_content(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """CORRECTED: Use ContentEvaluationAgent.evaluate_and_route() with pipeline_data"""
+        """
+        CRITICAL FIX: Evaluate database content and preserve hybrid restaurants in state
+
+        The ContentEvaluationAgent already implements the 3-mode logic correctly.
+        We just need to extract and preserve the data in state properly.
+        """
         try:
             logger.info("⚖️ City Content Evaluation")
 
@@ -950,7 +980,8 @@ class UnifiedRestaurantAgent:
             # Log what we received for debugging
             logger.info(f"📊 Database restaurants extracted: {len(database_restaurants)}")
             if not database_restaurants:
-                logger.warning("⚠️ No database_restaurants found in database_results. Available keys: " 
+                logger.warning("⚠️ No database_restaurants found in database_results. "
+                             f"Available keys: " 
                              f"{list(database_results.keys()) if isinstance(database_results, dict) else 'N/A'}")
 
             pipeline_data = {
@@ -964,16 +995,37 @@ class UnifiedRestaurantAgent:
                 pipeline_data=pipeline_data
             )
 
-            return {**state, "evaluation_results": evaluation_results, "current_step": "content_evaluated"}
+            # CRITICAL FIX: Extract hybrid mode data from evaluation
+            is_hybrid = evaluation_results.get("evaluation_result", {}).get("hybrid_mode", False)
+            database_restaurants_hybrid = evaluation_results.get("database_restaurants_hybrid", [])
+
+            logger.info(f"🔍 Evaluation complete:")
+            logger.info(f"   - Database sufficient: {evaluation_results.get('evaluation_result', {}).get('database_sufficient', False)}")
+            logger.info(f"   - Hybrid mode: {is_hybrid}")
+            logger.info(f"   - Hybrid restaurants preserved: {len(database_restaurants_hybrid)}")
+
+            return {
+                **state,
+                "evaluation_results": evaluation_results,
+                "is_hybrid_mode": is_hybrid,  # NEW: Top-level flag
+                "database_restaurants_hybrid": database_restaurants_hybrid,  # NEW: Top-level array
+                "current_step": "content_evaluated"
+            }
+
         except Exception as e:
             logger.error(f"❌ Error in city content evaluation: {e}")
             return {**state, "error_message": f"Content evaluation failed: {str(e)}", "success": False}
 
     @traceable(name="city_web_search")
     async def _city_web_search(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """CORRECTED: Use BraveSearchAgent.search() with proper parameters"""
+        """Execute web search"""
         try:
             logger.info("🌐 City Web Search")
+
+            # Log if we're in hybrid mode
+            if state.get("is_hybrid_mode"):
+                hybrid_count = len(state.get("database_restaurants_hybrid", []))
+                logger.info(f"🔀 HYBRID MODE: Preserving {hybrid_count} database restaurants")
 
             query_analysis = state.get("query_analysis")
             if not query_analysis:
@@ -989,7 +1041,10 @@ class UnifiedRestaurantAgent:
                 query_metadata=query_metadata
             )
 
+            logger.info(f"🔍 Web search complete: {len(search_results)} results")
+
             return {**state, "search_results": search_results, "current_step": "web_searched"}
+
         except Exception as e:
             logger.error(f"❌ Error in city web search: {e}")
             return {**state, "error_message": f"Web search failed: {str(e)}", "success": False}
@@ -1039,7 +1094,13 @@ class UnifiedRestaurantAgent:
 
     @traceable(name="city_edit_content")
     async def _city_edit_content(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """CORRECTED: Use EditorAgent.edit() with database_restaurants parameter"""
+        """
+        CRITICAL FIX: Editor now receives proper restaurant lists based on mode
+
+        - Database-only: database_restaurants from database_results
+        - Hybrid: database_restaurants_hybrid + scraped_results
+        - Web-only: scraped_results only
+        """
         try:
             logger.info("✏️ City Content Editing")
 
@@ -1047,16 +1108,39 @@ class UnifiedRestaurantAgent:
             if not destination:
                 raise ValueError("No destination available for editing")
 
-            database_results = state.get("database_results")
-            database_restaurants = None
-            if database_results:
-                if isinstance(database_results, dict):
-                    database_restaurants = database_results.get("database_restaurants", [])
-                elif isinstance(database_results, list):
-                    database_restaurants = database_results
+            # CRITICAL FIX: Determine which database restaurants to use
+            is_hybrid = state.get("is_hybrid_mode", False)
+            evaluation_results = state.get("evaluation_results", {})
+            database_sufficient = evaluation_results.get("evaluation_result", {}).get("database_sufficient", False)
+
+            if database_sufficient:
+                # Database-only mode: use full database results
+                database_results = state.get("database_results")
+                database_restaurants = None
+                if database_results:
+                    if isinstance(database_results, dict):
+                        database_restaurants = database_results.get("database_restaurants", [])
+                    elif isinstance(database_results, list):
+                        database_restaurants = database_results
+                logger.info(f"📊 DATABASE-ONLY MODE: Using {len(database_restaurants or [])} database restaurants")
+
+            elif is_hybrid:
+                # Hybrid mode: use preserved hybrid restaurants
+                database_restaurants = state.get("database_restaurants_hybrid", [])
+                logger.info(f"🔀 HYBRID MODE: Using {len(database_restaurants)} preserved database restaurants")
+
+            else:
+                # Web-only mode: no database restaurants
+                database_restaurants = None
+                logger.info("🌐 WEB-ONLY MODE: No database restaurants")
 
             scraped_results = state.get("scraped_results")
             cleaned_file_path = state.get("cleaned_file_path")
+
+            logger.info(f"📊 Sending to editor:")
+            logger.info(f"   - Database restaurants: {len(database_restaurants) if database_restaurants else 0}")
+            logger.info(f"   - Scraped results: {len(scraped_results) if scraped_results else 0}")
+            logger.info(f"   - Cleaned file: {cleaned_file_path}")
 
             edited_results = await sync_to_async(self.editor_agent.edit)(
                 destination=destination,
@@ -1067,12 +1151,15 @@ class UnifiedRestaurantAgent:
             )
 
             final_restaurants = edited_results.get("edited_results", {}).get("main_list", [])
+            logger.info(f"✅ Editing complete: {len(final_restaurants)} restaurants")
+
             return {
                 **state,
                 "edited_results": edited_results,
                 "final_restaurants": final_restaurants,
                 "current_step": "content_edited"
             }
+
         except Exception as e:
             logger.error(f"❌ Error in city content editing: {e}")
             return {**state, "error_message": f"Content editing failed: {str(e)}", "success": False}
@@ -1554,6 +1641,8 @@ class UnifiedRestaurantAgent:
                 "scraped_results": None,
                 "cleaned_file_path": None,
                 "edited_results": None,
+                "database_restaurants_hybrid": [],  # CRITICAL FIX
+                "is_hybrid_mode": False,  # CRITICAL FIX
                 "location_coordinates": None,
                 "proximity_results": None,
                 "filtered_results": None,
@@ -1853,9 +1942,7 @@ class UnifiedRestaurantAgent:
             return restaurants  # Return original list if filtering fails
 
     # FINAL CORRECTED CODE - store_search_results_in_memory method
-    # Complete working version with ALL fixes applied
-    # Replace lines ~1833-1930 in langgraph_orchestrator.py
-
+    
     async def store_search_results_in_memory(
         self,
         user_id: int,
