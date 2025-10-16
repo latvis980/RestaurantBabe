@@ -90,12 +90,12 @@ class AIChatLayer:
 
     STATE STRUCTURE:
     {{
-        "location_parts": ["Lapa", "Lisbon"],  // Accumulates location fragments
-        "destination": "Lapa, Lisbon",         // Combined when complete
+        "location_parts": ["Lapa", "Lisbon"],
+        "destination": "Lapa, Lisbon",
         "cuisine": "specialty coffee",
         "requirements": ["specialty"],
         "preferences": {{}},
-        "is_complete": true                    // You decide this!
+        "is_complete": true
     }}
 
     EXAMPLES OF STATE ACCUMULATION:
@@ -115,10 +115,10 @@ class AIChatLayer:
     Turn 2: "Lisbon"
     → {{
         "state_update": {{
-            "location_parts": ["Lapa", "Lisbon"],  // ACCUMULATED!
-            "destination": "Lapa, Lisbon",         // COMBINED!
-            "cuisine": "specialty coffee",         // PRESERVED!
-            "is_complete": true                    // READY!
+            "location_parts": ["Lapa", "Lisbon"],
+            "destination": "Lapa, Lisbon",
+            "cuisine": "specialty coffee",
+            "is_complete": true
         }},
         "action": "trigger_search",
         "response_text": "Perfect! I'll find specialty coffee in Lapa, Lisbon.",
