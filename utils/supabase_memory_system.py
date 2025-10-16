@@ -1,103 +1,84 @@
 # utils/supabase_memory_system.py
 """
-PostgreSQL-based Memory System for Restaurant Bot
+Supabase REST API Memory System for Restaurant Bot
 
-Replaces InMemoryStore with persistent PostgreSQL storage for:
+Uses Supabase REST API (not direct PostgreSQL) for persistent storage of:
 - User preferences (semantic memory)
 - Restaurant history (episodic memory)
 - Conversation patterns (procedural memory)
 - Session data (short-term memory)
+
+NO psycopg2 - Uses supabase-py client instead!
 """
 
 import json
 import logging
-import os
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Any, Optional
-from dataclasses import dataclass, asdict
-import psycopg2
-from psycopg2.extras import RealDictCursor, Json
-from psycopg2.pool import SimpleConnectionPool
+from dataclasses import asdict
 
 logger = logging.getLogger(__name__)
 
 # Import data classes from original memory system
-from utils.ai_memory_system import UserPreferences, RestaurantMemory, ConversationPattern, MemoryType, ConversationState
+from utils.ai_memory_system import (
+    UserPreferences, 
+    RestaurantMemory, 
+    ConversationPattern, 
+    MemoryType, 
+    ConversationState
+)
 
 
-class PostgresMemoryStore:
+class SupabaseMemoryStore:
     """
-    PostgreSQL-based persistent memory store
+    Supabase REST API-based persistent memory store
 
-    This replaces LangGraph's InMemoryStore with actual database persistence
+    This uses Supabase's REST API instead of direct PostgreSQL connections,
+    making it compatible with Railway and other platforms.
     """
 
     def __init__(self, config):
-        """Initialize PostgreSQL connection"""
+        """Initialize Supabase client"""
         self.config = config
 
-        # Use Supabase PostgreSQL connection
-        self.database_url = os.getenv('SUPABASE_DB_URL') or os.getenv('DATABASE_URL')
-
-        if not self.database_url:
-            # Fallback: Use Supabase URL and key to construct
-            supabase_url = os.getenv('SUPABASE_URL', '')
-            host = supabase_url.replace('https://', '').replace('http://', '')
-            self.database_url = f"postgresql://postgres.{host.split('.')[0]}:{os.getenv('SUPABASE_DB_PASSWORD')}@{host}:5432/postgres"
-
-        # Create connection pool
-        pool_size = getattr(config, 'MEMORY_STORE_POOL_SIZE', 10)
         try:
-            self.pool = SimpleConnectionPool(
-                minconn=1,
-                maxconn=pool_size,
-                dsn=self.database_url
+            from supabase import create_client, Client
+
+            self.supabase: Client = create_client(
+                config.SUPABASE_URL,
+                config.SUPABASE_KEY
             )
-            logger.info(f"✅ PostgreSQL connection pool created (size: {pool_size})")
+            logger.info("✅ Supabase Memory Store initialized (REST API)")
+
         except Exception as e:
-            logger.error(f"❌ Failed to create connection pool: {e}")
+            logger.error(f"❌ Failed to initialize Supabase Memory Store: {e}")
             raise
-
-    def _get_connection(self):
-        """Get a connection from the pool"""
-        return self.pool.getconn()
-
-    def _return_connection(self, conn):
-        """Return a connection to the pool"""
-        self.pool.putconn(conn)
 
     # =====================================================================
     # USER PREFERENCES (Semantic Memory)
     # =====================================================================
 
     async def get_user_preferences(self, user_id: int) -> UserPreferences:
-        """Get user preferences from database"""
-        conn = None
+        """Get user preferences from Supabase"""
         try:
-            conn = self._get_connection()
-            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            result = self.supabase.table('user_preferences')\
+                .select('*')\
+                .eq('user_id', user_id)\
+                .maybe_single()\
+                .execute()
 
-            cursor.execute(
-                "SELECT * FROM user_preferences WHERE user_id = %s",
-                (user_id,)
-            )
-
-            result = cursor.fetchone()
-            cursor.close()
-
-            if result:
-                # Convert database record to UserPreferences object
+            if result.data:
                 return UserPreferences(
-                    preferred_cities=result['preferred_cities'] or [],
-                    preferred_cuisines=result['preferred_cuisines'] or [],
-                    dietary_restrictions=result['dietary_restrictions'] or [],
-                    budget_range=result['budget_range'] or 'mid-range',
-                    preferred_ambiance=result['preferred_ambiance'] or [],
-                    meal_times=result['meal_times'] or [],
-                    group_size_typical=result['group_size_typical'] or 'couple'
+                    preferred_cities=result.data.get('preferred_cities', []),
+                    preferred_cuisines=result.data.get('preferred_cuisines', []),
+                    dietary_restrictions=result.data.get('dietary_restrictions', []),
+                    budget_range=result.data.get('budget_range', 'mid-range'),
+                    preferred_ambiance=result.data.get('preferred_ambiance', []),
+                    meal_times=result.data.get('meal_times', []),
+                    group_size_typical=result.data.get('group_size_typical', 'couple')
                 )
             else:
-                # Return default preferences
+                # Return defaults
                 return UserPreferences(
                     preferred_cities=[],
                     preferred_cuisines=[],
@@ -110,7 +91,7 @@ class PostgresMemoryStore:
 
         except Exception as e:
             logger.error(f"Error getting user preferences: {e}")
-            # Return default on error
+            # Return defaults on error
             return UserPreferences(
                 preferred_cities=[],
                 preferred_cuisines=[],
@@ -120,62 +101,37 @@ class PostgresMemoryStore:
                 meal_times=[],
                 group_size_typical='couple'
             )
-        finally:
-            if conn:
-                self._return_connection(conn)
 
     async def update_user_preferences(
         self, 
         user_id: int, 
         preferences: UserPreferences
     ) -> bool:
-        """Update user preferences in database"""
-        conn = None
+        """Update user preferences in Supabase"""
         try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
+            data = {
+                'user_id': user_id,
+                'preferred_cities': preferences.preferred_cities,
+                'preferred_cuisines': preferences.preferred_cuisines,
+                'dietary_restrictions': preferences.dietary_restrictions,
+                'budget_range': preferences.budget_range,
+                'preferred_ambiance': preferences.preferred_ambiance,
+                'meal_times': preferences.meal_times,
+                'group_size_typical': preferences.group_size_typical,
+                'updated_at': datetime.now(timezone.utc).isoformat()
+            }
 
-            # Use INSERT ... ON CONFLICT to update or insert
-            cursor.execute("""
-                INSERT INTO user_preferences (
-                    user_id, preferred_cities, preferred_cuisines, 
-                    dietary_restrictions, budget_range, preferred_ambiance,
-                    meal_times, group_size_typical
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (user_id) DO UPDATE SET
-                    preferred_cities = EXCLUDED.preferred_cities,
-                    preferred_cuisines = EXCLUDED.preferred_cuisines,
-                    dietary_restrictions = EXCLUDED.dietary_restrictions,
-                    budget_range = EXCLUDED.budget_range,
-                    preferred_ambiance = EXCLUDED.preferred_ambiance,
-                    meal_times = EXCLUDED.meal_times,
-                    group_size_typical = EXCLUDED.group_size_typical,
-                    updated_at = NOW()
-            """, (
-                user_id,
-                preferences.preferred_cities,
-                preferences.preferred_cuisines,
-                preferences.dietary_restrictions,
-                preferences.budget_range,
-                preferences.preferred_ambiance,
-                preferences.meal_times,
-                preferences.group_size_typical
-            ))
-
-            conn.commit()
-            cursor.close()
+            # Upsert (insert or update)
+            self.supabase.table('user_preferences')\
+                .upsert(data, on_conflict='user_id')\
+                .execute()
 
             logger.info(f"✅ Updated preferences for user {user_id}")
             return True
 
         except Exception as e:
-            if conn:
-                conn.rollback()
             logger.error(f"Error updating user preferences: {e}")
             return False
-        finally:
-            if conn:
-                self._return_connection(conn)
 
     # =====================================================================
     # RESTAURANT HISTORY (Episodic Memory)
@@ -188,50 +144,36 @@ class PostgresMemoryStore:
         limit: int = 100
     ) -> List[RestaurantMemory]:
         """Get user's restaurant recommendation history"""
-        conn = None
         try:
-            conn = self._get_connection()
-            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            query = self.supabase.table('restaurant_history')\
+                .select('*')\
+                .eq('user_id', user_id)\
+                .order('recommended_date', desc=True)\
+                .limit(limit)
 
             if city:
-                cursor.execute("""
-                    SELECT * FROM restaurant_history 
-                    WHERE user_id = %s AND city = %s
-                    ORDER BY recommended_date DESC
-                    LIMIT %s
-                """, (user_id, city, limit))
-            else:
-                cursor.execute("""
-                    SELECT * FROM restaurant_history 
-                    WHERE user_id = %s
-                    ORDER BY recommended_date DESC
-                    LIMIT %s
-                """, (user_id, limit))
+                query = query.eq('city', city)
 
-            results = cursor.fetchall()
-            cursor.close()
+            result = query.execute()
 
             # Convert to RestaurantMemory objects
             return [
                 RestaurantMemory(
                     restaurant_name=row['restaurant_name'],
                     city=row['city'],
-                    cuisine=row['cuisine'] or '',
-                    recommended_date=row['recommended_date'].isoformat() if row['recommended_date'] else '',
-                    user_feedback=row['user_feedback'],
-                    rating_given=float(row['rating_given']) if row['rating_given'] else None,
-                    notes=row['notes'],
-                    source=row['source'] or ''
+                    cuisine=row.get('cuisine', ''),
+                    recommended_date=row['recommended_date'] if row['recommended_date'] else '',
+                    user_feedback=row.get('user_feedback'),
+                    rating_given=float(row['rating_given']) if row.get('rating_given') else None,
+                    notes=row.get('notes'),
+                    source=row.get('source', '')
                 )
-                for row in results
+                for row in result.data
             ]
 
         except Exception as e:
             logger.error(f"Error getting restaurant history: {e}")
             return []
-        finally:
-            if conn:
-                self._return_connection(conn)
 
     async def add_restaurant_memory(
         self, 
@@ -239,41 +181,27 @@ class PostgresMemoryStore:
         restaurant_memory: RestaurantMemory
     ) -> bool:
         """Add a restaurant to user's history"""
-        conn = None
         try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
+            data = {
+                'user_id': user_id,
+                'restaurant_name': restaurant_memory.restaurant_name,
+                'city': restaurant_memory.city,
+                'cuisine': restaurant_memory.cuisine,
+                'user_feedback': restaurant_memory.user_feedback,
+                'rating_given': restaurant_memory.rating_given,
+                'notes': restaurant_memory.notes,
+                'source': restaurant_memory.source,
+                'recommended_date': datetime.now(timezone.utc).isoformat()
+            }
 
-            cursor.execute("""
-                INSERT INTO restaurant_history (
-                    user_id, restaurant_name, city, cuisine,
-                    user_feedback, rating_given, notes, source
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                user_id,
-                restaurant_memory.restaurant_name,
-                restaurant_memory.city,
-                restaurant_memory.cuisine,
-                restaurant_memory.user_feedback,
-                restaurant_memory.rating_given,
-                restaurant_memory.notes,
-                restaurant_memory.source
-            ))
-
-            conn.commit()
-            cursor.close()
+            self.supabase.table('restaurant_history').insert(data).execute()
 
             logger.info(f"✅ Added restaurant memory: {restaurant_memory.restaurant_name}")
             return True
 
         except Exception as e:
-            if conn:
-                conn.rollback()
             logger.error(f"Error adding restaurant memory: {e}")
             return False
-        finally:
-            if conn:
-                self._return_connection(conn)
 
     # =====================================================================
     # CONVERSATION PATTERNS (Procedural Memory)
@@ -281,27 +209,21 @@ class PostgresMemoryStore:
 
     async def get_conversation_patterns(self, user_id: int) -> ConversationPattern:
         """Get user's conversation patterns"""
-        conn = None
         try:
-            conn = self._get_connection()
-            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            result = self.supabase.table('conversation_patterns')\
+                .select('*')\
+                .eq('user_id', user_id)\
+                .maybe_single()\
+                .execute()
 
-            cursor.execute(
-                "SELECT * FROM conversation_patterns WHERE user_id = %s",
-                (user_id,)
-            )
-
-            result = cursor.fetchone()
-            cursor.close()
-
-            if result:
+            if result.data:
                 return ConversationPattern(
-                    user_communication_style=result['user_communication_style'],
-                    preferred_response_length=result['preferred_response_length'],
-                    likes_follow_up_questions=result['likes_follow_up_questions'],
-                    prefers_immediate_results=result['prefers_immediate_results'],
-                    timezone=result['timezone'],
-                    typical_search_times=result['typical_search_times'] or []
+                    user_communication_style=result.data.get('user_communication_style', 'casual'),
+                    preferred_response_length=result.data.get('preferred_response_length', 'medium'),
+                    likes_follow_up_questions=result.data.get('likes_follow_up_questions', True),
+                    prefers_immediate_results=result.data.get('prefers_immediate_results', True),
+                    timezone=result.data.get('timezone'),
+                    typical_search_times=result.data.get('typical_search_times', [])
                 )
             else:
                 # Return defaults
@@ -324,9 +246,6 @@ class PostgresMemoryStore:
                 timezone=None,
                 typical_search_times=[]
             )
-        finally:
-            if conn:
-                self._return_connection(conn)
 
     async def update_conversation_patterns(
         self, 
@@ -334,49 +253,29 @@ class PostgresMemoryStore:
         patterns: ConversationPattern
     ) -> bool:
         """Update user's conversation patterns"""
-        conn = None
         try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
+            data = {
+                'user_id': user_id,
+                'user_communication_style': patterns.user_communication_style,
+                'preferred_response_length': patterns.preferred_response_length,
+                'likes_follow_up_questions': patterns.likes_follow_up_questions,
+                'prefers_immediate_results': patterns.prefers_immediate_results,
+                'timezone': patterns.timezone,
+                'typical_search_times': patterns.typical_search_times,
+                'updated_at': datetime.now(timezone.utc).isoformat()
+            }
 
-            cursor.execute("""
-                INSERT INTO conversation_patterns (
-                    user_id, user_communication_style, preferred_response_length,
-                    likes_follow_up_questions, prefers_immediate_results,
-                    timezone, typical_search_times
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (user_id) DO UPDATE SET
-                    user_communication_style = EXCLUDED.user_communication_style,
-                    preferred_response_length = EXCLUDED.preferred_response_length,
-                    likes_follow_up_questions = EXCLUDED.likes_follow_up_questions,
-                    prefers_immediate_results = EXCLUDED.prefers_immediate_results,
-                    timezone = EXCLUDED.timezone,
-                    typical_search_times = EXCLUDED.typical_search_times,
-                    updated_at = NOW()
-            """, (
-                user_id,
-                patterns.user_communication_style,
-                patterns.preferred_response_length,
-                patterns.likes_follow_up_questions,
-                patterns.prefers_immediate_results,
-                patterns.timezone,
-                patterns.typical_search_times
-            ))
-
-            conn.commit()
-            cursor.close()
+            # Upsert
+            self.supabase.table('conversation_patterns')\
+                .upsert(data, on_conflict='user_id')\
+                .execute()
 
             logger.info(f"✅ Updated conversation patterns for user {user_id}")
             return True
 
         except Exception as e:
-            if conn:
-                conn.rollback()
             logger.error(f"Error updating conversation patterns: {e}")
             return False
-        finally:
-            if conn:
-                self._return_connection(conn)
 
     # =====================================================================
     # SESSION MEMORY (Short-term/Temporary)
@@ -388,31 +287,31 @@ class PostgresMemoryStore:
         thread_id: str
     ) -> Dict[str, Any]:
         """Get session-specific temporary data"""
-        conn = None
         try:
-            conn = self._get_connection()
-            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            result = self.supabase.table('session_memory')\
+                .select('session_data, expires_at')\
+                .eq('user_id', user_id)\
+                .eq('thread_id', thread_id)\
+                .maybe_single()\
+                .execute()
 
-            cursor.execute("""
-                SELECT session_data FROM session_memory 
-                WHERE user_id = %s AND thread_id = %s
-                AND (expires_at IS NULL OR expires_at > NOW())
-            """, (user_id, thread_id))
+            if result.data:
+                # Check if expired
+                expires_at = result.data.get('expires_at')
+                if expires_at:
+                    expires_dt = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+                    if expires_dt < datetime.now(timezone.utc):
+                        # Expired - delete and return empty
+                        await self._delete_session(user_id, thread_id)
+                        return {}
 
-            result = cursor.fetchone()
-            cursor.close()
-
-            if result:
-                return result['session_data'] or {}
+                return result.data.get('session_data', {})
             else:
                 return {}
 
         except Exception as e:
             logger.error(f"Error getting session data: {e}")
             return {}
-        finally:
-            if conn:
-                self._return_connection(conn)
 
     async def update_session_data(
         self, 
@@ -422,41 +321,40 @@ class PostgresMemoryStore:
         expire_hours: int = 24
     ) -> bool:
         """Update session-specific temporary data"""
-        conn = None
         try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-
             expires_at = datetime.now(timezone.utc) + timedelta(hours=expire_hours)
 
-            cursor.execute("""
-                INSERT INTO session_memory (
-                    user_id, thread_id, session_data, expires_at
-                ) VALUES (%s, %s, %s, %s)
-                ON CONFLICT (user_id, thread_id) DO UPDATE SET
-                    session_data = EXCLUDED.session_data,
-                    expires_at = EXCLUDED.expires_at,
-                    updated_at = NOW()
-            """, (
-                user_id,
-                thread_id,
-                Json(session_data),
-                expires_at
-            ))
+            data = {
+                'user_id': user_id,
+                'thread_id': thread_id,
+                'session_data': session_data,
+                'expires_at': expires_at.isoformat(),
+                'updated_at': datetime.now(timezone.utc).isoformat()
+            }
 
-            conn.commit()
-            cursor.close()
+            # Upsert
+            self.supabase.table('session_memory')\
+                .upsert(data, on_conflict='user_id,thread_id')\
+                .execute()
 
             return True
 
         except Exception as e:
-            if conn:
-                conn.rollback()
             logger.error(f"Error updating session data: {e}")
             return False
-        finally:
-            if conn:
-                self._return_connection(conn)
+
+    async def _delete_session(self, user_id: int, thread_id: str) -> bool:
+        """Delete a session"""
+        try:
+            self.supabase.table('session_memory')\
+                .delete()\
+                .eq('user_id', user_id)\
+                .eq('thread_id', thread_id)\
+                .execute()
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting session: {e}")
+            return False
 
     # =====================================================================
     # CLEANUP & MAINTENANCE
@@ -464,16 +362,16 @@ class PostgresMemoryStore:
 
     async def cleanup_expired_sessions(self) -> int:
         """Clean up expired session data"""
-        conn = None
         try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
+            # Delete sessions where expires_at < now
+            now = datetime.now(timezone.utc).isoformat()
 
-            cursor.execute("SELECT cleanup_expired_sessions()")
-            deleted_count = cursor.fetchone()[0]
+            result = self.supabase.table('session_memory')\
+                .delete()\
+                .lt('expires_at', now)\
+                .execute()
 
-            conn.commit()
-            cursor.close()
+            deleted_count = len(result.data) if result.data else 0
 
             if deleted_count > 0:
                 logger.info(f"🧹 Cleaned up {deleted_count} expired sessions")
@@ -483,21 +381,79 @@ class PostgresMemoryStore:
         except Exception as e:
             logger.error(f"Error cleaning up expired sessions: {e}")
             return 0
-        finally:
-            if conn:
-                self._return_connection(conn)
 
-    def close(self):
-        """Close all connections in the pool"""
-        if hasattr(self, 'pool') and self.pool:
-            self.pool.closeall()
-            logger.info("✅ Closed PostgreSQL connection pool")
+    # =====================================================================
+    # LANGGRAPH STORE COMPATIBILITY METHODS
+    # =====================================================================
+
+    async def aput(self, namespace: tuple, key: str, value: Dict[str, Any]) -> None:
+        """
+        LangGraph Store compatibility: Store data in namespace
+
+        This method provides compatibility with LangGraph's BaseStore interface
+        """
+        try:
+            # Convert namespace tuple to string
+            namespace_str = "_".join(str(x) for x in namespace)
+
+            # Store in a generic key-value table
+            data = {
+                'namespace': namespace_str,
+                'key': key,
+                'value': value,
+                'updated_at': datetime.now(timezone.utc).isoformat()
+            }
+
+            self.supabase.table('memory_store')\
+                .upsert(data, on_conflict='namespace,key')\
+                .execute()
+
+        except Exception as e:
+            logger.error(f"Error in aput: {e}")
+
+    async def aget(self, namespace: tuple, key: str) -> Optional[Dict[str, Any]]:
+        """
+        LangGraph Store compatibility: Get data from namespace
+        """
+        try:
+            namespace_str = "_".join(str(x) for x in namespace)
+
+            result = self.supabase.table('memory_store')\
+                .select('value')\
+                .eq('namespace', namespace_str)\
+                .eq('key', key)\
+                .maybe_single()\
+                .execute()
+
+            if result.data:
+                return result.data.get('value')
+            return None
+
+        except Exception as e:
+            logger.error(f"Error in aget: {e}")
+            return None
+
+    async def adelete(self, namespace: tuple, key: str) -> None:
+        """
+        LangGraph Store compatibility: Delete data from namespace
+        """
+        try:
+            namespace_str = "_".join(str(x) for x in namespace)
+
+            self.supabase.table('memory_store')\
+                .delete()\
+                .eq('namespace', namespace_str)\
+                .eq('key', key)\
+                .execute()
+
+        except Exception as e:
+            logger.error(f"Error in adelete: {e}")
 
 
 # =====================================================================
 # FACTORY FUNCTION
 # =====================================================================
 
-def create_supabase_memory_store(config) -> PostgresMemoryStore:
-    """Factory function to create Supabase memory store"""
-    return PostgresMemoryStore(config)
+def create_supabase_memory_store(config) -> SupabaseMemoryStore:
+    """Factory function to create Supabase memory store using REST API"""
+    return SupabaseMemoryStore(config)
