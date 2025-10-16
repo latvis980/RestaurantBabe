@@ -304,11 +304,17 @@ class UnifiedRestaurantAgent:
             if handoff.command == HandoffCommand.CONTINUE_CONVERSATION:
                 # Just conversation - no search
                 processing_time = round(time.time() - start_time, 2)
+
+                # ✅ NEW: Detect if AI requested GPS by checking reasoning
+                needs_gps = ('gps_required' in handoff.reasoning.lower() or 
+                             'gps coordinates' in handoff.reasoning.lower())
+
                 return {
                     "success": True,
                     "ai_response": handoff.conversation_response,
                     "action_taken": "conversation",
                     "search_triggered": False,
+                    "needs_location_button": needs_gps,  # ✅ NEW: Add this flag
                     "processing_time": processing_time,
                     "reasoning": handoff.reasoning
                 }
@@ -374,7 +380,7 @@ class UnifiedRestaurantAgent:
                     try:
                         # Check if confirmation_msg has message_id attribute
                         if hasattr(confirmation_msg, 'message_id'):
-                            telegram_bot.delete_message(chat_id, confirmation_msg.message_id)
+                            telegram_bot.delete_message(chat_id, confirmation_msg.message_id)  # type: ignore[attr-defined]
                             logger.info("✅ Deleted confirmation message")
                         else:
                             logger.warning("⚠️ Confirmation message object has no message_id attribute")
@@ -642,7 +648,7 @@ class UnifiedRestaurantAgent:
                 self._confirmation_ai = ChatOpenAI(
                     model=getattr(self.config, 'AI_MESSAGE_MODEL', 'gpt-4o-mini'),
                     temperature=0.7,
-                    max_tokens=80,  # Keep it short
+                    max_completion_tokens=80,  # Keep it short
                     api_key=self.config.OPENAI_API_KEY,
                     timeout=3  # 3 second timeout
                 )
@@ -999,7 +1005,7 @@ class UnifiedRestaurantAgent:
             is_hybrid = evaluation_results.get("evaluation_result", {}).get("hybrid_mode", False)
             database_restaurants_hybrid = evaluation_results.get("database_restaurants_hybrid", [])
 
-            logger.info(f"🔍 Evaluation complete:")
+            logger.info("🔍 Evaluation complete:")
             logger.info(f"   - Database sufficient: {evaluation_results.get('evaluation_result', {}).get('database_sufficient', False)}")
             logger.info(f"   - Hybrid mode: {is_hybrid}")
             logger.info(f"   - Hybrid restaurants preserved: {len(database_restaurants_hybrid)}")
@@ -1024,7 +1030,7 @@ class UnifiedRestaurantAgent:
 
             # Log if we're in hybrid mode
             if state.get("is_hybrid_mode"):
-                hybrid_count = len(state.get("database_restaurants_hybrid", []))
+                hybrid_count = len(state.get("database_restaurants_hybrid", []))  # type: ignore[arg-type]
                 logger.info(f"🔀 HYBRID MODE: Preserving {hybrid_count} database restaurants")
 
             query_analysis = state.get("query_analysis")
@@ -1110,7 +1116,7 @@ class UnifiedRestaurantAgent:
 
             # CRITICAL FIX: Determine which database restaurants to use
             is_hybrid = state.get("is_hybrid_mode", False)
-            evaluation_results = state.get("evaluation_results", {})
+            evaluation_results = state.get("evaluation_results") or {}
             database_sufficient = evaluation_results.get("evaluation_result", {}).get("database_sufficient", False)
 
             if database_sufficient:
@@ -1127,7 +1133,7 @@ class UnifiedRestaurantAgent:
             elif is_hybrid:
                 # Hybrid mode: use preserved hybrid restaurants
                 database_restaurants = state.get("database_restaurants_hybrid", [])
-                logger.info(f"🔀 HYBRID MODE: Using {len(database_restaurants)} preserved database restaurants")
+                logger.info(f"🔀 HYBRID MODE: Using {len(database_restaurants)} preserved database restaurants")  # type: ignore[arg-type]
 
             else:
                 # Web-only mode: no database restaurants
@@ -1137,7 +1143,7 @@ class UnifiedRestaurantAgent:
             scraped_results = state.get("scraped_results")
             cleaned_file_path = state.get("cleaned_file_path")
 
-            logger.info(f"📊 Sending to editor:")
+            logger.info("📊 Sending to editor:")
             logger.info(f"   - Database restaurants: {len(database_restaurants) if database_restaurants else 0}")
             logger.info(f"   - Scraped results: {len(scraped_results) if scraped_results else 0}")
             logger.info(f"   - Cleaned file: {cleaned_file_path}")
@@ -2033,7 +2039,7 @@ class UnifiedRestaurantAgent:
                 extracted_requirements = ctx.requirements or []
                 extracted_preferences = ctx.preferences or {}
 
-                logger.info(f"📦 Using AI-extracted preferences from SearchContext:")
+                logger.info("📦 Using AI-extracted preferences from SearchContext:")
                 logger.info(f"   Cuisine: {extracted_cuisine}")
                 logger.info(f"   Requirements: {extracted_requirements}")
                 logger.info(f"   Preferences: {extracted_preferences}")

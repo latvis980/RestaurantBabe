@@ -364,13 +364,11 @@ class AIChatLayer:
 
             # Handle GPS request
             if action == 'request_gps' or needs_gps:
-                logger.info(f"🎯 AI detected GPS-required search mode - requesting location button")
+                logger.info("🎯 AI detected GPS-required search mode - requesting location button")
                 return HandoffMessage(
-                    command=HandoffCommand.CONVERSATION,
+                    command=HandoffCommand.CONTINUE_CONVERSATION,
                     reasoning=decision.get('reasoning', 'GPS coordinates required'),
-                    conversation_response=decision.get('response_text', 'I\'d love to help you find restaurants near you!'),
-                    needs_location_button=True,
-                    user_query=user_message
+                    conversation_response=decision.get('response_text', 'I\'d love to help you find restaurants near you!')
                 )
 
             if action in ['chat_response', 'collect_info']:
@@ -385,7 +383,7 @@ class AIChatLayer:
                 session['last_search_time'] = time.time()
 
                 # Extract city from destination if this is a new city search
-                if search_mode == 'city_search' or (search_mode == 'neighborhood_search' and destination):
+                if destination and (search_mode == 'city_search' or search_mode == 'neighborhood_search'):
                     city = self._extract_city_from_destination(destination)
                     if city:
                         session['last_searched_city'] = city
