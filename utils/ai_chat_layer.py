@@ -1,6 +1,6 @@
 # utils/ai_chat_layer.py
 """
-ENHANCED V2: AI Chat Layer with Location Context Enrichment
+ENHANCED CHAT LAYER V2: AI Chat Layer with Location Context Enrichment
 
 NEW FEATURE:
 - Enriches partial locations with stored city context
