@@ -83,6 +83,24 @@ class AIChatLayer:
 
     Your job is to ACCUMULATE information across multiple turns and decide when you have enough to search.
 
+    CRITICAL: You must also determine the SEARCH MODE based on user intent.
+
+    SEARCH MODES:
+    1. GPS_REQUIRED - User wants restaurants near their physical location
+       - Examples: "near me", "nearby", "around me", "close to me", "in my area", "where I am"
+       - Requires: GPS coordinates
+       - Action: If no GPS provided, respond with needs_gps=true
+
+    2. CITY_SEARCH - User specifies a city/destination
+       - Examples: "in Tokyo", "Paris restaurants", "best sushi in NYC"
+       - Requires: City name
+       - Action: Normal destination collection
+
+    3. NEIGHBORHOOD_SEARCH - User specifies neighborhood without city
+       - Examples: "in SoHo", "Chinatown restaurants", "bars in Lapa"
+       - Requires: Neighborhood + city (may need clarification)
+       - Action: Collect or enrich with city context
+
     DIALOG STATE TRACKING:
     - You maintain an accumulated_state that builds across ALL turns
     - Each turn, you CRUD (Create/Read/Update/Delete) the state
@@ -95,37 +113,46 @@ class AIChatLayer:
         "cuisine": "specialty coffee",
         "requirements": ["specialty"],
         "preferences": {{}},
-        "is_complete": true
+        "search_mode": "gps_required" | "city_search" | "neighborhood_search",
+        "needs_gps": true | false,
+        "is_complete": true | false
     }}
 
-    EXAMPLES OF STATE ACCUMULATION:
+    CRITICAL RULES FOR GPS_REQUIRED MODE:
+    1. ALWAYS set search_mode="gps_required" when user indicates "near me" / "nearby" intent
+    2. ALWAYS set needs_gps=true if search_mode="gps_required" and no GPS coordinates provided
+    3. NEVER ask about stored cities when search_mode="gps_required"
+    4. IGNORE stored city context completely for GPS_REQUIRED mode
+    5. Even if you know user searched "Valencia" yesterday, if they say "near me" today, set needs_gps=true
 
-    Turn 1: "specialty coffee in Lapa"
+    EXAMPLES:
+
+    Turn 1: "specialty coffee near me"
     → {{
         "state_update": {{
-            "location_parts": ["Lapa"],
             "cuisine": "specialty coffee",
+            "search_mode": "gps_required",
+            "needs_gps": true,
             "is_complete": false
         }},
-        "action": "collect_info",
-        "response_text": "I can help with that! Could you tell me which city Lapa is in?",
-        "reasoning": "Need city to complete location. Added 'Lapa' to location_parts."
+        "action": "request_gps",
+        "response_text": "I'd love to help you find great specialty coffee near you!",
+        "reasoning": "User wants nearby results. Need GPS coordinates, not city name."
     }}
 
-    Turn 2: "Lisbon"
+    Turn 1: "restaurants around me"
     → {{
         "state_update": {{
-            "location_parts": ["Lapa", "Lisbon"],
-            "destination": "Lapa, Lisbon",
-            "cuisine": "specialty coffee",
-            "is_complete": true
+            "cuisine": "restaurants",
+            "search_mode": "gps_required",
+            "needs_gps": true,
+            "is_complete": false
         }},
-        "action": "trigger_search",
-        "response_text": "Perfect! I'll find specialty coffee in Lapa, Lisbon.",
-        "reasoning": "User provided city. Combined with neighborhood. State complete."
+        "action": "request_gps",
+        "response_text": "I'd love to help you find great restaurants near you!",
+        "reasoning": "User wants nearby results. Need GPS coordinates."
     }}
 
-    ALTERNATIVE: One-shot query
     Turn 1: "best ramen in Tokyo"
     → {{
         "state_update": {{
@@ -133,34 +160,77 @@ class AIChatLayer:
             "destination": "Tokyo",
             "cuisine": "ramen",
             "requirements": ["best"],
+            "search_mode": "city_search",
+            "needs_gps": false,
             "is_complete": true
         }},
         "action": "trigger_search",
         "response_text": "Great! Searching for the best ramen in Tokyo.",
-        "reasoning": "Complete info in first message. State immediately complete."
+        "reasoning": "Complete city search info. No GPS needed."
     }}
 
-    RESPONSE FORMAT:
+    Turn 1: "coffee in Lapa"
+    → {{
+        "state_update": {{
+            "location_parts": ["Lapa"],
+            "cuisine": "coffee",
+            "search_mode": "neighborhood_search",
+            "needs_gps": false,
+            "is_complete": false
+        }},
+        "action": "collect_info",
+        "response_text": "I can help with that! Which city is Lapa in?",
+        "reasoning": "Neighborhood specified but need city. Can enrich with stored city context if available."
+    }}
+
+    STORED CONTEXT USAGE:
+    - ONLY use stored city context for "neighborhood_search" mode
+    - NEVER use stored city context for "gps_required" mode
+    - For "city_search" mode, city is already specified
+
+    USER HAS STORED CITY "Valencia":
+    Turn 1: "coffee near me"
+    → {{
+        "search_mode": "gps_required",
+        "needs_gps": true,
+        "action": "request_gps"
+    }}
+    WRONG: "Are you in Valencia?"
+    CORRECT: Request GPS immediately
+
+    Turn 1: "coffee in Lapa" 
+    → {{
+        "search_mode": "neighborhood_search",
+        "location_parts": ["Lapa"],
+        "action": "collect_info",
+        "response_text": "I can help! Is Lapa in Lisbon?"
+    }}
+    CORRECT: Can use stored context to enrich
+
+    RESPONSE FORMAT (JSON only):
     {{
-        "action": "chat_response" | "collect_info" | "trigger_search",
+        "action": "chat_response" | "collect_info" | "request_gps" | "trigger_search",
         "response_text": "what to say",
         "state_update": {{
-            "location_parts": [...],  // ADD new location fragments
+            "location_parts": [...],
             "destination": "combined location" | null,
             "cuisine": "cuisine" | null,
             "requirements": [...],
             "preferences": {{}},
+            "search_mode": "gps_required" | "city_search" | "neighborhood_search" | null,
+            "needs_gps": true | false,
             "is_complete": true | false
         }},
-        "reasoning": "explain state changes"
+        "reasoning": "explain decision and search mode detection"
     }}
 
     RULES:
-    1. ALWAYS include state_update with ALL fields (even if unchanged)
-    2. ADD to location_parts, don't replace (accumulation!)
-    3. Set is_complete=true ONLY when you have enough to search
-    4. Can be ready in 1 turn OR 10 turns - YOU decide based on state
-    5. Don't ask for info already in accumulated_state
+    1. ALWAYS detect search_mode first based on user intent
+    2. ALWAYS include state_update with ALL fields
+    3. For GPS_REQUIRED: NEVER use stored city, ALWAYS request GPS if not provided
+    4. For NEIGHBORHOOD_SEARCH: CAN use stored city to enrich
+    5. For CITY_SEARCH: City already specified in query
+    6. Set is_complete=true ONLY when you have enough info for the detected search mode
     """),
         ("human", """CONVERSATION HISTORY:
     {conversation_history}
@@ -174,12 +244,15 @@ class AIChatLayer:
     - Last searched city: {last_searched_city}
     - Conversation state: {conversation_state}
 
+    GPS COORDINATES PROVIDED: {has_gps}
+
     USER MESSAGE: {user_message}
 
-    Analyze the message and determine action.""")
+    Analyze the message, detect search mode, and determine action.""")
         ])
 
         self.conversation_chain = self.conversation_prompt | self.llm
+
 
     async def process_message(
         self,
@@ -189,9 +262,9 @@ class AIChatLayer:
         thread_id: Optional[str] = None
     ) -> HandoffMessage:
         """
-        Process user message with context enrichment
+        Process user message with AI-detected search mode
 
-        Returns structured HandoffMessage with enriched location
+        Returns structured HandoffMessage based on AI decision
         """
         try:
             # Get or create session
@@ -217,7 +290,7 @@ class AIChatLayer:
 
             accumulated_state = session.get('accumulated_state', {})
 
-            # Prepare prompt variables
+            # Prepare prompt variables - INCLUDE GPS STATUS
             prompt_vars = {
                 'conversation_history': self._format_conversation_context(session),
                 'accumulated_state': json.dumps(accumulated_state, indent=2),
@@ -225,6 +298,7 @@ class AIChatLayer:
                 'current_cuisine': session.get('current_cuisine') or 'None',
                 'last_searched_city': session.get('last_searched_city') or 'None',
                 'conversation_state': current_state_value,
+                'has_gps': 'Yes' if gps_coordinates else 'No',  # NEW: Tell AI if we have GPS
                 'user_message': user_message
             }
 
@@ -248,7 +322,7 @@ class AIChatLayer:
                     reasoning="JSON parse error - using fallback"
                 )
 
-            logger.info(f"🤖 AI Decision: {decision.get('action')} - {decision.get('reasoning')}")
+            logger.info(f"🤖 AI Decision: {decision.get('action')} - Search mode: {decision.get('state_update', {}).get('search_mode')} - {decision.get('reasoning')}")
 
             # UPDATE ACCUMULATED STATE
             state_update = decision.get('state_update', {})
@@ -257,25 +331,18 @@ class AIChatLayer:
                 session['accumulated_state'] = accumulated_state
                 logger.info(f"📊 Updated state: {accumulated_state}")
 
-            # Extract info from accumulated state (not decision)
+            # Extract info from accumulated state
             destination = accumulated_state.get('destination') or session.get('current_destination')
             cuisine = accumulated_state.get('cuisine') or session.get('current_cuisine')
             is_complete = accumulated_state.get('is_complete', False)
             requirements = accumulated_state.get('requirements', [])
             preferences = accumulated_state.get('preferences', {})
-            is_new_destination = decision.get('is_new_destination', False)
+            search_mode = accumulated_state.get('search_mode')
+            needs_gps = accumulated_state.get('needs_gps', False)
 
             # Update session
             session['current_destination'] = destination
             session['current_cuisine'] = cuisine
-
-            # ENHANCED: Extract and store city for context enrichment
-            if destination and is_new_destination:
-                # Extract city from destination for future enrichment
-                city = self._extract_city_from_destination(destination)
-                if city:
-                    session['last_searched_city'] = city
-                    logger.info(f"💾 Stored city context for user {user_id}: {city}")
 
             # Update state
             new_state_str = decision.get('new_state', 'greeting')
@@ -292,11 +359,19 @@ class AIChatLayer:
                     'timestamp': time.time()
                 })
 
-            # Update collected info
-            self._update_collected_info(session, destination, cuisine, requirements, preferences)
-
             # Route by action
             action = decision.get('action')
+
+            # Handle GPS request
+            if action == 'request_gps' or needs_gps:
+                logger.info(f"🎯 AI detected GPS-required search mode - requesting location button")
+                return HandoffMessage(
+                    command=HandoffCommand.CONVERSATION,
+                    reasoning=decision.get('reasoning', 'GPS coordinates required'),
+                    conversation_response=decision.get('response_text', 'I\'d love to help you find restaurants near you!'),
+                    needs_location_button=True,
+                    user_query=user_message
+                )
 
             if action in ['chat_response', 'collect_info']:
                 # Continue conversation
@@ -309,13 +384,20 @@ class AIChatLayer:
                 # Track search time
                 session['last_search_time'] = time.time()
 
-                # Determine search type hint
-                search_type_hint = (
-                    SearchType.LOCATION_SEARCH if gps_coordinates
-                    else SearchType.CITY_SEARCH
-                )
+                # Extract city from destination if this is a new city search
+                if search_mode == 'city_search' or (search_mode == 'neighborhood_search' and destination):
+                    city = self._extract_city_from_destination(destination)
+                    if city:
+                        session['last_searched_city'] = city
+                        logger.info(f"💾 Stored city context for user {user_id}: {city}")
 
-                # Create search handoff with enriched location
+                # Determine search type hint based on AI-detected mode
+                if search_mode == 'gps_required':
+                    search_type_hint = SearchType.LOCATION_SEARCH
+                else:
+                    search_type_hint = SearchType.CITY_SEARCH
+
+                # Create search handoff
                 return create_search_handoff(
                     destination=destination or "unknown",
                     cuisine=cuisine,
@@ -326,8 +408,8 @@ class AIChatLayer:
                     gps_coordinates=gps_coordinates,
                     requirements=requirements,
                     preferences=preferences,
-                    clear_previous=is_new_destination,
-                    is_new_destination=is_new_destination,
+                    clear_previous=False,
+                    is_new_destination=False,
                     reasoning=decision.get('reasoning', '')
                 )
 
@@ -344,6 +426,7 @@ class AIChatLayer:
                 response="I'd be happy to help you find restaurants. What are you looking for?",
                 reasoning=f"Error: {str(e)}"
             )
+
 
     def _extract_city_from_destination(self, destination: str) -> Optional[str]:
         """
