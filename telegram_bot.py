@@ -136,138 +136,6 @@ def remove_location_button():
     """Remove reply keyboard"""
     return telebot.types.ReplyKeyboardRemove()
 
-def determine_search_type(conversation_context: str, action_taken: str) -> str:
-    """
-    Determine search type based on conversation context and AI action
-    """
-    try:
-        # Check action from AI Chat Layer
-        if action_taken == "trigger_city_search":
-            return "city_wide"
-        elif action_taken == "trigger_location_search":
-            return "location_based"
-
-        # Fallback: analyze conversation context
-        context_lower = conversation_context.lower()
-
-        location_indicators = [
-            "around", "near", "close to", "in the area", "nearby", 
-            "chiado", "bairro alto", "príncipe real", "cais do sodré",
-            "here", "vicinity", "my location"
-        ]
-
-        city_indicators = [
-            "best", "top", "favorite", "recommended", "must try",
-            "in lisbon", "in porto", "in madrid", "in barcelona",
-            "city", "downtown", "famous"
-        ]
-
-        if any(indicator in context_lower for indicator in location_indicators):
-            logger.info(f"🗺️ Detected location-based search")
-            return "location_based"
-
-        if any(indicator in context_lower for indicator in city_indicators):
-            logger.info(f"🏙️ Detected city-wide search")
-            return "city_wide"
-
-        # Default based on length
-        return "location_based" if len(context_lower.split()) > 8 else "city_wide"
-
-    except Exception as e:
-        logger.warning(f"Error determining search type: {e}")
-        return "city_wide"
-
-def generate_search_message(search_query: str, search_type: str) -> str:
-    """Generate AI-powered search message"""
-    global ai_message_generator
-
-    if not ai_message_generator:
-        # Fallback messages
-        if search_type == "city_wide":
-            return ("<b>I'm searching for the best restaurants for you.</b>\n\n"
-                    "This might take a minute while I check my curated collection and consult with my foodie network.")
-        else:
-            return ("<b>Great! I'm searching for amazing restaurants in that area.</b>\n\n"
-                    "Give me a moment to check my local guides and reach out to my contacts in the vicinity.")
-
-    try:
-        prompt = f"""Generate a short, enthusiastic search message for a restaurant bot. 
-
-Search type: {search_type}
-User query: {search_query}
-
-Requirements:
-- 1-2 sentences max
-- Enthusiastic but not over the top
-- Mention that it might take a moment
-- Use HTML formatting with <b> tags
-- Match the personality of a knowledgeable foodie assistant
-
-Example:
-<b>Perfect! I'm searching for amazing sushi spots in Chiado.</b>
-
-Let me check my local network and curated recommendations."""
-
-        response = ai_message_generator.invoke([HumanMessage(content=prompt)])
-        ai_message = response.content.strip()
-
-        if not ai_message.startswith('<b>'):
-            ai_message = f"<b>{ai_message}</b>"
-
-        return ai_message
-
-    except Exception as e:
-        logger.warning(f"AI message generation failed: {e}")
-        if search_type == "city_wide":
-            return ("<b>I'm searching for the best restaurants for you.</b>\n\n"
-                    "This might take a minute while I check my curated collection.")
-        else:
-            return ("<b>Great! I'm searching for amazing restaurants in that area.</b>\n\n"
-                    "Give me a moment to check my local guides.")
-
-def send_search_message_with_video(chat_id: int, search_query: str, search_type: str) -> Optional[telebot.types.Message]:
-    """
-    Send search message with appropriate video
-    """
-    try:
-        ai_message = generate_search_message(search_query, search_type)
-
-        if search_type == "city_wide":
-            video_path = 'media/searching.mp4'
-            fallback_emoji = "🔍"
-        else:
-            video_path = 'media/vicinity_search.mp4'
-            fallback_emoji = "📍"
-
-        try:
-            if os.path.exists(video_path):
-                with open(video_path, 'rb') as video:
-                    return bot.send_video(
-                        chat_id,
-                        video,
-                        caption=f"{fallback_emoji} {ai_message}",
-                        parse_mode='HTML'
-                    )
-            else:
-                logger.warning(f"Video file not found: {video_path}")
-                raise FileNotFoundError("Video not available")
-
-        except Exception as video_error:
-            logger.warning(f"Could not send video: {video_error}")
-            return bot.send_message(
-                chat_id,
-                f"{fallback_emoji} {ai_message}",
-                parse_mode='HTML'
-            )
-
-    except Exception as e:
-        logger.error(f"Error sending search message: {e}")
-        return bot.send_message(
-            chat_id,
-            "🔍 <b>Searching for restaurants...</b>\n\nThis might take a moment.",
-            parse_mode='HTML'
-        )
-
 def split_message_for_telegram(message: str, max_length: int = 4096) -> List[str]:
     """Split long messages for Telegram's character limit"""
     if len(message) <= max_length:
@@ -411,7 +279,7 @@ async def process_user_message(
         reasoning = result.get("reasoning", "No reasoning provided")
 
         if search_triggered:
-            restaurants_count = len(result.get("final_restaurants", []))
+            restaurants_count = result.get("restaurant_count", 0)
             logger.info(f"✅ Search completed in {processing_time}s - Found {restaurants_count} restaurants")
         else:
             logger.info(f"✅ Conversation continued in {processing_time}s - Action: {action_taken}")
