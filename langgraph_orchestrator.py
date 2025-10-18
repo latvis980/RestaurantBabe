@@ -1978,27 +1978,54 @@ class UnifiedRestaurantAgent:
         return response
 
     async def handle_human_decision(self, thread_id: str, decision: str) -> Dict[str, Any]:
-        """Handle human-in-the-loop decision - ASYNC version"""
+        """
+        Handle human-in-the-loop decision - ASYNC version
+
+        FIXED: Properly continues from paused checkpoint instead of restarting graph
+
+        When resuming a location search with "let's find more", this now correctly
+        continues from location_human_decision -> location_maps_search instead of
+        looping back to location_geocode -> location_search_database.
+        """
         try:
             logger.info(f"🤔 Human decision: {decision}")
 
             config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+
+            # Get the checkpoint to verify it exists
             checkpoint_tuple = self.checkpointer.get_tuple(config)
 
-            if checkpoint_tuple and checkpoint_tuple.checkpoint:
-                channel_values = checkpoint_tuple.checkpoint.get("channel_values", {})
-                current_state = dict(channel_values)
-                current_state["human_decision_result"] = decision
-                current_state["human_decision_pending"] = False
-
-                result = await self.graph.ainvoke(cast(UnifiedSearchState, current_state), config)
-                return result
-            else:
+            if not checkpoint_tuple or not checkpoint_tuple.checkpoint:
                 logger.error("No conversation state found for thread_id")
                 return {"success": False, "error_message": "No conversation found"}
 
+            # Extract current state from checkpoint
+            channel_values = checkpoint_tuple.checkpoint.get("channel_values", {})
+            current_state = dict(channel_values)
+
+            # Update state with human decision
+            current_state["human_decision_result"] = decision
+            current_state["human_decision_pending"] = False
+
+            logger.info(f"📍 Current step before resume: {current_state.get('current_step')}")
+            logger.info(f"🔄 Resuming graph from checkpoint with decision: {decision}")
+
+            # CRITICAL FIX: Use astream() with None input to continue from checkpoint
+            # This tells LangGraph to continue from the last paused node instead of restarting
+            final_state = None
+            async for event in self.graph.astream(None, config, stream_mode="values"):
+                final_state = event
+                logger.debug(f"📊 Stream event - current_step: {event.get('current_step')}")
+
+            if final_state:
+                logger.info(f"✅ Graph completed at step: {final_state.get('current_step')}")
+                return final_state
+            else:
+                logger.error("No final state from graph stream")
+                return {"success": False, "error_message": "Graph execution failed"}
+
         except Exception as e:
-            logger.error(f"❌ Error handling human decision: {e}")
+            logger.error(f"❌ Error handling human decision: {e}", exc_info=True)
             return {"success": False, "error_message": f"Decision handling failed: {str(e)}"}
 
     async def filter_already_recommended(
