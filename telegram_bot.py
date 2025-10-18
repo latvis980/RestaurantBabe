@@ -279,8 +279,21 @@ async def process_user_message(
         reasoning = result.get("reasoning", "No reasoning provided")
 
         if search_triggered:
-            restaurants_count = result.get("restaurant_count", 0)
+            # FIXED: Read restaurant_count from the nested search_result dict
+            search_result = result.get("search_result", {})
+
+            # Try to get restaurant_count from search_result
+            if search_result:
+                restaurants_count = search_result.get("restaurant_count", 0)
+                # Fallback: count from final_restaurants if restaurant_count not set
+                if restaurants_count == 0 and search_result.get("final_restaurants"):
+                    restaurants_count = len(search_result["final_restaurants"])
+            else:
+                # Last resort: try top-level (shouldn't happen but just in case)
+                restaurants_count = result.get("restaurant_count", 0)
+
             logger.info(f"✅ Search completed in {processing_time}s - Found {restaurants_count} restaurants")
+        
         else:
             logger.info(f"✅ Conversation continued in {processing_time}s - Action: {action_taken}")
             logger.info(f"🤖 AI Reasoning: {reasoning}")

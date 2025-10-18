@@ -1557,7 +1557,7 @@ class UnifiedRestaurantAgent:
             else:
                 # Format database-only results
                 results = state.get("filtered_results", {})
-                restaurants_list = results.get("restaurants", []) if results else []
+                restaurants_list = results.get("filtered_restaurants", []) if results else []
                 formatted_result = self.location_formatter.format_database_results(
                     restaurants=restaurants_list,
                     query=query,
