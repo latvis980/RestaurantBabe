@@ -852,9 +852,22 @@ class UnifiedRestaurantAgent:
         return "needs_search"
 
     def _route_after_filtering(self, state: UnifiedSearchState) -> str:
+        """Route after filtering: check if database results are sufficient or need Google Maps enhancement"""
         filtered_results = state.get("filtered_results")
-        if filtered_results and filtered_results.get("enhancement_needed"):
+
+        if not filtered_results:
+            logger.warning("⚠️ No filtered_results in state, routing to Google Maps")
             return "needs_enhancement"
+
+        # Check database_sufficient flag from filter_evaluator
+        database_sufficient = filtered_results.get("database_sufficient", False)
+        filtered_restaurants = filtered_results.get("filtered_restaurants", [])
+
+        if not database_sufficient or len(filtered_restaurants) == 0:
+            logger.info(f"🗺️ Database insufficient ({len(filtered_restaurants)} results) - routing to Google Maps search")
+            return "needs_enhancement"
+
+        logger.info(f"✅ Database sufficient ({len(filtered_restaurants)} results) - sending directly to user")
         return "sufficient"
 
     def _route_after_human_decision(self, state: UnifiedSearchState) -> str:
