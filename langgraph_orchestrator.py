@@ -1523,7 +1523,7 @@ class UnifiedRestaurantAgent:
 
     @traceable(name="location_format_results")
     def _location_format_results(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """CORRECTED: Use LocationTelegramFormatter.format_database_results() and format_google_maps_results()"""
+        """Format location search results for telegram"""
         try:
             logger.info("📝 Location Results Formatting")
 
@@ -1554,10 +1554,14 @@ class UnifiedRestaurantAgent:
                 formatted_message = formatted_result.get("message", "")
                 restaurants = restaurants_list
 
+            # FIX: Extract restaurant_count from formatted_result
+            restaurant_count = formatted_result.get("restaurant_count", len(restaurants))
+
             return {
                 **state,
                 "formatted_message": formatted_message,
                 "final_restaurants": restaurants,
+                "restaurant_count": restaurant_count,  # ADD THIS LINE
                 "success": True,
                 "current_step": "location_results_formatted"
             }
