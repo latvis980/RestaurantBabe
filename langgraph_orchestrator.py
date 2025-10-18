@@ -337,8 +337,8 @@ class UnifiedRestaurantAgent:
                 logger.info(f"   Decision: {decision}")
 
                 try:
-                    # Use existing handle_human_decision method
-                    result = self.handle_human_decision(resume_thread_id, decision)
+                    # Use existing handle_human_decision method (ASYNC)
+                    result = await self.handle_human_decision(resume_thread_id, decision)
 
                     # Add processing time
                     processing_time = round(time.time() - start_time, 2)
@@ -1977,8 +1977,8 @@ class UnifiedRestaurantAgent:
 
         return response
 
-    def handle_human_decision(self, thread_id: str, decision: str) -> Dict[str, Any]:
-        """Handle human-in-the-loop decision"""
+    async def handle_human_decision(self, thread_id: str, decision: str) -> Dict[str, Any]:
+        """Handle human-in-the-loop decision - ASYNC version"""
         try:
             logger.info(f"🤔 Human decision: {decision}")
 
@@ -1991,7 +1991,7 @@ class UnifiedRestaurantAgent:
                 current_state["human_decision_result"] = decision
                 current_state["human_decision_pending"] = False
 
-                result = self.graph.invoke(cast(UnifiedSearchState, current_state), config)
+                result = await self.graph.ainvoke(cast(UnifiedSearchState, current_state), config)
                 return result
             else:
                 logger.error("No conversation state found for thread_id")
