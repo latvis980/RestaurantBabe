@@ -410,22 +410,27 @@ class AIChatLayer:
                 # ====================================================================
                 # NEW: Check if this is a "more results" request - RESUME graph
                 # ====================================================================
+                # When resuming
                 if search_mode == 'follow_up_more_results':
-                    logger.info("🔄 Detected follow-up more results request - resuming graph")
+                    # Get the ORIGINAL search thread_id
+                    original_thread_id = session.get('last_search_thread_id')
 
-                    # Import the resume handoff creator
-                    from utils.handoff_protocol import create_resume_handoff
+                    if not original_thread_id:
+                        return create_conversation_handoff(
+                            response="I couldn't find your previous search...",
+                            reasoning="Missing original thread_id"
+                        )
 
                     return create_resume_handoff(
-                        thread_id=thread_id,
-                        decision="accept",
-                        reasoning="User requested more results - resuming paused graph execution"
+                        thread_id=original_thread_id,  # Use ORIGINAL, not current!
+                        decision="accept"
                     )
 
                 # ====================================================================
                 # Regular NEW SEARCH - track search time
                 # ====================================================================
                 session['last_search_time'] = time.time()
+                session['last_search_thread_id'] = thread_id
 
                 # Extract city from destination if this is a new city search
                 if destination and (search_mode == 'city_search' or search_mode == 'neighborhood_search'):
@@ -547,7 +552,8 @@ class AIChatLayer:
                 'current_cuisine': None,
                 'last_searched_city': None,
                 'gps_coordinates': None,
-                'last_search_time': None
+                'last_search_time': None,
+                'last_search_thread_id': None
             }
         return self.user_sessions[user_id]
 
