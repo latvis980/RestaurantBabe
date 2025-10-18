@@ -925,9 +925,28 @@ class UnifiedRestaurantAgent:
     async def _detect_search_flow(self, state: UnifiedSearchState) -> Dict[str, Any]:
         """
         FIXED: AI-powered flow detection using LocationAnalyzer
+        UPDATED: Skip detection when resuming (search_flow already set)
+
+        This method determines whether to route to:
+        - city_search: City-wide search pipeline
+        - location_search: GPS/location-based search pipeline
+
+        On resume (when user says "let's find more"), it preserves the original flow
+        instead of re-detecting, ensuring location searches stay in location pipeline.
         """
         try:
-            logger.info("🔍 Flow Detection")
+            # ====================================================================
+            # NEW: Check if we're resuming - search_flow already set in state
+            # ====================================================================
+            existing_flow = state.get("search_flow")
+            if existing_flow and existing_flow in ["city_search", "location_search"]:
+                logger.info(f"🔄 Resuming with existing flow: {existing_flow} (skipping detection)")
+                return {**state, "current_step": "flow_detected"}
+
+            # ====================================================================
+            # NEW SEARCH: Detect flow
+            # ====================================================================
+            logger.info("🔍 Flow Detection (new search)")
 
             has_coordinates = bool(state.get("gps_coordinates"))
             has_location_data = bool(state.get("location_data"))
