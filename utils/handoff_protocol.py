@@ -24,6 +24,7 @@ class HandoffCommand(Enum):
     """Commands from supervisor to workers"""
     EXECUTE_SEARCH = "execute_search"
     CONTINUE_CONVERSATION = "continue_conversation"
+    RESUME_WITH_DECISION = "resume_with_decision"
 
 
 @dataclass
@@ -85,12 +86,14 @@ class HandoffMessage:
     This is the structured message format that replaces raw query strings
     """
     command: HandoffCommand
+    reasoning: str
+    conversation_response: Optional[str] = None
     search_context: Optional[SearchContext] = None
-    conversation_response: Optional[str] = None  # If command is CONTINUE_CONVERSATION
+    decision: Optional[str] = None  # NEW: For RESUME_WITH_DECISION ("accept" or "skip")
+    thread_id: Optional[str] = None  # NEW: Thread to resume
 
     # Metadata
     timestamp: float = 0.0
-    reasoning: str = ""  # Why supervisor made this decision
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -194,6 +197,28 @@ def create_conversation_handoff(response: str, reasoning: str = "") -> HandoffMe
         reasoning=reasoning
     )
 
+def create_resume_handoff(
+    thread_id: str,
+    decision: str = "accept",
+    reasoning: str = "Resuming graph execution with user decision"
+) -> HandoffMessage:
+    """
+    Create a handoff to resume paused graph execution
+
+    Args:
+        thread_id: Thread ID of the paused graph
+        decision: "accept" or "skip"
+        reasoning: Explanation
+
+    Returns:
+        HandoffMessage with RESUME_WITH_DECISION command
+    """
+    return HandoffMessage(
+        command=HandoffCommand.RESUME_WITH_DECISION,
+        reasoning=reasoning,
+        decision=decision,
+        thread_id=thread_id
+    )
 
 # =============================================================================
 # EXAMPLE USAGE

@@ -259,7 +259,7 @@ class UnifiedRestaurantAgent:
 
         This is the main entry point that:
         1. Gets structured handoff from AI Chat Layer
-        2. Routes by command (conversation vs search)
+        2. Routes by command (conversation vs search vs resume)
         3. Sends video confirmation for searches
         4. Executes search with structured context
 
@@ -301,11 +301,15 @@ class UnifiedRestaurantAgent:
             logger.info(f"📝 Reasoning: {handoff.reasoning}")
 
             # 2. Route by command
+
+            # ================================================================
+            # COMMAND 1: CONTINUE_CONVERSATION (no search needed)
+            # ================================================================
             if handoff.command == HandoffCommand.CONTINUE_CONVERSATION:
                 # Just conversation - no search
                 processing_time = round(time.time() - start_time, 2)
 
-                # ✅ NEW: Detect if AI requested GPS by checking reasoning
+                # Detect if AI requested GPS by checking reasoning
                 needs_gps = ('gps_required' in handoff.reasoning.lower() or 
                              'gps coordinates' in handoff.reasoning.lower())
 
@@ -314,11 +318,53 @@ class UnifiedRestaurantAgent:
                     "ai_response": handoff.conversation_response,
                     "action_taken": "conversation",
                     "search_triggered": False,
-                    "needs_location_button": needs_gps,  # ✅ NEW: Add this flag
+                    "needs_location_button": needs_gps,
                     "processing_time": processing_time,
                     "reasoning": handoff.reasoning
                 }
 
+            # ================================================================
+            # COMMAND 2: RESUME_WITH_DECISION (resume paused graph)
+            # ================================================================
+            elif handoff.command == HandoffCommand.RESUME_WITH_DECISION:
+                # User wants to resume paused graph execution (e.g., "let's find more")
+                logger.info("🔄 Resuming paused graph execution")
+
+                decision = handoff.decision or "accept"
+                resume_thread_id = handoff.thread_id or thread_id
+
+                logger.info(f"   Thread ID: {resume_thread_id}")
+                logger.info(f"   Decision: {decision}")
+
+                try:
+                    # Use existing handle_human_decision method
+                    result = self.handle_human_decision(resume_thread_id, decision)
+
+                    # Add processing time
+                    processing_time = round(time.time() - start_time, 2)
+                    result["processing_time"] = processing_time
+                    result["action_taken"] = "resume_graph"
+                    result["resumed_with_decision"] = decision
+
+                    logger.info(f"✅ Graph resumed successfully in {processing_time}s")
+
+                    return result
+
+                except Exception as resume_error:
+                    logger.error(f"❌ Error resuming graph: {resume_error}")
+
+                    processing_time = round(time.time() - start_time, 2)
+                    return {
+                        "success": False,
+                        "error_message": f"Failed to resume: {str(resume_error)}",
+                        "ai_response": "I had trouble continuing the search. Could you try again?",
+                        "processing_time": processing_time,
+                        "reasoning": f"Resume error: {str(resume_error)}"
+                    }
+
+            # ================================================================
+            # COMMAND 3: EXECUTE_SEARCH (start new search)
+            # ================================================================
             elif handoff.command == HandoffCommand.EXECUTE_SEARCH:
                 # Type guard: Ensure search_context exists
                 search_ctx = handoff.search_context
@@ -329,63 +375,56 @@ class UnifiedRestaurantAgent:
                     return {
                         "success": False,
                         "error_message": "No search context in handoff",
-                        "ai_response": "I encountered an error processing your search. Please try again.",
+                        "ai_response": "I encountered an error processing your search.",
                         "search_triggered": False,
                         "processing_time": processing_time
                     }
 
-                # Now safe to access search_ctx properties
-                logger.info("🚀 Search Context:")
-                logger.info(f"   📍 Destination: {search_ctx.destination}")
-                logger.info(f"   🍽️  Cuisine: {search_ctx.cuisine}")
-                logger.info(f"   🔍 Type: {search_ctx.search_type.value}")
-                logger.info(f"   🧹 Clear previous: {search_ctx.clear_previous_context}")
-                logger.info(f"   🆕 New destination: {search_ctx.is_new_destination}")
+                logger.info("🔍 EXECUTE_SEARCH command received")
+                logger.info(f"   Destination: {search_ctx.destination}")
+                logger.info(f"   Cuisine: {search_ctx.cuisine}")
+                logger.info(f"   Type: {search_ctx.search_type.value}")
 
-                # Send confirmation WITH VIDEO
-                confirmation_msg = None
-                if telegram_bot and chat_id:
-                    confirmation_msg = await self._send_search_confirmation(
-                        telegram_bot, chat_id, search_ctx
-                    )
-
-                # Clear context if signaled
-                if search_ctx.clear_previous_context:
-                    logger.info("🧹 Clearing previous search context as requested")
-                    # Add your context clearing logic here if needed
-                    # For example: self.clear_user_context(user_id)
-
-                # Build query from context
+                # Build search query from context
                 search_query = self._build_search_query_from_context(search_ctx)
 
-                # Execute search with structured context
-                try:
-                    search_result = await self.search_restaurants(
-                        query=search_query,
-                        user_id=user_id,
-                        gps_coordinates=search_ctx.gps_coordinates,
-                        thread_id=thread_id,
-                        search_context=search_ctx
-                    )
-                except Exception as search_error:
-                    logger.error(f"❌ Search execution failed: {search_error}")
-                    search_result = {
-                        "success": False,
-                        "error_message": str(search_error),
-                        "final_restaurants": []
-                    }
+                # Extract GPS coordinates from context if available
+                search_gps = search_ctx.gps_coordinates or gps_coordinates
 
-                # 🔧 FIX: Delete confirmation message with proper type checking
-                if confirmation_msg is not None and telegram_bot and chat_id:
+                # Send confirmation message with video
+                confirmation_msg = None
+                if telegram_bot and chat_id:
                     try:
-                        # Check if confirmation_msg has message_id attribute
+                        confirmation_msg = self._send_search_confirmation_message(
+                            telegram_bot=telegram_bot,
+                            chat_id=chat_id,
+                            search_query=search_query,
+                            search_type=search_ctx.search_type.value
+                        )
+                    except Exception as conf_error:
+                        logger.warning(f"⚠️ Could not send confirmation: {conf_error}")
+
+                # Execute the search
+                logger.info(f"🚀 Executing search: '{search_query}'")
+
+                search_result = await self.search_restaurants(
+                    query=search_query,
+                    user_id=user_id,
+                    gps_coordinates=search_gps,
+                    thread_id=thread_id,
+                    search_context=search_ctx
+                )
+
+                # Delete confirmation message after search completes
+                if confirmation_msg and telegram_bot and chat_id:
+                    try:
                         if hasattr(confirmation_msg, 'message_id'):
-                            telegram_bot.delete_message(chat_id, confirmation_msg.message_id)  # type: ignore[attr-defined]
+                            telegram_bot.delete_message(chat_id, confirmation_msg.message_id)
                             logger.info("✅ Deleted confirmation message")
                         else:
-                            logger.warning("⚠️ Confirmation message object has no message_id attribute")
+                            logger.warning("⚠️ Confirmation message has no message_id")
                     except Exception as delete_error:
-                        logger.warning(f"⚠️ Could not delete confirmation message: {delete_error}")
+                        logger.warning(f"⚠️ Could not delete confirmation: {delete_error}")
 
                 # Add processing time and return
                 processing_time = round(time.time() - start_time, 2)
@@ -395,9 +434,11 @@ class UnifiedRestaurantAgent:
 
                 return search_result
 
+            # ================================================================
+            # UNKNOWN COMMAND (fallback)
+            # ================================================================
             else:
-                # Unknown command
-                logger.warning(f"Unknown handoff command: {handoff.command}")
+                logger.warning(f"❌ Unknown handoff command: {handoff.command}")
                 processing_time = round(time.time() - start_time, 2)
                 return {
                     "success": False,

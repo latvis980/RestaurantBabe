@@ -91,12 +91,18 @@ class AIChatLayer:
        - Requires: GPS coordinates
        - Action: If no GPS provided, respond with needs_gps=true
 
-    2. CITY_SEARCH - User specifies a city/destination
+    2. FOLLOW_UP_MORE_RESULTS - User asks for more after seeing initial results
+       - Examples: "show more", "let's find more", "more options", "other places", "find more"
+       - Context: User recently got database results, wants Google Maps enhancement
+       - Requires: Nothing - graph state has coordinates
+       - Action: Set search_mode="follow_up_more_results", is_complete=true, trigger resume
+
+    3. CITY_SEARCH - User specifies a city/destination
        - Examples: "in Tokyo", "Paris restaurants", "best sushi in NYC"
        - Requires: City name
        - Action: Normal destination collection
 
-    3. NEIGHBORHOOD_SEARCH - User specifies neighborhood without city
+    4. NEIGHBORHOOD_SEARCH - User specifies neighborhood without city
        - Examples: "in SoHo", "Chinatown restaurants", "bars in Lapa"
        - Requires: Neighborhood + city (may need clarification)
        - Action: Collect or enrich with city context
@@ -151,6 +157,28 @@ class AIChatLayer:
         "action": "request_gps",
         "response_text": "I'd love to help you find great restaurants near you!",
         "reasoning": "User wants nearby results. Need GPS coordinates."
+    }}
+
+    After showing database results, user says: "Let's find more"
+    → {{
+        "state_update": {{
+            "search_mode": "follow_up_more_results",
+            "is_complete": true
+        }},
+        "action": "trigger_search",
+        "response_text": "Perfect! I'll find more restaurants for you...",
+        "reasoning": "User wants more results. Resume graph execution with accept decision."
+    }}
+
+    After showing database results, user says: "show me other options"
+    → {{
+        "state_update": {{
+            "search_mode": "follow_up_more_results",
+            "is_complete": true
+        }},
+        "action": "trigger_search",
+        "response_text": "Great! Searching for more options...",
+        "reasoning": "Follow-up request for more results. Resume with Google Maps search."
     }}
 
     Turn 1: "best ramen in Tokyo"
