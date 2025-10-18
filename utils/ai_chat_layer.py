@@ -22,7 +22,7 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from utils.handoff_protocol import (
     HandoffMessage, SearchContext, SearchType, HandoffCommand,
-    create_search_handoff, create_conversation_handoff
+    create_search_handoff, create_conversation_handoff, create_resume_handoff
 )
 
 logger = logging.getLogger(__name__)
@@ -407,7 +407,24 @@ class AIChatLayer:
                 )
 
             elif action == 'trigger_search' and is_complete:
-                # Track search time
+                # ====================================================================
+                # NEW: Check if this is a "more results" request - RESUME graph
+                # ====================================================================
+                if search_mode == 'follow_up_more_results':
+                    logger.info("🔄 Detected follow-up more results request - resuming graph")
+
+                    # Import the resume handoff creator
+                    from utils.handoff_protocol import create_resume_handoff
+
+                    return create_resume_handoff(
+                        thread_id=thread_id,
+                        decision="accept",
+                        reasoning="User requested more results - resuming paused graph execution"
+                    )
+
+                # ====================================================================
+                # Regular NEW SEARCH - track search time
+                # ====================================================================
                 session['last_search_time'] = time.time()
 
                 # Extract city from destination if this is a new city search
