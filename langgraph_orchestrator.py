@@ -1740,7 +1740,7 @@ class UnifiedRestaurantAgent:
             logger.info("🤔 Location Human Decision")
 
             # Check if we have sufficient database results
-            filtered_results = state.get("filtered_results", {})
+            filtered_results = state.get("filtered_results", {}) or {}  # Ensure it's a dict, not None
             database_sufficient = filtered_results.get("database_sufficient", False)
             filtered_restaurants = filtered_results.get("filtered_restaurants", [])
 
@@ -1847,7 +1847,7 @@ class UnifiedRestaurantAgent:
 
             # Check if we're showing database results (before any Maps search)
             database_results_shown = state.get("database_results_shown", False)
-            filtered_results = state.get("filtered_results", {})
+            filtered_results = state.get("filtered_results", {}) or {} 
 
             if database_results_shown:
                 # Format database results with "more results available" hint
