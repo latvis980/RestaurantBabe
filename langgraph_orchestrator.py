@@ -302,12 +302,11 @@ class UnifiedRestaurantAgent:
         # ═══════════════════════════════════════════════════════════════════════
 
         # Path 1: Database results shown → END (session stored for follow-up)
-        graph.add_edge("location_format_database_results", END)
+        graph.add_edge("location_format_results", END)
 
         # Path 2: Maps search → verification → format → END (session cleared)
         graph.add_edge("location_maps_search", "location_media_verification")
         graph.add_edge("location_media_verification", "location_format_results")
-        graph.add_edge("location_format_results", END)
 
         # ═══════════════════════════════════════════════════════════════════════
         # COMPILE GRAPH
