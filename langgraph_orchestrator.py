@@ -22,13 +22,12 @@ CORRECTED METHOD NAMES FROM PROJECT FILES:
 import logging
 import asyncio
 import time
-from typing import TypedDict, Optional, Any, List, Dict, Tuple, cast
+from typing import TypedDict, Optional, Any, List, Dict, Tuple
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langsmith import traceable
 from datetime import datetime, timezone
-from collections import Counter
 
 from utils.async_utils import sync_to_async
 from utils.ai_memory_system import AIMemorySystem, RestaurantMemory, ConversationState
@@ -60,6 +59,8 @@ from utils.ai_chat_layer import AIChatLayer
 from formatters.telegram_formatter import TelegramFormatter
 from formatters.location_telegram_formatter import LocationTelegramFormatter
 
+from dataclasses import dataclass, field
+
 logger = logging.getLogger(__name__)
 
 class UnifiedSearchState(TypedDict, total=False):
@@ -70,15 +71,17 @@ class UnifiedSearchState(TypedDict, total=False):
     user_id: Optional[int]
     gps_coordinates: Optional[Tuple[float, float]]
     location_data: Optional[Any]
-    search_context: Optional[SearchContext]  # NEW: Structured handoff context
+    search_context: Optional[SearchContext]
 
     # Flow control
     search_flow: str
     current_step: str
-    human_decision_pending: bool
-    human_decision_result: Optional[str]
 
-    # City search pipeline data
+    skip_database: bool                      # Skip database, go direct to Maps
+    exclude_restaurant_ids: List[str]        # Previously shown IDs to exclude
+    is_follow_up_search: bool                # Flag for follow-up Maps request
+
+    # City search pipeline data (unchanged)
     query_analysis: Optional[Dict[str, Any]]
     destination: Optional[str]
     database_results: Optional[Dict[str, Any]]
@@ -87,24 +90,64 @@ class UnifiedSearchState(TypedDict, total=False):
     scraped_results: Optional[List[Dict[str, Any]]]
     cleaned_file_path: Optional[str]
     edited_results: Optional[Dict[str, Any]]
+    database_restaurants_hybrid: Optional[List[Dict[str, Any]]]
+    is_hybrid_mode: bool
 
-    # CRITICAL FIX: Separate tracking for hybrid mode
-    database_restaurants_hybrid: Optional[List[Dict[str, Any]]]  # Preserved DB results for hybrid
-    is_hybrid_mode: bool  # Flag to indicate hybrid mode
-
-    # Location search pipeline data
+    # Location search pipeline data (unchanged)
     location_coordinates: Optional[Tuple[float, float]]
     proximity_results: Optional[Dict[str, Any]]
     filtered_results: Optional[Dict[str, Any]]
     maps_results: Optional[Dict[str, Any]]
     media_verification_results: Optional[Dict[str, Any]]
 
-    # Output
+    # Output (unchanged)
     final_restaurants: List[Dict[str, Any]]
     formatted_message: Optional[str]
     success: bool
     error_message: Optional[str]
     processing_time: Optional[float]
+
+@dataclass
+class LocationSearchSession:
+    """Session state for location-based searches - enables follow-up requests"""
+    user_id: int
+    query: str                                    # "specialty coffee near me"
+    coordinates: Tuple[float, float]              # (38.7119, -9.1596)
+
+    # Results tracking
+    database_results_shown: bool = False
+    maps_results_shown: bool = False
+    last_shown_restaurant_ids: List[str] = field(default_factory=list)
+    last_shown_count: int = 0
+
+    # Metadata
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    can_request_more: bool = True
+    search_exhausted: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for storage"""
+        return {
+            'user_id': self.user_id,
+            'query': self.query,
+            'coordinates': self.coordinates,
+            'database_results_shown': self.database_results_shown,
+            'maps_results_shown': self.maps_results_shown,
+            'last_shown_restaurant_ids': self.last_shown_restaurant_ids,
+            'last_shown_count': self.last_shown_count,
+            'timestamp': self.timestamp.isoformat(),
+            'can_request_more': self.can_request_more,
+            'search_exhausted': self.search_exhausted
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'LocationSearchSession':
+        """Create from dictionary"""
+        data = data.copy()
+        if isinstance(data.get('timestamp'), str):
+            data['timestamp'] = datetime.fromisoformat(data['timestamp'])
+        return cls(**data)
+
 
 class UnifiedRestaurantAgent:
     """Unified LangGraph agent with ALL correct method names"""
@@ -141,6 +184,7 @@ class UnifiedRestaurantAgent:
     def _init_location_search_agents(self):
         """Initialize location search agents"""
         self.location_utils = LocationUtils()
+        self.location_search_sessions: Dict[int, LocationSearchSession] = {}
         self.location_analyzer = LocationAnalyzer(self.config)
         self.location_database_service = LocationDatabaseService(self.config)
         self.location_filter_evaluator = LocationFilterEvaluator(self.config)
@@ -158,8 +202,14 @@ class UnifiedRestaurantAgent:
         """Build the unified LangGraph with flow routing"""
         graph = StateGraph(UnifiedSearchState)
 
-        # Add nodes
+        # ═══════════════════════════════════════════════════════════════════════
+        # ADD ALL NODES
+        # ═══════════════════════════════════════════════════════════════════════
+
+        # Flow detection
         graph.add_node("detect_flow", self._detect_search_flow)
+
+        # City search nodes
         graph.add_node("city_analyze_query", self._city_analyze_query)
         graph.add_node("city_search_database", self._city_search_database)
         graph.add_node("city_evaluate_content", self._city_evaluate_content)
@@ -169,32 +219,50 @@ class UnifiedRestaurantAgent:
         graph.add_node("city_edit_content", self._city_edit_content)
         graph.add_node("city_follow_up_search", self._city_follow_up_search)
         graph.add_node("city_format_results", self._city_format_results)
+
+        # Location search nodes - UPDATED
         graph.add_node("location_geocode", self._location_geocode)
         graph.add_node("location_search_database", self._location_search_database)
         graph.add_node("location_filter_results", self._location_filter_results)
-        graph.add_node("location_human_decision", self._location_human_decision)
         graph.add_node("location_maps_search", self._location_maps_search)
         graph.add_node("location_media_verification", self._location_media_verification)
         graph.add_node("location_format_results", self._location_format_results)
 
-        # Set entry point
+        # ═══════════════════════════════════════════════════════════════════════
+        # SET ENTRY POINT
+        # ═══════════════════════════════════════════════════════════════════════
+
         graph.set_entry_point("detect_flow")
 
-        # Add routing edges
+        # ═══════════════════════════════════════════════════════════════════════
+        # MAIN FLOW ROUTING (detect_flow splits to city vs location)
+        # ═══════════════════════════════════════════════════════════════════════
+
         graph.add_conditional_edges(
             "detect_flow",
             self._route_by_flow,
-            {"city_search": "city_analyze_query", "location_search": "location_geocode"}
+            {
+                "city_search": "city_analyze_query",
+                "location_search": "location_geocode"
+            }
         )
 
-        # City search flow
+        # ═══════════════════════════════════════════════════════════════════════
+        # CITY SEARCH FLOW (unchanged from original)
+        # ═══════════════════════════════════════════════════════════════════════
+
         graph.add_edge("city_analyze_query", "city_search_database")
         graph.add_edge("city_search_database", "city_evaluate_content")
+
         graph.add_conditional_edges(
             "city_evaluate_content",
             self._route_after_evaluation,
-            {"sufficient": "city_edit_content", "needs_search": "city_web_search"}
+            {
+                "sufficient": "city_edit_content",
+                "needs_search": "city_web_search"
+            }
         )
+
         graph.add_edge("city_web_search", "city_scrape_content")
         graph.add_edge("city_scrape_content", "city_clean_content")
         graph.add_edge("city_clean_content", "city_edit_content")
@@ -202,22 +270,48 @@ class UnifiedRestaurantAgent:
         graph.add_edge("city_follow_up_search", "city_format_results")
         graph.add_edge("city_format_results", END)
 
-        # Location search flow
-        graph.add_edge("location_geocode", "location_search_database")
+        # ═══════════════════════════════════════════════════════════════════════
+        # LOCATION SEARCH FLOW - COMPLETELY REDESIGNED
+        # ═══════════════════════════════════════════════════════════════════════
+
+        # After geocoding, check if this is a follow-up request (skip database)
+        graph.add_conditional_edges(
+            "location_geocode",
+            self._route_after_geocode,
+            {
+                "database_search": "location_search_database",  # Normal: search database first
+                "maps_direct": "location_maps_search"           # Follow-up: skip database, go to Maps
+            }
+        )
+
+        # Database search always goes to filtering
         graph.add_edge("location_search_database", "location_filter_results")
+
+        # After filtering, decide based on result count
         graph.add_conditional_edges(
             "location_filter_results",
             self._route_after_filtering,
-            {"sufficient": "location_format_results", "needs_enhancement": "location_human_decision"}
+            {
+                "format_database": "location_format_results",  # >0 results: show them
+                "continue_to_maps": "location_maps_search"     # 0 results: auto-continue to Maps
+            }
         )
-        graph.add_conditional_edges(
-            "location_human_decision",
-            self._route_after_human_decision,
-            {"accept": "location_maps_search", "skip": "location_format_results"}
-        )
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # TWO SEPARATE ENDING PATHS
+        # ═══════════════════════════════════════════════════════════════════════
+
+        # Path 1: Database results shown → END (session stored for follow-up)
+        graph.add_edge("location_format_database_results", END)
+
+        # Path 2: Maps search → verification → format → END (session cleared)
         graph.add_edge("location_maps_search", "location_media_verification")
         graph.add_edge("location_media_verification", "location_format_results")
         graph.add_edge("location_format_results", END)
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # COMPILE GRAPH
+        # ═══════════════════════════════════════════════════════════════════════
 
         return graph.compile(checkpointer=self.checkpointer)
 
@@ -418,8 +512,15 @@ class UnifiedRestaurantAgent:
                 # Delete confirmation message after search completes
                 if confirmation_msg and telegram_bot and chat_id:
                     try:
+                        # Handle both Telegram Message object (has .message_id) and dict (has ['message_id'])
+                        msg_id = None
                         if hasattr(confirmation_msg, 'message_id'):
-                            telegram_bot.delete_message(chat_id, confirmation_msg.message_id)
+                            msg_id = confirmation_msg.message_id
+                        elif isinstance(confirmation_msg, dict) and 'message_id' in confirmation_msg:
+                            msg_id = confirmation_msg['message_id']
+
+                        if msg_id:
+                            telegram_bot.delete_message(chat_id, msg_id)
                             logger.info("✅ Deleted confirmation message")
                         else:
                             logger.warning("⚠️ Confirmation message has no message_id")
@@ -458,6 +559,84 @@ class UnifiedRestaurantAgent:
                 "search_triggered": False,
                 "processing_time": processing_time
             }
+
+    async def _store_location_search_session(
+        self,
+        user_id: int,
+        query: str,
+        coordinates: Tuple[float, float],
+        database_results_shown: bool = False,
+        maps_results_shown: bool = False,
+        last_shown_restaurant_ids: Optional[List[str]] = None,
+        last_shown_count: int = 0,
+        can_request_more: bool = True
+    ) -> bool:
+        """Store location search session for follow-up requests"""
+        try:
+            session = LocationSearchSession(
+                user_id=user_id,
+                query=query,
+                coordinates=coordinates,
+                database_results_shown=database_results_shown,
+                maps_results_shown=maps_results_shown,
+                last_shown_restaurant_ids=last_shown_restaurant_ids or [],
+                last_shown_count=last_shown_count,
+                can_request_more=can_request_more
+            )
+
+            self.location_search_sessions[user_id] = session
+
+            logger.info(f"💾 Stored location search session for user {user_id}")
+            logger.info(f"   Query: '{query}'")
+            logger.info(f"   Coordinates: {coordinates}")
+            logger.info(f"   Shown IDs: {len(last_shown_restaurant_ids or [])}")
+            logger.info(f"   Can request more: {can_request_more}")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Error storing location search session: {e}")
+            return False
+
+    def _load_location_search_session(self, user_id: int) -> Optional[LocationSearchSession]:
+        """Load location search session for follow-up requests"""
+        try:
+            session = self.location_search_sessions.get(user_id)
+
+            if session:
+                # Check if session is still valid (within last 30 minutes)
+                age = (datetime.now(timezone.utc) - session.timestamp).total_seconds()
+                if age > 1800:  # 30 minutes
+                    logger.info(f"⏰ Location search session expired for user {user_id}")
+                    del self.location_search_sessions[user_id]
+                    return None
+
+                logger.info(f"📂 Loaded location search session for user {user_id}")
+                logger.info(f"   Query: '{session.query}'")
+                logger.info(f"   Coordinates: {session.coordinates}")
+                logger.info(f"   Can request more: {session.can_request_more}")
+
+                return session
+
+            logger.info(f"ℹ️ No location search session found for user {user_id}")
+            return None
+
+        except Exception as e:
+            logger.error(f"❌ Error loading location search session: {e}")
+            return None
+
+    def _clear_location_search_session(self, user_id: int) -> bool:
+        """Clear location search session (e.g., after Maps results shown)"""
+        try:
+            if user_id in self.location_search_sessions:
+                del self.location_search_sessions[user_id]
+                logger.info(f"🗑️ Cleared location search session for user {user_id}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"❌ Error clearing location search session: {e}")
+            return False
+
 
     """
     HELPER METHOD - Build search query from structured context:
@@ -679,7 +858,6 @@ class UnifiedRestaurantAgent:
             AI-generated message or None if failed
         """
         try:
-            import asyncio
             from concurrent.futures import ThreadPoolExecutor, TimeoutError
             from langchain_openai import ChatOpenAI
             from langchain_core.messages import HumanMessage
@@ -893,23 +1071,50 @@ class UnifiedRestaurantAgent:
         return "needs_search"
 
     def _route_after_filtering(self, state: UnifiedSearchState) -> str:
-        """Route after filtering: check if database results are sufficient or need Google Maps enhancement"""
+        """
+        Route after filtering: ALWAYS go to human_decision for location searches
+
+        CRITICAL CHANGE: We now ALWAYS pause at human_decision, even when database
+        results are sufficient. This allows users to request more results via Maps.
+
+        The human_decision node will:
+        - If database results are good → show them, but graph stays paused for "more results"
+        - If database results are poor → automatically trigger Maps search
+        """
         filtered_results = state.get("filtered_results")
 
         if not filtered_results:
-            logger.warning("⚠️ No filtered_results in state, routing to Google Maps")
+            logger.warning("⚠️ No filtered_results in state, routing to human decision")
             return "needs_enhancement"
 
         # Check database_sufficient flag from filter_evaluator
         database_sufficient = filtered_results.get("database_sufficient", False)
         filtered_restaurants = filtered_results.get("filtered_restaurants", [])
 
-        if not database_sufficient or len(filtered_restaurants) == 0:
-            logger.info(f"🗺️ Database insufficient ({len(filtered_restaurants)} results) - routing to Google Maps search")
-            return "needs_enhancement"
+        if database_sufficient and len(filtered_restaurants) > 0:
+            logger.info(f"✅ Database sufficient ({len(filtered_restaurants)} results) - routing to human decision (will show results and wait)")
+        else:
+            logger.info(f"🗺️ Database insufficient ({len(filtered_restaurants)} results) - routing to human decision (will trigger Maps)")
 
-        logger.info(f"✅ Database sufficient ({len(filtered_restaurants)} results) - sending directly to user")
-        return "sufficient"
+        # ALWAYS go to human_decision - this is the key fix!
+        return "needs_enhancement"
+
+    def _route_after_geocode(self, state: UnifiedSearchState) -> str:
+        """
+        Route after geocoding - check if this is a follow-up Maps request
+
+        Logic:
+        - skip_database=True → maps_direct (follow-up request, bypass database)
+        - skip_database=False → database_search (normal flow)
+        """
+        skip_database = state.get("skip_database", False)
+
+        if skip_database:
+            logger.info("🗺️ Skipping database - direct to Google Maps (follow-up request)")
+            return "maps_direct"
+        else:
+            logger.info("🗃️ Normal flow - searching database first")
+            return "database_search"
 
     def _route_after_human_decision(self, state: UnifiedSearchState) -> str:
         if state.get("human_decision_pending", False):
@@ -1524,13 +1729,48 @@ class UnifiedRestaurantAgent:
 
     @traceable(name="location_human_decision")
     def _location_human_decision(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """Human decision handler"""
+        """
+        Human decision handler - ENHANCED to handle database-sufficient results
+
+        NEW BEHAVIOR:
+        - If database results are sufficient: Set flag to show them, but stay paused
+        - If database results are insufficient: Automatically accept and trigger Maps
+        """
         try:
             logger.info("🤔 Location Human Decision")
-            return {**state, "human_decision_pending": True, "current_step": "human_decision_pending"}
+
+            # Check if we have sufficient database results
+            filtered_results = state.get("filtered_results", {})
+            database_sufficient = filtered_results.get("database_sufficient", False)
+            filtered_restaurants = filtered_results.get("filtered_restaurants", [])
+
+            if database_sufficient and len(filtered_restaurants) > 0:
+                # We have good database results - show them but PAUSE for potential "more results" request
+                logger.info(f"✅ Database results are sufficient - showing {len(filtered_restaurants)} results and pausing")
+                logger.info("   User can say 'let's find more' to trigger Google Maps search")
+
+                return {
+                    **state,
+                    "human_decision_pending": True,  # PAUSE here!
+                    "database_results_shown": True,  # Flag that we showed database results
+                    "current_step": "human_decision_pending"
+                }
+            else:
+                # Database results insufficient - automatically trigger Maps without pausing
+                logger.info("🗺️ Database insufficient - automatically triggering Maps search (no pause)")
+
+                return {
+                    **state,
+                    "human_decision_pending": False,  # Don't pause - go straight to Maps
+                    "human_decision_result": "accept",  # Auto-accept Maps search
+                    "database_results_shown": False,
+                    "current_step": "auto_triggering_maps"
+                }
+
         except Exception as e:
             logger.error(f"❌ Error in location human decision: {e}")
             return {**state, "error_message": f"Human decision setup failed: {str(e)}", "success": False}
+
 
     @traceable(name="location_maps_search")
     def _location_maps_search(self, state: UnifiedSearchState) -> Dict[str, Any]:
@@ -1595,52 +1835,84 @@ class UnifiedRestaurantAgent:
 
 
     @traceable(name="location_format_results")
-    def _location_format_results(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """Format location search results for telegram"""
+    async def _location_format_results(self, state: UnifiedSearchState) -> Dict[str, Any]:
+        """
+        Format final location results - ENHANCED to show database results first if available
+
+        NEW: If we have database_results_shown flag, format database results and
+        indicate to user they can request more via Maps
+        """
         try:
-            logger.info("📝 Location Results Formatting")
+            logger.info("📊 Location Format Results")
 
-            query = state.get("query", "restaurant")
-            location_description = f"Location search: {query}"
+            # Check if we're showing database results (before any Maps search)
+            database_results_shown = state.get("database_results_shown", False)
+            filtered_results = state.get("filtered_results", {})
 
-            if state.get("media_verification_results"):
-                # Format Google Maps + verification results
-                results = state["media_verification_results"]
-                venues = results if isinstance(results, list) else (results.get("restaurants", []) if results else [])
-                formatted_result = self.location_formatter.format_google_maps_results(
-                    venues=venues,
+            if database_results_shown:
+                # Format database results with "more results available" hint
+                logger.info("📋 Formatting DATABASE results (user can request Maps search)")
+
+                filtered_restaurants = filtered_results.get("filtered_restaurants", [])
+                query = state.get("query", "restaurants")
+
+                formatted = self.location_formatter.format_database_results(
+                    restaurants=filtered_restaurants,  # Changed from venues to restaurants
                     query=query,
-                    location_description=location_description
+                    location_description=f"GPS search: {query}",
+                    offer_more_search=True  # Changed from show_more_option to offer_more_search
                 )
-                formatted_message = formatted_result.get("message", "")
-                restaurants = venues
+
+                return {
+                    **state,
+                    "formatted_message": formatted.get("message", ""),
+                    "final_restaurants": filtered_restaurants,
+                    "success": True,
+                    "current_step": "database_results_formatted"  # Different from final END state
+                }
+
+            # Otherwise, format Maps results (after user requested more)
+            logger.info("📋 Formatting MAPS results (user requested more options)")
+
+            maps_results = state.get("maps_results", {})
+            media_results = state.get("media_verification_results", {})
+
+            # Use Maps results if available, otherwise fallback
+            if maps_results and maps_results.get("restaurants"):
+                restaurants = maps_results["restaurants"]
+            elif media_results and media_results.get("restaurants"):
+                restaurants = media_results["restaurants"]
+            elif filtered_results and filtered_results.get("filtered_restaurants"):
+                restaurants = filtered_results["filtered_restaurants"]
             else:
-                # Format database-only results
-                results = state.get("filtered_results", {})
-                restaurants_list = results.get("filtered_restaurants", []) if results else []
-                formatted_result = self.location_formatter.format_database_results(
-                    restaurants=restaurants_list,
-                    query=query,
-                    location_description=location_description,
-                    offer_more_search=True
-                )
-                formatted_message = formatted_result.get("message", "")
-                restaurants = restaurants_list
+                return {
+                    **state,
+                    "formatted_message": "😔 No results found.",
+                    "final_restaurants": [],
+                    "success": False,
+                    "current_step": "location_results_formatted"
+                }
 
-            # FIX: Extract restaurant_count from formatted_result
-            restaurant_count = formatted_result.get("restaurant_count", len(restaurants))
+            query = state.get("query", "restaurants")
+
+            formatted = self.location_formatter.format_google_maps_results(
+                venues=restaurants,
+                query=query,
+                location_description=f"GPS search: {query}"
+            )
 
             return {
                 **state,
-                "formatted_message": formatted_message,
+                "formatted_message": formatted.get("message", ""),
                 "final_restaurants": restaurants,
-                "restaurant_count": restaurant_count,  # ADD THIS LINE
                 "success": True,
-                "current_step": "location_results_formatted"
+                "current_step": "location_results_formatted"  # Final END state
             }
+
         except Exception as e:
-            logger.error(f"❌ Error in location results formatting: {e}")
-            return {**state, "error_message": f"Location results formatting failed: {str(e)}", "success": False}
+            logger.error(f"❌ Error in location formatting: {e}")
+            return {**state, "error_message": f"Location formatting failed: {str(e)}", "success": False}
+
 
     # ============================================================================
     # PUBLIC API
@@ -1714,8 +1986,6 @@ class UnifiedRestaurantAgent:
                 "search_context": search_context,  # Pass structured context
                 "search_flow": "",
                 "current_step": "initialized",
-                "human_decision_pending": False,
-                "human_decision_result": None,
                 "query_analysis": None,
                 "destination": None,
                 "database_results": None,
