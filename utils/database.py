@@ -398,33 +398,70 @@ class Database:
     # ============ GEOCODING HELPER ============
 
     def geocode_address(self, address: str) -> Optional[Tuple[float, float]]:
-        """Geocode an address to get coordinates - SIMPLIFIED and SAFE"""
+        """Geocode using Nominatim with Google Maps API fallback"""
         try:
-            if not self.geocoder or not address:
-                logger.warning("Geocoder not available or empty address")
+            if not address:
+                logger.warning("Empty address provided")
                 return None
 
-            # Simple, safe geocoding - remove timeout parameter to avoid type issues
-            location = self.geocoder.geocode(address)
+            logger.info(f"🌍 Attempting to geocode: '{address}'")
 
-            # Handle the result safely
-            if location:
-                # Extract coordinates with explicit type checking
-                lat = getattr(location, 'latitude', None)
-                lng = getattr(location, 'longitude', None)
+            # ============ STEP 1: Try Nominatim (free) ============
+            if self.geocoder:
+                try:
+                    location = self.geocoder.geocode(address)
 
-                if lat is not None and lng is not None:
-                    try:
-                        return (float(lat), float(lng))
-                    except (ValueError, TypeError):
-                        logger.warning(f"Invalid coordinate values: lat={lat}, lng={lng}")
-                        return None
+                    if location:
+                        lat = getattr(location, 'latitude', None)
+                        lng = getattr(location, 'longitude', None)
 
-            logger.debug(f"No geocoding result for: {address}")
-            return None
+                        if lat is not None and lng is not None:
+                            coords = (float(lat), float(lng))
+                            logger.info(f"✅ Nominatim geocoded '{address}' to: {coords[0]:.4f}, {coords[1]:.4f}")
+                            return coords
+
+                    logger.warning(f"⚠️ Nominatim returned no result for: '{address}'")
+                except Exception as nom_error:
+                    logger.warning(f"⚠️ Nominatim error for '{address}': {nom_error}")
+
+            # ============ STEP 2: Fallback to Google Maps API ============
+            
+            logger.info(f"🌍 Falling back to Google Maps API for: '{address}'")
+
+            # Get API key from config
+            google_api_key = getattr(self.config, 'GOOGLE_MAPS_API_KEY', None)
+
+            if not google_api_key:
+                logger.error("❌ No Google Maps API key configured")
+                return None
+
+            # Call Google Maps Geocoding API
+            import requests
+            google_url = "https://maps.googleapis.com/maps/api/geocode/json"
+            params = {
+                'address': address,
+                'key': google_api_key
+            }
+
+            response = requests.get(google_url, params=params, timeout=10)
+
+            if response.status_code == 200:
+                data = response.json()
+
+                if data.get('status') == 'OK' and data.get('results'):
+                    location = data['results'][0]['geometry']['location']
+                    coords = (float(location['lat']), float(location['lng']))
+                    logger.info(f"✅ Google Maps geocoded '{address}' to: {coords[0]:.4f}, {coords[1]:.4f}")
+                    return coords
+                else:
+                    logger.error(f"❌ Google Maps API error: {data.get('status')}")
+                    return None
+            else:
+                logger.error(f"❌ Google Maps API request failed: {response.status_code}")
+                return None
 
         except Exception as e:
-            logger.error(f"Error geocoding address '{address}': {e}")
+            logger.error(f"❌ Error geocoding address '{address}': {e}")
             return None
 
 # ============ GLOBAL DATABASE INSTANCE ============
