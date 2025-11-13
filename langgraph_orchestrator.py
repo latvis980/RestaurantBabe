@@ -1795,7 +1795,7 @@ class UnifiedRestaurantAgent:
 
     @traceable(name="location_media_verification")
     def _location_media_verification(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """FIXED: Properly handle async verify_venues_media_coverage()"""
+        """FIXED: Combine Maps results with media verification data"""
         try:
             logger.info("📱 Location Media Verification")
 
@@ -1803,8 +1803,7 @@ class UnifiedRestaurantAgent:
             if not maps_results:
                 raise ValueError("No maps results available for verification")
 
-            # FIXED: maps_results is now a list of VenueSearchResult objects, not a dict
-            # The async method returns a list directly
+            # FIXED: maps_results is a list of VenueSearchResult objects
             venues = maps_results if isinstance(maps_results, list) else []
             query = state.get("query", "")
 
@@ -1824,9 +1823,60 @@ class UnifiedRestaurantAgent:
                 )
             )
 
-            return {**state, "media_verification_results": verification_results, "current_step": "location_media_verified"}
+            # CRITICAL FIX: Merge media verification data BACK into the original venue objects
+            # Create a lookup of verification results by venue name
+            verification_lookup = {}
+            for ver_result in verification_results:
+                venue_name = getattr(ver_result, 'venue_name', '').lower()
+                if venue_name:
+                    verification_lookup[venue_name] = ver_result
+
+            # Enhance original venues with media verification data
+            enhanced_venues = []
+            for venue in venues:
+                # Get venue name for lookup
+                venue_name = getattr(venue, 'name', '').lower()
+
+                # Find matching verification result
+                ver_result = verification_lookup.get(venue_name)
+
+                # Create enhanced venue dict with ALL original venue data + media data
+                enhanced_venue = {
+                    # Original VenueSearchResult fields
+                    'name': getattr(venue, 'name', 'Unknown'),
+                    'address': getattr(venue, 'address', 'Address not available'),
+                    'place_id': getattr(venue, 'place_id', ''),
+                    'latitude': getattr(venue, 'latitude', 0.0),
+                    'longitude': getattr(venue, 'longitude', 0.0),
+                    'distance_km': getattr(venue, 'distance_km', 0.0),
+                    'rating': getattr(venue, 'rating', None),
+                    'user_ratings_total': getattr(venue, 'user_ratings_total', 0),
+                    'business_status': getattr(venue, 'business_status', 'OPERATIONAL'),
+                    'google_maps_url': getattr(venue, 'google_maps_url', ''),
+
+                    # Media verification fields (if available)
+                    'media_verified': bool(ver_result and ver_result.has_professional_coverage) if ver_result else False,
+                    'has_media_coverage': bool(ver_result and ver_result.has_professional_coverage) if ver_result else False,
+                    'media_coverage_score': getattr(ver_result, 'media_coverage_score', 0.0) if ver_result else 0.0,
+                    'professional_sources': getattr(ver_result, 'professional_sources', []) if ver_result else [],
+                    'sources': getattr(ver_result, 'professional_sources', []) if ver_result else [],
+                    'description': '',  # Will be filled by AI editor if needed
+                }
+
+                enhanced_venues.append(enhanced_venue)
+
+            logger.info(f"✅ Enhanced {len(enhanced_venues)} venues with media verification data")
+
+            return {
+                **state,
+                "media_verification_results": enhanced_venues,  # Now these are complete venue dicts!
+                "current_step": "location_media_verified"
+            }
+
         except Exception as e:
             logger.error(f"❌ Error in location media verification: {e}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
             return {**state, "error_message": f"Location media verification failed: {str(e)}", "success": False}
 
 
