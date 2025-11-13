@@ -1105,19 +1105,17 @@ class UnifiedRestaurantAgent:
     @traceable(name="detect_search_flow")
     async def _detect_search_flow(self, state: UnifiedSearchState) -> Dict[str, Any]:
         """
-        FIXED: AI-powered flow detection using LocationAnalyzer
-        UPDATED: Skip detection when resuming (search_flow already set)
+        FIXED: Flow detection that trusts AI Chat Layer decisions
 
-        This method determines whether to route to:
-        - city_search: City-wide search pipeline
-        - location_search: GPS/location-based search pipeline
-
-        On resume (when user says "let's find more"), it preserves the original flow
-        instead of re-detecting, ensuring location searches stay in location pipeline.
+        Priority order:
+        1. Check if resuming (search_flow already set) - preserve it
+        2. Check SearchContext from AI Chat Layer (already decided)
+        3. Check GPS/location_data presence
+        4. Default to city_search
         """
         try:
             # ====================================================================
-            # NEW: Check if we're resuming - search_flow already set in state
+            # CHECK 1: Resuming? Preserve existing flow
             # ====================================================================
             existing_flow = state.get("search_flow")
             if existing_flow and existing_flow in ["city_search", "location_search"]:
@@ -1125,52 +1123,43 @@ class UnifiedRestaurantAgent:
                 return {**state, "current_step": "flow_detected"}
 
             # ====================================================================
-            # NEW SEARCH: Detect flow
+            # CHECK 2: Use SearchContext from AI Chat Layer (BEST SOURCE)
             # ====================================================================
             logger.info("🔍 Flow Detection (new search)")
 
+            search_ctx = state.get("search_context")
+            if search_ctx and hasattr(search_ctx, 'search_type'):
+                if search_ctx.search_type == SearchType.LOCATION_SEARCH:
+                    search_flow = "location_search"
+                    logger.info("🗺️ Using search type from AI Chat Layer: LOCATION_SEARCH")
+                else:
+                    search_flow = "city_search"
+                    logger.info("🏙️ Using search type from AI Chat Layer: CITY_SEARCH")
+
+                return {**state, "search_flow": search_flow, "current_step": "flow_detected"}
+
+            # ====================================================================
+            # CHECK 3: GPS/location_data presence
+            # ====================================================================
             has_coordinates = bool(state.get("gps_coordinates"))
             has_location_data = bool(state.get("location_data"))
 
-            # If we have coordinates or location data, it's definitely location search
             if has_coordinates or has_location_data:
                 search_flow = "location_search"
                 logger.info("🗺️ Detected: Location-based search (GPS/location data provided)")
-            else:
-                # Use AI-powered LocationAnalyzer instead of hardcoded keywords
-                query = state["query"]
-                logger.info(f"🤖 Using AI to analyze query: '{query}'")
+                return {**state, "search_flow": search_flow, "current_step": "flow_detected"}
 
-                try:
-                    location_analysis = self.location_analyzer.analyze_message(query)
-                    request_type = location_analysis.get("request_type", "GENERAL_SEARCH")
-                    confidence = location_analysis.get("confidence", 0.0)
-                    location_detected = location_analysis.get("location_detected")
-                    reasoning = location_analysis.get("reasoning", "No reasoning provided")
-
-                    logger.info("🤖 AI Analysis Result:")
-                    logger.info(f"   Request Type: {request_type}")
-                    logger.info(f"   Location Detected: {location_detected}")
-                    logger.info(f"   Confidence: {confidence}")
-                    logger.info(f"   Reasoning: {reasoning}")
-
-                    if request_type == "LOCATION_SEARCH":
-                        search_flow = "location_search"
-                        logger.info("🗺️ Detected: Location-based search (AI analysis)")
-                    else:
-                        search_flow = "city_search"
-                        logger.info("🏙️ Detected: City-based search (AI analysis)")
-
-                except Exception as ai_error:
-                    logger.error(f"❌ AI flow detection failed: {ai_error}")
-                    # Fallback to city search if AI fails
-                    search_flow = "city_search"
-                    logger.info("🏙️ Detected: City-based search (AI fallback)")
+            # ====================================================================
+            # CHECK 4: Default to city search
+            # ====================================================================
+            search_flow = "city_search"
+            logger.info("🏙️ Detected: City-based search (default)")
 
             return {**state, "search_flow": search_flow, "current_step": "flow_detected"}
 
         except Exception as e:
             logger.error(f"❌ Error in flow detection: {e}")
+            # Safe fallback
             return {**state, "search_flow": "city_search", "error_message": f"Flow detection failed: {str(e)}"}
 
     @traceable(name="city_analyze_query")
