@@ -417,7 +417,7 @@ class Database:
 
                         if lat is not None and lng is not None:
                             coords = (float(lat), float(lng))
-                            logger.info(f"✅ Nominatim geocoded '{address}' to: {coords[0]:.4f}, {coords[1]:.4f}")
+                            logger.info(f"✅ Nominatim geocoded '{address}' to: ({coords[0]:.6f}, {coords[1]:.6f})")
                             return coords
 
                     logger.warning(f"⚠️ Nominatim returned no result for: '{address}'")
@@ -425,7 +425,6 @@ class Database:
                     logger.warning(f"⚠️ Nominatim error for '{address}': {nom_error}")
 
             # ============ STEP 2: Fallback to Google Maps API ============
-            
             logger.info(f"🌍 Falling back to Google Maps API for: '{address}'")
 
             # Get API key from config
@@ -451,13 +450,13 @@ class Database:
                 if data.get('status') == 'OK' and data.get('results'):
                     location = data['results'][0]['geometry']['location']
                     coords = (float(location['lat']), float(location['lng']))
-                    logger.info(f"✅ Google Maps geocoded '{address}' to: {coords[0]:.4f}, {coords[1]:.4f}")
+                    logger.info(f"✅ Google Maps geocoded '{address}' to: ({coords[0]:.6f}, {coords[1]:.6f})")
                     return coords
                 else:
-                    logger.error(f"❌ Google Maps API error: {data.get('status')}")
+                    logger.error(f"❌ Google Maps API error: {data.get('status')} for '{address}'")
                     return None
             else:
-                logger.error(f"❌ Google Maps API request failed: {response.status_code}")
+                logger.error(f"❌ Google Maps API request failed with status {response.status_code} for '{address}'")
                 return None
 
         except Exception as e:
