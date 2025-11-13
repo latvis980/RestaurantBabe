@@ -80,20 +80,23 @@ class SearchContext:
 
 @dataclass
 class HandoffMessage:
-    """
-    Complete handoff message from supervisor to workers
-
-    This is the structured message format that replaces raw query strings
-    """
+    """Structured handoff between AI Chat Layer and orchestrator"""
     command: HandoffCommand
-    reasoning: str
-    conversation_response: Optional[str] = None
-    search_context: Optional[SearchContext] = None
-    decision: Optional[str] = None  # NEW: For RESUME_WITH_DECISION ("accept" or "skip")
-    thread_id: Optional[str] = None  # NEW: Thread to resume
+    reasoning: str = ""
 
-    # Metadata
-    timestamp: float = 0.0
+    # Conversation
+    conversation_response: Optional[str] = None
+
+    # Search
+    search_context: Optional[SearchContext] = None
+
+    # Resume
+    decision: Optional[str] = None
+    thread_id: Optional[str] = None
+
+    # NEW: GPS requirement flag (EXPLICIT)
+    needs_gps: bool = False  # True if GPS coordinates required for location button
+
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -200,7 +203,8 @@ def create_conversation_handoff(response: str, reasoning: str = "") -> HandoffMe
 def create_resume_handoff(
     thread_id: str,
     decision: str = "accept",
-    reasoning: str = "Resuming graph execution with user decision"
+    reasoning: str = "Resuming graph execution with user decision",
+    needs_gps: bool = False
 ) -> HandoffMessage:
     """
     Create a handoff to resume paused graph execution

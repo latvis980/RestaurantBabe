@@ -315,30 +315,6 @@ class UnifiedRestaurantAgent:
 
         return graph.compile(checkpointer=self.checkpointer)
 
-    def _detect_needs_location_button(self, query: str) -> bool:
-        """
-        Detect if query requires GPS coordinates but user hasn't provided them
-
-        Keywords indicating user needs location button:
-        - "near me", "nearby", "around here", "close to me"
-        - "where I am", "my location", "around me"
-        """
-        query_lower = query.lower()
-
-        location_keywords = [
-            "near me",
-            "nearby",
-            "around here",
-            "close to me",
-            "around me",
-            "where i am",
-            "my location",
-            "in my area",
-            "in the area"
-        ]
-
-        return any(keyword in query_lower for keyword in location_keywords)
-
     async def process_user_message_with_ai_chat(
         self,
         query: str,
@@ -403,16 +379,19 @@ class UnifiedRestaurantAgent:
                 # Just conversation - no search
                 processing_time = round(time.time() - start_time, 2)
 
-                # Detect if AI requested GPS by checking reasoning
-                needs_gps = ('gps_required' in handoff.reasoning.lower() or 
-                             'gps coordinates' in handoff.reasoning.lower())
+                # Trust AI Chat Layer's explicit needs_gps flag
+                # AI analyzes full context and determines if GPS is needed
+                needs_gps = handoff.needs_gps
+
+                logger.info(f"🎯 AI Decision: needs_location_button={needs_gps}")
+                logger.info(f"📝 Reasoning: {handoff.reasoning}")
 
                 return {
                     "success": True,
                     "ai_response": handoff.conversation_response,
                     "action_taken": "conversation",
                     "search_triggered": False,
-                    "needs_location_button": needs_gps,
+                    "needs_location_button": needs_gps,  # Trust AI decision
                     "processing_time": processing_time,
                     "reasoning": handoff.reasoning
                 }
@@ -904,7 +883,7 @@ class UnifiedRestaurantAgent:
                     # Validate the response
                     if ai_message and len(ai_message) > 10 and len(ai_message) < 200:
                         # Ensure proper HTML formatting
-                        if not '<b>' in ai_message:
+                        if '<b>' not in ai_message:
                             # Add bold to first sentence
                             sentences = ai_message.split('. ')
                             if sentences:
