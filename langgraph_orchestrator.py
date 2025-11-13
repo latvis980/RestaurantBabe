@@ -1572,16 +1572,18 @@ class UnifiedRestaurantAgent:
                                 if stored_city:
                                     logger.info(f"   📍 Using stored city context for enrichment: {stored_city}")
 
-                    # Use LocationAnalyzer with context enrichment
-                    analysis_result = self.location_analyzer.analyze_message(
-                        state['query'],
-                        stored_city_context=stored_city  # Pass stored city!
+                    # Use LocationAnalyzer to extract location (async)
+                    loop = asyncio.get_event_loop()
+                    analysis_result = loop.run_until_complete(
+                        self.location_analyzer.extract_location(state['query'])
                     )
+
                     location_detected = analysis_result.get("location_detected", "")
 
-                    # Log if context enrichment was applied
-                    if analysis_result.get("context_enrichment_applied"):
-                        logger.info(f"   ✨ Location enriched: {location_detected}")
+                    # Add stored city context if available and location is incomplete
+                    if stored_city and location_detected and ',' not in location_detected:
+                        location_detected = f"{location_detected}, {stored_city}"
+                        logger.info(f"   ✨ Location enriched with stored city: {location_detected}")
 
                     if location_detected:
                         logger.info(f"🌍 AI extracted location: '{location_detected}', attempting to geocode")
