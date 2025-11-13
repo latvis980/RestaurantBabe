@@ -144,7 +144,7 @@ STATE STRUCTURE
 {{
     "destination": "full location string" | null,
     "cuisine": "what they want" | null,
-    "search_mode": "gps_required|city_search|neighborhood_search|follow_up" | null,
+    "search_mode": "gps_required|city_search|coordinates_search|follow_up" | null,
     "needs_gps": true | false,
     "is_ambiguous": true | false,
     "needs_clarification": true | false,
@@ -177,7 +177,7 @@ EXAMPLES
 
 "Find good places around Viale delle Egadi in Rome"
 → {{
-    "search_mode": "neighborhood_search",
+    "search_mode": "coordinates_search",
     "destination": "Viale delle Egadi, Rome",
     "cuisine": "restaurants",
     "needs_gps": false,
@@ -185,7 +185,33 @@ EXAMPLES
     "is_complete": true,
     "action": "trigger_search",
     "response_text": "Searching for restaurants around Viale delle Egadi in Rome!",
-    "reasoning": "Specific street + city = clear neighborhood search, NOT GPS mode"
+    "reasoning": "Specific street name = coordinates search using Google Maps"
+}}
+
+"best pizza in Marais" (with stored city: "Paris")
+→ {{
+    "search_mode": "city_search",
+    "destination": "Marais, Paris",
+    "cuisine": "pizza",
+    "needs_gps": false,
+    "is_ambiguous": false,
+    "is_complete": true,
+    "action": "trigger_search",
+    "response_text": "Searching for the best pizza in Marais!",
+    "reasoning": "Marais is a popular tourist area, likely has online guides"
+}}
+
+"restaurants near Pantheon" (with stored city: "Rome")
+→ {{
+    "search_mode": "coordinates_search",
+    "destination": "Pantheon, Rome",
+    "cuisine": "restaurants",
+    "needs_gps": false,
+    "is_ambiguous": false,
+    "is_complete": true,
+    "action": "trigger_search",
+    "response_text": "Finding restaurants near the Pantheon!",
+    "reasoning": "Specific landmark = coordinates search for precise location"
 }}
 
 "best ramen in Tokyo"
