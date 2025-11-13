@@ -1831,56 +1831,58 @@ class UnifiedRestaurantAgent:
 
 
     @traceable(name="location_format_results")
-    async def _location_format_results(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """
-        Format final location results - ENHANCED to show database results first if available
-
-        NEW: If we have database_results_shown flag, format database results and
-        indicate to user they can request more via Maps
-        """
+    def _location_format_results(self, state: UnifiedSearchState) -> Dict[str, Any]:
+        """Format location search results for Telegram"""
         try:
             logger.info("📊 Location Format Results")
 
-            # Check if we're showing database results (before any Maps search)
-            database_results_shown = state.get("database_results_shown", False)
-            filtered_results = state.get("filtered_results", {}) or {} 
+            query = state.get("query", "restaurants")
+            filtered_results = state.get("filtered_results", {})
 
-            if database_results_shown:
-                # Format database results with "more results available" hint
-                logger.info("📋 Formatting DATABASE results (user can request Maps search)")
-
+            # Check if we're formatting database results (shown before Maps search)
+            if filtered_results and filtered_results.get("filtered_restaurants"):
                 filtered_restaurants = filtered_results.get("filtered_restaurants", [])
-                query = state.get("query", "restaurants")
 
-                formatted = self.location_formatter.format_database_results(
-                    restaurants=filtered_restaurants,  # Changed from venues to restaurants
-                    query=query,
-                    location_description=f"GPS search: {query}",
-                    offer_more_search=True  # Changed from show_more_option to offer_more_search
-                )
+                if len(filtered_restaurants) > 0:
+                    logger.info(f"📋 Formatting DATABASE results ({len(filtered_restaurants)} restaurants)")
 
-                return {
-                    **state,
-                    "formatted_message": formatted.get("message", ""),
-                    "final_restaurants": filtered_restaurants,
-                    "success": True,
-                    "current_step": "database_results_formatted"  # Different from final END state
-                }
+                    formatted = self.location_formatter.format_database_results(
+                        restaurants=filtered_restaurants,
+                        query=query,
+                        location_description=f"GPS search: {query}",
+                        offer_more_search=True
+                    )
 
-            # Otherwise, format Maps results (after user requested more)
+                    return {
+                        **state,
+                        "formatted_message": formatted.get("message", ""),
+                        "final_restaurants": filtered_restaurants,
+                        "success": True,
+                        "current_step": "database_results_formatted"
+                    }
+
+            # Otherwise, format Maps results (after verification)
             logger.info("📋 Formatting MAPS results (user requested more options)")
 
-            maps_results = state.get("maps_results", {})
-            media_results = state.get("media_verification_results", {})
+            # FIXED: maps_results is a LIST of VenueSearchResult, not a dict
+            maps_results = state.get("maps_results", [])
+            media_results = state.get("media_verification_results", [])
 
-            # Use Maps results if available, otherwise fallback
-            if maps_results and maps_results.get("restaurants"):
-                restaurants = maps_results["restaurants"]
-            elif media_results and media_results.get("restaurants"):
-                restaurants = media_results["restaurants"]
+            # Determine which results to use
+            if media_results and len(media_results) > 0:
+                # Use media-verified results
+                restaurants = media_results
+                logger.info(f"   Using {len(restaurants)} media-verified results")
+            elif maps_results and len(maps_results) > 0:
+                # Fallback to raw Maps results
+                restaurants = maps_results
+                logger.info(f"   Using {len(restaurants)} raw Maps results")
             elif filtered_results and filtered_results.get("filtered_restaurants"):
-                restaurants = filtered_results["filtered_restaurants"]
+                # Last fallback to database results
+                restaurants = filtered_results.get("filtered_restaurants", [])
+                logger.info(f"   Fallback to {len(restaurants)} database results")
             else:
+                # No results at all
                 return {
                     **state,
                     "formatted_message": "😔 No results found.",
@@ -1889,8 +1891,7 @@ class UnifiedRestaurantAgent:
                     "current_step": "location_results_formatted"
                 }
 
-            query = state.get("query", "restaurants")
-
+            # Format using the Maps formatter
             formatted = self.location_formatter.format_google_maps_results(
                 venues=restaurants,
                 query=query,
@@ -1902,11 +1903,13 @@ class UnifiedRestaurantAgent:
                 "formatted_message": formatted.get("message", ""),
                 "final_restaurants": restaurants,
                 "success": True,
-                "current_step": "location_results_formatted"  # Final END state
+                "current_step": "location_results_formatted"
             }
 
         except Exception as e:
             logger.error(f"❌ Error in location formatting: {e}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
             return {**state, "error_message": f"Location formatting failed: {str(e)}", "success": False}
 
 
