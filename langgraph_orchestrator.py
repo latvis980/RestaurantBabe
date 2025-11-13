@@ -226,6 +226,7 @@ class UnifiedRestaurantAgent:
         graph.add_node("location_filter_results", self._location_filter_results)
         graph.add_node("location_maps_search", self._location_maps_search)
         graph.add_node("location_media_verification", self._location_media_verification)
+        graph.add_node("location_generate_descriptions", self._location_generate_descriptions)  # NEW NODE
         graph.add_node("location_format_results", self._location_format_results)
 
         # ═══════════════════════════════════════════════════════════════════════
@@ -1878,7 +1879,69 @@ class UnifiedRestaurantAgent:
             import traceback
             logger.error(f"   Traceback: {traceback.format_exc()}")
             return {**state, "error_message": f"Location media verification failed: {str(e)}", "success": False}
+            
+    @traceable(name="location_generate_descriptions")
+    def _location_generate_descriptions(self, state: UnifiedSearchState) -> Dict[str, Any]:
+        """Generate AI descriptions for location search results"""
+        try:
+            logger.info("✏️ Location Generate Descriptions")
 
+            media_verification_results = state.get("media_verification_results", [])
+            maps_results = state.get("maps_results", [])
+            query = state.get("query", "")
+
+            if not media_verification_results and not maps_results:
+                logger.warning("⚠️ No results available for description generation")
+                return {**state, "current_step": "location_descriptions_generated"}
+
+            # Use media_verification_results if available, otherwise maps_results
+            venues_to_describe = media_verification_results if media_verification_results else maps_results
+
+            logger.info(f"📝 Generating descriptions for {len(venues_to_describe)} venues")
+
+            # FIXED: Run async method using asyncio.run()
+            descriptions = asyncio.run(
+                self.location_ai_editor.create_descriptions_for_map_search_results(
+                    map_search_results=maps_results,  # Original map search data
+                    media_verification_results=media_verification_results,  # Media data
+                    user_query=query
+                )
+            )
+
+            logger.info(f"✅ Generated {len(descriptions)} AI descriptions")
+
+            # Convert MapSearchRestaurantDescription objects to dicts for state
+            description_dicts = []
+            for desc in descriptions:
+                desc_dict = {
+                    'name': desc.name,
+                    'address': desc.address,
+                    'google_maps_url': desc.google_maps_url,
+                    'place_id': desc.place_id,
+                    'distance_km': desc.distance_km,
+                    'description': desc.description,  # THIS is the key field!
+                    'media_sources': desc.media_sources,
+                    'rating': desc.rating,
+                    'user_ratings_total': desc.user_ratings_total,
+                    'selection_score': desc.selection_score,
+                    'selection_reason': getattr(desc, 'selection_reason', ''),
+                    'sources': desc.media_sources,  # For formatter compatibility
+                    'media_verified': True if desc.media_sources else False
+                }
+                description_dicts.append(desc_dict)
+
+            return {
+                **state,
+                "media_verification_results": description_dicts,  # Replace with described venues
+                "current_step": "location_descriptions_generated"
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error in location description generation: {e}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
+            # Continue with whatever we have
+            return {**state, "error_message": f"Description generation failed: {str(e)}", "current_step": "location_descriptions_generated"}
 
     @traceable(name="location_format_results")
     def _location_format_results(self, state: UnifiedSearchState) -> Dict[str, Any]:
