@@ -2054,19 +2054,6 @@ class UnifiedRestaurantAgent:
                 logger.info(f"   Clear previous: {search_context.clear_previous_context}")
                 logger.info(f"   New destination: {search_context.is_new_destination}")
 
-            # Check for location button requirement
-            if self._detect_needs_location_button(query):
-                if not gps_coordinates and not location_data:
-                    logger.info(f"🔘 Query needs location but none provided: '{query}'")
-                    return {
-                        "success": False,
-                        "needs_location_button": True,
-                        "action": "REQUEST_LOCATION",
-                        "query": query,
-                        "message": "I'd love to help you find great restaurants nearby! Please share your location.",
-                        "processing_time": round(time.time() - start_time, 2)
-                    }
-
             # Initialize state
             initial_state: UnifiedSearchState = {
                 "query": query,
