@@ -455,14 +455,14 @@ Detect search mode and decide action.""")
                 session['last_search_thread_id'] = thread_id
 
                 # Extract city from destination for context storage
-                if destination and (search_mode == 'city_search' or search_mode == 'neighborhood_search'):
+                if destination and (search_mode == 'city_search' or search_mode == 'coordinates_search'):
                     city = self._extract_city_from_destination(destination)
                     if city:
                         session['last_searched_city'] = city
                         logger.info(f"💾 Stored city context for user {user_id}: {city}")
 
-                # Determine search type hint
-                if search_mode == 'gps_required':
+                # Determine search type hint based on search mode
+                if search_mode == 'gps_required' or search_mode == 'coordinates_search':
                     search_type_hint = SearchType.LOCATION_SEARCH
                 else:
                     search_type_hint = SearchType.CITY_SEARCH
