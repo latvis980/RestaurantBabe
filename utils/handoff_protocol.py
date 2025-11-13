@@ -136,28 +136,7 @@ def create_search_handoff(
     is_new_destination: bool = False,
     reasoning: str = ""
 ) -> HandoffMessage:
-    """
-    Create a search handoff message from supervisor to search pipeline
-
-    Args:
-        destination: Where to search (city/neighborhood)
-        cuisine: What to search for
-        search_type: City-wide or location-based
-        user_query: Current user message (not accumulated)
-        user_id: User ID
-        thread_id: Thread ID
-        gps_coordinates: GPS if available
-        requirements: List of requirements
-        preferences: User preferences dict
-        clear_previous: Whether to clear previous context
-        is_new_destination: Whether this is a new destination
-        reasoning: Why supervisor chose this action
-
-    Returns:
-        Structured HandoffMessage
-    """
-    import time
-
+    """Create a search handoff message from supervisor to search pipeline"""
     search_context = SearchContext(
         destination=destination,
         cuisine=cuisine,
@@ -175,53 +154,33 @@ def create_search_handoff(
     return HandoffMessage(
         command=HandoffCommand.EXECUTE_SEARCH,
         search_context=search_context,
-        timestamp=time.time(),
         reasoning=reasoning
+        # timestamp will use default value 0.0 - no need to pass it
     )
 
 
 def create_conversation_handoff(response: str, reasoning: str = "") -> HandoffMessage:
-    """
-    Create a conversation handoff (no search needed)
-
-    Args:
-        response: Response to send to user
-        reasoning: Why continuing conversation
-
-    Returns:
-        Structured HandoffMessage
-    """
-    import time
-
+    """Create a conversation handoff (no search needed)"""
     return HandoffMessage(
         command=HandoffCommand.CONTINUE_CONVERSATION,
         conversation_response=response,
-        timestamp=time.time(),
         reasoning=reasoning
+        # timestamp will use default value 0.0 - no need to pass it
     )
+
 
 def create_resume_handoff(
     thread_id: str,
     decision: str = "accept",
-    reasoning: str = "Resuming graph execution with user decision",
-    needs_gps: bool = False
+    reasoning: str = "Resuming graph execution with user decision"
 ) -> HandoffMessage:
-    """
-    Create a handoff to resume paused graph execution
-
-    Args:
-        thread_id: Thread ID of the paused graph
-        decision: "accept" or "skip"
-        reasoning: Explanation
-
-    Returns:
-        HandoffMessage with RESUME_WITH_DECISION command
-    """
+    """Create a handoff to resume paused graph execution"""
     return HandoffMessage(
         command=HandoffCommand.RESUME_WITH_DECISION,
         reasoning=reasoning,
         decision=decision,
         thread_id=thread_id
+        # timestamp will use default value 0.0 - no need to pass it
     )
 
 # =============================================================================
