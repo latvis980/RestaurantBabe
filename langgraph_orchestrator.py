@@ -1071,32 +1071,29 @@ class UnifiedRestaurantAgent:
 
     def _route_after_filtering(self, state: UnifiedSearchState) -> str:
         """
-        Route after filtering: ALWAYS go to human_decision for location searches
+        Route after filtering based on result count
 
-        CRITICAL CHANGE: We now ALWAYS pause at human_decision, even when database
-        results are sufficient. This allows users to request more results via Maps.
-
-        The human_decision node will:
-        - If database results are good → show them, but graph stays paused for "more results"
-        - If database results are poor → automatically trigger Maps search
+        Returns:
+        - "format_database": When we have results to show
+        - "continue_to_maps": When we need to search Maps (0 results or insufficient)
         """
         filtered_results = state.get("filtered_results")
 
         if not filtered_results:
-            logger.warning("⚠️ No filtered_results in state, routing to human decision")
-            return "needs_enhancement"
+            logger.warning("⚠️ No filtered_results in state, routing to Maps")
+            return "continue_to_maps"  # ✅ FIXED: Changed from "needs_enhancement"
 
-        # Check database_sufficient flag from filter_evaluator
+        # Check database_sufficient flag and restaurant count
         database_sufficient = filtered_results.get("database_sufficient", False)
         filtered_restaurants = filtered_results.get("filtered_restaurants", [])
+        result_count = len(filtered_restaurants)
 
-        if database_sufficient and len(filtered_restaurants) > 0:
-            logger.info(f"✅ Database sufficient ({len(filtered_restaurants)} results) - routing to human decision (will show results and wait)")
+        if database_sufficient and result_count > 0:
+            logger.info(f"✅ Database sufficient ({result_count} results) - routing to format")
+            return "format_database"
         else:
-            logger.info(f"🗺️ Database insufficient ({len(filtered_restaurants)} results) - routing to human decision (will trigger Maps)")
-
-        # ALWAYS go to human_decision - this is the key fix!
-        return "needs_enhancement"
+            logger.info(f"🗺️ Database insufficient ({result_count} results) - routing to Maps")
+            return "continue_to_maps"
 
     def _route_after_geocode(self, state: UnifiedSearchState) -> str:
         """
