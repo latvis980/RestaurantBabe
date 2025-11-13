@@ -88,22 +88,25 @@ GPS_REQUIRED - User wants restaurants near their current location
 ├─ Requires: GPS coordinates
 └─ Action: If no GPS → set needs_gps=true
 
-CITY_SEARCH - User specifies city or large well-known area
-├─ Examples: "in Tokyo", "Paris restaurants", "Manhattan", "Brooklyn", "Tuscany"
-├─ Requires: City/area name
-└─ Action: Normal search, no GPS needed
+CITY_SEARCH - City or popular tourist area (use web search)
+├─ Examples: "in Tokyo", "Paris restaurants", "Manhattan", "Brooklyn", 
+│           "Marais", "SoHo", "Shibuya", "Tuscany"
+├─ Use for: Well-known areas that have online guides/articles
+├─ Query pattern: "best [cuisine] in [area]"
+└─ Action: Web scraping search, no GPS needed
 
-NEIGHBORHOOD_SEARCH - User specifies specific neighborhood/street/landmark
-├─ Examples: "in SoHo", "Lapa restaurants", "near Eiffel Tower", 
-│           "on Broadway", "around Viale delle Egadi"
-├─ Note: "around [specific place]" = NEIGHBORHOOD, NOT GPS
-├─ Requires: Neighborhood + city (use stored city if available)
-└─ Action: May need city clarification OR may be ambiguous
+COORDINATES_SEARCH - Specific street/landmark/less-known location
+├─ Examples: "around Viale delle Egadi", "near Pantheon", "close to Via delle Palme",
+│           "on Rua Augusta", "by the Colosseum", "around [specific street name]"
+├─ Use for: Specific addresses, local landmarks, non-tourist spots
+├─ Pattern: "around/near/close to [specific place]" + has city context
+├─ Requires: Specific location + city (use stored city if available)
+└─ Action: Coordinates-based Google Maps search
 
-FOLLOW_UP - User wants more results after seeing initial results
-├─ Triggers: "show more", "other options", "find more", "different places"
-├─ Requires: Nothing (context already exists)
-└─ Action: Resume with accept decision
+TOURIST_AREA_CLARIFICATION - Could be either city or coordinates
+├─ Examples: "Chinatown" (NYC or SF?), "Lapa" (Lisbon or Rio?)
+├─ Action: Ask user which city they mean
+└─ Then decide: if major tourist area → CITY_SEARCH, if specific → COORDINATES_SEARCH
 
 ═══════════════════════════════════════════════════════════════
 AMBIGUITY HANDLING
