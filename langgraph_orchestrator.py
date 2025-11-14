@@ -51,7 +51,6 @@ from location.location_database_ai_editor import LocationDatabaseAIEditor
 from location.location_map_search_ai_editor import LocationMapSearchAIEditor
 from location.location_map_search import LocationMapSearchAgent
 from location.location_media_verification import LocationMediaVerificationAgent
-from location.location_map_search_ai_editor import LocationAIEditor
 
 from utils.handoff_protocol import HandoffMessage, SearchContext, SearchType, HandoffCommand
 from utils.ai_chat_layer import AIChatLayer
