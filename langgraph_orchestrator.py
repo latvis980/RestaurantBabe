@@ -307,7 +307,9 @@ class UnifiedRestaurantAgent:
 
         # Path 2: Maps search → verification → format → END (session cleared)
         graph.add_edge("location_maps_search", "location_media_verification")
-        graph.add_edge("location_media_verification", "location_format_results")
+        graph.add_edge("location_media_verification", "location_generate_descriptions")
+        graph.add_edge("location_generate_descriptions", "location_format_results")
+    
 
         # ═══════════════════════════════════════════════════════════════════════
         # COMPILE GRAPH
