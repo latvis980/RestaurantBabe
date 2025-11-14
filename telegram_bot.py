@@ -27,6 +27,7 @@ from langchain_core.messages import HumanMessage
 from langgraph_orchestrator import create_unified_restaurant_agent
 from utils.voice_handler import VoiceMessageHandler
 from utils.database import initialize_database
+from location.geocoding import initialize_geocoding_service
 import config
 
 # Configure logging
@@ -40,6 +41,7 @@ bot = telebot.TeleBot(config.TELEGRAM_BOT_TOKEN)
 
 # Initialize database FIRST
 initialize_database(config)
+initialize_geocoding_service(config)
 
 # Initialize enhanced unified agent with AI Chat Layer
 unified_agent = create_unified_restaurant_agent(config)

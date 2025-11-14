@@ -1515,61 +1515,51 @@ class UnifiedRestaurantAgent:
     @traceable(name="location_geocode")
     def _location_geocode(self, state: UnifiedSearchState) -> Dict[str, Any]:
         """
-        FIXED: Location coordinate validation (NO geocoding logic)
-
-        Coordinates should already be provided by AI Chat Layer or earlier steps.
-        This node ONLY validates that coordinates exist and are valid.
+        Validate location coordinates (coordinates should already be geocoded by AI Chat Layer)
 
         Priority order for coordinates:
-        1. GPS coordinates from state (gps_coordinates)
-        2. Coordinates in location_data (latitude/longitude)
-        3. If location_data has description but no coords, geocode the description
+        1. GPS coordinates from state (user shared via button)
+        2. Coordinates in SearchContext (geocoded by AI Chat Layer)
+        3. Coordinates in location_data (fallback)
 
-        Does NOT extract location from query - that's AI Chat Layer's job.
+        This node NO LONGER performs geocoding - that happens in AI Chat Layer for early validation.
         """
         try:
-            logger.info("🗺️ Location Geocoding")
+            logger.info("🗺️ Location Coordinate Validation")
 
-            location_data = state.get("location_data")
-            gps_coords = state.get("gps_coordinates")
             coordinates = None
 
             # Priority 1: Use GPS coordinates if provided
+            gps_coords = state.get("gps_coordinates")
             if gps_coords:
                 coordinates = gps_coords
                 logger.info(f"✅ Using GPS coordinates: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
 
-            # Priority 2: Check location_data for existing coordinates (verify not None)
-            elif location_data:
+            # Priority 2: Check SearchContext for coordinates (geocoded by AI Chat Layer)
+            elif state.get("search_context"):
+                search_ctx = state["search_context"]
+                if hasattr(search_ctx, 'gps_coordinates') and search_ctx.gps_coordinates:
+                    coordinates = search_ctx.gps_coordinates
+                    logger.info(f"✅ Using SearchContext coordinates (geocoded by AI Chat Layer): {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+
+            # Priority 3: Check location_data for existing coordinates
+            elif state.get("location_data"):
+                location_data = state["location_data"]
                 if hasattr(location_data, 'latitude') and hasattr(location_data, 'longitude'):
                     if location_data.latitude is not None and location_data.longitude is not None:
                         coordinates = (location_data.latitude, location_data.longitude)
                         logger.info(f"✅ Using location_data coordinates: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
 
-                    # Priority 3: Geocode from location_data.description if coordinates are None
-                    elif hasattr(location_data, 'description') and location_data.description:
-                        logger.info(f"🌍 Geocoding location from description: {location_data.description}")
-                        geocoded_coords = self.location_utils.geocode_location(location_data.description)
-
-                        if geocoded_coords:
-                            coordinates = geocoded_coords
-                            # Update location_data with geocoded coordinates
-                            location_data.latitude = coordinates[0]
-                            location_data.longitude = coordinates[1]
-                            logger.info(f"✅ Geocoded to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
-                        else:
-                            logger.warning(f"❌ Failed to geocode description: {location_data.description}")
-
             # Final validation - coordinates MUST exist by this point
             if not coordinates:
                 error_msg = (
-                    "No coordinates available for location search. "
-                    "Coordinates should be provided by AI Chat Layer before calling orchestrator. "
+                    "No coordinates available for location search.\n\n"
+                    "This error suggests coordinates were not provided by AI Chat Layer.\n"
                     "Possible causes:\n"
-                    "1. AI Chat Layer didn't extract location from user message\n"
-                    "2. AI Chat Layer didn't geocode the extracted location\n"
-                    "3. location_data was passed without coordinates or description\n"
-                    "Check that location extraction and geocoding happen before calling orchestrator."
+                    "1. AI Chat Layer didn't geocode text location (coordinates_search mode)\n"
+                    "2. User didn't share GPS (gps_required mode)\n"
+                    "3. SearchContext missing gps_coordinates field\n\n"
+                    "Check AI Chat Layer logs for geocoding attempts."
                 )
                 logger.error(f"❌ {error_msg}")
                 raise ValueError(error_msg)

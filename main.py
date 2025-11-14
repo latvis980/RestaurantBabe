@@ -32,6 +32,16 @@ except Exception as e:
     logger.error(f"❌ Failed to initialize database: {e}")
     raise
 
+# Initialize geocoding service SECOND (NEW!)
+try:
+    from location.geocoding import initialize_geocoding_service
+    initialize_geocoding_service(config)
+    logger.info("✅ Geocoding service initialized successfully")
+    logger.info("🗺️ Providers: Nominatim (primary) → Google Maps (fallback)")
+except Exception as e:
+    logger.error(f"❌ Failed to initialize geocoding service: {e}")
+    raise
+
 # Initialize Supabase Storage Manager (optional) - Uses Railway environment variables
 try:
     supabase_url = os.environ.get('SUPABASE_URL')

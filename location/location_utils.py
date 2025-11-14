@@ -173,11 +173,10 @@ class LocationUtils:
 
     @staticmethod
     def geocode_location(address: str) -> Optional[Tuple[float, float]]:
-        """Wrapper for database geocoding"""
+        """Wrapper for centralized geocoding service"""
         try:
-            from utils.database import get_database
-            database = get_database()
-            return database.geocode_address(address)
+            from location.geocoding import geocode_location as geocode
+            return geocode(address)
         except Exception as e:
             logger.error(f"Error geocoding '{address}': {e}")
             return None
