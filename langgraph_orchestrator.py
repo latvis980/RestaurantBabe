@@ -51,6 +51,7 @@ from location.location_database_ai_editor import LocationDatabaseAIEditor
 from location.location_map_search_ai_editor import LocationMapSearchAIEditor
 from location.location_map_search import LocationMapSearchAgent
 from location.location_media_verification import LocationMediaVerificationAgent
+from location.location_map_search_ai_editor import LocationAIEditor
 
 from utils.handoff_protocol import HandoffMessage, SearchContext, SearchType, HandoffCommand
 from utils.ai_chat_layer import AIChatLayer
@@ -190,8 +191,11 @@ class UnifiedRestaurantAgent:
         self.location_filter_evaluator = LocationFilterEvaluator(self.config)
         self.location_database_ai_editor = LocationDatabaseAIEditor(self.config)
         self.location_map_search_ai_editor = LocationMapSearchAIEditor(self.config)
+        self.location_database_ai_editor = LocationDatabaseAIEditor(self.config)  # ✅ For database results
+        self.location_map_search_ai_editor = LocationMapSearchAIEditor(self.config)  # ✅ For maps results
         self.location_map_search_agent = LocationMapSearchAgent(self.config)
         self.location_media_verification_agent = LocationMediaVerificationAgent(self.config)
+        
 
     def _init_formatters(self):
         """Initialize formatters"""
@@ -1832,11 +1836,10 @@ class UnifiedRestaurantAgent:
 
             logger.info(f"📝 Generating descriptions for {len(venues_to_describe)} venues")
 
-            # FIXED: Run async method using asyncio.run()
             descriptions = asyncio.run(
-                self.location_ai_editor.create_descriptions_for_map_search_results(
-                    map_search_results=maps_results,  # Original map search data
-                    media_verification_results=media_verification_results,  # Media data
+                self.location_map_search_ai_editor.create_descriptions_for_map_search_results(
+                    map_search_results=maps_results,
+                    media_verification_results=media_verification_results,
                     user_query=query
                 )
             )
