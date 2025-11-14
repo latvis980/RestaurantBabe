@@ -1515,13 +1515,17 @@ class UnifiedRestaurantAgent:
     @traceable(name="location_geocode")
     def _location_geocode(self, state: UnifiedSearchState) -> Dict[str, Any]:
         """
-        FIXED: Location geocoding with proper description handling
+        FIXED: Location coordinate validation (NO geocoding logic)
 
-        Priority order:
-        1. GPS coordinates from state
-        2. Existing coordinates in location_data (if not None)
-        3. Geocode location_data.description
-        4. Use LocationAnalyzer to extract location from query, then geocode
+        Coordinates should already be provided by AI Chat Layer or earlier steps.
+        This node ONLY validates that coordinates exist and are valid.
+
+        Priority order for coordinates:
+        1. GPS coordinates from state (gps_coordinates)
+        2. Coordinates in location_data (latitude/longitude)
+        3. If location_data has description but no coords, geocode the description
+
+        Does NOT extract location from query - that's AI Chat Layer's job.
         """
         try:
             logger.info("🗺️ Location Geocoding")
@@ -1556,60 +1560,26 @@ class UnifiedRestaurantAgent:
                         else:
                             logger.warning(f"❌ Failed to geocode description: {location_data.description}")
 
-            # Priority 4: Extract location from query using AI with context enrichment
+            # Final validation - coordinates MUST exist by this point
             if not coordinates:
-                logger.info(f"🤖 Extracting location from query using AI: {state['query']}")
+                error_msg = (
+                    "No coordinates available for location search. "
+                    "Coordinates should be provided by AI Chat Layer before calling orchestrator. "
+                    "Possible causes:\n"
+                    "1. AI Chat Layer didn't extract location from user message\n"
+                    "2. AI Chat Layer didn't geocode the extracted location\n"
+                    "3. location_data was passed without coordinates or description\n"
+                    "Check that location extraction and geocoding happen before calling orchestrator."
+                )
+                logger.error(f"❌ {error_msg}")
+                raise ValueError(error_msg)
 
-                try:
-                    # NEW: Get stored city context from AI Chat Layer if available
-                    stored_city = None
-                    if hasattr(self, 'ai_chat_layer') and self.ai_chat_layer:
-                        user_id = state.get('user_id')
-                        if user_id:
-                            session_info = self.ai_chat_layer.get_session_info(user_id)
-                            if session_info:
-                                stored_city = session_info.get('last_searched_city')
-                                if stored_city:
-                                    logger.info(f"   📍 Using stored city context for enrichment: {stored_city}")
+            # Validate coordinate ranges
+            lat, lng = coordinates
+            if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+                raise ValueError(f"Invalid coordinate ranges: lat={lat}, lng={lng}")
 
-                    # Use LocationAnalyzer to extract location (async)
-                    loop = asyncio.get_event_loop()
-                    analysis_result = loop.run_until_complete(
-                        self.location_analyzer.extract_location(state['query'])
-                    )
-
-                    location_detected = analysis_result.get("location_detected", "")
-
-                    # Add stored city context if available and location is incomplete
-                    if stored_city and location_detected and ',' not in location_detected:
-                        location_detected = f"{location_detected}, {stored_city}"
-                        logger.info(f"   ✨ Location enriched with stored city: {location_detected}")
-
-                    if location_detected:
-                        logger.info(f"🌍 AI extracted location: '{location_detected}', attempting to geocode")
-                        coordinates = self.location_utils.geocode_location(location_detected)
-
-                        if coordinates:
-                            logger.info(f"✅ Geocoded extracted location to: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
-
-                            # Update location_data if it exists
-                            if location_data:
-                                location_data.latitude = coordinates[0]
-                                location_data.longitude = coordinates[1]
-                                if not hasattr(location_data, 'description') or not location_data.description:
-                                    location_data.description = location_detected
-                        else:
-                            raise ValueError(f"Failed to geocode extracted location: {location_detected}")
-                    else:
-                        raise ValueError(f"Could not extract location from query: {state['query']}")
-
-                except Exception as extract_error:
-                    logger.error(f"❌ Location extraction/geocoding failed: {extract_error}")
-                    raise ValueError(f"Location geocoding failed: {str(extract_error)}")
-
-            # Final validation
-            if not coordinates:
-                raise ValueError("Could not obtain coordinates from any source")
+            logger.info(f"✅ Coordinates validated: {lat:.4f}, {lng:.4f}")
 
             return {
                 **state, 
@@ -1618,11 +1588,12 @@ class UnifiedRestaurantAgent:
             }
 
         except Exception as e:
-            logger.error(f"❌ Error in location geocoding: {e}")
+            logger.error(f"❌ Error in location coordinate validation: {e}")
             return {
-                **state, 
-                "error_message": f"Location geocoding failed: {str(e)}", 
-                "success": False
+                **state,
+                "error_message": f"Location coordinate validation failed: {str(e)}",
+                "success": False,
+                "current_step": "location_geocode_failed"
             }
 
     @traceable(name="location_search_database")

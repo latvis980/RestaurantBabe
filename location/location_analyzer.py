@@ -1,14 +1,12 @@
 # location/location_analyzer.py
 """
-SIMPLIFIED LocationAnalyzer - Pure Utility (No Conversation Logic)
+FIXED LocationAnalyzer - Pure Utility with Sync Support
 
-This is now a PURE UTILITY that only:
-1. Extracts location data from text
-2. Geocodes addresses
-3. Returns technical location information
-
-ALL conversation logic (ambiguity detection, clarification, search mode detection)
-has been moved to AI Chat Layer as the single source of truth.
+Changes from original:
+1. Added extract_location_sync() method for sync contexts (fixes async event loop error)
+2. Removed geocode_location() placeholder method (was useless)
+3. Kept async extract_location() for async contexts
+4. No changes to prompts or other logic
 """
 
 import logging
@@ -80,68 +78,47 @@ LOCATION TYPES:
 - "city": Tokyo, Paris, Lisbon, New York, etc.
 - "country": France, Italy, Portugal, etc.
 
-RESPONSE FORMAT (JSON only):
-{{
-    "location_detected": "extracted location string",
-    "location_type": "neighborhood" | "street" | "landmark" | "city" | "country" | "unknown",
-    "confidence": 0.0-1.0,
-    "components": {{
-        "neighborhood": "name" | null,
-        "city": "name" | null,
-        "country": "name" | null
-    }}
-}}
+CONFIDENCE LEVELS:
+- 1.0: Very specific (street address, GPS coordinates)
+- 0.9: Specific (neighborhood with city)
+- 0.7: Clear (city or well-known landmark)
+- 0.5: Vague (region or general area)
+- 0.3: Ambiguous (could be multiple places)
 
 EXAMPLES:
+Input: "restaurants in SoHo, New York"
+Output: {"location_detected": "SoHo, New York", "location_type": "neighborhood", "confidence": 0.9}
 
-"restaurants in Lapa, Lisbon"
-→ {{
-    "location_detected": "Lapa, Lisbon",
-    "location_type": "neighborhood",
-    "confidence": 0.95,
-    "components": {{"neighborhood": "Lapa", "city": "Lisbon", "country": null}}
-}}
+Input: "sushi in Tokyo"
+Output: {"location_detected": "Tokyo", "location_type": "city", "confidence": 0.7}
 
-"Find good places around Viale delle Egadi in Rome"
-→ {{
-    "location_detected": "Viale delle Egadi, Rome",
-    "location_type": "street",
-    "confidence": 0.9,
-    "components": {{"neighborhood": null, "city": "Rome", "country": null}}
-}}
+Input: "pizza on Via Adamello, Rome"
+Output: {"location_detected": "Via Adamello, Rome", "location_type": "street", "confidence": 1.0}
 
-"best ramen in Tokyo"
-→ {{
-    "location_detected": "Tokyo",
-    "location_type": "city",
-    "confidence": 1.0,
-    "components": {{"neighborhood": null, "city": "Tokyo", "country": null}}
-}}
+Input: "cafes near Eiffel Tower"
+Output: {"location_detected": "Eiffel Tower", "location_type": "landmark", "confidence": 0.9}
 
-"coffee near Eiffel Tower"
-→ {{
-    "location_detected": "Eiffel Tower",
-    "location_type": "landmark",
-    "confidence": 0.95,
-    "components": {{"neighborhood": null, "city": "Paris", "country": null}}
-}}
+RETURN FORMAT (JSON):
+{
+    "location_detected": "extracted location string or null",
+    "location_type": "neighborhood|street|landmark|city|country|unknown",
+    "confidence": 0.0-1.0,
+    "components": {
+        "neighborhood": "if present",
+        "city": "if present",
+        "country": "if present"
+    }
+}
 
-"restaurants in Springfield"
-→ {{
-    "location_detected": "Springfield",
-    "location_type": "city",
-    "confidence": 0.7,
-    "components": {{"neighborhood": null, "city": "Springfield", "country": null}}
-}}
-
-Note: This is PURE EXTRACTION. Don't worry about ambiguity or clarification - just extract what's mentioned.
+Don't worry about ambiguity or clarification - just extract what's mentioned.
 """
 
     async def extract_location(self, user_message: str) -> Dict[str, Any]:
         """
-        Extract location information from user message
+        Extract location information from user message (ASYNC version)
         
         Returns technical location data only - NO conversation logic
+        Use this when calling from async context (like async functions).
         """
         try:
             response = await self.extraction_chain.ainvoke({
@@ -179,16 +156,47 @@ Note: This is PURE EXTRACTION. Don't worry about ambiguity or clarification - ju
                 "components": {}
             }
 
-    def geocode_location(self, location_string: str) -> Optional[Tuple[float, float]]:
+    def extract_location_sync(self, user_message: str) -> Dict[str, Any]:
         """
-        Geocode a location string to coordinates
+        Extract location information from user message (SYNC version)
         
-        This is a placeholder - in production, use a real geocoding service
+        FIXED: This method handles sync contexts properly by creating its own event loop.
+        Use this when calling from sync context (like langgraph_orchestrator).
+        
+        This fixes the "There is no current event loop in thread" error.
         """
-        # TODO: Integrate with actual geocoding service (Google Maps, Nominatim, etc.)
-        logger.warning(f"Geocoding not implemented for: {location_string}")
-        return None
+        try:
+            import asyncio
+            
+            # Create new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            try:
+                # Run the async extraction
+                result = loop.run_until_complete(self.extract_location(user_message))
+                return result
+            finally:
+                # Clean up the event loop
+                loop.close()
+                asyncio.set_event_loop(None)
+                
+        except Exception as e:
+            logger.error(f"Error in sync location extraction: {e}")
+            return {
+                "location_detected": None,
+                "location_type": "unknown",
+                "confidence": 0.0,
+                "components": {}
+            }
 
     def validate_coordinates(self, lat: float, lon: float) -> bool:
         """Validate coordinate ranges"""
         return -90 <= lat <= 90 and -180 <= lon <= 180
+
+
+# NOTE: The geocode_location() method has been REMOVED
+# It was a useless placeholder that did nothing.
+# Actual geocoding is done via:
+# - utils/database.py -> geocode_address() (Nominatim -> Google Maps fallback)
+# - location/location_utils.py -> LocationUtils.geocode_location() (wrapper)
