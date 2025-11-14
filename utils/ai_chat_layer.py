@@ -23,6 +23,7 @@ from utils.handoff_protocol import (
     HandoffMessage, SearchContext, SearchType, HandoffCommand,
     create_search_handoff, create_conversation_handoff, create_resume_handoff
 )
+from location.geocoding import geocode_location
 
 logger = logging.getLogger(__name__)
 
@@ -320,7 +321,7 @@ Detect search mode and decide action.""")
         thread_id: Optional[str] = None
     ) -> HandoffMessage:
         """
-        Process user message with AI-detected search mode
+        Process user message with AI-detected search mode and early geocoding
 
         Returns structured HandoffMessage based on AI decision
         """
@@ -331,9 +332,15 @@ Detect search mode and decide action.""")
 
             session = self._get_or_create_session(user_id, thread_id)
 
-            # Store GPS if provided
+            # CRITICAL FIX: Store GPS if provided AND use it for this turn
+            current_gps = gps_coordinates
             if gps_coordinates:
                 session['gps_coordinates'] = gps_coordinates
+                logger.info(f"📍 Stored GPS coordinates: {gps_coordinates[0]:.4f}, {gps_coordinates[1]:.4f}")
+            elif session.get('gps_coordinates'):
+                # Use previously stored GPS if available
+                current_gps = session['gps_coordinates']
+                logger.info(f"📍 Using stored GPS coordinates: {current_gps[0]:.4f}, {current_gps[1]:.4f}")
 
             # Add user message to history
             session['conversation_history'].append({
@@ -351,7 +358,7 @@ Detect search mode and decide action.""")
                 'conversation_history': self._format_conversation_context(session),
                 'accumulated_state': json.dumps(accumulated_state, indent=2),
                 'last_searched_city': session.get('last_searched_city') or 'None',
-                'has_gps': 'Yes' if gps_coordinates else 'No',
+                'has_gps': 'Yes' if current_gps else 'No',
                 'user_message': user_message
             }
 
@@ -419,7 +426,7 @@ Detect search mode and decide action.""")
                     command=HandoffCommand.CONTINUE_CONVERSATION,
                     reasoning=decision.get('reasoning', 'GPS coordinates required'),
                     conversation_response=decision.get('response_text', 'I\'d love to help you find restaurants near you!'),
-                    needs_gps=True  # EXPLICIT FLAG
+                    needs_gps=True
                 )
 
             # Handle clarification requests (ambiguous locations)
@@ -428,7 +435,7 @@ Detect search mode and decide action.""")
                     command=HandoffCommand.CONTINUE_CONVERSATION,
                     conversation_response=decision.get('response_text', "How can I help?"),
                     reasoning=decision.get('reasoning', ''),
-                    needs_gps=False  # Clarification doesn't need GPS
+                    needs_gps=False
                 )
 
             # Handle search trigger
@@ -461,13 +468,81 @@ Detect search mode and decide action.""")
                         session['last_searched_city'] = city
                         logger.info(f"💾 Stored city context for user {user_id}: {city}")
 
+                # ================================================================
+                # EARLY GEOCODING FOR COORDINATES_SEARCH MODE
+                # ================================================================
+                geocoded_coordinates = None
+
+                if search_mode == 'coordinates_search' and destination and not current_gps:
+                    logger.info(f"🌍 Early geocoding for coordinates_search: '{destination}'")
+
+                    try:
+                        # Attempt to geocode the destination
+                        geocoded_coordinates = geocode_location(destination)
+
+                        if geocoded_coordinates:
+                            logger.info(f"✅ Successfully geocoded '{destination}' → {geocoded_coordinates[0]:.4f}, {geocoded_coordinates[1]:.4f}")
+                            # Store in session for future use
+                            session['last_geocoded_location'] = {
+                                'address': destination,
+                                'coordinates': geocoded_coordinates,
+                                'timestamp': time.time()
+                            }
+                        else:
+                            # Geocoding failed - ask for clarification
+                            logger.warning(f"❌ Failed to geocode '{destination}'")
+
+                            clarification_message = (
+                                f"I couldn't find '{destination}' on the map. 🗺️\n\n"
+                                f"Could you help me out? Try one of these:\n\n"
+                                f"• <b>Be more specific</b>: Add the city name\n"
+                                f"  Example: \"Viale delle Egadi, <i>Rome</i>\"\n\n"
+                                f"• <b>Use a landmark</b>: Reference something nearby\n"
+                                f"  Example: \"Near the Colosseum\"\n\n"
+                                f"• <b>Share your GPS</b>: Use the button below for exact location"
+                            )
+
+                            return HandoffMessage(
+                                command=HandoffCommand.CONTINUE_CONVERSATION,
+                                conversation_response=clarification_message,
+                                reasoning=f"Geocoding failed for: {destination}",
+                                needs_gps=True  # Offer GPS button as alternative
+                            )
+
+                    except Exception as geocoding_error:
+                        logger.error(f"❌ Geocoding error for '{destination}': {geocoding_error}")
+
+                        # Graceful fallback - ask user for help
+                        return HandoffMessage(
+                            command=HandoffCommand.CONTINUE_CONVERSATION,
+                            conversation_response=(
+                                f"I'm having trouble finding '{destination}' on the map. "
+                                f"Could you provide more details or share your GPS location?"
+                            ),
+                            reasoning=f"Geocoding exception: {str(geocoding_error)}",
+                            needs_gps=True
+                        )
+
+                # Determine which coordinates to use
+                final_coordinates = current_gps or geocoded_coordinates
+
+                if search_mode in ['coordinates_search', 'gps_required'] and final_coordinates:
+                    logger.info(f"📍 Using coordinates for search: {final_coordinates[0]:.4f}, {final_coordinates[1]:.4f}")
+                    logger.info(f"   Source: {'GPS' if current_gps else 'Geocoded'}")
+
                 # Determine search type hint based on search mode
                 if search_mode == 'gps_required' or search_mode == 'coordinates_search':
                     search_type_hint = SearchType.LOCATION_SEARCH
                 else:
                     search_type_hint = SearchType.CITY_SEARCH
 
-                # Create search handoff
+                # Create search handoff with coordinates (GPS or geocoded)
+                logger.info(f"🔍 Creating search handoff:")
+                logger.info(f"   Mode: {search_mode}")
+                logger.info(f"   Type: {search_type_hint.value}")
+                logger.info(f"   Destination: {destination}")
+                logger.info(f"   Coordinates: {final_coordinates}")
+
                 return create_search_handoff(
                     destination=destination or "unknown",
                     cuisine=cuisine,
@@ -475,7 +550,7 @@ Detect search mode and decide action.""")
                     user_query=user_message,
                     user_id=user_id,
                     thread_id=thread_id,
-                    gps_coordinates=gps_coordinates,
+                    gps_coordinates=final_coordinates,  # GPS or geocoded coordinates
                     requirements=requirements,
                     preferences=preferences,
                     clear_previous=False,

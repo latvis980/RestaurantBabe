@@ -1,4 +1,4 @@
-# utils/database.py - CLEANED: Direct Supabase interface with all type errors fixed
+# utils/database.py - CLEANED: Removed geocoding (moved to location/geocoding.py)
 import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional, Tuple, Union
@@ -10,6 +10,8 @@ class Database:
     """
     Direct Supabase database interface for the AI-powered restaurant bot.
     Simplified, single-purpose database class with clear naming.
+
+    NOTE: Geocoding functionality has been moved to location/geocoding.py
     """
 
     def __init__(self, config):
@@ -23,15 +25,6 @@ class Database:
         except Exception as e:
             logger.error(f"❌ Failed to initialize database: {e}")
             raise
-
-        # Initialize geocoder (optional)
-        try:
-            from geopy.geocoders import Nominatim
-            self.geocoder = Nominatim(user_agent="ai-restaurant-bot")
-            logger.info("✅ Geocoder initialized")
-        except Exception as e:
-            logger.warning(f"⚠️ Geocoder initialization failed: {e}")
-            self.geocoder = None
 
     # ======== SOURCE QUALITY METHODS ========
 
@@ -284,8 +277,6 @@ class Database:
             logger.error(f"Error getting restaurants by preference tags: {e}")
             return []
 
-    # utils/database.py - Coordinate-based search using PostGIS spatial functions
-
     def get_restaurants_by_coordinates(self, center: Tuple[float, float], radius_km: float, limit: int = 20) -> List[Dict[str, Any]]:
         """
         Get restaurants within radius of coordinates using PostGIS spatial search
@@ -395,75 +386,10 @@ class Database:
         # For now, always return None to force fresh searches
         return None
 
-    # ============ GEOCODING HELPER ============
 
-    def geocode_address(self, address: str) -> Optional[Tuple[float, float]]:
-        """Geocode using Nominatim with Google Maps API fallback"""
-        try:
-            if not address:
-                logger.warning("Empty address provided")
-                return None
-
-            logger.info(f"🌍 Attempting to geocode: '{address}'")
-
-            # ============ STEP 1: Try Nominatim (free) ============
-            if self.geocoder:
-                try:
-                    location = self.geocoder.geocode(address)
-
-                    if location:
-                        lat = getattr(location, 'latitude', None)
-                        lng = getattr(location, 'longitude', None)
-
-                        if lat is not None and lng is not None:
-                            coords = (float(lat), float(lng))
-                            logger.info(f"✅ Nominatim geocoded '{address}' to: ({coords[0]:.6f}, {coords[1]:.6f})")
-                            return coords
-
-                    logger.warning(f"⚠️ Nominatim returned no result for: '{address}'")
-                except Exception as nom_error:
-                    logger.warning(f"⚠️ Nominatim error for '{address}': {nom_error}")
-
-            # ============ STEP 2: Fallback to Google Maps API ============
-            logger.info(f"🌍 Falling back to Google Maps API for: '{address}'")
-
-            # Get API key from config
-            google_api_key = getattr(self.config, 'GOOGLE_MAPS_API_KEY', None)
-
-            if not google_api_key:
-                logger.error("❌ No Google Maps API key configured")
-                return None
-
-            # Call Google Maps Geocoding API
-            import requests
-            google_url = "https://maps.googleapis.com/maps/api/geocode/json"
-            params = {
-                'address': address,
-                'key': google_api_key
-            }
-
-            response = requests.get(google_url, params=params, timeout=10)
-
-            if response.status_code == 200:
-                data = response.json()
-
-                if data.get('status') == 'OK' and data.get('results'):
-                    location = data['results'][0]['geometry']['location']
-                    coords = (float(location['lat']), float(location['lng']))
-                    logger.info(f"✅ Google Maps geocoded '{address}' to: ({coords[0]:.6f}, {coords[1]:.6f})")
-                    return coords
-                else:
-                    logger.error(f"❌ Google Maps API error: {data.get('status')} for '{address}'")
-                    return None
-            else:
-                logger.error(f"❌ Google Maps API request failed with status {response.status_code} for '{address}'")
-                return None
-
-        except Exception as e:
-            logger.error(f"❌ Error geocoding address '{address}': {e}")
-            return None
-
-# ============ GLOBAL DATABASE INSTANCE ============
+# ============================================================================
+# GLOBAL DATABASE INSTANCE
+# ============================================================================
 
 _database = None
 
