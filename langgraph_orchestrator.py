@@ -496,7 +496,7 @@ class UnifiedRestaurantAgent:
                         else:
                             logger.info(f"📍 User has stored location: {loc_name} [{search_type}]")
                     else:
-                        logger.info(f"ℹ️ No stored location for user (will be stored after search)")
+                        logger.info("ℹ️ No stored location for user (will be stored after search)")
 
                 # Execute the search
                 logger.info(f"🚀 Executing search: '{search_query}'")
@@ -517,10 +517,10 @@ class UnifiedRestaurantAgent:
                     try:
                         # Handle both Telegram Message object (has .message_id) and dict (has ['message_id'])
                         msg_id = None
-                        if hasattr(confirmation_msg, 'message_id'):
-                            msg_id = confirmation_msg.message_id
+                        if hasattr(confirmation_msg, 'message_id') and confirmation_msg.message_id is not None:  # type: ignore[attr-defined]
+                            msg_id = confirmation_msg.message_id  # type: ignore[attr-defined]
                         elif isinstance(confirmation_msg, dict) and 'message_id' in confirmation_msg:
-                            msg_id = confirmation_msg['message_id']
+                            msg_id = confirmation_msg['message_id']  # type: ignore[index]
 
                         if msg_id:
                             telegram_bot.delete_message(chat_id, msg_id)
@@ -1021,7 +1021,6 @@ class UnifiedRestaurantAgent:
 
             # Get the accumulated raw query and context
             raw_query = search_context.get('raw_query', '')
-            collected_info = search_context.get('collected_info', {})
 
             logger.info(f"🔍 Executing {search_type} search with context: '{raw_query}'")
 
@@ -1562,14 +1561,21 @@ class UnifiedRestaurantAgent:
             # Priority 2: Check SearchContext for coordinates (geocoded by AI Chat Layer)
             elif state.get("search_context"):
                 search_ctx = state["search_context"]
-                if hasattr(search_ctx, 'gps_coordinates') and search_ctx.gps_coordinates:
+                if search_ctx and hasattr(search_ctx, 'gps_coordinates') and search_ctx.gps_coordinates:
                     coordinates = search_ctx.gps_coordinates
                     logger.info(f"✅ Using SearchContext coordinates (geocoded by AI Chat Layer): {coordinates[0]:.4f}, {coordinates[1]:.4f}")
 
             # Priority 3: Check location_data for existing coordinates
             elif state.get("location_data"):
                 location_data = state["location_data"]
-                if hasattr(location_data, 'latitude') and hasattr(location_data, 'longitude'):
+                # Type guard: Check location_data is not None and has coordinates
+                if location_data is not None and hasattr(location_data, 'gps_coordinates') and location_data.gps_coordinates:
+                    gps_coords = location_data.gps_coordinates
+                    if hasattr(gps_coords, 'latitude') and hasattr(gps_coords, 'longitude'):
+                        coordinates = (gps_coords.latitude, gps_coords.longitude)
+                        logger.info(f"✅ Using location_data.gps_coordinates: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
+                # Fallback: Check direct latitude/longitude attributes
+                elif location_data is not None and hasattr(location_data, 'latitude') and hasattr(location_data, 'longitude'):
                     if location_data.latitude is not None and location_data.longitude is not None:
                         coordinates = (location_data.latitude, location_data.longitude)
                         logger.info(f"✅ Using location_data coordinates: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
@@ -1858,14 +1864,15 @@ class UnifiedRestaurantAgent:
             maps_results = state.get("maps_results", [])
             query = state.get("query", "")
 
-            if not media_verification_results and not maps_results:
+            if (not media_verification_results or len(media_verification_results) == 0) and \
+               (not maps_results or len(maps_results) == 0):
                 logger.warning("⚠️ No results available for description generation")
                 return {**state, "current_step": "location_descriptions_generated"}
 
             # Use media_verification_results if available, otherwise maps_results
             venues_to_describe = media_verification_results if media_verification_results else maps_results
 
-            logger.info(f"📝 Generating descriptions for {len(venues_to_describe)} venues")
+            logger.info(f"📝 Generating descriptions for {len(venues_to_describe)} venues")  # type: ignore[arg-type]
 
             descriptions = asyncio.run(
                 self.location_map_search_ai_editor.create_descriptions_for_map_search_results(
@@ -1972,8 +1979,19 @@ class UnifiedRestaurantAgent:
                 }
 
             # Format using the Maps formatter
+            if isinstance(restaurants, dict):
+                venues_list = [restaurants]
+            elif isinstance(restaurants, list):
+                venues_list = restaurants
+            elif restaurants is None:
+                venues_list = []
+            else:
+                logger.warning(f"⚠️ Unexpected restaurants type: {type(restaurants)}, using empty list")
+                venues_list = []
+
+            # Format using the Maps formatter
             formatted = self.location_formatter.format_google_maps_results(
-                venues=restaurants,
+                venues=venues_list,
                 query=query,
                 location_description=f"GPS search: {query}"
             )
