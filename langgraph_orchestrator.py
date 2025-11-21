@@ -167,6 +167,8 @@ class UnifiedRestaurantAgent:
 
         self.memory_system = AIMemorySystem(config)
 
+        logger.info("ℹ️ AI Chat Layer will be used for location context management")
+
         logger.info("✅ Unified Restaurant Agent initialized")
 
     def _init_city_search_agents(self):
@@ -482,6 +484,23 @@ class UnifiedRestaurantAgent:
                     except Exception as conf_error:
                         logger.warning(f"⚠️ Could not send confirmation: {conf_error}")
 
+                # ✅ PHASE 2: Log stored location context from AI Chat Layer
+                if hasattr(self, 'ai_chat_layer'):
+                    stored_location = self.ai_chat_layer.get_location_context(user_id)
+                    if stored_location:
+                        loc_name = stored_location['location']
+                        coords = stored_location.get('coordinates')
+                        search_type = stored_location.get('search_type', 'unknown')
+                        if coords:
+                            logger.info(f"📍 User has stored location: {loc_name} [{search_type}] ({coords[0]:.4f}, {coords[1]:.4f})")
+                        else:
+                            logger.info(f"📍 User has stored location: {loc_name} [{search_type}]")
+                    else:
+                        logger.info(f"ℹ️ No stored location for user (will be stored after search)")
+
+                # Execute the search
+                logger.info(f"🚀 Executing search: '{search_query}'")
+                
                 # Execute the search
                 logger.info(f"🚀 Executing search: '{search_query}'")
 
@@ -1575,6 +1594,19 @@ class UnifiedRestaurantAgent:
                 raise ValueError(f"Invalid coordinate ranges: lat={lat}, lng={lng}")
 
             logger.info(f"✅ Coordinates validated: {lat:.4f}, {lng:.4f}")
+
+            # ✅ PHASE 2: Store location context after validation
+            user_id = state.get("user_id")
+            search_ctx = state.get("search_context")
+            if user_id and search_ctx and hasattr(self, 'ai_chat_layer'):
+                destination = search_ctx.destination if hasattr(search_ctx, 'destination') else 'Unknown location'
+                self.ai_chat_layer.store_location_context(
+                    user_id=user_id,
+                    location=destination,
+                    coordinates=coordinates,
+                    search_type='location_search'
+                )
+                logger.info(f"💾 Stored location in AI Chat Layer: {destination}")
 
             return {
                 **state, 

@@ -302,7 +302,7 @@ CURRENT STATE:
 {accumulated_state}
 
 STORED CONTEXT:
-- Last searched city: {last_searched_city}
+- Stored location: {stored_location}
 
 GPS COORDINATES: {has_gps}
 
@@ -332,15 +332,33 @@ Detect search mode and decide action.""")
 
             session = self._get_or_create_session(user_id, thread_id)
 
-            # CRITICAL FIX: Store GPS if provided AND use it for this turn
+            # ✅ FIX: Define current_gps based on provided coordinates
             current_gps = gps_coordinates
             if gps_coordinates:
                 session['gps_coordinates'] = gps_coordinates
-                logger.info(f"📍 Stored GPS coordinates: {gps_coordinates[0]:.4f}, {gps_coordinates[1]:.4f}")
+                logger.info(f"📍 Received GPS coordinates: {gps_coordinates[0]:.4f}, {gps_coordinates[1]:.4f}")
             elif session.get('gps_coordinates'):
-                # Use previously stored GPS if available
+                # Use previously stored GPS if available (for current conversation)
                 current_gps = session['gps_coordinates']
                 logger.info(f"📍 Using stored GPS coordinates: {current_gps[0]:.4f}, {current_gps[1]:.4f}")
+
+            # Check for valid stored location context
+            stored_location = self.get_location_context(user_id)
+            if stored_location:
+                loc_name = stored_location['location']
+                coords = stored_location.get('coordinates')
+                age_min = (time.time() - stored_location['stored_at']) / 60
+
+                if coords:
+                    logger.info(f"📂 Found valid stored location: {loc_name} ({coords[0]:.4f}, {coords[1]:.4f}) - {age_min:.1f} min old")
+                else:
+                    logger.info(f"📂 Found valid stored location: {loc_name} - {age_min:.1f} min old")
+
+                # Make stored location available to AI prompt
+                session['stored_location_context'] = stored_location
+            else:
+                logger.info("ℹ️ No valid stored location (expired or not found)")
+                session['stored_location_context'] = None
 
             # Add user message to history
             session['conversation_history'].append({
@@ -353,11 +371,25 @@ Detect search mode and decide action.""")
             current_state = session.get('state', ConversationState.GREETING)
             accumulated_state = session.get('accumulated_state', {})
 
+            # Use stored location context for AI decision
+            stored_location = session.get('stored_location_context')
+            stored_location_text = 'None'
+            if stored_location:
+                loc = stored_location['location']
+                coords = stored_location.get('coordinates')
+                age_min = (time.time() - stored_location['stored_at']) / 60
+                s_type = stored_location.get('search_type', 'unknown')
+
+                if coords:
+                    stored_location_text = f"{loc} [{s_type}] ({coords[0]:.4f}, {coords[1]:.4f}) - {age_min:.0f} min ago"
+                else:
+                    stored_location_text = f"{loc} [{s_type}] - {age_min:.0f} min ago"
+
             # Prepare prompt variables
             prompt_vars = {
                 'conversation_history': self._format_conversation_context(session),
                 'accumulated_state': json.dumps(accumulated_state, indent=2),
-                'last_searched_city': session.get('last_searched_city') or 'None',
+                'stored_location': stored_location_text,  # ✅ Changed from 'last_searched_city'
                 'has_gps': 'Yes' if current_gps else 'No',
                 'user_message': user_message
             }
@@ -461,12 +493,38 @@ Detect search mode and decide action.""")
                 session['last_search_time'] = time.time()
                 session['last_search_thread_id'] = thread_id
 
-                # Extract city from destination for context storage
-                if destination and (search_mode == 'city_search' or search_mode == 'coordinates_search'):
-                    city = self._extract_city_from_destination(destination)
-                    if city:
-                        session['last_searched_city'] = city
-                        logger.info(f"💾 Stored city context for user {user_id}: {city}")
+                # ✅ PHASE 2: Store location context based on search mode
+                # Different flows store different data:
+                # - GPS_REQUIRED: coordinates only (location = "GPS location")
+                # - COORDINATES_SEARCH: both location name and coordinates  
+                # - CITY_SEARCH: location name only (coordinates = None)
+
+                store_coords = None
+                store_location = destination
+
+                if search_mode == 'gps_required':
+                    # GPS flow: store coordinates, generic location name
+                    store_coords = current_gps
+                    store_location = "GPS location"
+                elif search_mode == 'coordinates_search':
+                    # Named location with coordinates: store both
+                    store_coords = current_gps  # Already geocoded
+                    store_location = destination
+                elif search_mode == 'city_search':
+                    # City/broad area: location name only
+                    store_coords = None
+                    store_location = destination
+
+                # ✅ FIX: Only store if we have a valid location
+                if store_location:
+                    self.store_location_context(
+                        user_id=user_id,
+                        location=store_location,
+                        coordinates=store_coords,
+                        search_type=search_mode
+                    )
+                else:
+                    logger.warning("⚠️ Cannot store location context - no destination provided")
 
                 # ================================================================
                 # EARLY GEOCODING FOR COORDINATES_SEARCH MODE
@@ -482,12 +540,14 @@ Detect search mode and decide action.""")
 
                         if geocoded_coordinates:
                             logger.info(f"✅ Successfully geocoded '{destination}' → {geocoded_coordinates[0]:.4f}, {geocoded_coordinates[1]:.4f}")
-                            # Store in session for future use
-                            session['last_geocoded_location'] = {
-                                'address': destination,
-                                'coordinates': geocoded_coordinates,
-                                'timestamp': time.time()
-                            }
+
+                            # ✅ PHASE 2: Use new location context storage (single source of truth)
+                            self.store_location_context(
+                                user_id=user_id,
+                                location=destination,
+                                coordinates=geocoded_coordinates,
+                                search_type='coordinates_search'
+                            )
                         else:
                             # Geocoding failed - ask for clarification
                             logger.warning(f"❌ Failed to geocode '{destination}'")
@@ -537,7 +597,7 @@ Detect search mode and decide action.""")
                     search_type_hint = SearchType.CITY_SEARCH
 
                 # Create search handoff with coordinates (GPS or geocoded)
-                logger.info(f"🔍 Creating search handoff:")
+                logger.info("🔍 Creating search handoff:")
                 logger.info(f"   Mode: {search_mode}")
                 logger.info(f"   Type: {search_type_hint.value}")
                 logger.info(f"   Destination: {destination}")
@@ -634,7 +694,6 @@ Detect search mode and decide action.""")
                 'accumulated_state': {},
                 'current_destination': None,
                 'current_cuisine': None,
-                'last_searched_city': None,
                 'gps_coordinates': None,
                 'last_search_time': None,
                 'last_search_thread_id': None
@@ -642,10 +701,11 @@ Detect search mode and decide action.""")
         return self.user_sessions[user_id]
 
     def clear_session(self, user_id: int):
-        """Clear user session but keep last_searched_city"""
+        """Clear user session but keep location context"""
         if user_id in self.user_sessions:
             session = self.user_sessions[user_id]
-            last_city = session.get('last_searched_city')
+            # ✅ PHASE 3: Keep the new location context storage
+            location_context = session.get('current_location')  # This has 30-min expiry
 
             # Clear everything else
             session['current_destination'] = None
@@ -654,11 +714,132 @@ Detect search mode and decide action.""")
             session['accumulated_state'] = {}
             session['last_search_time'] = None
 
-            # Restore city context
-            session['last_searched_city'] = last_city
+            # Location context is kept (already in 'current_location')
+            # No need to restore since we didn't delete it
 
-            logger.info(f"🧹 Cleared session for user {user_id} (kept city context: {last_city})")
+            if location_context:
+                loc_name = location_context.get('location', 'unknown')
+                logger.info(f"🧹 Cleared session for user {user_id} (kept location context: {loc_name})")
+            else:
+                logger.info(f"🧹 Cleared session for user {user_id}")
 
     def get_session_info(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get current session info"""
         return self.user_sessions.get(user_id)
+
+    # ================================================================
+    # LOCATION CONTEXT MANAGEMENT - SINGLE SOURCE OF TRUTH
+    # ================================================================
+
+    def store_location_context(
+        self, 
+        user_id: int, 
+        location: str,
+        coordinates: Optional[Tuple[float, float]] = None,
+        search_type: str = "city_search"
+    ) -> None:
+        """
+        Store location context with automatic 30-minute expiry
+
+        This is the SINGLE SOURCE OF TRUTH for current location.
+        All layers check this method for valid location context.
+
+        Args:
+            user_id: User ID
+            location: Location name/description (e.g., "Paris", "Tokyo", "Berlin")
+            coordinates: Optional GPS coordinates (lat, lng)
+            search_type: 'city_search' or 'coordinates_search'
+        """
+        session = self.user_sessions.get(user_id)
+        if not session:
+            # Create minimal session if doesn't exist
+            session = {
+                'user_id': user_id,
+                'created_at': time.time()
+            }
+            self.user_sessions[user_id] = session
+
+        # Store location context with timestamp
+        session['current_location'] = {
+            'location': location,
+            'coordinates': coordinates,
+            'search_type': search_type,
+            'stored_at': time.time()
+        }
+
+        coord_str = f" ({coordinates[0]:.4f}, {coordinates[1]:.4f})" if coordinates else ""
+        logger.info(f"📍 Stored location for user {user_id}: {location}{coord_str} (expires in 30 min)")
+
+    def get_location_context(
+        self, 
+        user_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get current location context if still valid (< 30 minutes)
+
+        This is the SINGLE CHECK for location validity across all layers.
+        Returns None if expired or not found.
+
+        Returns:
+            Dict with keys: location, coordinates, search_type, stored_at
+            or None if expired/not found
+        """
+        session = self.user_sessions.get(user_id)
+        if not session:
+            return None
+
+        location_ctx = session.get('current_location')
+        if not location_ctx:
+            return None
+
+        # Check if expired (30 minutes = 1800 seconds)
+        stored_at = location_ctx.get('stored_at', 0)
+        age_seconds = time.time() - stored_at
+
+        if age_seconds > 1800:  # 30 minutes
+            age_minutes = age_seconds / 60
+            logger.info(f"⏰ Location context expired for user {user_id} ({age_minutes:.1f} min old)")
+            # Clean up expired location
+            del session['current_location']
+            return None
+
+        age_minutes = age_seconds / 60
+        logger.info(f"✅ Location context valid for user {user_id}: {location_ctx['location']} ({age_minutes:.1f} min old)")
+        return location_ctx
+
+    def clear_location_context(self, user_id: int) -> None:
+        """
+        Clear stored location context (e.g., when destination changes)
+
+        Call this when:
+        - AI detects destination change
+        - User explicitly changes location
+        - Manual reset needed
+        """
+        session = self.user_sessions.get(user_id)
+        if session and 'current_location' in session:
+            old_location = session['current_location'].get('location', 'unknown')
+            del session['current_location']
+            logger.info(f"🗑️ Cleared location context for user {user_id} (was: {old_location})")
+        else:
+            logger.debug(f"ℹ️ No location context to clear for user {user_id}")
+
+
+    def get_location_age_minutes(self, user_id: int) -> Optional[float]:
+        """
+        Get age of stored location in minutes
+
+        Returns:
+            Age in minutes, or None if no location stored
+        """
+        session = self.user_sessions.get(user_id)
+        if not session:
+            return None
+
+        location_ctx = session.get('current_location')
+        if not location_ctx:
+            return None
+
+        stored_at = location_ctx.get('stored_at', 0)
+        age_seconds = time.time() - stored_at
+        return age_seconds / 60
