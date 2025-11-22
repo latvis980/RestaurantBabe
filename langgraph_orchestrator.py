@@ -26,7 +26,7 @@ from typing import TypedDict, Optional, Any, List, Dict, Tuple
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.types import interrupt
+from langgraph.types import interrupt, Command, Interrupt
 from langsmith import traceable
 from datetime import datetime, timezone
 
@@ -1862,8 +1862,8 @@ class UnifiedRestaurantAgent:
         Format location search results for Telegram
 
         Two scenarios:
-        1. DATABASE results → format, set interrupt, pause for user decision
-        2. MAPS results → format, end (no interrupt needed)
+        1. DATABASE results → format, interrupt, wait for user decision
+        2. MAPS results → format, end (no interrupt)
         """
         try:
             logger.info("📊 Location Format Results")
@@ -1960,7 +1960,11 @@ class UnifiedRestaurantAgent:
                 "current_step": "no_results"
             }
 
+        except Interrupt:
+            # Let interrupt propagate - this is normal!
+            raise
         except Exception as e:
+            # Only catch real errors
             logger.error(f"❌ Error in location formatting: {e}")
             import traceback
             logger.error(f"   Traceback: {traceback.format_exc()}")
