@@ -1073,15 +1073,18 @@ class UnifiedRestaurantAgent:
 
     def _route_after_database_format(self, state: UnifiedSearchState) -> str:
         """
-        Simple routing based on route_decision flag set by the node
+        Route after formatting database results
+
+        Check if this is a resume from user decision
         """
-        route = state.get("route_decision", "end")
+        # Check if user resumed with "show more" decision
+        human_decision = state.get("human_decision_result")
 
-        logger.info(f"🎯 Route decision: {route}")
-
-        if route == "continue_to_maps":
+        if human_decision == "accept":
+            logger.info("🗺️ User requested more results - proceeding to Google Maps")
             return "continue_to_maps"
         else:
+            logger.info("✅ Search complete - ending")
             return "end"
 
     def _route_after_geocode(self, state: UnifiedSearchState) -> str:
@@ -1863,7 +1866,7 @@ class UnifiedRestaurantAgent:
         Format location search results for Telegram
 
         Two scenarios:
-        1. DATABASE results → format, interrupt, wait for user decision
+        1. DATABASE results → format, RETURN state, let graph pause at END
         2. MAPS results → format, end (no interrupt)
         """
         try:
@@ -1889,43 +1892,25 @@ class UnifiedRestaurantAgent:
                         offer_more_search=True
                     )
 
-                    # Update state with formatted results
-                    updated_state = {
+                    # ⚠️ KEY CHANGE: Just return the state with results
+                    # The graph will pause at END, Telegram will send results,
+                    # then user can resume with "show more"
+                    logger.info("✅ Database results formatted - graph will pause at END")
+                    return {
                         **state,
                         "formatted_message": formatted.get("message", ""),
                         "final_restaurants": filtered_restaurants,
                         "success": True,
-                        "current_step": "database_results_shown"
+                        "current_step": "database_results_shown",
+                        # These flags tell the system this is resumable
+                        "awaiting_user_decision": True,  # NEW: Flag for resume detection
+                        "resume_point": "after_database_results"  # NEW: Where to resume from
                     }
 
-                    # 🔑 Use interrupt() to pause and ask user
-                    logger.info("⏸️ Interrupting for user decision on more results")
-                    user_decision = interrupt({
-                        "message": "Do you want to see more results from Google Maps?",
-                        "options": ["yes", "no"],
-                        "context": "database_results_shown"
-                    })
-
-                    # When resumed, user_decision contains the answer
-                    if user_decision and user_decision.get("answer") == "yes":
-                        logger.info("✅ User wants more results - continuing to Maps")
-                        return {
-                            **updated_state,
-                            "skip_database": True,  # Skip DB if somehow loops back
-                            "route_decision": "continue_to_maps"
-                        }
-                    else:
-                        logger.info("✅ User satisfied with database results - ending")
-                        return {
-                            **updated_state,
-                            "route_decision": "end"
-                        }
-
             # ============================================================
-            # CASE 2: Formatting MAPS results (final, no interrupt)
+            # CASE 2: Formatting MAPS results (final, no pause)
             # ============================================================
             if maps_results:
-                # maps_results should be a list from media_verification_results
                 if not isinstance(maps_results, list):
                     logger.error(f"❌ maps_results is not a list: {type(maps_results)}")
                     maps_results = []
@@ -1934,7 +1919,7 @@ class UnifiedRestaurantAgent:
                     logger.info(f"📋 Formatting MAPS results ({len(maps_results)} restaurants)")
 
                     formatted = self.location_formatter.format_google_maps_results(
-                        venues=maps_results,  # Now guaranteed to be a list
+                        venues=maps_results,
                         query=query,
                         location_description=f"GPS search: {query}"
                     )
@@ -1944,12 +1929,11 @@ class UnifiedRestaurantAgent:
                         "formatted_message": formatted.get("message", ""),
                         "final_restaurants": maps_results,
                         "success": True,
-                        "route_decision": "end",
                         "current_step": "maps_results_shown"
                     }
 
             # ============================================================
-            # CASE 3: No results at all
+            # CASE 3: No results
             # ============================================================
             logger.warning("⚠️ No results to format")
             return {
@@ -1957,15 +1941,13 @@ class UnifiedRestaurantAgent:
                 "formatted_message": "😔 I couldn't find any restaurants matching your search.",
                 "final_restaurants": [],
                 "success": False,
-                "route_decision": "end",
                 "current_step": "no_results"
             }
 
         except GraphInterrupt:
-            # Let interrupt propagate - this is normal!
+            logger.info("⏸️ Graph interrupted successfully")
             raise
         except Exception as e:
-            # Only catch real errors
             logger.error(f"❌ Error in location formatting: {e}")
             import traceback
             logger.error(f"   Traceback: {traceback.format_exc()}")
@@ -1973,7 +1955,6 @@ class UnifiedRestaurantAgent:
                 **state, 
                 "error_message": f"Location formatting failed: {str(e)}", 
                 "success": False,
-                "route_decision": "end",
                 "current_step": "formatting_error"
             }
 
