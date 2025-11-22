@@ -308,7 +308,16 @@ class UnifiedRestaurantAgent:
         # ═══════════════════════════════════════════════════════════════════════
 
         # Path 1: Database results shown → END (session stored for follow-up)
-        graph.add_edge("location_format_results", END)
+        # After formatting database results, check if we should pause or continue
+        graph.add_conditional_edges(
+            "location_format_results",
+            self._route_after_database_format,
+            {
+                "pause": END,                           # Pause for user decision
+                "continue_to_maps": "location_maps_search",  # User wants more
+                "end": END                              # Complete
+            }
+        )
 
         # Path 2: Maps search → verification → format → END (session cleared)
         graph.add_edge("location_maps_search", "location_media_verification")
@@ -1098,6 +1107,28 @@ class UnifiedRestaurantAgent:
             logger.info(f"🗺️ Database insufficient ({result_count} results) - routing to Maps")
             return "continue_to_maps"
 
+    def _route_after_database_format(self, state: UnifiedSearchState) -> str:
+        """
+        Route after formatting database results
+
+        Logic:
+        - If human_decision_pending → pause at END
+        - If human_decision_result="accept" → continue to Maps
+        - Otherwise → END
+        """
+        human_decision_pending = state.get("human_decision_pending", False)
+        human_decision_result = state.get("human_decision_result", "")
+
+        if human_decision_pending:
+            logger.info("⏸️ Pausing after database results - waiting for user decision")
+            return "pause"
+        elif human_decision_result == "accept":
+            logger.info("🗺️ User requested more results - proceeding to Google Maps")
+            return "continue_to_maps"
+        else:
+            logger.info("✅ Search complete - ending")
+            return "end"
+
     def _route_after_geocode(self, state: UnifiedSearchState) -> str:
         """
         Route after geocoding - check if this is a follow-up Maps request
@@ -1697,52 +1728,6 @@ class UnifiedRestaurantAgent:
             return {**state, "error_message": f"Location filtering failed: {str(e)}", "success": False}
 
 
-
-    @traceable(name="location_human_decision")
-    def _location_human_decision(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """
-        Human decision handler - ENHANCED to handle database-sufficient results
-
-        NEW BEHAVIOR:
-        - If database results are sufficient: Set flag to show them, but stay paused
-        - If database results are insufficient: Automatically accept and trigger Maps
-        """
-        try:
-            logger.info("🤔 Location Human Decision")
-
-            # Check if we have sufficient database results
-            filtered_results = state.get("filtered_results", {}) or {}  # Ensure it's a dict, not None
-            database_sufficient = filtered_results.get("database_sufficient", False)
-            filtered_restaurants = filtered_results.get("filtered_restaurants", [])
-
-            if database_sufficient and len(filtered_restaurants) > 0:
-                # We have good database results - show them but PAUSE for potential "more results" request
-                logger.info(f"✅ Database results are sufficient - showing {len(filtered_restaurants)} results and pausing")
-                logger.info("   User can say 'let's find more' to trigger Google Maps search")
-
-                return {
-                    **state,
-                    "human_decision_pending": True,  # PAUSE here!
-                    "database_results_shown": True,  # Flag that we showed database results
-                    "current_step": "human_decision_pending"
-                }
-            else:
-                # Database results insufficient - automatically trigger Maps without pausing
-                logger.info("🗺️ Database insufficient - automatically triggering Maps search (no pause)")
-
-                return {
-                    **state,
-                    "human_decision_pending": False,  # Don't pause - go straight to Maps
-                    "human_decision_result": "accept",  # Auto-accept Maps search
-                    "database_results_shown": False,
-                    "current_step": "auto_triggering_maps"
-                }
-
-        except Exception as e:
-            logger.error(f"❌ Error in location human decision: {e}")
-            return {**state, "error_message": f"Human decision setup failed: {str(e)}", "success": False}
-
-
     @traceable(name="location_maps_search")
     def _location_maps_search(self, state: UnifiedSearchState) -> Dict[str, Any]:
         """FIXED: Properly handle async search_venues_with_ai_analysis()"""
@@ -1919,14 +1904,20 @@ class UnifiedRestaurantAgent:
 
     @traceable(name="location_format_results")
     def _location_format_results(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """Format location search results for Telegram"""
+        """
+        Format location search results for Telegram
+
+        UPDATED: Now sets human_decision_pending flag for database results to enable "more results" flow
+        """
         try:
             logger.info("📊 Location Format Results")
 
             query = state.get("query", "restaurants")
             filtered_results = state.get("filtered_results", {})
 
-            # Check if we're formatting database results (shown before Maps search)
+            # ================================================================
+            # CASE 1: Formatting DATABASE results (shown before Maps search)
+            # ================================================================
             if filtered_results and filtered_results.get("filtered_restaurants"):
                 filtered_restaurants = filtered_results.get("filtered_restaurants", [])
 
@@ -1940,75 +1931,68 @@ class UnifiedRestaurantAgent:
                         offer_more_search=True
                     )
 
+                    # ⏸️ PAUSE HERE - User can request "more results"
+                    logger.info("⏸️ Setting human_decision_pending - user can request more results")
                     return {
                         **state,
                         "formatted_message": formatted.get("message", ""),
                         "final_restaurants": filtered_restaurants,
                         "success": True,
-                        "current_step": "database_results_formatted"
+                        "human_decision_pending": True,  # 🔑 KEY FIX: Enable pause for follow-up
+                        "current_step": "database_results_shown"
                     }
 
-            # Otherwise, format Maps results (after verification)
-            logger.info("📋 Formatting MAPS results (user requested more options)")
+            # ================================================================
+            # CASE 2: Formatting MAPS results (after Google Maps search)
+            # ================================================================
+            # Get media verification results (these contain full descriptions)
+            media_verification_results = state.get("media_verification_results", [])
 
-            # FIXED: maps_results is a LIST of VenueSearchResult, not a dict
-            maps_results = state.get("maps_results", [])
-            media_results = state.get("media_verification_results", [])
+            if media_verification_results and len(media_verification_results) > 0:
+                logger.info(f"📋 Formatting MAPS results ({len(media_verification_results)} restaurants)")
 
-            # Determine which results to use
-            if media_results and len(media_results) > 0:
-                # Use media-verified results
-                restaurants = media_results
-                logger.info(f"   Using {len(restaurants)} media-verified results")
-            elif maps_results and len(maps_results) > 0:
-                # Fallback to raw Maps results
-                restaurants = maps_results
-                logger.info(f"   Using {len(restaurants)} raw Maps results")
-            elif filtered_results and filtered_results.get("filtered_restaurants"):
-                # Last fallback to database results
-                restaurants = filtered_results.get("filtered_restaurants", [])
-                logger.info(f"   Fallback to {len(restaurants)} database results")
-            else:
-                # No results at all
+                # Format using the Maps formatter
+                formatted = self.location_formatter.format_google_maps_results(
+                    venues=media_verification_results,
+                    query=query,
+                    location_description=f"GPS search: {query}"
+                )
+
+                # ✅ COMPLETE - No pause, this is final result
+                logger.info("✅ Maps search complete - ending normally")
                 return {
                     **state,
-                    "formatted_message": "😔 No results found.",
-                    "final_restaurants": [],
-                    "success": False,
-                    "current_step": "location_results_formatted"
+                    "formatted_message": formatted.get("message", ""),
+                    "final_restaurants": media_verification_results,
+                    "success": True,
+                    "human_decision_pending": False,  # No pause - search is complete
+                    "current_step": "maps_results_shown"
                 }
 
-            # Format using the Maps formatter
-            if isinstance(restaurants, dict):
-                venues_list = [restaurants]
-            elif isinstance(restaurants, list):
-                venues_list = restaurants
-            elif restaurants is None:
-                venues_list = []
-            else:
-                logger.warning(f"⚠️ Unexpected restaurants type: {type(restaurants)}, using empty list")
-                venues_list = []
-
-            # Format using the Maps formatter
-            formatted = self.location_formatter.format_google_maps_results(
-                venues=venues_list,
-                query=query,
-                location_description=f"GPS search: {query}"
-            )
-
+            # ================================================================
+            # CASE 3: Fallback - No results from either source
+            # ================================================================
+            logger.warning("⚠️ No results to format from either database or maps")
             return {
                 **state,
-                "formatted_message": formatted.get("message", ""),
-                "final_restaurants": restaurants,
-                "success": True,
-                "current_step": "location_results_formatted"
+                "formatted_message": "😔 No restaurants found in this area.",
+                "final_restaurants": [],
+                "success": False,
+                "human_decision_pending": False,
+                "current_step": "no_results"
             }
 
         except Exception as e:
             logger.error(f"❌ Error in location formatting: {e}")
             import traceback
             logger.error(f"   Traceback: {traceback.format_exc()}")
-            return {**state, "error_message": f"Location formatting failed: {str(e)}", "success": False}
+            return {
+                **state, 
+                "error_message": f"Location formatting failed: {str(e)}", 
+                "success": False,
+                "human_decision_pending": False,
+                "current_step": "formatting_error"
+            }
 
 
     # ============================================================================
@@ -2360,6 +2344,14 @@ class UnifiedRestaurantAgent:
             # Update state with human decision
             current_state["human_decision_result"] = decision
             current_state["human_decision_pending"] = False
+
+            # CRITICAL: Update the checkpoint with new state BEFORE resuming
+            # This ensures the graph sees the updated decision when it resumes
+            self.checkpointer.put(
+                config=config,
+                checkpoint=checkpoint_tuple.checkpoint,
+                metadata=checkpoint_tuple.metadata
+            )
 
             logger.info(f"📍 Current step before resume: {current_state.get('current_step')}")
             logger.info(f"🔄 Resuming graph from checkpoint with decision: {decision}")
