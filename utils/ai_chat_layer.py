@@ -486,7 +486,7 @@ Detect search mode and decide action.""")
 
                     return create_resume_handoff(
                         thread_id=original_thread_id,
-                        decision="accept"
+                        decision="yes"  # This becomes "answer": "yes" in the resume payload
                     )
 
                 # Regular new search
