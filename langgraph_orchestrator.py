@@ -26,7 +26,8 @@ from typing import TypedDict, Optional, Any, List, Dict, Tuple
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.types import interrupt, Command, Interrupt
+from langgraph.types import interrupt, Command
+from langgraph.errors import GraphInterrupt
 from langsmith import traceable
 from datetime import datetime, timezone
 
@@ -1960,7 +1961,7 @@ class UnifiedRestaurantAgent:
                 "current_step": "no_results"
             }
 
-        except Interrupt:
+        except GraphInterrupt:
             # Let interrupt propagate - this is normal!
             raise
         except Exception as e:
