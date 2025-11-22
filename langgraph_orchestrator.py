@@ -26,7 +26,7 @@ from typing import TypedDict, Optional, Any, List, Dict, Tuple
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.types import interrupt, Command
+from langgraph.types import interrupt
 from langsmith import traceable
 from datetime import datetime, timezone
 
@@ -1083,16 +1083,6 @@ class UnifiedRestaurantAgent:
         else:
             return "end"
 
-    # In graph construction:
-    graph.add_conditional_edges(
-        "location_format_results",
-        self._route_after_database_format,
-        {
-            "continue_to_maps": "location_maps_search",
-            "end": END
-        }
-    )
-
     def _route_after_geocode(self, state: UnifiedSearchState) -> str:
         """
         Route after geocoding - check if this is a follow-up Maps request
@@ -1931,25 +1921,31 @@ class UnifiedRestaurantAgent:
                         }
 
             # ============================================================
-            # CASE 2: Formatting MAPS results (final results, no pause)
+            # CASE 2: Formatting MAPS results (final, no interrupt)
             # ============================================================
-            if maps_results and len(maps_results) > 0:
-                logger.info(f"📋 Formatting MAPS results ({len(maps_results)} restaurants)")
+            if maps_results:
+                # maps_results should be a list from media_verification_results
+                if not isinstance(maps_results, list):
+                    logger.error(f"❌ maps_results is not a list: {type(maps_results)}")
+                    maps_results = []
 
-                formatted = self.location_formatter.format_google_maps_results(
-                    venues=maps_results,
-                    query=query,
-                    location_description=f"GPS search: {query}"
-                )
+                if len(maps_results) > 0:
+                    logger.info(f"📋 Formatting MAPS results ({len(maps_results)} restaurants)")
 
-                return {
-                    **state,
-                    "formatted_message": formatted.get("message", ""),
-                    "final_restaurants": maps_results,
-                    "success": True,
-                    "route_decision": "end",
-                    "current_step": "maps_results_shown"
-                }
+                    formatted = self.location_formatter.format_google_maps_results(
+                        venues=maps_results,  # Now guaranteed to be a list
+                        query=query,
+                        location_description=f"GPS search: {query}"
+                    )
+
+                    return {
+                        **state,
+                        "formatted_message": formatted.get("message", ""),
+                        "final_restaurants": maps_results,
+                        "success": True,
+                        "route_decision": "end",
+                        "current_step": "maps_results_shown"
+                    }
 
             # ============================================================
             # CASE 3: No results at all
