@@ -387,22 +387,49 @@ def handle_location_message(message):
     awaiting_data = users_awaiting_location.get(user_id)
 
     if awaiting_data:
-        # User was asked for location - use original query
+        # User was asked for location - retrieve parsed cuisine from AI Chat Layer
         original_query = awaiting_data.get("query", "restaurants")
         del users_awaiting_location[user_id]
 
+        # FIXED: Get the already-parsed cuisine from AI Chat Layer session
+        try:
+            ai_chat_layer = unified_agent.ai_chat_layer if hasattr(unified_agent, 'ai_chat_layer') else None
+
+            if ai_chat_layer:
+                session = ai_chat_layer.user_sessions.get(user_id, {})
+                parsed_cuisine = session.get('current_cuisine') or session.get('accumulated_state', {}).get('cuisine')
+                requirements = session.get('accumulated_state', {}).get('requirements', [])
+
+                # Build clean query from parsed data
+                if parsed_cuisine:
+                    if requirements:
+                        clean_query = f"{' '.join(requirements)} {parsed_cuisine}"
+                    else:
+                        clean_query = parsed_cuisine
+                    logger.info(f"📝 Using parsed cuisine from AI Chat Layer: '{original_query}' → '{clean_query}'")
+                else:
+                    clean_query = original_query
+                    logger.warning(f"⚠️ No parsed cuisine found in session, using original query")
+            else:
+                clean_query = original_query
+                logger.warning(f"⚠️ AI Chat Layer not available, using original query")
+
+        except Exception as e:
+            logger.error(f"Error retrieving parsed cuisine: {e}")
+            clean_query = original_query
+
         bot.send_message(
             chat_id,
-            f"📍 <b>Perfect! Searching for {original_query} near your location...</b>",
+            f"📍 <b>Perfect! Searching for {clean_query} near your location...</b>",
             parse_mode='HTML',
             reply_markup=remove_location_button()
         )
 
-        # Process with coordinates
+        # Process with coordinates using CLEAN QUERY
         asyncio.run(process_user_message(
             user_id=user_id,
             chat_id=chat_id,
-            message_text=original_query,
+            message_text=clean_query,
             gps_coordinates=(latitude, longitude),
             message_type="location"
         ))
@@ -423,19 +450,45 @@ def handle_text_message(message):
 
     logger.info(f"📝 Text message from user {user_id}: '{message_text[:50]}...'")
 
-    # Check if user is providing location as text
     if user_id in users_awaiting_location:
         # User providing text location instead of GPS
         awaiting_data = users_awaiting_location[user_id]
         original_query = awaiting_data.get("query", "restaurants")
         del users_awaiting_location[user_id]
 
-        # Combine original query with location
-        combined_query = f"{original_query} in {message_text}"
+        # FIXED: Get the already-parsed cuisine from AI Chat Layer session
+        try:
+            ai_chat_layer = unified_agent.ai_chat_layer if hasattr(unified_agent, 'ai_chat_layer') else None
+
+            if ai_chat_layer:
+                session = ai_chat_layer.user_sessions.get(user_id, {})
+                parsed_cuisine = session.get('current_cuisine') or session.get('accumulated_state', {}).get('cuisine')
+                requirements = session.get('accumulated_state', {}).get('requirements', [])
+
+                # Build clean query from parsed data
+                if parsed_cuisine:
+                    if requirements:
+                        clean_query = f"{' '.join(requirements)} {parsed_cuisine}"
+                    else:
+                        clean_query = parsed_cuisine
+                    logger.info(f"📝 Using parsed cuisine from AI Chat Layer: '{original_query}' → '{clean_query}'")
+                else:
+                    clean_query = original_query
+                    logger.warning(f"⚠️ No parsed cuisine found in session, using original query")
+            else:
+                clean_query = original_query
+                logger.warning(f"⚠️ AI Chat Layer not available, using original query")
+
+        except Exception as e:
+            logger.error(f"Error retrieving parsed cuisine: {e}")
+            clean_query = original_query
+
+        # Combine clean query with location
+        combined_query = f"{clean_query} in {message_text}"
 
         bot.send_message(
             chat_id,
-            f"📍 <b>Got it! Searching for {original_query} in {message_text}...</b>",
+            f"📍 <b>Got it! Searching for {clean_query} in {message_text}...</b>",
             parse_mode='HTML',
             reply_markup=remove_location_button()
         )
@@ -446,6 +499,7 @@ def handle_text_message(message):
             message_text=combined_query,
             message_type="text"
         ))
+
     else:
         # Normal message processing through AI Chat Layer
         asyncio.run(process_user_message(
