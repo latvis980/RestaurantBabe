@@ -409,7 +409,7 @@ class LangGraphSupervisor:
     ) -> Dict[str, Any]:
         """
         Handle EXECUTE_SEARCH command.
-        Routes to appropriate LCEL pipeline based on search type.
+        Sends confirmation video, then routes to appropriate LCEL pipeline.
         """
         search_ctx = handoff.search_context
 
@@ -433,26 +433,125 @@ class LangGraphSupervisor:
         search_gps = search_ctx.gps_coordinates or gps_coordinates
 
         # ================================================================
+        # SEND CONFIRMATION MESSAGE WITH VIDEO
+        # ================================================================
+        confirmation_msg = None
+        if telegram_bot and chat_id:
+            confirmation_msg = await self._send_search_confirmation(
+                telegram_bot=telegram_bot,
+                chat_id=chat_id,
+                search_type=search_ctx.search_type,
+                search_query=search_query,
+                destination=search_ctx.destination,
+                cuisine=search_ctx.cuisine
+            )
+
+        # ================================================================
         # ROUTE TO APPROPRIATE LCEL PIPELINE
         # ================================================================
+        try:
+            if search_ctx.search_type == SearchType.LOCATION_SEARCH:
+                # ----- LOCATION SEARCH (GPS-based) -----
+                result = await self._execute_location_search(
+                    search_query=search_query,
+                    search_ctx=search_ctx,
+                    gps_coordinates=search_gps,
+                    cancel_check_fn=cancel_check_fn,
+                    start_time=start_time
+                )
+            else:
+                # ----- CITY SEARCH (city-wide) -----
+                result = await self._execute_city_search(
+                    search_query=search_query,
+                    search_ctx=search_ctx,
+                    cancel_check_fn=cancel_check_fn,
+                    start_time=start_time
+                )
+            
+            # Clean up confirmation message after search completes
+            if confirmation_msg and telegram_bot:
+                try:
+                    telegram_bot.delete_message(chat_id, confirmation_msg.message_id)
+                except Exception as e:
+                    logger.debug(f"Could not delete confirmation message: {e}")
+            
+            return result
+            
+        except Exception as e:
+            # Clean up confirmation message on error
+            if confirmation_msg and telegram_bot:
+                try:
+                    telegram_bot.delete_message(chat_id, confirmation_msg.message_id)
+                except Exception:
+                    pass
+            raise
 
-        if search_ctx.search_type == SearchType.LOCATION_SEARCH:
-            # ----- LOCATION SEARCH (GPS-based) -----
-            return await self._execute_location_search(
-                search_query=search_query,
-                search_ctx=search_ctx,
-                gps_coordinates=search_gps,
-                cancel_check_fn=cancel_check_fn,
-                start_time=start_time
-            )
-        else:
-            # ----- CITY SEARCH (city-wide) -----
-            return await self._execute_city_search(
-                search_query=search_query,
-                search_ctx=search_ctx,
-                cancel_check_fn=cancel_check_fn,
-                start_time=start_time
-            )
+    async def _send_search_confirmation(
+        self,
+        telegram_bot,
+        chat_id: int,
+        search_type: SearchType,
+        search_query: str,
+        destination: Optional[str],
+        cuisine: Optional[str]
+    ):
+        """
+        Send confirmation message with video before search starts.
+        
+        Uses different videos for city vs location searches.
+        """
+        try:
+            # Build caption based on search type
+            if search_type == SearchType.LOCATION_SEARCH:
+                video_path = 'media/vicinity_search.mp4'
+                if cuisine and destination:
+                    caption = f"📍 <b>Searching for {cuisine} near {destination}...</b>\n\n⏱ Checking my curated collection and finding the best places nearby."
+                elif cuisine:
+                    caption = f"📍 <b>Searching for {cuisine} near you...</b>\n\n⏱ Checking my curated collection and finding the best places nearby."
+                else:
+                    caption = "📍 <b>Searching for restaurants nearby...</b>\n\n⏱ Checking my curated collection and finding the best places nearby."
+            else:
+                video_path = 'media/searching.mp4'
+                if cuisine and destination:
+                    caption = f"🔍 <b>Searching for {cuisine} in {destination}...</b>\n\n⏱ This might take a minute while I check with my sources."
+                elif destination:
+                    caption = f"🔍 <b>Searching for restaurants in {destination}...</b>\n\n⏱ This might take a minute while I check with my sources."
+                else:
+                    caption = "🔍 <b>Searching for the best restaurants...</b>\n\n⏱ This might take a minute while I check with my sources."
+
+            # Try to send video
+            try:
+                with open(video_path, 'rb') as video:
+                    confirmation_msg = telegram_bot.send_video(
+                        chat_id,
+                        video,
+                        caption=caption,
+                        parse_mode='HTML'
+                    )
+                    logger.info(f"📹 Sent search confirmation with video: {video_path}")
+                    return confirmation_msg
+            except FileNotFoundError:
+                logger.warning(f"⚠️ Video file not found: {video_path}")
+                # Fallback to text message
+                confirmation_msg = telegram_bot.send_message(
+                    chat_id,
+                    caption,
+                    parse_mode='HTML'
+                )
+                return confirmation_msg
+            except Exception as e:
+                logger.warning(f"⚠️ Could not send video: {e}")
+                # Fallback to text message
+                confirmation_msg = telegram_bot.send_message(
+                    chat_id,
+                    caption,
+                    parse_mode='HTML'
+                )
+                return confirmation_msg
+                
+        except Exception as e:
+            logger.error(f"❌ Error sending search confirmation: {e}")
+            return None
 
     async def _handle_resume(
         self,
