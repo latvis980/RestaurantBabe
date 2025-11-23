@@ -235,7 +235,7 @@ class FollowUpSearchAgent:
         })
 
         # FINAL RETURN (correct structure for LangGraph orchestrator)
-        return {"main_list": verified_restaurants}
+        return {"enhanced_results": {"main_list": verified_restaurants}}
 
 
     def _verify_and_filter_restaurant(self, restaurant: Dict[str, Any], destination: str) -> Optional[Dict[str, Any]]:
