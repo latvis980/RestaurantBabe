@@ -1426,7 +1426,7 @@ class UnifiedRestaurantAgent:
         try:
             logger.info("🔍 City Follow-up Search (Google Maps verification)")
 
-            edited_results = state.get("edited_results")
+            enhanced_results = state.get("enhanced_results")
             destination = state.get("destination", "Unknown")
 
             if not edited_results:
@@ -1478,15 +1478,26 @@ class UnifiedRestaurantAgent:
     
     @traceable(name="city_format_results")
     async def _city_format_results(self, state: UnifiedSearchState) -> Dict[str, Any]:
-        """CORRECTED: Use TelegramFormatter.format_recommendations()"""
+        """FIXED: Use enhanced_results from follow-up search which contains place_id for clickable links"""
         try:
             logger.info("📝 City Results Formatting")
 
-            edited_results = state.get("edited_results")
-            if not edited_results:
-                raise ValueError("No edited results available")
+            # FIXED: Use enhanced_results (from follow-up search) instead of edited_results
+            # enhanced_results contains the restaurants WITH place_id and verified addresses
+            enhanced_results = state.get("enhanced_results")
+            
+            if enhanced_results:
+                # Use enhanced results if available (after follow-up search)
+                main_list = enhanced_results.get("main_list", [])
+                logger.info(f"✅ Using enhanced results with {len(main_list)} restaurants (includes place_id)")
+            else:
+                # Fallback to edited results if follow-up search hasn't run yet
+                edited_results = state.get("edited_results")
+                if not edited_results:
+                    raise ValueError("No results available for formatting")
+                main_list = edited_results.get("edited_results", {}).get("main_list", [])
+                logger.warning(f"⚠️ Using edited results (no follow-up search) with {len(main_list)} restaurants")
 
-            main_list = edited_results.get("edited_results", {}).get("main_list", [])
             recommendations_data = {"main_list": main_list}
 
             formatted_message = await sync_to_async(self.telegram_formatter.format_recommendations)(
