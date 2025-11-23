@@ -310,7 +310,7 @@ class RestaurantSearchTools:
                     destination=destination
                 )
 
-                logger.info(f"✅ Formatting complete")
+                logger.info("✅ Formatting complete")
                 return result
 
             except Exception as e:

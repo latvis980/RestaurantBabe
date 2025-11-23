@@ -256,38 +256,6 @@ Extract restaurants using the diplomatic concierge approach. Include good option
         logger.info(f"🔗 Merged chunks into {len(all_restaurants)} unique restaurants")
         return all_restaurants
 
-    def _generate_follow_up_queries(self, restaurants, destination):
-        """
-        Generate follow-up queries for restaurants that need address verification
-        Now supports using both API keys to double the capacity
-        """
-        queries = []
-
-        # Check if we have a second Google Maps API key
-        has_second_key = bool(os.environ.get("GOOGLE_MAPS_API_KEY2"))
-
-        # Determine max queries based on available API keys
-        if has_second_key:
-            max_queries = 10  # Double capacity with 2 keys
-            logger.info("🔑 Using dual Google Maps API keys - capacity doubled to 10 queries")
-        else:
-            max_queries = 5  # Single key capacity
-            logger.info("🔑 Using single Google Maps API key - capacity limited to 5 queries")
-
-        for restaurant in restaurants:
-            address = restaurant.get("address", "")
-            # Generate query for all restaurants to ensure proper address verification
-            queries.append({
-                "restaurant_name": restaurant['name'],
-                "query": f"{restaurant['name']} {destination} restaurant address location",
-                "needs_verification": "verification" in address.lower() or "requires" in address.lower() or not address
-            })
-
-        # Prioritize restaurants that explicitly need verification
-        queries.sort(key=lambda x: not x['needs_verification'])
-
-        return queries[:max_queries]
-
     @log_function_call
     def edit(self, scraped_results=None, database_restaurants=None, raw_query="", destination="Unknown", 
          content_source=None, processing_mode=None, cleaned_file_path=None, **kwargs):
@@ -364,17 +332,9 @@ Extract restaurants using the diplomatic concierge approach. Include good option
                 logger.warning(f"⚠️ Unknown processing mode: {mode}")
                 return self._fallback_response()
 
-            # Generate follow-up queries for all restaurants found
             if result and result.get("edited_results", {}).get("main_list"):
                 all_restaurants = result["edited_results"]["main_list"]
-
-                # Generate follow-up queries for the restaurants
-                result["follow_up_queries"] = self._generate_follow_up_queries(
-                    all_restaurants, 
-                    destination
-                )
-
-                logger.info(f"✅ Final result: {len(all_restaurants)} restaurants, {len(result['follow_up_queries'])} follow-up queries")
+                logger.info(f"✅ Final result: {len(all_restaurants)} restaurants")
 
             return result
 
@@ -453,7 +413,6 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
             return {
                 "edited_results": {"main_list": unique_restaurants},
-                "follow_up_queries": [],  # Will be generated after processing
                 "processing_notes": {
                     "mode": "hybrid",
                     "database_count": len(database_restaurants) if database_restaurants else 0,
@@ -512,7 +471,6 @@ Extract restaurants using the diplomatic concierge approach. Include good option
                 "edited_results": {
                     "main_list": processed_restaurants
                 },
-                "follow_up_queries": []
             }
 
         except Exception as e:
@@ -620,8 +578,7 @@ Extract restaurants using the diplomatic concierge approach. Include good option
             result = {
                 "edited_results": {
                     "main_list": merged_restaurants
-                },
-                "follow_up_queries": []  # Will be generated later
+                },                
             }
 
             logger.info(f"✅ Successfully processed cleaned file chunks: {len(merged_restaurants)} restaurants")
@@ -727,7 +684,6 @@ Extract restaurants using the diplomatic concierge approach. Include good option
 
             return {
                 "edited_results": {"main_list": merged_restaurants},
-                "follow_up_queries": [],  # Will be generated later
                 "processing_notes": {
                     "mode": "scraped_chunked",
                     "chunk_count": len(chunks),
@@ -965,7 +921,6 @@ Extract restaurants using the diplomatic concierge approach. Include good option
                 "edited_results": {
                     "main_list": cleaned_restaurants
                 },
-                "follow_up_queries": []  # Will be generated later
             }
 
         except json.JSONDecodeError as e:
@@ -1004,7 +959,6 @@ Extract restaurants using the diplomatic concierge approach. Include good option
             "edited_results": {
                 "main_list": []
             },
-            "follow_up_queries": []
         }
 
     # BACKWARD COMPATIBILITY: Keep existing method signatures
