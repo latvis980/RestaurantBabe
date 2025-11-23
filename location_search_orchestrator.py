@@ -47,9 +47,9 @@ from location.location_utils import LocationUtils
 from location.telegram_location_handler import LocationData
 
 # Location-specific services
-from location.database_search import LocationDatabaseService
+from location.location_database_search import LocationDatabaseService
 from location.filter_evaluator import LocationFilterEvaluator
-from location.location_telegram_formatter import LocationTelegramFormatter
+from formatters.location_telegram_formatter import LocationTelegramFormatter
 
 # AI Editors (facade pattern - delegates to specialized editors)
 from location.location_ai_editor import LocationAIEditor
