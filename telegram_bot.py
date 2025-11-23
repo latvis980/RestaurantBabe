@@ -206,7 +206,7 @@ async def process_user_message(
         logger.info(f"🎯 Processing message for user {user_id}: '{message_text[:50]}...'")
 
         # Call unified agent with bot instance for confirmation messages
-        result = await unified_agent.restaurant_search_with_memory(
+        result = await unified_agent.process_message(
             query=message_text,
             user_id=user_id,
             gps_coordinates=gps_coordinates,

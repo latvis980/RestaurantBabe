@@ -1,13 +1,14 @@
 # utils/ai_chat_layer.py
 """
-OPTIMIZED AI Chat Layer - Single Source of Truth for Conversation Management
+AI Chat Layer with Memory Integration - Single Source of Truth for Conversation Management
 
 Key Features:
-- Clearer search mode detection ("around me" vs "around [place]")
+- Memory context integration (preferences, past restaurants, patterns)
+- Search mode detection ("around me" vs "around [place]")
 - Integrated ambiguity handling
 - Context enrichment for neighborhoods
 - Explicit needs_gps flag in handoffs
-- No duplication with LocationAnalyzer
+- Personalized responses based on user history
 """
 
 import json
@@ -41,13 +42,14 @@ class ConversationState(Enum):
 
 class AIChatLayer:
     """
-    OPTIMIZED: Single source of truth for all conversation decisions
-    
+    AI Chat Layer with Memory Integration
+
     Responsibilities:
     - Detect search modes (GPS vs city vs neighborhood)
     - Handle ambiguous locations
     - Enrich with context
     - Decide when to search
+    - Use memory context for personalized responses
     - Return structured handoffs with explicit flags
     """
 
@@ -56,274 +58,224 @@ class AIChatLayer:
 
         # Initialize AI
         self.llm = ChatOpenAI(
-            model=config.OPENAI_MODEL,
+            model=getattr(config, 'OPENAI_MODEL', 'gpt-4o-mini'),
             temperature=0.3,
             api_key=config.OPENAI_API_KEY
         )
 
-        # User sessions
+        # User sessions (in-memory for current conversation)
         self.user_sessions: Dict[int, Dict[str, Any]] = {}
+
+        # Location context storage (for follow-up searches)
+        self.location_contexts: Dict[int, Dict[str, Any]] = {}
 
         # Build prompts
         self._build_prompts()
 
-        logger.info("✅ AI Chat Layer initialized (optimized)")
+        logger.info("✅ AI Chat Layer initialized with memory support")
 
     def _build_prompts(self):
-        """Build AI prompts with state tracking and ambiguity detection"""
+        """Build AI prompts with memory context support"""
 
         self.conversation_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are the conversation manager for a restaurant bot. Your job:
+            ("system", """You are the conversation manager for a restaurant recommendation bot with memory.
+
+YOUR JOB:
 1. Accumulate info across conversation turns
-2. Detect search mode based on user intent  
-3. Decide when you have enough info to search
-4. Handle ambiguous locations naturally
+2. Detect search mode based on user intent
+3. Use memory context to personalize responses
+4. Decide when you have enough info to search
+5. Return structured decisions
 
 ═══════════════════════════════════════════════════════════════
-SEARCH MODES
+MEMORY CONTEXT (from previous conversations)
 ═══════════════════════════════════════════════════════════════
 
-GPS_REQUIRED - User wants restaurants near their current location
-├─ Triggers: "near me", "nearby", "around me", "close to me", "in my area", 
-│           "where I am", "walking distance", "5 mins away"
-├─ Requires: GPS coordinates
-└─ Action: If no GPS → set needs_gps=true
+You have access to the user's:
+- PREFERRED CUISINES: What they usually search for
+- DIETARY RESTRICTIONS: Things to avoid
+- PAST RESTAURANTS: What was already recommended (avoid repeats!)
+- CITIES THEY'VE SEARCHED: Where they've looked before
+- COMMUNICATION STYLE: How they prefer responses
 
-CITY_SEARCH - City or popular tourist area (use web search)
-├─ Examples: "in Tokyo", "Paris restaurants", "Manhattan", "Brooklyn", 
-│           "Marais", "SoHo", "Shibuya", "Tuscany"
-├─ Use for: Well-known areas that have online guides/articles
-├─ Query pattern: "best [cuisine] in [area]"
-└─ Action: Web scraping search, no GPS needed
+USE MEMORY TO:
+- Suggest cuisines they might like based on preferences
+- Avoid recommending the same restaurants again
+- Reference past searches when relevant ("Last time you searched in Paris...")
+- Adapt your tone to their communication style
 
-COORDINATES_SEARCH - Specific street/landmark/less-known location
-├─ Examples: "around Viale delle Egadi", "near Pantheon", "close to Via delle Palme",
-│           "on Rua Augusta", "by the Colosseum", "around [specific street name]"
-├─ Use for: Specific addresses, local landmarks, non-tourist spots
-├─ Pattern: "around/near/close to [specific place]" + has city context
-├─ Requires: Specific location + city (use stored city if available)
-└─ Action: Coordinates-based Google Maps search
+═══════════════════════════════════════════════════════════════
+SEARCH MODES (detect which one applies)
+═══════════════════════════════════════════════════════════════
 
-TOURIST_AREA_CLARIFICATION - Could be either city or coordinates
-├─ Examples: "Chinatown" (NYC or SF?), "Lapa" (Lisbon or Rio?)
-├─ Action: Ask user which city they mean
-└─ Then decide: if major tourist area → CITY_SEARCH, if specific → COORDINATES_SEARCH
+1. GPS_REQUIRED (needs physical location):
+   - "restaurants near me", "around me", "nearby"
+   - "food close by", "what's around here"
+   → Action: request_gps, needs_gps: true
+
+2. CITY_SEARCH (city-wide, no GPS needed):
+   - "best ramen in Tokyo", "restaurants in Paris"
+   - "pizza places in New York", "cafes in Berlin"
+   → Action: trigger_search, search_mode: city_search
+
+3. COORDINATES_SEARCH (specific location, needs geocoding):
+   - "restaurants in SoHo", "bars in Chinatown"
+   - "cafes near Times Square", "food on Rua Augusta"
+   → Action: trigger_search, search_mode: coordinates_search
+
+4. FOLLOW_UP (after seeing results):
+   - "show more", "other options", "what else"
+   → Action: trigger_search, search_mode: follow_up_more_results
 
 ═══════════════════════════════════════════════════════════════
 AMBIGUITY HANDLING
 ═══════════════════════════════════════════════════════════════
 
-Detect ambiguous locations and ask natural clarifying questions:
-
-AMBIGUOUS: "restaurants in Springfield"
-→ is_ambiguous=true, needs_clarification=true
-→ "There are several Springfields! Which state did you mean? (e.g., Massachusetts, Illinois, Missouri)"
-
-AMBIGUOUS: "coffee in Cambridge"
-→ is_ambiguous=true, needs_clarification=true
-→ "Cambridge in England or Cambridge, Massachusetts?"
-
-CLEAR: "restaurants in Lapa, Lisbon" → NOT ambiguous
-CLEAR: "around Viale delle Egadi in Rome" → NOT ambiguous, this is NEIGHBORHOOD_SEARCH
-
-═══════════════════════════════════════════════════════════════
-CONTEXT ENRICHMENT
-═══════════════════════════════════════════════════════════════
-
-Use stored city context ONLY for NEIGHBORHOOD_SEARCH:
-
-User previously searched "Lisbon", new query: "coffee in Lapa"
-→ Enrich to "Lapa, Lisbon", search_mode="neighborhood_search"
-
-User previously searched "Valencia", new query: "coffee near me"
-→ DO NOT use Valencia, request GPS, search_mode="gps_required"
-
-═══════════════════════════════════════════════════════════════
-STATE STRUCTURE
-═══════════════════════════════════════════════════════════════
-
-{{
-    "destination": "full location string" | null,
-    "cuisine": "what they want" | null,
-    "search_mode": "gps_required|city_search|coordinates_search|follow_up" | null,
-    "needs_gps": true | false,
-    "is_ambiguous": true | false,
-    "needs_clarification": true | false,
-    "is_complete": true | false
-}}
-
-═══════════════════════════════════════════════════════════════
-DECISION RULES
-═══════════════════════════════════════════════════════════════
-
-1. GPS_REQUIRED: NEVER use stored city, ALWAYS request GPS if not provided
-2. NEIGHBORHOOD_SEARCH: CAN use stored city, check if ambiguous
-3. CITY_SEARCH: City specified, check if ambiguous
-4. Set is_complete=true ONLY when: have enough info AND NOT ambiguous
-
-═══════════════════════════════════════════════════════════════
-EXAMPLES
-═══════════════════════════════════════════════════════════════
-
-"specialty coffee near me"
-→ {{
-    "search_mode": "gps_required",
-    "cuisine": "specialty coffee",
-    "needs_gps": true,
-    "is_complete": false,
-    "action": "request_gps",
-    "response_text": "I'd love to help you find specialty coffee near you!",
-    "reasoning": "GPS required mode, need coordinates"
-}}
-
-"Find good places around Viale delle Egadi in Rome"
-→ {{
-    "search_mode": "coordinates_search",
-    "destination": "Viale delle Egadi, Rome",
-    "cuisine": "restaurants",
-    "needs_gps": false,
-    "is_ambiguous": false,
-    "is_complete": true,
-    "action": "trigger_search",
-    "response_text": "Searching for restaurants around Viale delle Egadi in Rome!",
-    "reasoning": "Specific street name = coordinates search using Google Maps"
-}}
-
-"best pizza in Marais" (with stored city: "Paris")
-→ {{
-    "search_mode": "city_search",
-    "destination": "Marais, Paris",
-    "cuisine": "pizza",
-    "needs_gps": false,
-    "is_ambiguous": false,
-    "is_complete": true,
-    "action": "trigger_search",
-    "response_text": "Searching for the best pizza in Marais!",
-    "reasoning": "Marais is a popular tourist area, likely has online guides"
-}}
-
-"restaurants near Pantheon" (with stored city: "Rome")
-→ {{
-    "search_mode": "coordinates_search",
-    "destination": "Pantheon, Rome",
-    "cuisine": "restaurants",
-    "needs_gps": false,
-    "is_ambiguous": false,
-    "is_complete": true,
-    "action": "trigger_search",
-    "response_text": "Finding restaurants near the Pantheon!",
-    "reasoning": "Specific landmark = coordinates search for precise location"
-}}
-
-"best ramen in Tokyo"
-→ {{
-    "search_mode": "city_search",
-    "destination": "Tokyo",
-    "cuisine": "ramen",
-    "needs_gps": false,
-    "is_ambiguous": false,
-    "is_complete": true,
-    "action": "trigger_search",
-    "response_text": "Searching for the best ramen in Tokyo!",
-    "reasoning": "Clear city search"
-}}
-
-"restaurants in Springfield"
-→ {{
-    "search_mode": "city_search",
-    "destination": "Springfield",
-    "cuisine": "restaurants",
-    "is_ambiguous": true,
-    "needs_clarification": true,
-    "is_complete": false,
-    "action": "collect_info",
-    "response_text": "There are several Springfields! Which state did you mean? (Massachusetts, Illinois, Missouri, etc.)",
-    "reasoning": "Ambiguous city name, need clarification"
-}}
-
-"coffee in Lapa" (with stored city: "Lisbon")
-→ {{
-    "search_mode": "neighborhood_search",
-    "destination": "Lapa, Lisbon",
-    "cuisine": "coffee",
-    "needs_gps": false,
-    "is_ambiguous": false,
-    "is_complete": true,
-    "action": "trigger_search",
-    "response_text": "Searching for coffee in Lapa, Lisbon!",
-    "reasoning": "Neighborhood enriched with stored city context"
-}}
-
-"coffee in Lapa" (NO stored city)
-→ {{
-    "search_mode": "neighborhood_search",
-    "destination": "Lapa",
-    "cuisine": "coffee",
-    "is_ambiguous": true,
-    "needs_clarification": true,
-    "is_complete": false,
-    "action": "collect_info",
-    "response_text": "I found several neighborhoods called Lapa! Did you mean Lapa in Lisbon, Lapa in São Paulo, or somewhere else?",
-    "reasoning": "Neighborhood without city - could be multiple places"
-}}
-
-User says "Let's find more" (after seeing results)
-→ {{
-    "search_mode": "follow_up",
-    "is_complete": true,
-    "action": "trigger_search",
-    "response_text": "Perfect! Finding more options for you...",
-    "reasoning": "Follow-up request, resume graph"
-}}
+If location is ambiguous (Springfield, Cambridge, etc.):
+- Set is_ambiguous: true
+- Set needs_clarification: true
+- Ask for clarification in response_text
 
 ═══════════════════════════════════════════════════════════════
 RESPONSE FORMAT (JSON ONLY)
 ═══════════════════════════════════════════════════════════════
 
 {{
-    "action": "request_gps" | "collect_info" | "trigger_search",
-    "response_text": "what to say to user",
+    "action": "request_gps" | "collect_info" | "trigger_search" | "chat_response",
+    "response_text": "what to say to user (personalized based on memory)",
     "state_update": {{
         "destination": "full location" | null,
         "cuisine": "what they want" | null,
-        "search_mode": "gps_required|city_search|neighborhood_search|follow_up" | null,
+        "search_mode": "gps_required|city_search|coordinates_search|follow_up_more_results" | null,
         "needs_gps": true | false,
         "is_ambiguous": true | false,
         "needs_clarification": true | false,
-        "is_complete": true | false
+        "is_complete": true | false,
+        "requirements": ["outdoor", "romantic", etc.] | []
     }},
     "reasoning": "brief explanation"
 }}
+
+═══════════════════════════════════════════════════════════════
+EXAMPLES WITH MEMORY
+═══════════════════════════════════════════════════════════════
+
+User says "sushi in Tokyo" (has searched Japanese in Tokyo before):
+→ {{
+    "action": "trigger_search",
+    "response_text": "Great choice! I know you love Japanese food. Let me find the best sushi spots in Tokyo for you!",
+    "state_update": {{"destination": "Tokyo", "cuisine": "sushi", "search_mode": "city_search", "is_complete": true}},
+    "reasoning": "User has preference for Japanese cuisine from memory"
+}}
+
+User says "restaurants near me" (no memory yet):
+→ {{
+    "action": "request_gps",
+    "response_text": "I'd love to help! What kind of cuisine are you in the mood for? And I'll need your location to find nearby places.",
+    "state_update": {{"search_mode": "gps_required", "needs_gps": true}},
+    "reasoning": "Need GPS and cuisine preference"
+}}
+
+User says "more options" (has past restaurants in memory):
+→ {{
+    "action": "trigger_search",
+    "response_text": "Finding more options for you! I'll make sure to show you places different from what I recommended before.",
+    "state_update": {{"search_mode": "follow_up_more_results", "is_complete": true}},
+    "reasoning": "Follow-up request, will exclude previously recommended restaurants"
+}}
 """),
-            ("human", """CONVERSATION HISTORY:
+            ("human", """═══════════════════════════════════════════════════════════════
+USER MEMORY CONTEXT
+═══════════════════════════════════════════════════════════════
+{memory_context}
+
+═══════════════════════════════════════════════════════════════
+CONVERSATION STATE
+═══════════════════════════════════════════════════════════════
+Conversation History:
 {conversation_history}
 
-CURRENT STATE:
+Accumulated State:
 {accumulated_state}
 
-STORED CONTEXT:
-- Stored location: {stored_location}
+Stored Location Context:
+{stored_location}
 
-GPS COORDINATES: {has_gps}
+Has GPS Coordinates: {has_gps}
 
+═══════════════════════════════════════════════════════════════
+CURRENT MESSAGE
+═══════════════════════════════════════════════════════════════
 USER MESSAGE: {user_message}
 
-Detect search mode and decide action.""")
+Detect search mode and decide action. Use memory context to personalize your response.""")
         ])
 
         self.conversation_chain = self.conversation_prompt | self.llm
+
+    def _format_memory_context(self, user_context: Optional[Dict[str, Any]]) -> str:
+        """Format user memory context for AI prompt"""
+        if not user_context:
+            return "No memory available for this user (new user)."
+
+        parts = []
+
+        # Preferences
+        prefs = user_context.get("preferences")
+        if prefs:
+            if hasattr(prefs, 'preferred_cuisines') and prefs.preferred_cuisines:
+                parts.append(f"Preferred cuisines: {', '.join(prefs.preferred_cuisines)}")
+            if hasattr(prefs, 'preferred_cities') and prefs.preferred_cities:
+                parts.append(f"Frequently searched cities: {', '.join(prefs.preferred_cities)}")
+            if hasattr(prefs, 'dietary_restrictions') and prefs.dietary_restrictions:
+                parts.append(f"Dietary restrictions: {', '.join(prefs.dietary_restrictions)}")
+            if hasattr(prefs, 'budget_range') and prefs.budget_range:
+                parts.append(f"Budget preference: {prefs.budget_range}")
+
+        # Restaurant history
+        history = user_context.get("restaurant_history", [])
+        if history:
+            recent = history[:10]  # Last 10 recommendations
+            restaurant_names = [r.restaurant_name if hasattr(r, 'restaurant_name') else r.get('restaurant_name', 'Unknown') 
+                              for r in recent]
+            parts.append(f"Recently recommended restaurants (AVOID REPEATING): {', '.join(restaurant_names)}")
+
+            # Get cities from history
+            cities = list(set([r.city if hasattr(r, 'city') else r.get('city', '') for r in recent if r]))
+            if cities:
+                parts.append(f"Cities searched before: {', '.join(cities)}")
+
+        # Conversation patterns
+        patterns = user_context.get("conversation_patterns")
+        if patterns:
+            style = patterns.user_communication_style if hasattr(patterns, 'user_communication_style') else patterns.get('user_communication_style', 'casual')
+            parts.append(f"Communication style: {style}")
+
+        if not parts:
+            return "User has no stored preferences yet (relatively new user)."
+
+        return "\n".join(parts)
 
     async def process_message(
         self,
         user_id: int,
         user_message: str,
         gps_coordinates: Optional[Tuple[float, float]] = None,
-        thread_id: Optional[str] = None
+        thread_id: Optional[str] = None,
+        user_context: Optional[Dict[str, Any]] = None  # NEW: Memory context from supervisor
     ) -> HandoffMessage:
         """
-        Process user message with AI-detected search mode and early geocoding
+        Process user message with memory context for personalized responses.
 
-        Returns structured HandoffMessage based on AI decision
+        Args:
+            user_id: Telegram user ID
+            user_message: The user's message
+            gps_coordinates: Optional GPS coordinates if provided
+            thread_id: Thread ID for session tracking
+            user_context: Memory context from supervisor (preferences, history, patterns)
+
+        Returns:
+            HandoffMessage with command and context
         """
         try:
             # Get or create session
@@ -332,33 +284,26 @@ Detect search mode and decide action.""")
 
             session = self._get_or_create_session(user_id, thread_id)
 
-            # ✅ FIX: Define current_gps based on provided coordinates
+            # Handle GPS coordinates
             current_gps = gps_coordinates
             if gps_coordinates:
                 session['gps_coordinates'] = gps_coordinates
                 logger.info(f"📍 Received GPS coordinates: {gps_coordinates[0]:.4f}, {gps_coordinates[1]:.4f}")
             elif session.get('gps_coordinates'):
-                # Use previously stored GPS if available (for current conversation)
                 current_gps = session['gps_coordinates']
-                logger.info(f"📍 Using stored GPS coordinates: {current_gps[0]:.4f}, {current_gps[1]:.4f}")
+                logger.info(f"📍 Using stored GPS: {current_gps[0]:.4f}, {current_gps[1]:.4f}")
 
-            # Check for valid stored location context
+            # Check for stored location context
             stored_location = self.get_location_context(user_id)
+            stored_location_text = 'None'
             if stored_location:
-                loc_name = stored_location['location']
+                loc = stored_location['location']
                 coords = stored_location.get('coordinates')
                 age_min = (time.time() - stored_location['stored_at']) / 60
-
                 if coords:
-                    logger.info(f"📂 Found valid stored location: {loc_name} ({coords[0]:.4f}, {coords[1]:.4f}) - {age_min:.1f} min old")
+                    stored_location_text = f"{loc} ({coords[0]:.4f}, {coords[1]:.4f}) - {age_min:.0f} min ago"
                 else:
-                    logger.info(f"📂 Found valid stored location: {loc_name} - {age_min:.1f} min old")
-
-                # Make stored location available to AI prompt
-                session['stored_location_context'] = stored_location
-            else:
-                logger.info("ℹ️ No valid stored location (expired or not found)")
-                session['stored_location_context'] = None
+                    stored_location_text = f"{loc} - {age_min:.0f} min ago"
 
             # Add user message to history
             session['conversation_history'].append({
@@ -367,29 +312,24 @@ Detect search mode and decide action.""")
                 'timestamp': time.time()
             })
 
-            # Get current state
-            current_state = session.get('state', ConversationState.GREETING)
+            # Get accumulated state
             accumulated_state = session.get('accumulated_state', {})
 
-            # Use stored location context for AI decision
-            stored_location = session.get('stored_location_context')
-            stored_location_text = 'None'
-            if stored_location:
-                loc = stored_location['location']
-                coords = stored_location.get('coordinates')
-                age_min = (time.time() - stored_location['stored_at']) / 60
-                s_type = stored_location.get('search_type', 'unknown')
+            # Format memory context for AI
+            memory_context_text = self._format_memory_context(user_context)
 
-                if coords:
-                    stored_location_text = f"{loc} [{s_type}] ({coords[0]:.4f}, {coords[1]:.4f}) - {age_min:.0f} min ago"
-                else:
-                    stored_location_text = f"{loc} [{s_type}] - {age_min:.0f} min ago"
+            # Log memory context usage
+            if user_context and user_context.get("preferences"):
+                logger.info(f"🧠 Using memory context for user {user_id}")
+            else:
+                logger.info(f"🆕 No memory context for user {user_id} (new user)")
 
             # Prepare prompt variables
             prompt_vars = {
+                'memory_context': memory_context_text,
                 'conversation_history': self._format_conversation_context(session),
                 'accumulated_state': json.dumps(accumulated_state, indent=2),
-                'stored_location': stored_location_text,  # ✅ Changed from 'last_searched_city'
+                'stored_location': stored_location_text,
                 'has_gps': 'Yes' if current_gps else 'No',
                 'user_message': user_message
             }
@@ -412,61 +352,63 @@ Detect search mode and decide action.""")
                 return HandoffMessage(
                     command=HandoffCommand.CONTINUE_CONVERSATION,
                     conversation_response="How can I help you find restaurants?",
-                    reasoning="JSON parse error - using fallback",
+                    reasoning="JSON parse error",
                     needs_gps=False
                 )
 
-            logger.info(f"🤖 AI Decision: {decision.get('action')} - Search mode: {decision.get('state_update', {}).get('search_mode')} - {decision.get('reasoning')}")
-
-            # UPDATE ACCUMULATED STATE
+            # Extract decision fields
+            action = decision.get('action', 'chat_response')
             state_update = decision.get('state_update', {})
+            response_text = decision.get('response_text', '')
+            reasoning = decision.get('reasoning', '')
+
+            # Update session state
             if state_update:
-                accumulated_state.update(state_update)
+                accumulated_state.update({k: v for k, v in state_update.items() if v is not None})
                 session['accumulated_state'] = accumulated_state
-                logger.info(f"📊 Updated state: {accumulated_state}")
 
-            # Extract info from accumulated state
-            destination = accumulated_state.get('destination') or session.get('current_destination')
-            cuisine = accumulated_state.get('cuisine') or session.get('current_cuisine')
-            is_complete = accumulated_state.get('is_complete', False)
-            requirements = accumulated_state.get('requirements', [])
-            preferences = accumulated_state.get('preferences', {})
-            search_mode = accumulated_state.get('search_mode')
-            needs_gps = accumulated_state.get('needs_gps', False)
-            is_ambiguous = accumulated_state.get('is_ambiguous', False)
-            needs_clarification = accumulated_state.get('needs_clarification', False)
+            # Extract key fields
+            search_mode = state_update.get('search_mode', '')
+            destination = state_update.get('destination', '')
+            cuisine = state_update.get('cuisine', '')
+            requirements = state_update.get('requirements', [])
+            preferences = state_update.get('preferences', {})
+            is_complete = state_update.get('is_complete', False)
+            needs_clarification = state_update.get('needs_clarification', False)
+            needs_gps = state_update.get('needs_gps', False)
 
-            # Update session
-            session['current_destination'] = destination
-            session['current_cuisine'] = cuisine
+            # Store cuisine for location button flow
+            if cuisine:
+                session['current_cuisine'] = cuisine
 
             # Add assistant response to history
-            if decision.get('response_text'):
-                session['conversation_history'].append({
-                    'role': 'assistant',
-                    'message': decision['response_text'],
-                    'timestamp': time.time()
-                })
+            session['conversation_history'].append({
+                'role': 'assistant',
+                'message': response_text,
+                'timestamp': time.time()
+            })
 
-            # Route by action
-            action = decision.get('action')
+            logger.info(f"🤖 AI decision: action={action}, mode={search_mode}, complete={is_complete}")
+
+            # ================================================================
+            # RETURN APPROPRIATE HANDOFF
+            # ================================================================
 
             # Handle GPS request
-            if action == 'request_gps' or needs_gps:
-                logger.info("🎯 AI detected GPS-required search mode - requesting location button")
+            if action == 'request_gps' or (search_mode == 'gps_required' and not current_gps):
                 return HandoffMessage(
                     command=HandoffCommand.CONTINUE_CONVERSATION,
-                    reasoning=decision.get('reasoning', 'GPS coordinates required'),
-                    conversation_response=decision.get('response_text', 'I\'d love to help you find restaurants near you!'),
+                    conversation_response=response_text or "I need your location to find nearby restaurants.",
+                    reasoning=reasoning,
                     needs_gps=True
                 )
 
-            # Handle clarification requests (ambiguous locations)
+            # Handle clarification requests
             if action in ['chat_response', 'collect_info'] or needs_clarification:
                 return HandoffMessage(
                     command=HandoffCommand.CONTINUE_CONVERSATION,
-                    conversation_response=decision.get('response_text', "How can I help?"),
-                    reasoning=decision.get('reasoning', ''),
+                    conversation_response=response_text or "How can I help?",
+                    reasoning=reasoning,
                     needs_gps=False
                 )
 
@@ -475,133 +417,57 @@ Detect search mode and decide action.""")
                 # Check if follow-up request
                 if search_mode == 'follow_up_more_results':
                     original_thread_id = session.get('last_search_thread_id')
-
                     if not original_thread_id:
                         return HandoffMessage(
                             command=HandoffCommand.CONTINUE_CONVERSATION,
-                            conversation_response="I couldn't find your previous search. Could you tell me what you're looking for?",
+                            conversation_response="I couldn't find your previous search. What are you looking for?",
                             reasoning="Missing original thread_id",
                             needs_gps=False
                         )
-
                     return create_resume_handoff(
                         thread_id=original_thread_id,
-                        decision="yes"  # This becomes "answer": "yes" in the resume payload
+                        decision="yes"
                     )
 
-                # Regular new search
+                # Store for follow-up
                 session['last_search_time'] = time.time()
                 session['last_search_thread_id'] = thread_id
 
-                # ✅ PHASE 2: Store location context based on search mode
-                # Different flows store different data:
-                # - GPS_REQUIRED: coordinates only (location = "GPS location")
-                # - COORDINATES_SEARCH: both location name and coordinates  
-                # - CITY_SEARCH: location name only (coordinates = None)
-
-                store_coords = None
-                store_location = destination
-
-                if search_mode == 'gps_required':
-                    # GPS flow: store coordinates, generic location name
-                    store_coords = current_gps
-                    store_location = "GPS location"
-                elif search_mode == 'coordinates_search':
-                    # Named location with coordinates: store both
-                    store_coords = current_gps  # Already geocoded
-                    store_location = destination
-                elif search_mode == 'city_search':
-                    # City/broad area: location name only
-                    store_coords = None
-                    store_location = destination
-
-                # ✅ FIX: Only store if we have a valid location
-                if store_location:
+                # Store location context
+                if destination:
                     self.store_location_context(
                         user_id=user_id,
-                        location=store_location,
-                        coordinates=store_coords,
+                        location=destination,
+                        coordinates=current_gps,
                         search_type=search_mode
                     )
-                else:
-                    logger.warning("⚠️ Cannot store location context - no destination provided")
 
-                # ================================================================
-                # EARLY GEOCODING FOR COORDINATES_SEARCH MODE
-                # ================================================================
+                # Handle geocoding for coordinates_search
                 geocoded_coordinates = None
-
                 if search_mode == 'coordinates_search' and destination and not current_gps:
-                    logger.info(f"🌍 Early geocoding for coordinates_search: '{destination}'")
-
                     try:
-                        # Attempt to geocode the destination
                         geocoded_coordinates = geocode_location(destination)
-
                         if geocoded_coordinates:
-                            logger.info(f"✅ Successfully geocoded '{destination}' → {geocoded_coordinates[0]:.4f}, {geocoded_coordinates[1]:.4f}")
-
-                            # ✅ PHASE 2: Use new location context storage (single source of truth)
-                            self.store_location_context(
-                                user_id=user_id,
-                                location=destination,
-                                coordinates=geocoded_coordinates,
-                                search_type='coordinates_search'
-                            )
-                        else:
-                            # Geocoding failed - ask for clarification
-                            logger.warning(f"❌ Failed to geocode '{destination}'")
-
-                            clarification_message = (
-                                f"I couldn't find '{destination}' on the map. 🗺️\n\n"
-                                f"Could you help me out? Try one of these:\n\n"
-                                f"• <b>Be more specific</b>: Add the city name\n"
-                                f"  Example: \"Viale delle Egadi, <i>Rome</i>\"\n\n"
-                                f"• <b>Use a landmark</b>: Reference something nearby\n"
-                                f"  Example: \"Near the Colosseum\"\n\n"
-                                f"• <b>Share your GPS</b>: Use the button below for exact location"
-                            )
-
-                            return HandoffMessage(
-                                command=HandoffCommand.CONTINUE_CONVERSATION,
-                                conversation_response=clarification_message,
-                                reasoning=f"Geocoding failed for: {destination}",
-                                needs_gps=True  # Offer GPS button as alternative
-                            )
-
+                            logger.info(f"📍 Geocoded '{destination}' to {geocoded_coordinates}")
                     except Exception as geocoding_error:
-                        logger.error(f"❌ Geocoding error for '{destination}': {geocoding_error}")
-
-                        # Graceful fallback - ask user for help
+                        logger.warning(f"⚠️ Geocoding failed for '{destination}': {geocoding_error}")
                         return HandoffMessage(
                             command=HandoffCommand.CONTINUE_CONVERSATION,
-                            conversation_response=(
-                                f"I'm having trouble finding '{destination}' on the map. "
-                                f"Could you provide more details or share your GPS location?"
-                            ),
-                            reasoning=f"Geocoding exception: {str(geocoding_error)}",
+                            conversation_response=f"I couldn't find the exact location for '{destination}'. Could you be more specific?",
+                            reasoning=f"Geocoding failed: {str(geocoding_error)}",
                             needs_gps=True
                         )
 
-                # Determine which coordinates to use
+                # Determine final coordinates
                 final_coordinates = current_gps or geocoded_coordinates
 
-                if search_mode in ['coordinates_search', 'gps_required'] and final_coordinates:
-                    logger.info(f"📍 Using coordinates for search: {final_coordinates[0]:.4f}, {final_coordinates[1]:.4f}")
-                    logger.info(f"   Source: {'GPS' if current_gps else 'Geocoded'}")
-
-                # Determine search type hint based on search mode
-                if search_mode == 'gps_required' or search_mode == 'coordinates_search':
+                # Determine search type
+                if search_mode in ['gps_required', 'coordinates_search']:
                     search_type_hint = SearchType.LOCATION_SEARCH
                 else:
                     search_type_hint = SearchType.CITY_SEARCH
 
-                # Create search handoff with coordinates (GPS or geocoded)
-                logger.info("🔍 Creating search handoff:")
-                logger.info(f"   Mode: {search_mode}")
-                logger.info(f"   Type: {search_type_hint.value}")
-                logger.info(f"   Destination: {destination}")
-                logger.info(f"   Coordinates: {final_coordinates}")
+                logger.info(f"🔍 Creating search handoff: mode={search_mode}, type={search_type_hint.value}")
 
                 return create_search_handoff(
                     destination=destination or "unknown",
@@ -610,18 +476,18 @@ Detect search mode and decide action.""")
                     user_query=user_message,
                     user_id=user_id,
                     thread_id=thread_id,
-                    gps_coordinates=final_coordinates,  # GPS or geocoded coordinates
+                    gps_coordinates=final_coordinates,
                     requirements=requirements,
                     preferences=preferences,
                     clear_previous=False,
                     is_new_destination=False,
-                    reasoning=decision.get('reasoning', '')
+                    reasoning=reasoning
                 )
 
             # Unknown action - fallback
             return HandoffMessage(
                 command=HandoffCommand.CONTINUE_CONVERSATION,
-                conversation_response=decision.get('response_text', "Let me help you find restaurants."),
+                conversation_response=response_text or "Let me help you find restaurants.",
                 reasoning=f"Unknown action: {action}",
                 needs_gps=False
             )
@@ -635,24 +501,28 @@ Detect search mode and decide action.""")
                 needs_gps=False
             )
 
-    def _extract_city_from_destination(self, destination: str) -> Optional[str]:
-        """
-        Extract city name from destination string for context storage
+    # ============================================================================
+    # SESSION MANAGEMENT
+    # ============================================================================
 
-        Examples:
-        "Lapa, Lisbon" → "Lisbon"
-        "SoHo, New York" → "New York"
-        "Paris" → "Paris"
-        """
-        if not destination:
-            return None
-
-        parts = [p.strip() for p in destination.split(',')]
-
-        if len(parts) > 1:
-            return parts[-1]
-
-        return parts[0]
+    def _get_or_create_session(self, user_id: int, thread_id: str) -> Dict[str, Any]:
+        """Get or create user session"""
+        if user_id not in self.user_sessions:
+            self.user_sessions[user_id] = {
+                'user_id': user_id,
+                'thread_id': thread_id,
+                'created_at': time.time(),
+                'state': ConversationState.GREETING,
+                'conversation_history': [],
+                'accumulated_state': {},
+                'current_destination': None,
+                'current_cuisine': None,
+                'gps_coordinates': None,
+                'last_search_time': None,
+                'last_search_thread_id': None,
+                'current_location': None  # Location context with 30-min expiry
+            }
+        return self.user_sessions[user_id]
 
     def _format_conversation_context(self, session: Dict[str, Any]) -> str:
         """Format conversation history for AI"""
@@ -679,61 +549,15 @@ Detect search mode and decide action.""")
         if cleaned.endswith("```"):
             cleaned = cleaned[:-3]
         cleaned = cleaned.strip()
-
         return json.loads(cleaned)
 
-    def _get_or_create_session(self, user_id: int, thread_id: str) -> Dict[str, Any]:
-        """Get or create user session"""
-        if user_id not in self.user_sessions:
-            self.user_sessions[user_id] = {
-                'user_id': user_id,
-                'thread_id': thread_id,
-                'created_at': time.time(),
-                'state': ConversationState.GREETING,
-                'conversation_history': [],
-                'accumulated_state': {},
-                'current_destination': None,
-                'current_cuisine': None,
-                'gps_coordinates': None,
-                'last_search_time': None,
-                'last_search_thread_id': None
-            }
-        return self.user_sessions[user_id]
-
-    def clear_session(self, user_id: int):
-        """Clear user session but keep location context"""
-        if user_id in self.user_sessions:
-            session = self.user_sessions[user_id]
-            # ✅ PHASE 3: Keep the new location context storage
-            location_context = session.get('current_location')  # This has 30-min expiry
-
-            # Clear everything else
-            session['current_destination'] = None
-            session['current_cuisine'] = None
-            session['state'] = ConversationState.GREETING
-            session['accumulated_state'] = {}
-            session['last_search_time'] = None
-
-            # Location context is kept (already in 'current_location')
-            # No need to restore since we didn't delete it
-
-            if location_context:
-                loc_name = location_context.get('location', 'unknown')
-                logger.info(f"🧹 Cleared session for user {user_id} (kept location context: {loc_name})")
-            else:
-                logger.info(f"🧹 Cleared session for user {user_id}")
-
-    def get_session_info(self, user_id: int) -> Optional[Dict[str, Any]]:
-        """Get current session info"""
-        return self.user_sessions.get(user_id)
-
-    # ================================================================
-    # LOCATION CONTEXT MANAGEMENT - SINGLE SOURCE OF TRUTH
-    # ================================================================
+    # ============================================================================
+    # LOCATION CONTEXT MANAGEMENT
+    # ============================================================================
 
     def store_location_context(
-        self, 
-        user_id: int, 
+        self,
+        user_id: int,
         location: str,
         coordinates: Optional[Tuple[float, float]] = None,
         search_type: str = "city_search"
@@ -759,7 +583,7 @@ Detect search mode and decide action.""")
             }
             self.user_sessions[user_id] = session
 
-        # Store location context with timestamp
+        # Store location context with timestamp in session
         session['current_location'] = {
             'location': location,
             'coordinates': coordinates,
@@ -767,13 +591,13 @@ Detect search mode and decide action.""")
             'stored_at': time.time()
         }
 
+        # Also store in separate dict for compatibility
+        self.location_contexts[user_id] = session['current_location']
+
         coord_str = f" ({coordinates[0]:.4f}, {coordinates[1]:.4f})" if coordinates else ""
         logger.info(f"📍 Stored location for user {user_id}: {location}{coord_str} (expires in 30 min)")
 
-    def get_location_context(
-        self, 
-        user_id: int
-    ) -> Optional[Dict[str, Any]]:
+    def get_location_context(self, user_id: int, max_age_minutes: int = 30) -> Optional[Dict[str, Any]]:
         """
         Get current location context if still valid (< 30 minutes)
 
@@ -786,17 +610,26 @@ Detect search mode and decide action.""")
         """
         session = self.user_sessions.get(user_id)
         if not session:
+            # Check separate storage as fallback
+            context = self.location_contexts.get(user_id)
+            if context:
+                age_minutes = (time.time() - context['stored_at']) / 60
+                if age_minutes > max_age_minutes:
+                    del self.location_contexts[user_id]
+                    return None
+                return context
             return None
 
         location_ctx = session.get('current_location')
         if not location_ctx:
             return None
 
-        # Check if expired (30 minutes = 1800 seconds)
+        # Check if expired (default 30 minutes = 1800 seconds)
         stored_at = location_ctx.get('stored_at', 0)
         age_seconds = time.time() - stored_at
+        max_age_seconds = max_age_minutes * 60
 
-        if age_seconds > 1800:  # 30 minutes
+        if age_seconds > max_age_seconds:
             age_minutes = age_seconds / 60
             logger.info(f"⏰ Location context expired for user {user_id} ({age_minutes:.1f} min old)")
             # Clean up expired location
@@ -824,6 +657,9 @@ Detect search mode and decide action.""")
         else:
             logger.debug(f"ℹ️ No location context to clear for user {user_id}")
 
+        # Also clear from separate storage if exists
+        if user_id in self.location_contexts:
+            del self.location_contexts[user_id]
 
     def get_location_age_minutes(self, user_id: int) -> Optional[float]:
         """
@@ -843,3 +679,47 @@ Detect search mode and decide action.""")
         stored_at = location_ctx.get('stored_at', 0)
         age_seconds = time.time() - stored_at
         return age_seconds / 60
+
+    def clear_session(self, user_id: int):
+        """Clear user session but keep location context"""
+        if user_id in self.user_sessions:
+            session = self.user_sessions[user_id]
+            # Keep the location context (has 30-min expiry)
+            location_context = session.get('current_location')
+
+            # Clear everything else
+            session['current_destination'] = None
+            session['current_cuisine'] = None
+            session['state'] = ConversationState.GREETING
+            session['accumulated_state'] = {}
+            session['last_search_time'] = None
+            session['conversation_history'] = []
+
+            if location_context:
+                loc_name = location_context.get('location', 'unknown')
+                logger.info(f"🧹 Cleared session for user {user_id} (kept location context: {loc_name})")
+            else:
+                logger.info(f"🧹 Cleared session for user {user_id}")
+
+    def get_session_info(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Get current session info"""
+        return self.user_sessions.get(user_id)
+
+    def _extract_city_from_destination(self, destination: str) -> Optional[str]:
+        """
+        Extract city name from destination string for context storage
+
+        Examples:
+        "Lapa, Lisbon" → "Lisbon"
+        "SoHo, New York" → "New York"
+        "Paris" → "Paris"
+        """
+        if not destination:
+            return None
+
+        parts = [p.strip() for p in destination.split(',')]
+
+        if len(parts) > 1:
+            return parts[-1]
+
+        return parts[0]
