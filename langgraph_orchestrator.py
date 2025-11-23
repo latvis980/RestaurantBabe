@@ -26,7 +26,6 @@ from typing import TypedDict, Optional, Any, List, Dict, Tuple
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.types import interrupt, Command
 from langgraph.errors import GraphInterrupt
 from langsmith import traceable
 from datetime import datetime, timezone
@@ -1527,95 +1526,47 @@ class UnifiedRestaurantAgent:
     @traceable(name="location_geocode")
     def _location_geocode(self, state: UnifiedSearchState) -> Dict[str, Any]:
         """
-        Validate location coordinates (coordinates should already be geocoded by AI Chat Layer)
+        Validate and extract location coordinates from state.
 
-        Priority order for coordinates:
-        1. GPS coordinates from state (user shared via button)
-        2. Coordinates in SearchContext (geocoded by AI Chat Layer)
-        3. Coordinates in location_data (fallback)
-
-        This node NO LONGER performs geocoding - that happens in AI Chat Layer for early validation.
+        Delegates to LocationUtils.extract_coordinates_from_state() for the actual
+        extraction logic. This node focuses on state management and error handling.
         """
         try:
             logger.info("🗺️ Location Coordinate Validation")
 
-            coordinates = None
+            # Delegate coordinate extraction to LocationUtils
+            coordinates, location_description = LocationUtils.extract_coordinates_from_state(state)
 
-            # Priority 1: Use GPS coordinates if provided
-            gps_coords = state.get("gps_coordinates")
-            if gps_coords:
-                coordinates = gps_coords
-                logger.info(f"✅ Using GPS coordinates: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
-
-            # Priority 2: Check SearchContext for coordinates (geocoded by AI Chat Layer)
-            elif state.get("search_context"):
-                search_ctx = state["search_context"]
-                if search_ctx and hasattr(search_ctx, 'gps_coordinates') and search_ctx.gps_coordinates:
-                    coordinates = search_ctx.gps_coordinates
-                    logger.info(f"✅ Using SearchContext coordinates (geocoded by AI Chat Layer): {coordinates[0]:.4f}, {coordinates[1]:.4f}")
-
-            # Priority 3: Check location_data for existing coordinates
-            elif state.get("location_data"):
-                location_data = state["location_data"]
-                # Type guard: Check location_data is not None and has coordinates
-                if location_data is not None and hasattr(location_data, 'gps_coordinates') and location_data.gps_coordinates:
-                    gps_coords = location_data.gps_coordinates
-                    if hasattr(gps_coords, 'latitude') and hasattr(gps_coords, 'longitude'):
-                        coordinates = (gps_coords.latitude, gps_coords.longitude)
-                        logger.info(f"✅ Using location_data.gps_coordinates: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
-                # Fallback: Check direct latitude/longitude attributes
-                elif location_data is not None and hasattr(location_data, 'latitude') and hasattr(location_data, 'longitude'):
-                    if location_data.latitude is not None and location_data.longitude is not None:
-                        coordinates = (location_data.latitude, location_data.longitude)
-                        logger.info(f"✅ Using location_data coordinates: {coordinates[0]:.4f}, {coordinates[1]:.4f}")
-
-            # Final validation - coordinates MUST exist by this point
+            # Coordinates MUST exist by this point
             if not coordinates:
                 error_msg = (
-                    "No coordinates available for location search.\n\n"
-                    "This error suggests coordinates were not provided by AI Chat Layer.\n"
-                    "Possible causes:\n"
-                    "1. AI Chat Layer didn't geocode text location (coordinates_search mode)\n"
-                    "2. User didn't share GPS (gps_required mode)\n"
-                    "3. SearchContext missing gps_coordinates field\n\n"
-                    "Check AI Chat Layer logs for geocoding attempts."
+                    "No coordinates available for location search. "
+                    "Please share your location or specify a valid address."
                 )
                 logger.error(f"❌ {error_msg}")
-                raise ValueError(error_msg)
+                return {
+                    **state,
+                    "success": False,
+                    "error_message": error_msg,
+                    "current_step": "geocode_failed"
+                }
 
-            # Validate coordinate ranges
-            lat, lng = coordinates
-            if not (-90 <= lat <= 90 and -180 <= lng <= 180):
-                raise ValueError(f"Invalid coordinate ranges: lat={lat}, lng={lng}")
-
-            logger.info(f"✅ Coordinates validated: {lat:.4f}, {lng:.4f}")
-
-            # ✅ PHASE 2: Store location context after validation
-            user_id = state.get("user_id")
-            search_ctx = state.get("search_context")
-            if user_id and search_ctx and hasattr(self, 'ai_chat_layer'):
-                destination = search_ctx.destination if hasattr(search_ctx, 'destination') else 'Unknown location'
-                self.ai_chat_layer.store_location_context(
-                    user_id=user_id,
-                    location=destination,
-                    coordinates=coordinates,
-                    search_type='location_search'
-                )
-                logger.info(f"💾 Stored location in AI Chat Layer: {destination}")
-
+            # Success - return validated coordinates
             return {
-                **state, 
-                "location_coordinates": coordinates, 
-                "current_step": "location_geocoded"
+                **state,
+                "location_coordinates": coordinates,
+                "location_description": location_description,
+                "current_step": "geocoded",
+                "success": True
             }
 
         except Exception as e:
-            logger.error(f"❌ Error in location coordinate validation: {e}")
+            logger.error(f"❌ Error in location geocoding: {e}")
             return {
                 **state,
-                "error_message": f"Location coordinate validation failed: {str(e)}",
                 "success": False,
-                "current_step": "location_geocode_failed"
+                "error_message": f"Geocoding failed: {str(e)}",
+                "current_step": "geocode_failed"
             }
 
     @traceable(name="location_search_database")

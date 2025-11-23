@@ -47,6 +47,106 @@ class LocationUtils:
     EARTH_RADIUS_KM = 6371.0
 
     @staticmethod
+    def extract_coordinates_from_state(state) -> Tuple[Optional[Tuple[float, float]], str]:
+        """
+        Extract and validate coordinates from unified search state.
+
+        Priority order:
+        1. GPS coordinates from state (user shared via button)
+        2. Coordinates in SearchContext (geocoded by AI Chat Layer)
+        3. Coordinates in location_data (fallback)
+
+        Args:
+            state: UnifiedSearchState dictionary
+
+        Returns:
+            Tuple of (coordinates, location_description)
+            - coordinates: (lat, lng) tuple or None if not found
+            - location_description: Human-readable description of location
+        """
+        coordinates = None
+        location_description = "Unknown location"
+
+        # Priority 1: GPS coordinates directly in state
+        gps_coords = state.get("gps_coordinates")
+        if gps_coords and len(gps_coords) == 2:
+            try:
+                lat, lng = float(gps_coords[0]), float(gps_coords[1])
+                if LocationUtils.validate_coordinates(lat, lng):
+                    coordinates = (lat, lng)
+                    location_description = f"GPS: {lat:.4f}, {lng:.4f}"
+                    logger.info(f"✅ Using GPS coordinates: {lat:.4f}, {lng:.4f}")
+                    return coordinates, location_description
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid GPS coordinates in state: {e}")
+
+        # Priority 2: SearchContext coordinates (geocoded by AI Chat Layer)
+        search_context = state.get("search_context")
+        if search_context:
+            # Check for gps_coordinates attribute
+            ctx_coords = getattr(search_context, 'gps_coordinates', None)
+            if ctx_coords and len(ctx_coords) == 2:
+                try:
+                    lat, lng = float(ctx_coords[0]), float(ctx_coords[1])
+                    if LocationUtils.validate_coordinates(lat, lng):
+                        coordinates = (lat, lng)
+                        # Use destination from context if available
+                        destination = getattr(search_context, 'destination', None)
+                        location_description = destination or f"GPS: {lat:.4f}, {lng:.4f}"
+                        logger.info(f"✅ Using SearchContext coordinates: {lat:.4f}, {lng:.4f}")
+                        return coordinates, location_description
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid SearchContext coordinates: {e}")
+
+            # Also check 'coordinates' attribute (alternative naming)
+            ctx_coords = getattr(search_context, 'coordinates', None)
+            if ctx_coords and len(ctx_coords) == 2:
+                try:
+                    lat, lng = float(ctx_coords[0]), float(ctx_coords[1])
+                    if LocationUtils.validate_coordinates(lat, lng):
+                        coordinates = (lat, lng)
+                        destination = getattr(search_context, 'destination', None)
+                        location_description = destination or f"GPS: {lat:.4f}, {lng:.4f}"
+                        logger.info(f"✅ Using SearchContext.coordinates: {lat:.4f}, {lng:.4f}")
+                        return coordinates, location_description
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid SearchContext.coordinates: {e}")
+
+        # Priority 3: location_data object
+        location_data = state.get("location_data")
+        if location_data is not None:
+            # Try gps_coordinates attribute
+            if hasattr(location_data, 'gps_coordinates') and location_data.gps_coordinates:
+                gps = location_data.gps_coordinates
+                if hasattr(gps, 'latitude') and hasattr(gps, 'longitude'):
+                    try:
+                        lat, lng = float(gps.latitude), float(gps.longitude)
+                        if LocationUtils.validate_coordinates(lat, lng):
+                            coordinates = (lat, lng)
+                            location_description = getattr(location_data, 'description', f"GPS: {lat:.4f}, {lng:.4f}")
+                            logger.info(f"✅ Using location_data.gps_coordinates: {lat:.4f}, {lng:.4f}")
+                            return coordinates, location_description
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Invalid location_data.gps_coordinates: {e}")
+
+            # Try direct latitude/longitude attributes
+            if hasattr(location_data, 'latitude') and hasattr(location_data, 'longitude'):
+                if location_data.latitude is not None and location_data.longitude is not None:
+                    try:
+                        lat, lng = float(location_data.latitude), float(location_data.longitude)
+                        if LocationUtils.validate_coordinates(lat, lng):
+                            coordinates = (lat, lng)
+                            location_description = getattr(location_data, 'description', f"GPS: {lat:.4f}, {lng:.4f}")
+                            logger.info(f"✅ Using location_data coordinates: {lat:.4f}, {lng:.4f}")
+                            return coordinates, location_description
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Invalid location_data coordinates: {e}")
+
+        # No valid coordinates found
+        logger.warning("⚠️ No valid coordinates found in state")
+        return None, location_description
+    
+    @staticmethod
     def calculate_distance(
         point1: Tuple[float, float], 
         point2: Tuple[float, float]
