@@ -316,14 +316,11 @@ Detect search mode and decide action. Use memory context to personalize your res
                 else:
                     stored_location_text = f"{loc} - {age_min:.0f} min ago"
 
-            # Add assistant response to history and save to DB
-            if response_text:
-                session['conversation_history'].append({
-                    'role': 'assistant',
-                    'message': response_text,
-                    'timestamp': time.time()
-                })
-                self._save_message_async(user_id, 'assistant', response_text)
+            # Background save user message to Supabase (non-blocking)
+            self._save_message_async(user_id, 'user', user_message)
+
+            # Background save user message to Supabase (non-blocking)
+            self._save_message_async(user_id, 'user', user_message)
 
             # Background save to Supabase (non-blocking)
             self._save_message_async(user_id, 'user', user_message)
@@ -596,21 +593,14 @@ Detect search mode and decide action. Use memory context to personalize your res
 
         import asyncio
 
+        # Store reference to avoid None check issues
+        memory_store = self.memory_store
+
         async def _save():
             try:
-                await self.memory_store.add_conversation_message(user_id, role, message)
+                await memory_store.add_conversation_message(user_id, role, message)
             except Exception as e:
                 logger.warning(f"Background save failed: {e}")
-
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.create_task(_save())
-            else:
-                loop.run_until_complete(_save())
-        except RuntimeError:
-            # Fire and forget if no loop
-            pass
 
     def _format_conversation_context(self, session: Dict[str, Any]) -> str:
         """Format conversation history for AI"""
