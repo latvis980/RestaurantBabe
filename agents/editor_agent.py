@@ -457,11 +457,14 @@ Extract restaurants using the diplomatic concierge approach. Include good option
                     original_name = original_restaurant.get('name', '').lower().strip()
 
                     if name == original_name:
-                        # Preserve the original sources
+                        # Preserve the original sources and place_id
                         original_sources = original_restaurant.get('sources', [])
+                        original_place_id = original_restaurant.get('place_id', '')
                         processed_restaurant['sources'] = original_sources
+                        processed_restaurant['place_id'] = original_place_id
 
                         logger.info(f"🔍 EDITOR OUTPUT - Restaurant: {processed_restaurant['name']}")
+                        logger.info(f"🔍 EDITOR OUTPUT - Place ID: {processed_restaurant['place_id']}")
                         logger.info(f"🔍 EDITOR OUTPUT - Sources: {processed_restaurant['sources']}")
                         break
 
@@ -903,7 +906,8 @@ Extract restaurants using the diplomatic concierge approach. Include good option
                     "name": name,
                     "address": restaurant.get("address", "Requires verification"),
                     "description": restaurant.get("description", "").strip(),
-                    "sources": restaurant.get("sources", [])
+                    "sources": restaurant.get("sources", []),
+                    "place_id": restaurant.get("place_id", "")
                 }
 
                 # Validate description
