@@ -282,7 +282,7 @@ FLASK_DEBUG = False
 # GOOGLE MAPS CONFIGURATION 
 # ============================================================================
 
-ENHANCED_RATING_THRESHOLD = 4.3  # Only verify venues with rating >= this threshold
+ENHANCED_RATING_THRESHOLD = 4.1  # Only verify venues with rating >= this threshold
 MIN_DATABASE_RESULTS_TRIGGER = 2  # Trigger enhanced search when DB results < this number
 MAX_VENUES_TO_VERIFY = 5
 
