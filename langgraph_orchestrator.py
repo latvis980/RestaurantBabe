@@ -1351,11 +1351,11 @@ class UnifiedRestaurantAgent:
     @traceable(name="city_edit_content")
     async def _city_edit_content(self, state: UnifiedSearchState) -> Dict[str, Any]:
         """
-        CRITICAL FIX: Editor now receives proper restaurant lists based on mode
+        Edit and format restaurant content.
 
-        - Database-only: database_restaurants from database_results
-        - Hybrid: database_restaurants_hybrid + scraped_results
-        - Web-only: scraped_results only
+        Delegates mode detection to EditorAgent - it automatically determines
+        whether to use database-only, hybrid, or web-only mode based on
+        what data is provided.
         """
         try:
             logger.info("✏️ City Content Editing")
@@ -1364,49 +1364,34 @@ class UnifiedRestaurantAgent:
             if not destination:
                 raise ValueError("No destination available for editing")
 
-            # CRITICAL FIX: Determine which database restaurants to use
-            is_hybrid = state.get("is_hybrid_mode", False)
-            evaluation_results = state.get("evaluation_results") or {}
-            database_sufficient = evaluation_results.get("evaluation_result", {}).get("database_sufficient", False)
-
-            if database_sufficient:
-                # Database-only mode: use full database results
-                database_results = state.get("database_results")
-                database_restaurants = None
-                if database_results:
-                    if isinstance(database_results, dict):
-                        database_restaurants = database_results.get("database_restaurants", [])
-                    elif isinstance(database_results, list):
-                        database_restaurants = database_results
-                logger.info(f"📊 DATABASE-ONLY MODE: Using {len(database_restaurants or [])} database restaurants")
-
-            elif is_hybrid:
-                # Hybrid mode: use preserved hybrid restaurants
-                database_restaurants = state.get("database_restaurants_hybrid", [])
-                logger.info(f"🔀 HYBRID MODE: Using {len(database_restaurants)} preserved database restaurants")  # type: ignore[arg-type]
-
-            else:
-                # Web-only mode: no database restaurants
-                database_restaurants = None
-                logger.info("🌐 WEB-ONLY MODE: No database restaurants")
-
-            scraped_results = state.get("scraped_results")
-            cleaned_file_path = state.get("cleaned_file_path")
-
-            logger.info("📊 Sending to editor:")
-            logger.info(f"   - Database restaurants: {len(database_restaurants) if database_restaurants else 0}")
-            logger.info(f"   - Scraped results: {len(scraped_results) if scraped_results else 0}")
-            logger.info(f"   - Cleaned file: {cleaned_file_path}")
-
-            edited_results = await sync_to_async(self.editor_agent.edit)(
-                destination=destination,
-                database_restaurants=database_restaurants,
-                scraped_results=scraped_results,
-                cleaned_file_path=cleaned_file_path,
-                raw_query=state["query"]
+            # Gather all available data - let EditorAgent decide the mode
+            # Priority: hybrid restaurants (preserved during web search) > full database results
+            database_restaurants = (
+                state.get("database_restaurants_hybrid") or  # Preserved during hybrid mode
+                state.get("database_results", {}).get("restaurants", [])  # Full database results
             )
 
+            scraped_results = state.get("scraped_results", [])
+            cleaned_file_path = state.get("cleaned_file_path")
+
+            logger.info(f"📊 Data available for editing:")
+            logger.info(f"   - Database restaurants: {len(database_restaurants) if database_restaurants else 0}")
+            logger.info(f"   - Scraped results: {len(scraped_results) if scraped_results else 0}")
+            logger.info(f"   - Cleaned file: {'Yes' if cleaned_file_path else 'No'}")
+
+            # Let EditorAgent determine the mode and process accordingly
+            edited_results = await sync_to_async(self.editor_agent.edit)(
+                database_restaurants=database_restaurants,
+                scraped_results=scraped_results,
+                raw_query=state.get("query", ""),
+                destination=destination,
+                cleaned_file_path=cleaned_file_path
+                # Note: No processing_mode - let EditorAgent auto-detect
+            )
+
+            # Extract results
             final_restaurants = edited_results.get("edited_results", {}).get("main_list", [])
+
             logger.info(f"✅ Editing complete: {len(final_restaurants)} restaurants")
 
             return {
@@ -1418,7 +1403,13 @@ class UnifiedRestaurantAgent:
 
         except Exception as e:
             logger.error(f"❌ Error in city content editing: {e}")
-            return {**state, "error_message": f"Content editing failed: {str(e)}", "success": False}
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
+            return {
+                **state, 
+                "error_message": f"Content editing failed: {str(e)}", 
+                "success": False
+            }
 
     @traceable(name="city_follow_up_search")
     async def _city_follow_up_search(self, state: UnifiedSearchState) -> Dict[str, Any]:
