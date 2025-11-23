@@ -38,7 +38,7 @@ import asyncio
 import time
 import os
 import concurrent.futures
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Callable
 from datetime import datetime
 
 from langchain_core.runnables import RunnableLambda, RunnableSequence, RunnableBranch
@@ -766,7 +766,7 @@ class CitySearchOrchestrator:
     async def process_query_async(
         self,
         query: str,
-        cancel_check_fn: Optional[callable] = None
+        cancel_check_fn: Optional[Callable] = None
     ) -> Dict[str, Any]:
         """
         Process a city search query through the complete LCEL pipeline (async version)

@@ -43,7 +43,7 @@ This replaces the heavy langgraph_orchestrator.py with a clean supervisor patter
 import logging
 import asyncio
 import time
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, Callable
 from dataclasses import dataclass
 
 from langsmith import traceable
@@ -113,7 +113,7 @@ class LangGraphSupervisor:
         thread_id: Optional[str] = None,
         telegram_bot=None,
         chat_id: Optional[int] = None,
-        cancel_check_fn: Optional[callable] = None
+        cancel_check_fn: Optional[Callable] = None
     ) -> Dict[str, Any]:
         """
         Main entry point for processing user messages.
@@ -519,7 +519,7 @@ class LangGraphSupervisor:
         thread_id: Optional[str] = None,
         telegram_bot=None,
         chat_id: Optional[int] = None,
-        cancel_check_fn: Optional[callable] = None
+        cancel_check_fn: Optional[Callable] = None
     ) -> Dict[str, Any]:
         """
         Synchronous wrapper for process_message.
