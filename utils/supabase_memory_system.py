@@ -357,6 +357,115 @@ class SupabaseMemoryStore:
             return False
 
     # =====================================================================
+    # CONVERSATION HISTORY (Persistent Chat Dialog)
+    # =====================================================================
+
+    async def get_conversation_history(
+        self, 
+        user_id: int, 
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        Get user's recent conversation history from Supabase.
+        Returns the last N messages as a list of {role, message, timestamp} dicts.
+        """
+        try:
+            result = self.supabase.table('conversation_history')\
+                .select('role, message, created_at')\
+                .eq('user_id', user_id)\
+                .order('created_at', desc=True)\
+                .limit(limit)\
+                .execute()
+
+            if result.data:
+                # Reverse to get chronological order (oldest first)
+                messages = list(reversed(result.data))
+                return [
+                    {
+                        'role': row['role'],
+                        'message': row['message'],
+                        'timestamp': row['created_at']
+                    }
+                    for row in messages
+                ]
+            return []
+
+        except Exception as e:
+            logger.error(f"Error getting conversation history: {e}")
+            return []
+
+    async def add_conversation_message(
+        self, 
+        user_id: int, 
+        role: str, 
+        message: str
+    ) -> bool:
+        """
+        Add a message to user's conversation history.
+        Also trims old messages to keep only the last 10.
+        """
+        try:
+            # Insert new message
+            data = {
+                'user_id': user_id,
+                'role': role,
+                'message': message
+            }
+            self.supabase.table('conversation_history').insert(data).execute()
+
+            # Trim old messages - keep only last 10
+            await self._trim_conversation_history(user_id, keep_last=10)
+
+            logger.debug(f"💬 Added {role} message for user {user_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error adding conversation message: {e}")
+            return False
+
+    async def _trim_conversation_history(self, user_id: int, keep_last: int = 10) -> None:
+        """Remove old messages, keeping only the most recent ones"""
+        try:
+            # Get IDs of messages to keep
+            keep_result = self.supabase.table('conversation_history')\
+                .select('id')\
+                .eq('user_id', user_id)\
+                .order('created_at', desc=True)\
+                .limit(keep_last)\
+                .execute()
+
+            if keep_result.data and len(keep_result.data) >= keep_last:
+                keep_ids = [row['id'] for row in keep_result.data]
+
+                # Delete messages NOT in the keep list
+                # Using a subquery approach: delete where id < minimum kept id
+                min_keep_id = min(keep_ids)
+
+                self.supabase.table('conversation_history')\
+                    .delete()\
+                    .eq('user_id', user_id)\
+                    .lt('id', min_keep_id)\
+                    .execute()
+
+        except Exception as e:
+            logger.error(f"Error trimming conversation history: {e}")
+
+    async def clear_conversation_history(self, user_id: int) -> bool:
+        """Clear all conversation history for a user"""
+        try:
+            self.supabase.table('conversation_history')\
+                .delete()\
+                .eq('user_id', user_id)\
+                .execute()
+
+            logger.info(f"🗑️ Cleared conversation history for user {user_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error clearing conversation history: {e}")
+            return False
+
+    # =====================================================================
     # CLEANUP & MAINTENANCE
     # =====================================================================
 

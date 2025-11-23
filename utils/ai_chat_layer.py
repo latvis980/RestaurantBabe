@@ -69,6 +69,15 @@ class AIChatLayer:
         # Location context storage (for follow-up searches)
         self.location_contexts: Dict[int, Dict[str, Any]] = {}
 
+        # Initialize Supabase memory store for persistent conversation history
+        self.memory_store = None
+        try:
+            from utils.supabase_memory_system import create_supabase_memory_store
+            self.memory_store = create_supabase_memory_store(config)
+            logger.info("✅ AI Chat Layer connected to persistent memory store")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not initialize memory store: {e}")
+
         # Build prompts
         self._build_prompts()
 
@@ -283,6 +292,8 @@ Detect search mode and decide action. Use memory context to personalize your res
                 thread_id = f"chat_{user_id}_{int(time.time())}"
 
             session = self._get_or_create_session(user_id, thread_id)
+            # Load history from DB if app just restarted (non-blocking after first call)
+            await self._ensure_history_loaded(user_id)
 
             # Handle GPS coordinates
             current_gps = gps_coordinates
@@ -305,12 +316,17 @@ Detect search mode and decide action. Use memory context to personalize your res
                 else:
                     stored_location_text = f"{loc} - {age_min:.0f} min ago"
 
-            # Add user message to history
-            session['conversation_history'].append({
-                'role': 'user',
-                'message': user_message,
-                'timestamp': time.time()
-            })
+            # Add assistant response to history and save to DB
+            if response_text:
+                session['conversation_history'].append({
+                    'role': 'assistant',
+                    'message': response_text,
+                    'timestamp': time.time()
+                })
+                self._save_message_async(user_id, 'assistant', response_text)
+
+            # Background save to Supabase (non-blocking)
+            self._save_message_async(user_id, 'user', user_message)
 
             # Get accumulated state
             accumulated_state = session.get('accumulated_state', {})
@@ -389,7 +405,7 @@ Detect search mode and decide action. Use memory context to personalize your res
             })
 
             logger.info(f"🤖 AI decision: action={action}, mode={search_mode}, complete={is_complete}")
-
+ 
             # ================================================================
             # RETURN APPROPRIATE HANDOFF
             # ================================================================
@@ -506,8 +522,9 @@ Detect search mode and decide action. Use memory context to personalize your res
     # ============================================================================
 
     def _get_or_create_session(self, user_id: int, thread_id: str) -> Dict[str, Any]:
-        """Get or create user session"""
+        """Get or create user session, loading persistent history if available"""
         if user_id not in self.user_sessions:
+            # Create new session
             self.user_sessions[user_id] = {
                 'user_id': user_id,
                 'thread_id': thread_id,
@@ -518,11 +535,82 @@ Detect search mode and decide action. Use memory context to personalize your res
                 'current_destination': None,
                 'current_cuisine': None,
                 'gps_coordinates': None,
+            
                 'last_search_time': None,
                 'last_search_thread_id': None,
-                'current_location': None  # Location context with 30-min expiry
+                'current_location': None,
+                    'history_loaded': False  # Track if we loaded from DB
             }
+
+            # Load persistent conversation history from Supabase
+            if self.memory_store:
+                try:
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # Schedule loading for later if we're in async context
+                        asyncio.create_task(self._load_persistent_history(user_id))
+                    else:
+                        loop.run_until_complete(self._load_persistent_history(user_id))
+                except RuntimeError:
+                    # No event loop, create one
+                    asyncio.run(self._load_persistent_history(user_id))
+                except Exception as e:
+                    logger.warning(f"Could not load persistent history: {e}")
+
         return self.user_sessions[user_id]
+
+    async def _load_persistent_history(self, user_id: int) -> None:
+        """Load conversation history from Supabase into session"""
+        try:
+            if self.memory_store:
+                history = await self.memory_store.get_conversation_history(user_id, limit=10)
+                if history and user_id in self.user_sessions:
+                    self.user_sessions[user_id]['conversation_history'] = history
+                    logger.info(f"📜 Loaded {len(history)} messages from history for user {user_id}")
+        except Exception as e:
+            logger.error(f"Error loading persistent history: {e}")
+
+    async def _ensure_history_loaded(self, user_id: int) -> None:
+        """Load history from Supabase if not already loaded (only happens after restart)"""
+        session = self.user_sessions.get(user_id)
+        if not session or session.get('history_loaded'):
+            return
+
+        # Only load if memory is empty (app just restarted)
+        if not session['conversation_history'] and self.memory_store:
+            try:
+                history = await self.memory_store.get_conversation_history(user_id, limit=10)
+                if history:
+                    session['conversation_history'] = history
+                    logger.info(f"📜 Restored {len(history)} messages from DB for user {user_id}")
+            except Exception as e:
+                logger.warning(f"Could not load history from DB: {e}")
+
+        session['history_loaded'] = True
+
+    def _save_message_async(self, user_id: int, role: str, message: str) -> None:
+        """Save message to Supabase in background (non-blocking)"""
+        if not self.memory_store:
+            return
+
+        import asyncio
+
+        async def _save():
+            try:
+                await self.memory_store.add_conversation_message(user_id, role, message)
+            except Exception as e:
+                logger.warning(f"Background save failed: {e}")
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(_save())
+            else:
+                loop.run_until_complete(_save())
+        except RuntimeError:
+            # Fire and forget if no loop
+            pass
 
     def _format_conversation_context(self, session: Dict[str, Any]) -> str:
         """Format conversation history for AI"""
