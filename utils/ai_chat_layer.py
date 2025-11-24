@@ -277,6 +277,9 @@ Using conversation context, detect search mode and decide action. Personalize yo
         """
         Add a message to conversation history.
 
+        Primary: In-memory session (fast)
+        Backup: Supabase (survives restarts)
+
         Call this for:
         - User messages (role="user")
         - Bot responses (role="assistant") 
@@ -292,9 +295,12 @@ Using conversation context, detect search mode and decide action. Personalize yo
             'timestamp': time.time()
         })
 
-        # Keep only last 10 messages
+        # Keep only last 10 messages in memory
         if len(session['conversation_history']) > 10:
             session['conversation_history'] = session['conversation_history'][-10:]
+
+        # Backup to Supabase (non-blocking, survives restarts)
+        self._save_message_async(user_id, role, content)
 
         logger.debug(f"📝 Added {role} message to history for user {user_id} ({len(content)} chars)")
 
@@ -367,14 +373,8 @@ Using conversation context, detect search mode and decide action. Personalize yo
                 else:
                     stored_location_text = f"{loc} - {age_min:.0f} min ago"
 
-            # Background save user message to Supabase (non-blocking)
-            self._save_message_async(user_id, 'user', user_message)
-
-            # Background save user message to Supabase (non-blocking)
-            self._save_message_async(user_id, 'user', user_message)
-
-            # Background save to Supabase (non-blocking)
-            self._save_message_async(user_id, 'user', user_message)
+            # Add user message to in-memory history (also backs up to Supabase)
+            self.add_message(user_id, 'user', user_message)
 
             # Get accumulated state
             accumulated_state = session.get('accumulated_state', {})
@@ -637,7 +637,7 @@ Using conversation context, detect search mode and decide action. Personalize yo
         session['history_loaded'] = True
 
     def _save_message_async(self, user_id: int, role: str, message: str) -> None:
-        """Save message to Supabase in background (non-blocking)"""
+        """Save message to Supabase in background (non-blocking fallback storage)"""
         if not self.memory_store:
             return
 
@@ -649,8 +649,23 @@ Using conversation context, detect search mode and decide action. Personalize yo
         async def _save():
             try:
                 await memory_store.add_conversation_message(user_id, role, message)
+                logger.debug(f"💾 Backed up {role} message to Supabase for user {user_id}")
             except Exception as e:
                 logger.warning(f"Background save failed: {e}")
+
+        # Schedule the coroutine to actually run
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(_save())
+            else:
+                loop.run_until_complete(_save())
+        except RuntimeError:
+            # No event loop - try creating one
+            try:
+                asyncio.run(_save())
+            except Exception as e:
+                logger.debug(f"Could not schedule background save: {e}")
 
     def _format_conversation_context(self, session: Dict[str, Any]) -> str:
         """Format conversation history for AI - includes everything shown in Telegram"""
