@@ -388,8 +388,9 @@ Using conversation context, detect search mode and decide action. Personalize yo
             else:
                 logger.info(f"🆕 No memory context for user {user_id} (new user)")
 
-            # Prepare prompt variables (simplified - conversation history has everything)
+            # Prepare prompt variables
             prompt_vars = {
+                'memory_context': memory_context_text,
                 'conversation_history': self._format_conversation_context(session),
                 'stored_location': stored_location_text,
                 'has_gps': 'Yes' if current_gps else 'No',
