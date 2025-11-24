@@ -209,24 +209,33 @@ User says "more options" (has past restaurants in memory):
     "reasoning": "Follow-up request, will exclude previously recommended restaurants"
 }}
 """),
-            ("human", """═══════════════════════════════════════════════════════════════
-USER MEMORY CONTEXT
-═══════════════════════════════════════════════════════════════
-{memory_context}
+            ("human", """══════════════════════════════════════════════════
+            USER MEMORY CONTEXT
+            ═══════════════════════════════════════════════════════════════
+            {memory_context}
 
-═══════════════════════════════════════════════════════════════
-CONVERSATION STATE
-═══════════════════════════════════════════════════════════════
-Conversation History:
-{conversation_history}
+            ═══════════════════════════════════════════════════════════════
+            CURRENT SESSION STATE
+            ═══════════════════════════════════════════════════════════════
+            Current Cuisine: {current_cuisine}
+            Current Destination: {current_destination}
+            Stored Location: {stored_location}
+            GPS Available: {has_gps}
 
-═══════════════════════════════════════════════════════════════
-CURRENT MESSAGE
-═══════════════════════════════════════════════════════════════
-USER MESSAGE: {user_message}
+            ═══════════════════════════════════════════════════════════════
+            CONVERSATION HISTORY
+            ═══════════════════════════════════════════════════════════════
+            {conversation_history}
 
-Using conversation context, detect search mode and decide action. Personalize your response.""")
-        ])
+            ═══════════════════════════════════════════════════════════════
+            CURRENT MESSAGE
+            ═══════════════════════════════════════════════════════════════
+            USER MESSAGE: {user_message}
+
+            Use the conversation history to understand context and accumulated state
+
+            Using all context above, detect search mode and decide action. Personalize your response.""")
+            ])
 
         self.conversation_chain = self.conversation_prompt | self.llm
 
@@ -352,14 +361,24 @@ Using conversation context, detect search mode and decide action. Personalize yo
             # Load history from DB if app just restarted (non-blocking after first call)
             await self._ensure_history_loaded(user_id)
 
-            # Handle GPS coordinates
+            # Handle GPS coordinates - with 30-minute expiry
             current_gps = gps_coordinates
             if gps_coordinates:
                 session['gps_coordinates'] = gps_coordinates
+                session['gps_timestamp'] = time.time()  # Track when GPS was received
                 logger.info(f"📍 Received GPS coordinates: {gps_coordinates[0]:.4f}, {gps_coordinates[1]:.4f}")
             elif session.get('gps_coordinates'):
-                current_gps = session['gps_coordinates']
-                logger.info(f"📍 Using stored GPS: {current_gps[0]:.4f}, {current_gps[1]:.4f}")
+                # Check if stored GPS is still fresh (< 30 minutes)
+                gps_age = time.time() - session.get('gps_timestamp', 0)
+                if gps_age < 1800:  # 30 minutes
+                    current_gps = session['gps_coordinates']
+                    logger.info(f"📍 Using stored GPS: {current_gps[0]:.4f}, {current_gps[1]:.4f} ({gps_age/60:.0f} min old)")
+                else:
+                    # GPS expired - clear it
+                    logger.info(f"⏰ Stored GPS expired ({gps_age/60:.0f} min old), clearing")
+                    del session['gps_coordinates']
+                    if 'gps_timestamp' in session:
+                        del session['gps_timestamp']
 
             # Check for stored location context
             stored_location = self.get_location_context(user_id)
@@ -388,10 +407,16 @@ Using conversation context, detect search mode and decide action. Personalize yo
             else:
                 logger.info(f"🆕 No memory context for user {user_id} (new user)")
 
-            # Prepare prompt variables
+            # Get current cuisine and destination from accumulated state
+            current_cuisine = accumulated_state.get('cuisine') or session.get('current_cuisine') or 'None'
+            current_destination = accumulated_state.get('destination') or session.get('current_destination') or 'None'
+
+            # Prepare prompt variables - include ALL context the AI needs
             prompt_vars = {
                 'memory_context': memory_context_text,
                 'conversation_history': self._format_conversation_context(session),
+                'current_cuisine': current_cuisine,
+                'current_destination': current_destination,
                 'stored_location': stored_location_text,
                 'has_gps': 'Yes' if current_gps else 'No',
                 'user_message': user_message
