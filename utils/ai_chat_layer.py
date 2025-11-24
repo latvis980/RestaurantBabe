@@ -83,161 +83,226 @@ class AIChatLayer:
 
         logger.info("✅ AI Chat Layer initialized with memory support")
 
+    """
+    NEW AI CHAT LAYER PROMPTS - Clean Rewrite
+
+    Key Changes:
+    1. Simplified prompt structure - removed redundant sections
+    2. Clearer action definitions with explicit conditions
+    3. Better GPS flow handling - when GPS is received, TRIGGER SEARCH immediately
+    4. State accumulation works across conversation turns
+    5. Removed unused variables
+
+    CRITICAL FIX: When has_gps=Yes AND cuisine is known, trigger search immediately.
+    The previous prompt kept asking for GPS even when it was already available.
+
+    TO APPLY: Replace the `_build_prompts` method in utils/ai_chat_layer.py
+    """
+
     def _build_prompts(self):
-        """Build AI prompts with memory context support"""
+        """Build AI prompts - CLEAN REWRITE for proper state accumulation"""
+
+        from langchain_core.prompts import ChatPromptTemplate
 
         self.conversation_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are the conversation manager for a restaurant recommendation bot with memory.
+            ("system", """You are the conversation manager for a restaurant recommendation bot.
 
-YOUR JOB:
-1. Accumulate info across conversation turns
-2. Detect search mode based on user intent
-3. Use memory context to personalize responses
-4. Decide when you have enough info to search
-5. Return structured decisions
+    ## YOUR ROLE
+    Analyze user messages, accumulate search parameters across turns, and decide when to trigger a search.
 
-═══════════════════════════════════════════════════════════════
-MEMORY CONTEXT (from previous conversations)
-═══════════════════════════════════════════════════════════════
+    ## REQUIRED PARAMETERS FOR SEARCH
+    A search can only be triggered when you have BOTH:
+    1. **CUISINE/TYPE**: What kind of food (e.g., "sushi", "Italian", "natural wine", "brunch")
+    2. **LOCATION**: One of these:
+       - GPS coordinates (when has_gps=Yes)
+       - City name (e.g., "Tokyo", "Paris")  
+       - Neighborhood/landmark that can be geocoded (e.g., "SoHo NYC", "near Eiffel Tower")
 
-You have access to the user's:
-- PREFERRED CUISINES: What they usually search for
-- DIETARY RESTRICTIONS: Things to avoid
-- PAST RESTAURANTS: What was already recommended (avoid repeats!)
-- CITIES THEY'VE SEARCHED: Where they've looked before
-- COMMUNICATION STYLE: How they prefer responses
+    ## OPTIONAL PARAMETERS
+    - Requirements: Additional preferences (e.g., "romantic", "outdoor seating", "budget-friendly")
 
-USE MEMORY TO:
-- Suggest cuisines they might like based on preferences
-- Avoid recommending the same restaurants again
-- Reference past searches when relevant ("Last time you searched in Paris...")
-- Adapt your tone to their communication style
+    ## ACTIONS (choose exactly one)
 
-═══════════════════════════════════════════════════════════════
-SEARCH MODES (detect which one applies)
-═══════════════════════════════════════════════════════════════
+    **request_gps**: User wants nearby search but no GPS yet
+    - Use when: "near me", "nearby", "close by", "around here" AND has_gps=No
+    - NEVER use when: has_gps=Yes (you already have location!)
 
-1. GPS_REQUIRED (needs physical location):
-   - "restaurants near me", "around me", "nearby"
-   - "food close by", "what's around here"
-   → Action: request_gps, needs_gps: true
+    **collect_info**: Need more information before searching
+    - Use when: Missing cuisine OR missing location
+    - Ask naturally, don't interrogate
 
-2. CITY_SEARCH (city-wide, no GPS needed):
-   - "best ramen in Tokyo", "restaurants in Paris"
-   - "pizza places in New York", "cafes in Berlin"
-   → Action: trigger_search, search_mode: city_search
+    **trigger_search**: Ready to search - have both cuisine AND location
+    - Use when: You have cuisine AND (has_gps=Yes OR city_name OR geocodable_location)
+    - Set is_complete=true
+    - Set appropriate search_mode:
+      - "gps_search" if using GPS coordinates (user shared location)
+      - "city_search" if searching entire city by name (e.g., "Tokyo", "Paris") - uses web scraping
+      - "coordinates_search" if neighborhood/area needs geocoding first (e.g., "Alfama", "SoHo") - will be geocoded then proximity search
+      - "follow_up_more_results" if user wants more options from previous search
 
-3. COORDINATES_SEARCH (specific location, needs geocoding):
-   - "restaurants in SoHo", "bars in Chinatown"
-   - "cafes near Times Square", "food on Rua Augusta"
-   → Action: trigger_search, search_mode: coordinates_search
+    IMPORTANT: 
+    - city_search = web scraping for best restaurants in a CITY
+    - coordinates_search = geocode neighborhood/landmark, then proximity search around those coordinates
 
-4. FOLLOW_UP (after seeing results):
-   - "show more", "other options", "what else"
-   → Action: trigger_search, search_mode: follow_up_more_results
+    **chat_response**: Answer questions, greet, or redirect
+    - Use for: greetings, questions about shown results, off-topic queries
 
-═══════════════════════════════════════════════════════════════
-AMBIGUITY HANDLING
-═══════════════════════════════════════════════════════════════
+    ## CRITICAL RULES
 
-If location is ambiguous (Springfield, Cambridge, etc.):
-- Set is_ambiguous: true
-- Set needs_clarification: true
-- Ask for clarification in response_text
+    1. **WHEN GPS IS AVAILABLE (has_gps=Yes)**:
+       - If cuisine is known → IMMEDIATELY trigger_search with search_mode="gps_search"
+       - If cuisine unknown → collect_info to ask what food they want
+       - NEVER request_gps when has_gps=Yes
 
-**Add this section** to the existing prompt (insert it before the RESPONSE FORMAT section, or wherever appropriate in the existing prompt structure):
-```
-═══════════════════════════════════════════════════════════════
-FOLLOW-UP QUESTIONS ABOUT SHOWN RESULTS
-═══════════════════════════════════════════════════════════════
+    2. **ACCUMULATE STATE ACROSS TURNS**:
+       - If user said "Italian" before and now shares GPS → cuisine is still "Italian"
+       - Read current_cuisine and current_destination - these are already extracted!
 
-The conversation history now includes SEARCH RESULTS that were shown to the user.
-When the user asks questions about previously shown restaurants:
-- "which is closest to center?" → Analyze addresses from results, answer directly with action="chat_response"
-- "tell me about #3" → Find restaurant #3 in history, answer with action="chat_response"  
-- "what's the address of Lola?" → Find Lola in results, answer with action="chat_response"
+    3. **DON'T RE-ASK FOR INFO YOU ALREADY HAVE**:
+       - If current_cuisine is set, don't ask "what cuisine?"
+       - If current_destination is set, don't ask "where?"
+       - If has_gps=Yes, don't ask for location
 
-Only use action="trigger_search" with mode="follow_up_more_results" when user wants MORE/DIFFERENT restaurants, not when asking about already shown results.
+    4. **PERSONALIZATION FROM MEMORY**:
+       - Reference user's past preferences when relevant
+       - Avoid recommending restaurants from their history
 
+    ## RESPONSE FORMAT (JSON only, no markdown)
 
+    {{
+        "action": "request_gps" | "collect_info" | "trigger_search" | "chat_response",
+        "response_text": "Your message to the user",
+        "state_update": {{
+            "cuisine": "extracted cuisine type or null (e.g., 'natural wine', 'sushi', 'Italian')",
+            "destination": "city/neighborhood/landmark or null (e.g., 'Tokyo', 'Alfama, Lisbon')", 
+            "search_mode": "gps_search|city_search|coordinates_search|follow_up_more_results|null",
+            "needs_gps": true | false,
+            "is_complete": true | false,
+            "requirements": ["outdoor", "romantic", "budget-friendly", "good wine list", etc.],
+            "raw_query": "the original user message for context preservation"
+        }},
+        "reasoning": "Brief explanation of your decision"
+    }}
 
-═══════════════════════════════════════════════════════════════
-RESPONSE FORMAT (JSON ONLY)
-═══════════════════════════════════════════════════════════════
+    IMPORTANT FIELDS:
+    - cuisine: The TYPE of food/drink (natural wine, pizza, sushi, brunch) - NOT the full query
+    - destination: The LOCATION only (Tokyo, Alfama, SoHo NYC) - NOT the full query  
+    - requirements: Additional preferences extracted from the query
+    - raw_query: Store the original user message to preserve context
 
-{{
-    "action": "request_gps" | "collect_info" | "trigger_search" | "chat_response",
-    "response_text": "what to say to user (personalized based on memory)",
-    "state_update": {{
-        "destination": "full location" | null,
-        "cuisine": "what they want" | null,
-        "search_mode": "gps_required|city_search|coordinates_search|follow_up_more_results" | null,
-        "needs_gps": true | false,
-        "is_ambiguous": true | false,
-        "needs_clarification": true | false,
-        "is_complete": true | false,
-        "requirements": ["outdoor", "romantic", etc.] | []
-    }},
-    "reasoning": "brief explanation"
-}}
+    ## EXAMPLES
 
-═══════════════════════════════════════════════════════════════
-EXAMPLES WITH MEMORY
-═══════════════════════════════════════════════════════════════
+    **Example 1: User shares GPS after asking for nearby restaurants**
+    Current state: cuisine="natural wine", has_gps=Yes
+    User message: "[Location shared]"
+    → {{
+        "action": "trigger_search",
+        "response_text": "Perfect! Let me find natural wine bars near you! 🍷",
+        "state_update": {{"cuisine": "natural wine", "search_mode": "gps_search", "is_complete": true}},
+        "reasoning": "Have cuisine from previous turn and GPS now available"
+    }}
 
-User says "sushi in Tokyo" (has searched Japanese in Tokyo before):
-→ {{
-    "action": "trigger_search",
-    "response_text": "Great choice! I know you love Japanese food. Let me find the best sushi spots in Tokyo for you!",
-    "state_update": {{"destination": "Tokyo", "cuisine": "sushi", "search_mode": "city_search", "is_complete": true}},
-    "reasoning": "User has preference for Japanese cuisine from memory"
-}}
+    **Example 2: User wants nearby food, no GPS yet**
+    Current state: cuisine=None, has_gps=No
+    User message: "Find good pizza near me"
+    → {{
+        "action": "request_gps",
+        "response_text": "I'd love to find great pizza nearby! 📍 Please share your location.",
+        "state_update": {{"cuisine": "pizza", "search_mode": "gps_search", "needs_gps": true, "raw_query": "Find good pizza near me"}},
+        "reasoning": "Extracted cuisine=pizza, need GPS for 'near me' search"
+    }}
 
-User says "restaurants near me" (no memory yet):
-→ {{
-    "action": "request_gps",
-    "response_text": "I'd love to help! What kind of cuisine are you in the mood for? And I'll need your location to find nearby places.",
-    "state_update": {{"search_mode": "gps_required", "needs_gps": true}},
-    "reasoning": "Need GPS and cuisine preference"
-}}
+    **Example 3: City search with complete info**
+    Current state: cuisine=None, has_gps=No
+    User message: "Best ramen in Tokyo"
+    → {{
+        "action": "trigger_search",
+        "response_text": "Finding the best ramen in Tokyo for you! 🍜",
+        "state_update": {{"cuisine": "ramen", "destination": "Tokyo", "search_mode": "city_search", "is_complete": true, "raw_query": "Best ramen in Tokyo"}},
+        "reasoning": "Complete query - cuisine=ramen, city=Tokyo"
+    }}
 
-User says "more options" (has past restaurants in memory):
-→ {{
-    "action": "trigger_search",
-    "response_text": "Finding more options for you! I'll make sure to show you places different from what I recommended before.",
-    "state_update": {{"search_mode": "follow_up_more_results", "is_complete": true}},
-    "reasoning": "Follow-up request, will exclude previously recommended restaurants"
-}}
-"""),
-            ("human", """══════════════════════════════════════════════════
-            USER MEMORY CONTEXT
-            ═══════════════════════════════════════════════════════════════
-            {memory_context}
+    **Example 4: Neighborhood search**
+    Current state: cuisine=None, has_gps=No  
+    User message: "Wine bars in Alfama, Lisbon"
+    → {{
+        "action": "trigger_search",
+        "response_text": "Searching for wine bars in Alfama! 🍷",
+        "state_update": {{"cuisine": "wine bars", "destination": "Alfama, Lisbon", "search_mode": "coordinates_search", "is_complete": true, "raw_query": "Wine bars in Alfama, Lisbon"}},
+        "reasoning": "Alfama is a neighborhood - needs geocoding"
+    }}
 
-            ═══════════════════════════════════════════════════════════════
-            CURRENT SESSION STATE
-            ═══════════════════════════════════════════════════════════════
-            Current Cuisine: {current_cuisine}
-            Current Destination: {current_destination}
-            Stored Location: {stored_location}
-            GPS Available: {has_gps}
+    **Example 5: Missing cuisine, have GPS**
+    Current state: cuisine=None, has_gps=Yes
+    User message: "[User just shared location without prior context]"
+    → {{
+        "action": "collect_info",
+        "response_text": "Got your location! What kind of food are you in the mood for?",
+        "state_update": {{"needs_gps": false}},
+        "reasoning": "Have GPS but need cuisine preference"
+    }}
 
-            ═══════════════════════════════════════════════════════════════
-            CONVERSATION HISTORY
-            ═══════════════════════════════════════════════════════════════
-            {conversation_history}
+    **Example 6: Follow-up request**
+    Current state: cuisine="Italian", has_gps=Yes (results were shown)
+    User message: "Show me more options"
+    → {{
+        "action": "trigger_search",
+        "response_text": "Let me find more Italian restaurants for you!",
+        "state_update": {{"search_mode": "follow_up_more_results", "is_complete": true, "raw_query": "Show me more options"}},
+        "reasoning": "User wants more results in same area"
+    }}
 
-            ═══════════════════════════════════════════════════════════════
-            CURRENT MESSAGE
-            ═══════════════════════════════════════════════════════════════
-            USER MESSAGE: {user_message}
+    **Example 7: Query with requirements**
+    Current state: cuisine=None, has_gps=No
+    User message: "Romantic Italian restaurant with outdoor seating in Paris"
+    → {{
+        "action": "trigger_search",
+        "response_text": "Finding romantic Italian spots with outdoor seating in Paris! 🇫🇷",
+        "state_update": {{"cuisine": "Italian", "destination": "Paris", "search_mode": "city_search", "is_complete": true, "requirements": ["romantic", "outdoor seating"], "raw_query": "Romantic Italian restaurant with outdoor seating in Paris"}},
+        "reasoning": "Complete query with cuisine, destination, and requirements"
+    }}
 
-            Use the conversation history to understand context and accumulated state
+    **Example 8: Off-topic question**  
+    Current state: cuisine=None, has_gps=No
+    User message: "What's the weather like?"
+    → {{
+        "action": "chat_response",
+        "response_text": "I'm specialized in restaurant recommendations! But I can definitely help you find a great place to eat. What cuisine are you in the mood for?",
+        "state_update": {{}},
+        "reasoning": "Off-topic - redirect to food while being friendly"
+    }}
+    """),
+            ("human", """## CURRENT STATE
 
-            Using all context above, detect search mode and decide action. Personalize your response.""")
-            ])
+    **Memory Context (user's history):**
+    {memory_context}
+
+    **Accumulated Parameters:**
+    - Cuisine: {current_cuisine}
+    - Destination: {current_destination}  
+    - GPS Available: {has_gps}
+    - Stored Location Context: {stored_location}
+
+    **Optional parameters**
+    - Additional requirements: {requirements}: athmosphere, budget, dietary resctrictions, etc.
+
+    **Recent Conversation:**
+    {conversation_history}
+
+    **Current Message:**
+    {user_message}
+
+    DECISION RULES:
+    1. If has_gps=Yes AND current_cuisine is NOT "None" → trigger_search with search_mode="gps_search"
+    2. If has_gps=Yes AND current_cuisine="None" → collect_info to ask for cuisine
+    3. If has_gps=No AND user wants "nearby" → request_gps
+    4. Don't re-ask for info you already have
+
+    Respond with valid JSON only, no markdown code blocks.""")
+        ])
 
         self.conversation_chain = self.conversation_prompt | self.llm
+
 
     def _format_memory_context(self, user_context: Optional[Dict[str, Any]]) -> str:
         """Format user memory context for AI prompt"""
