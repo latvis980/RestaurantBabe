@@ -145,6 +145,22 @@ If location is ambiguous (Springfield, Cambridge, etc.):
 - Set needs_clarification: true
 - Ask for clarification in response_text
 
+**Add this section** to the existing prompt (insert it before the RESPONSE FORMAT section, or wherever appropriate in the existing prompt structure):
+```
+═══════════════════════════════════════════════════════════════
+FOLLOW-UP QUESTIONS ABOUT SHOWN RESULTS
+═══════════════════════════════════════════════════════════════
+
+The conversation history now includes SEARCH RESULTS that were shown to the user.
+When the user asks questions about previously shown restaurants:
+- "which is closest to center?" → Analyze addresses from results, answer directly with action="chat_response"
+- "tell me about #3" → Find restaurant #3 in history, answer with action="chat_response"  
+- "what's the address of Lola?" → Find Lola in results, answer with action="chat_response"
+
+Only use action="trigger_search" with mode="follow_up_more_results" when user wants MORE/DIFFERENT restaurants, not when asking about already shown results.
+
+
+
 ═══════════════════════════════════════════════════════════════
 RESPONSE FORMAT (JSON ONLY)
 ═══════════════════════════════════════════════════════════════
@@ -204,20 +220,12 @@ CONVERSATION STATE
 Conversation History:
 {conversation_history}
 
-Accumulated State:
-{accumulated_state}
-
-Stored Location Context:
-{stored_location}
-
-Has GPS Coordinates: {has_gps}
-
 ═══════════════════════════════════════════════════════════════
 CURRENT MESSAGE
 ═══════════════════════════════════════════════════════════════
 USER MESSAGE: {user_message}
 
-Detect search mode and decide action. Use memory context to personalize your response.""")
+Using conversation context, detect search mode and decide action. Personalize your response.""")
         ])
 
         self.conversation_chain = self.conversation_prompt | self.llm
@@ -264,6 +272,49 @@ Detect search mode and decide action. Use memory context to personalize your res
             return "User has no stored preferences yet (relatively new user)."
 
         return "\n".join(parts)
+
+    def add_message(self, user_id: int, role: str, content: str) -> None:
+        """
+        Add a message to conversation history.
+
+        Call this for:
+        - User messages (role="user")
+        - Bot responses (role="assistant") 
+        - Search results sent to user (role="assistant")
+
+        This ensures the AI sees everything shown in Telegram.
+        """
+        session = self._get_or_create_session(user_id, f"msg_{user_id}")
+
+        session['conversation_history'].append({
+            'role': role,
+            'message': content,
+            'timestamp': time.time()
+        })
+
+        # Keep only last 10 messages
+        if len(session['conversation_history']) > 10:
+            session['conversation_history'] = session['conversation_history'][-10:]
+
+        logger.debug(f"📝 Added {role} message to history for user {user_id} ({len(content)} chars)")
+
+    def add_search_results(self, user_id: int, formatted_results: str, search_context: Optional[Dict] = None) -> None:
+        """
+        Add search results to conversation history.
+
+        Call this after sending results to the user in Telegram.
+        The formatted_results should be the exact text sent to the user.
+        """
+        self.add_message(user_id, 'assistant', formatted_results)
+
+        if search_context:
+            session = self._get_or_create_session(user_id, f"msg_{user_id}")
+            session['last_search_context'] = {
+                **search_context,
+                'timestamp': time.time()
+            }
+
+        logger.info(f"📋 Added search results to conversation history for user {user_id}")
 
     async def process_message(
         self,
@@ -337,11 +388,9 @@ Detect search mode and decide action. Use memory context to personalize your res
             else:
                 logger.info(f"🆕 No memory context for user {user_id} (new user)")
 
-            # Prepare prompt variables
+            # Prepare prompt variables (simplified - conversation history has everything)
             prompt_vars = {
-                'memory_context': memory_context_text,
                 'conversation_history': self._format_conversation_context(session),
-                'accumulated_state': json.dumps(accumulated_state, indent=2),
                 'stored_location': stored_location_text,
                 'has_gps': 'Yes' if current_gps else 'No',
                 'user_message': user_message
@@ -603,19 +652,23 @@ Detect search mode and decide action. Use memory context to personalize your res
                 logger.warning(f"Background save failed: {e}")
 
     def _format_conversation_context(self, session: Dict[str, Any]) -> str:
-        """Format conversation history for AI"""
+        """Format conversation history for AI - includes everything shown in Telegram"""
         history = session.get('conversation_history', [])
         if not history:
             return "No previous conversation."
 
-        recent = history[-10:]
         formatted = []
-        for msg in recent:
-            role = msg.get('role', 'user')
-            message = msg.get('message', '')
-            formatted.append(f"{role.capitalize()}: {message}")
+        for msg in history[-10:]:  # Last 10 messages
+            role = msg.get('role', 'user').upper()
+            content = msg.get('message', '')
 
-        return "\n".join(formatted)
+            # Truncate very long content (like search results) but keep enough for context
+            if len(content) > 2000:
+                content = content[:2000] + "\n... [truncated]"
+
+            formatted.append(f"[{role}]: {content}")
+
+        return "\n\n".join(formatted)
 
     def _parse_ai_response(self, response_text: str) -> Dict[str, Any]:
         """Parse AI response (handles markdown code blocks)"""

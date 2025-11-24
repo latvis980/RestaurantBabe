@@ -304,6 +304,18 @@ class LangGraphSupervisor:
                             restaurants=restaurants,
                             search_context=handoff.search_context
                         )
+
+                        # Add search results to conversation history for follow-up questions
+                        formatted_results = result.get("langchain_formatted_results") or result.get("location_formatted_results") or result.get("ai_response", "")
+                        if formatted_results:
+                            self.ai_chat_layer.add_search_results(
+                                user_id=user_id,
+                                formatted_results=formatted_results,
+                                search_context={
+                                    'cuisine': handoff.search_context.cuisine if handoff.search_context else None,
+                                    'destination': handoff.search_context.destination if handoff.search_context else None,
+                                }
+                            )
                         
                         # Update preferences
                         await self._update_preferences_from_search(
