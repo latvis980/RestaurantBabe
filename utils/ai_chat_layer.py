@@ -477,6 +477,19 @@ class AIChatLayer:
             current_destination = accumulated_state.get('destination') or session.get('current_destination') or 'None'
 
             # Prepare prompt variables - include ALL context the AI needs
+            # Get requirements from accumulated state or user preferences
+            current_requirements = accumulated_state.get('requirements', [])
+            if not current_requirements and user_context:
+                # Pull from memory if available
+                prefs = user_context.get("preferences")
+                if prefs:
+                    if hasattr(prefs, 'dietary_restrictions') and prefs.dietary_restrictions:
+                        current_requirements.extend(prefs.dietary_restrictions)
+                    if hasattr(prefs, 'budget_range') and prefs.budget_range:
+                        current_requirements.append(f"budget: {prefs.budget_range}")
+
+            requirements_text = ', '.join(current_requirements) if current_requirements else 'None'
+
             prompt_vars = {
                 'memory_context': memory_context_text,
                 'conversation_history': self._format_conversation_context(session),
@@ -484,7 +497,8 @@ class AIChatLayer:
                 'current_destination': current_destination,
                 'stored_location': stored_location_text,
                 'has_gps': 'Yes' if current_gps else 'No',
-                'user_message': user_message
+                'user_message': user_message,
+                'requirements': requirements_text
             }
 
             # Get AI decision
