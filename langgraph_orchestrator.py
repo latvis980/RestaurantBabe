@@ -49,7 +49,7 @@ from utils.ai_memory_system import AIMemorySystem, RestaurantMemory
 
 # LCEL Pipelines (search execution)
 from city_search_orchestrator import CitySearchOrchestrator
-from location_search_orchestrator import LocationSearchOrchestrator
+from location_orchestrator import LocationOrchestrator
 
 # Location utilities
 from location.telegram_location_handler import LocationData
@@ -82,7 +82,7 @@ class LangGraphSupervisor:
 
         # Initialize LCEL pipelines (search execution)
         self.city_pipeline = CitySearchOrchestrator(config)
-        self.location_pipeline = LocationSearchOrchestrator(config)
+        self.location_pipeline = LocationOrchestrator(config)
         logger.info("✅ LCEL pipelines initialized (city + location)")
 
         # Statistics
@@ -654,7 +654,7 @@ class LangGraphSupervisor:
         cancel_check_fn: Optional[Callable],
         start_time: float
     ) -> Dict[str, Any]:
-        """Execute location-based search using LocationSearchOrchestrator LCEL pipeline"""
+        """Execute location-based search using LocationOrchestrator LCEL pipeline"""
         self.stats["location_searches"] += 1
 
         logger.info(f"📍 Executing location search: '{search_query}'")
@@ -678,7 +678,7 @@ class LangGraphSupervisor:
             )
 
             # Execute the LCEL pipeline
-            result = await self.location_pipeline.process_location_query_async(
+            result = await self.location_pipeline.process_location_query(
                 query=search_query,
                 location_data=location_data,
                 cancel_check_fn=cancel_check_fn,
