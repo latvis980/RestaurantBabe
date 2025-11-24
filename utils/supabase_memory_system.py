@@ -55,6 +55,15 @@ class SupabaseMemoryStore:
             raise
 
     # =====================================================================
+    # HELPER: Check if error is due to missing table
+    # =====================================================================
+
+    def _is_table_missing_error(self, error: Exception) -> bool:
+        """Check if the error is due to a missing table (404) or empty response (204)"""
+        error_str = str(error)
+        return any(code in error_str for code in ['404', '204', 'Missing response', 'relation', 'does not exist'])
+
+    # =====================================================================
     # USER PREFERENCES (Semantic Memory)
     # =====================================================================
 
@@ -64,18 +73,18 @@ class SupabaseMemoryStore:
             result = self.supabase.table('user_preferences')\
                 .select('*')\
                 .eq('user_id', user_id)\
-                .maybe_single()\
                 .execute()
 
-            if result.data:
+            if result.data and len(result.data) > 0:
+                data = result.data[0]
                 return UserPreferences(
-                    preferred_cities=result.data.get('preferred_cities', []),
-                    preferred_cuisines=result.data.get('preferred_cuisines', []),
-                    dietary_restrictions=result.data.get('dietary_restrictions', []),
-                    budget_range=result.data.get('budget_range', 'mid-range'),
-                    preferred_ambiance=result.data.get('preferred_ambiance', []),
-                    meal_times=result.data.get('meal_times', []),
-                    group_size_typical=result.data.get('group_size_typical', 'couple')
+                    preferred_cities=data.get('preferred_cities', []),
+                    preferred_cuisines=data.get('preferred_cuisines', []),
+                    dietary_restrictions=data.get('dietary_restrictions', []),
+                    budget_range=data.get('budget_range', 'mid-range'),
+                    preferred_ambiance=data.get('preferred_ambiance', []),
+                    meal_times=data.get('meal_times', []),
+                    group_size_typical=data.get('group_size_typical', 'couple')
                 )
             else:
                 # Return defaults
@@ -90,7 +99,10 @@ class SupabaseMemoryStore:
                 )
 
         except Exception as e:
-            logger.error(f"Error getting user preferences: {e}")
+            if self._is_table_missing_error(e):
+                logger.debug(f"user_preferences table not available, returning defaults")
+            else:
+                logger.error(f"Error getting user preferences: {e}")
             # Return defaults on error
             return UserPreferences(
                 preferred_cities=[],
@@ -130,7 +142,10 @@ class SupabaseMemoryStore:
             return True
 
         except Exception as e:
-            logger.error(f"Error updating user preferences: {e}")
+            if self._is_table_missing_error(e):
+                logger.debug(f"user_preferences table not available, skipping update")
+            else:
+                logger.error(f"Error updating user preferences: {e}")
             return False
 
     # =====================================================================
@@ -156,6 +171,9 @@ class SupabaseMemoryStore:
 
             result = query.execute()
 
+            if not result.data:
+                return []
+
             # Convert to RestaurantMemory objects
             return [
                 RestaurantMemory(
@@ -172,7 +190,10 @@ class SupabaseMemoryStore:
             ]
 
         except Exception as e:
-            logger.error(f"Error getting restaurant history: {e}")
+            if self._is_table_missing_error(e):
+                logger.debug(f"restaurant_history table not available, returning empty list")
+            else:
+                logger.error(f"Error getting restaurant history: {e}")
             return []
 
     async def add_restaurant_memory(
@@ -200,7 +221,10 @@ class SupabaseMemoryStore:
             return True
 
         except Exception as e:
-            logger.error(f"Error adding restaurant memory: {e}")
+            if self._is_table_missing_error(e):
+                logger.debug(f"restaurant_history table not available, skipping add")
+            else:
+                logger.error(f"Error adding restaurant memory: {e}")
             return False
 
     # =====================================================================
@@ -209,43 +233,41 @@ class SupabaseMemoryStore:
 
     async def get_conversation_patterns(self, user_id: int) -> ConversationPattern:
         """Get user's conversation patterns"""
+        default_patterns = ConversationPattern(
+            user_communication_style='casual',
+            preferred_response_length='medium',
+            likes_follow_up_questions=True,
+            prefers_immediate_results=True,
+            timezone=None,
+            typical_search_times=[]
+        )
+        
         try:
             result = self.supabase.table('conversation_patterns')\
                 .select('*')\
                 .eq('user_id', user_id)\
-                .maybe_single()\
                 .execute()
 
-            if result.data:
+            if result.data and len(result.data) > 0:
+                data = result.data[0]
                 return ConversationPattern(
-                    user_communication_style=result.data.get('user_communication_style', 'casual'),
-                    preferred_response_length=result.data.get('preferred_response_length', 'medium'),
-                    likes_follow_up_questions=result.data.get('likes_follow_up_questions', True),
-                    prefers_immediate_results=result.data.get('prefers_immediate_results', True),
-                    timezone=result.data.get('timezone'),
-                    typical_search_times=result.data.get('typical_search_times', [])
+                    user_communication_style=data.get('user_communication_style', 'casual'),
+                    preferred_response_length=data.get('preferred_response_length', 'medium'),
+                    likes_follow_up_questions=data.get('likes_follow_up_questions', True),
+                    prefers_immediate_results=data.get('prefers_immediate_results', True),
+                    timezone=data.get('timezone'),
+                    typical_search_times=data.get('typical_search_times', [])
                 )
             else:
-                # Return defaults
-                return ConversationPattern(
-                    user_communication_style='casual',
-                    preferred_response_length='medium',
-                    likes_follow_up_questions=True,
-                    prefers_immediate_results=True,
-                    timezone=None,
-                    typical_search_times=[]
-                )
+                return default_patterns
 
         except Exception as e:
-            logger.error(f"Error getting conversation patterns: {e}")
-            return ConversationPattern(
-                user_communication_style='casual',
-                preferred_response_length='medium',
-                likes_follow_up_questions=True,
-                prefers_immediate_results=True,
-                timezone=None,
-                typical_search_times=[]
-            )
+            # Handle table-not-found (404) gracefully - don't log as error
+            if self._is_table_missing_error(e):
+                logger.debug(f"conversation_patterns table not available for user {user_id}, returning defaults")
+            else:
+                logger.error(f"Error getting conversation patterns: {e}")
+            return default_patterns
 
     async def update_conversation_patterns(
         self, 
@@ -274,7 +296,10 @@ class SupabaseMemoryStore:
             return True
 
         except Exception as e:
-            logger.error(f"Error updating conversation patterns: {e}")
+            if self._is_table_missing_error(e):
+                logger.debug(f"conversation_patterns table not available, skipping update")
+            else:
+                logger.error(f"Error updating conversation patterns: {e}")
             return False
 
     # =====================================================================
@@ -292,12 +317,13 @@ class SupabaseMemoryStore:
                 .select('session_data, expires_at')\
                 .eq('user_id', user_id)\
                 .eq('thread_id', thread_id)\
-                .maybe_single()\
                 .execute()
 
-            if result.data:
+            if result.data and len(result.data) > 0:
+                row = result.data[0]
+                
                 # Check if expired
-                expires_at = result.data.get('expires_at')
+                expires_at = row.get('expires_at')
                 if expires_at:
                     expires_dt = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
                     if expires_dt < datetime.now(timezone.utc):
@@ -305,12 +331,16 @@ class SupabaseMemoryStore:
                         await self._delete_session(user_id, thread_id)
                         return {}
 
-                return result.data.get('session_data', {})
+                return row.get('session_data', {})
             else:
                 return {}
 
         except Exception as e:
-            logger.error(f"Error getting session data: {e}")
+            # Handle table-not-found (404) gracefully
+            if self._is_table_missing_error(e):
+                logger.debug(f"session_memory table not available for user {user_id}, returning empty")
+            else:
+                logger.error(f"Error getting session data: {e}")
             return {}
 
     async def update_session_data(
@@ -340,7 +370,10 @@ class SupabaseMemoryStore:
             return True
 
         except Exception as e:
-            logger.error(f"Error updating session data: {e}")
+            if self._is_table_missing_error(e):
+                logger.debug(f"session_memory table not available, skipping update")
+            else:
+                logger.error(f"Error updating session data: {e}")
             return False
 
     async def _delete_session(self, user_id: int, thread_id: str) -> bool:
@@ -353,7 +386,8 @@ class SupabaseMemoryStore:
                 .execute()
             return True
         except Exception as e:
-            logger.error(f"Error deleting session: {e}")
+            if not self._is_table_missing_error(e):
+                logger.error(f"Error deleting session: {e}")
             return False
 
     # =====================================================================
@@ -391,7 +425,10 @@ class SupabaseMemoryStore:
             return []
 
         except Exception as e:
-            logger.error(f"Error getting conversation history: {e}")
+            if self._is_table_missing_error(e):
+                logger.debug(f"conversation_history table not available, returning empty")
+            else:
+                logger.error(f"Error getting conversation history: {e}")
             return []
 
     async def add_conversation_message(
@@ -420,7 +457,10 @@ class SupabaseMemoryStore:
             return True
 
         except Exception as e:
-            logger.error(f"Error adding conversation message: {e}")
+            if self._is_table_missing_error(e):
+                logger.debug(f"conversation_history table not available, skipping add")
+            else:
+                logger.error(f"Error adding conversation message: {e}")
             return False
 
     async def _trim_conversation_history(self, user_id: int, keep_last: int = 10) -> None:
@@ -448,7 +488,8 @@ class SupabaseMemoryStore:
                     .execute()
 
         except Exception as e:
-            logger.error(f"Error trimming conversation history: {e}")
+            if not self._is_table_missing_error(e):
+                logger.error(f"Error trimming conversation history: {e}")
 
     async def clear_conversation_history(self, user_id: int) -> bool:
         """Clear all conversation history for a user"""
@@ -462,8 +503,12 @@ class SupabaseMemoryStore:
             return True
 
         except Exception as e:
-            logger.error(f"Error clearing conversation history: {e}")
-            return False
+            if self._is_table_missing_error(e):
+                logger.debug(f"conversation_history table not available, nothing to clear")
+                return True
+            else:
+                logger.error(f"Error clearing conversation history: {e}")
+                return False
 
     # =====================================================================
     # CLEANUP & MAINTENANCE
@@ -488,7 +533,8 @@ class SupabaseMemoryStore:
             return deleted_count
 
         except Exception as e:
-            logger.error(f"Error cleaning up expired sessions: {e}")
+            if not self._is_table_missing_error(e):
+                logger.error(f"Error cleaning up expired sessions: {e}")
             return 0
 
     # =====================================================================
@@ -518,7 +564,8 @@ class SupabaseMemoryStore:
                 .execute()
 
         except Exception as e:
-            logger.error(f"Error in aput: {e}")
+            if not self._is_table_missing_error(e):
+                logger.error(f"Error in aput: {e}")
 
     async def aget(self, namespace: tuple, key: str) -> Optional[Dict[str, Any]]:
         """
@@ -531,15 +578,15 @@ class SupabaseMemoryStore:
                 .select('value')\
                 .eq('namespace', namespace_str)\
                 .eq('key', key)\
-                .maybe_single()\
                 .execute()
 
-            if result.data:
-                return result.data.get('value')
+            if result.data and len(result.data) > 0:
+                return result.data[0].get('value')
             return None
 
         except Exception as e:
-            logger.error(f"Error in aget: {e}")
+            if not self._is_table_missing_error(e):
+                logger.error(f"Error in aget: {e}")
             return None
 
     async def adelete(self, namespace: tuple, key: str) -> None:
@@ -556,7 +603,8 @@ class SupabaseMemoryStore:
                 .execute()
 
         except Exception as e:
-            logger.error(f"Error in adelete: {e}")
+            if not self._is_table_missing_error(e):
+                logger.error(f"Error in adelete: {e}")
 
 
 # =====================================================================
