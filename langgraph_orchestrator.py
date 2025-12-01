@@ -471,6 +471,18 @@ class LangGraphSupervisor:
                     cancel_check_fn=cancel_check_fn,
                     start_time=start_time
                 )
+
+                # ✅ NEW: Update AI Chat Layer session for follow-up "more" requests
+                if result.get("success"):
+                    restaurants = result.get("final_restaurants", [])
+                    self.ai_chat_layer.update_last_search_context(
+                        user_id=user_id,
+                        search_type='location_search',
+                        cuisine=search_ctx.cuisine,
+                        destination=search_ctx.destination,
+                        restaurants=restaurants,
+                        coordinates=search_gps
+                    )
             else:
                 # ----- CITY SEARCH (city-wide) -----
                 result = await self._execute_city_search(
@@ -479,6 +491,18 @@ class LangGraphSupervisor:
                     cancel_check_fn=cancel_check_fn,
                     start_time=start_time
                 )
+
+                # ✅ NEW: Update AI Chat Layer session for follow-up "more" requests
+                if result.get("success"):
+                    restaurants = result.get("final_restaurants", [])
+                    self.ai_chat_layer.update_last_search_context(
+                        user_id=user_id,
+                        search_type='city_search',
+                        cuisine=search_ctx.cuisine,
+                        destination=search_ctx.destination,
+                        restaurants=restaurants
+                    )
+            
             
             # Clean up confirmation message after search completes
             if confirmation_msg and telegram_bot:

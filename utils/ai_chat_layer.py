@@ -505,6 +505,50 @@ class AIChatLayer:
             'search_time': session.get('last_search_time')
         }
 
+    def update_last_search_context(
+        self,
+        user_id: int,
+        search_type: str,  # 'location_search' or 'city_search'
+        cuisine: Optional[str] = None,
+        destination: Optional[str] = None,
+        restaurants: Optional[List[Dict[str, Any]]] = None,
+        coordinates: Optional[Tuple[float, float]] = None
+    ) -> None:
+        """
+        Update session with last search context for follow-up "more" requests.
+
+        Called by LangGraphSupervisor after successful search completion.
+        """
+        session = self.user_sessions.get(user_id)
+        if not session:
+            session = self._get_or_create_session(user_id, f"search_{user_id}")
+
+        # Update search tracking fields
+        session['last_search_type'] = search_type
+        session['last_search_time'] = time.time()
+
+        if cuisine:
+            session['last_search_cuisine'] = cuisine
+
+        if destination:
+            session['last_search_destination'] = destination
+
+        if coordinates:
+            session['gps_coordinates'] = coordinates
+            session['gps_timestamp'] = time.time()
+
+        # Store shown restaurants for duplicate detection
+        if restaurants:
+            restaurant_names = []
+            for r in restaurants[:20]:  # Keep last 20
+                name = r.get('name') or r.get('restaurant_name') or r.get('title', '')
+                if name:
+                    restaurant_names.append(name.lower().strip())
+            session['last_shown_restaurants'] = restaurant_names
+
+        logger.info(f"✅ Updated last search context for user {user_id}: "
+                    f"type={search_type}, cuisine={cuisine}, destination={destination}")
+
     # ============================================================================
     # MEMORY CONTEXT FORMATTING
     # ============================================================================
