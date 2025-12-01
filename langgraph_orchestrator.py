@@ -454,7 +454,6 @@ class LangGraphSupervisor:
                 telegram_bot=telegram_bot,
                 chat_id=chat_id,
                 search_type=search_ctx.search_type,
-                search_query=search_query,
                 destination=search_ctx.destination,
                 cuisine=search_ctx.cuisine
             )
