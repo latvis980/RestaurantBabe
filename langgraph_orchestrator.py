@@ -33,6 +33,7 @@ import asyncio
 import time
 from typing import Dict, Any, Optional, Tuple, Callable, List
 from dataclasses import dataclass
+import telebot.types
 
 from langsmith import traceable
 
@@ -503,16 +504,19 @@ class LangGraphSupervisor:
         telegram_bot,
         chat_id: int,
         search_type: SearchType,
-        search_query: str,
         destination: Optional[str],
         cuisine: Optional[str]
     ):
         """
         Send confirmation message with video before search starts.
-        
+
         Uses different videos for city vs location searches.
+        Also removes any location keyboard that might be showing.
         """
         try:
+            # Create keyboard removal markup
+            remove_keyboard = telebot.types.ReplyKeyboardRemove()
+
             # Build caption based on search type
             if search_type == SearchType.LOCATION_SEARCH:
                 video_path = 'media/vicinity_search.mp4'
@@ -538,7 +542,8 @@ class LangGraphSupervisor:
                         chat_id,
                         video,
                         caption=caption,
-                        parse_mode='HTML'
+                        parse_mode='HTML',
+                        reply_markup=remove_keyboard  # Remove location button!
                     )
                     logger.info(f"📹 Sent search confirmation with video: {video_path}")
                     return confirmation_msg
@@ -548,7 +553,8 @@ class LangGraphSupervisor:
                 confirmation_msg = telegram_bot.send_message(
                     chat_id,
                     caption,
-                    parse_mode='HTML'
+                    parse_mode='HTML',
+                    reply_markup=remove_keyboard  # Remove location button!
                 )
                 return confirmation_msg
             except Exception as e:
@@ -557,10 +563,11 @@ class LangGraphSupervisor:
                 confirmation_msg = telegram_bot.send_message(
                     chat_id,
                     caption,
-                    parse_mode='HTML'
+                    parse_mode='HTML',
+                    reply_markup=remove_keyboard  # Remove location button!
                 )
                 return confirmation_msg
-                
+
         except Exception as e:
             logger.error(f"❌ Error sending search confirmation: {e}")
             return None

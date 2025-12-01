@@ -158,7 +158,13 @@ class AIChatLayer:
       - "gps_search" if using GPS coordinates
       - "city_search" if searching entire city by name (e.g., "Tokyo", "Paris")
       - "coordinates_search" if neighborhood/area needs geocoding (e.g., "Alfama", "SoHo")
-      - "follow_up_more_results" if user wants more options from previous search
+      - "google_maps_more" if user wants MORE options after a LOCATION-based search (uses Google Maps)
+      - "follow_up_more_results" if user wants more options after a CITY-based search
+    
+    **IMPORTANT - "MORE" REQUESTS:**
+    - Check last_search_type to decide which mode to use!
+    - If last_search_type="location_search" → use "google_maps_more"
+    - If last_search_type="city_search" → use "follow_up_more_results"
 
     **chat_response**: Answer questions, greet, or redirect
     - Use for: greetings, questions about shown results, off-topic queries
@@ -252,12 +258,37 @@ class AIChatLayer:
         "state_update": {{"cuisine": "pizza", "needs_gps": true, "clear_pending_gps": false}},
         "reasoning": "Updated cuisine, still need location"
     }}
+
+    **Example 8: User wants MORE after location search**
+    Last Search Type: location_search, Last Cuisine: "Thai", Last Destination: "Mandarin Oriental"
+    User message: "show me more options"
+    → {{
+        "action": "trigger_search",
+        "response_text": "Let me check Google Maps for more Thai restaurants near Mandarin Oriental! 🗺️",
+        "state_update": {{"cuisine": "Thai", "destination": "Mandarin Oriental", "search_mode": "google_maps_more", "is_complete": true, "clear_pending_gps": false}},
+        "reasoning": "More requested after location search - use Google Maps for additional options"
+    }}
+
+    **Example 9: User wants MORE after city search**
+    Last Search Type: city_search, Last Cuisine: "ramen", Last Destination: "Tokyo"
+    User message: "any other options?"
+    → {{
+        "action": "trigger_search",
+        "response_text": "Let me find more ramen spots in Tokyo! 🍜",
+        "state_update": {{"cuisine": "ramen", "destination": "Tokyo", "search_mode": "follow_up_more_results", "is_complete": true, "clear_pending_gps": false}},
+        "reasoning": "More requested after city search - use follow-up mode"
+    }}
     """),
             ("human", """## CURRENT STATE
 
     **Pending GPS Request:**
     - GPS Button Shown: {pending_gps}
     - Pending Cuisine: {pending_gps_cuisine}
+
+    **Last Search Context (for "more" requests):**
+    - Last Search Type: {last_search_type}
+    - Last Cuisine: {last_search_cuisine}
+    - Last Destination: {last_search_destination}
 
     **Memory Context (user's history):**
     {memory_context}
@@ -338,6 +369,105 @@ class AIChatLayer:
     def is_pending_gps(self, user_id: int) -> bool:
         """Quick check if GPS is pending for user"""
         return self.get_pending_gps_state(user_id)['pending_gps']
+
+    # ============================================================================
+    # SHOWN RESTAURANTS TRACKING (for duplicate detection)
+    # ============================================================================
+
+    def store_shown_restaurants(self, user_id: int, restaurants: List[Dict[str, Any]], search_type: str, cuisine: str = None, destination: str = None) -> None:
+        """
+        Store the restaurants that were just shown to the user.
+        Used to detect duplicates on "more" requests.
+        
+        Args:
+            user_id: User ID
+            restaurants: List of restaurant dicts (must have 'name' key)
+            search_type: 'city_search' or 'location_search'
+            cuisine: The cuisine that was searched
+            destination: The destination that was searched
+        """
+        session = self._get_or_create_session(user_id, f"track_{user_id}")
+        
+        # Extract restaurant names for comparison
+        restaurant_names = []
+        for r in restaurants:
+            name = r.get('name') or r.get('restaurant_name') or r.get('title', '')
+            if name:
+                restaurant_names.append(name.lower().strip())
+        
+        session['last_shown_restaurants'] = restaurant_names
+        session['last_search_type'] = search_type
+        session['last_search_cuisine'] = cuisine
+        session['last_search_destination'] = destination
+        session['last_search_time'] = time.time()
+        
+        logger.info(f"📋 Stored {len(restaurant_names)} shown restaurants for user {user_id} (type={search_type})")
+
+    def check_for_duplicates(self, user_id: int, new_restaurants: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Check if new results are duplicates of what was already shown.
+        
+        Returns:
+            {
+                'has_duplicates': bool,
+                'duplicate_count': int,
+                'new_count': int,
+                'duplicate_percentage': float,
+                'all_duplicates': bool,  # True if ALL results are duplicates
+                'new_restaurants': list  # Only the non-duplicate restaurants
+            }
+        """
+        session = self.user_sessions.get(user_id)
+        if not session:
+            return {'has_duplicates': False, 'duplicate_count': 0, 'new_count': len(new_restaurants), 
+                    'duplicate_percentage': 0.0, 'all_duplicates': False, 'new_restaurants': new_restaurants}
+        
+        shown = set(session.get('last_shown_restaurants', []))
+        if not shown:
+            return {'has_duplicates': False, 'duplicate_count': 0, 'new_count': len(new_restaurants),
+                    'duplicate_percentage': 0.0, 'all_duplicates': False, 'new_restaurants': new_restaurants}
+        
+        duplicates = 0
+        new_restaurants_filtered = []
+        
+        for r in new_restaurants:
+            name = r.get('name') or r.get('restaurant_name') or r.get('title', '')
+            if name and name.lower().strip() in shown:
+                duplicates += 1
+            else:
+                new_restaurants_filtered.append(r)
+        
+        total = len(new_restaurants)
+        duplicate_pct = (duplicates / total * 100) if total > 0 else 0
+        all_dupes = duplicates == total and total > 0
+        
+        result = {
+            'has_duplicates': duplicates > 0,
+            'duplicate_count': duplicates,
+            'new_count': len(new_restaurants_filtered),
+            'duplicate_percentage': duplicate_pct,
+            'all_duplicates': all_dupes,
+            'new_restaurants': new_restaurants_filtered
+        }
+        
+        if duplicates > 0:
+            logger.info(f"🔄 Duplicate check for user {user_id}: {duplicates}/{total} duplicates ({duplicate_pct:.0f}%)")
+        
+        return result
+
+    def get_last_search_context(self, user_id: int) -> Dict[str, Any]:
+        """Get the context from the last search for follow-up requests"""
+        session = self.user_sessions.get(user_id)
+        if not session:
+            return {}
+        
+        return {
+            'search_type': session.get('last_search_type'),
+            'cuisine': session.get('last_search_cuisine'),
+            'destination': session.get('last_search_destination'),
+            'shown_restaurants': session.get('last_shown_restaurants', []),
+            'search_time': session.get('last_search_time')
+        }
 
     # ============================================================================
     # MEMORY CONTEXT FORMATTING
@@ -513,6 +643,9 @@ class AIChatLayer:
             prompt_vars = {
                 'pending_gps': 'Yes' if pending_gps else 'No',
                 'pending_gps_cuisine': pending_gps_cuisine or 'None',
+                'last_search_type': session.get('last_search_type') or 'None',
+                'last_search_cuisine': session.get('last_search_cuisine') or 'None',
+                'last_search_destination': session.get('last_search_destination') or 'None',
                 'memory_context': memory_context_text,
                 'conversation_history': self._format_conversation_context(session),
                 'current_cuisine': current_cuisine,
@@ -615,7 +748,7 @@ class AIChatLayer:
 
             # Handle search trigger
             if action == 'trigger_search' and is_complete:
-                # Check if follow-up request
+                # Check if follow-up request for city search
                 if search_mode == 'follow_up_more_results':
                     original_thread_id = session.get('last_search_thread_id')
                     if not original_thread_id:
@@ -628,6 +761,44 @@ class AIChatLayer:
                     return create_resume_handoff(
                         thread_id=original_thread_id,
                         decision="yes"
+                    )
+
+                # Handle Google Maps "more" for location searches
+                if search_mode == 'google_maps_more':
+                    # Use last search context
+                    last_cuisine = session.get('last_search_cuisine') or cuisine
+                    last_destination = session.get('last_search_destination') or destination
+                    
+                    # Get stored GPS or location context
+                    stored_gps = current_gps or session.get('gps_coordinates')
+                    if not stored_gps:
+                        # Try to get from location context
+                        loc_ctx = self.get_location_context(user_id)
+                        if loc_ctx and loc_ctx.get('coordinates'):
+                            stored_gps = loc_ctx['coordinates']
+                    
+                    if not stored_gps and last_destination:
+                        # Geocode the last destination
+                        try:
+                            stored_gps = geocode_location(last_destination)
+                        except Exception as e:
+                            logger.warning(f"Could not geocode {last_destination}: {e}")
+                    
+                    logger.info(f"🗺️ Google Maps MORE: cuisine={last_cuisine}, dest={last_destination}, gps={stored_gps is not None}")
+                    
+                    return create_search_handoff(
+                        destination=last_destination or "nearby",
+                        cuisine=last_cuisine,
+                        search_type=SearchType.LOCATION_SEARCH,
+                        user_query=f"more {last_cuisine} near {last_destination}",
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        gps_coordinates=stored_gps,
+                        requirements=requirements,
+                        preferences={'use_google_maps': True, 'is_more_request': True},
+                        clear_previous=False,
+                        is_new_destination=False,
+                        reasoning=f"Google Maps search for more options: {reasoning}"
                     )
 
                 # Store for follow-up
@@ -728,6 +899,11 @@ class AIChatLayer:
                 'pending_gps': False,
                 'pending_gps_cuisine': None,
                 'pending_gps_timestamp': None,
+                # Last search tracking (for "more" requests and duplicate detection)
+                'last_search_type': None,  # 'city_search' or 'location_search'
+                'last_search_cuisine': None,
+                'last_search_destination': None,
+                'last_shown_restaurants': [],  # List of restaurant names shown
             }
 
             # Load persistent conversation history from Supabase
