@@ -30,7 +30,7 @@ import logging
 import asyncio
 import time
 import concurrent.futures
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Callable
 
 from langchain_core.runnables import RunnableLambda, RunnableBranch
 from langchain_openai import ChatOpenAI
@@ -53,6 +53,7 @@ from location.location_map_search_ai_editor import LocationMapSearchAIEditor
 # Enhanced verification agents
 from location.location_map_search import LocationMapSearchAgent
 from location.location_media_verification import LocationMediaVerificationAgent
+from agents.follow_up_search_agent import FollowUpSearchAgent
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,9 @@ class LocationOrchestrator:
         # Formatter
         self.formatter = LocationTelegramFormatter(config)
 
+        # Verification agent for database results
+        self.verification_agent = FollowUpSearchAgent(config)
+
         # Pipeline settings
         self.db_search_radius = getattr(config, 'DB_PROXIMITY_RADIUS_KM', 2.0)
         self.min_db_matches = 2
@@ -132,6 +136,12 @@ class LocationOrchestrator:
             name="ai_filter_evaluation"
         )
 
+        # Step 3b: Verification (NEW - adds place_id, filters closed/low-rated)
+        self.verification_chain = RunnableLambda(
+            self._verification_step_traced,
+            name="database_verification"
+        )
+
         # Step 4a: Description Editing (for database results)
         self.description_editing_chain = RunnableLambda(
             self._description_editing_step_traced,
@@ -159,10 +169,10 @@ class LocationOrchestrator:
 
         # Branch after filtering: database sufficient OR maps needed
         self.post_filter_branch = RunnableBranch(
-            # If sufficient database results → description editing → formatting
+            # If sufficient database results → verification → description editing → formatting
             (
-                lambda x: x.get("sufficient_results", False) and len(x.get("filtered_restaurants", [])) >= self.min_db_matches,
-                self.description_editing_chain | self.formatting_chain
+                lambda x: isinstance(x, dict) and x.get("maps_only", False),
+                self.maps_only_pipeline
             ),
             # Default: insufficient results → enhanced verification → formatting
             self.enhanced_verification_chain | self.formatting_chain
@@ -182,7 +192,7 @@ class LocationOrchestrator:
         self.pipeline = RunnableBranch(
             # If maps_only=True → skip database, go directly to Google Maps
             (
-                lambda x: x.get("maps_only", False),
+                lambda x: isinstance(x, dict) and x.get("maps_only", False),
                 self.maps_only_pipeline
             ),
             # Default: normal flow with database search first
@@ -495,6 +505,103 @@ class LocationOrchestrator:
                 "step_completed": "description_editing"
             }
 
+    # ============ NEW: VERIFICATION STEP ============
+
+    @traceable(
+        run_type="tool",
+        name="database_verification",
+        metadata={"step": "verification", "component": "follow_up_search_agent"}
+    )
+    async def _verification_step_traced(self, pipeline_input: Dict[str, Any]) -> Dict[str, Any]:
+        """Traced wrapper for verification step"""
+        return await self._verification_step(pipeline_input)
+
+    async def _verification_step(self, pipeline_input: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Step 3b: Verify Database Restaurants via Google Maps
+
+        This step runs AFTER filtering but BEFORE description editing.
+        Uses FollowUpSearchAgent to:
+        1. Add place_id from Google Maps (fixes link formation)
+        2. Add proper google_maps_url with place_id
+        3. Filter out closed restaurants (CLOSED_TEMPORARILY/PERMANENTLY)
+        4. Filter by rating threshold (default 4.1)
+        5. Save updated geodata back to database
+
+        This ensures all database results have proper Google Maps links
+        and are verified as open/quality restaurants.
+        """
+        try:
+            cancel_check_fn = pipeline_input.get("cancel_check_fn")
+            if cancel_check_fn and cancel_check_fn():
+                raise ValueError("Search cancelled by user")
+
+            filtered_restaurants = pipeline_input.get("filtered_restaurants", [])
+            location_desc = pipeline_input.get("location_description", "")
+
+            if not filtered_restaurants:
+                logger.info("✅ No restaurants to verify - skipping verification step")
+                return {
+                    **pipeline_input,
+                    "verified_restaurants": [],
+                    "verification_success": True,
+                    "verification_stats": {"total": 0, "verified": 0, "rejected": 0},
+                    "step_completed": "verification"
+                }
+
+            logger.info(f"🔍 Step 3b: Verifying {len(filtered_restaurants)} restaurants via Google Maps")
+
+            # Convert to format expected by follow_up_search_agent
+            edited_results = {"main_list": filtered_restaurants}
+
+            # Run verification through follow_up_search_agent
+            # This uses _verify_and_filter_restaurant for each restaurant
+            verification_result = self.verification_agent.perform_follow_up_searches(
+                edited_results=edited_results,
+                destination=location_desc
+            )
+
+            verified_restaurants = verification_result.get("enhanced_results", {}).get("main_list", [])
+
+            # Calculate stats
+            original_count = len(filtered_restaurants)
+            verified_count = len(verified_restaurants)
+            rejected_count = original_count - verified_count
+
+            logger.info(f"✅ Verification complete: {verified_count}/{original_count} passed")
+            logger.info(f"   - Verified: {verified_count}")
+            logger.info(f"   - Rejected (closed/low rating): {rejected_count}")
+
+            # Log place_id additions for debugging
+            place_id_count = sum(1 for r in verified_restaurants if r.get("place_id"))
+            logger.info(f"   - With place_id: {place_id_count}/{verified_count}")
+
+            return {
+                **pipeline_input,
+                "filtered_restaurants": verified_restaurants,  # Replace with verified list
+                "verified_restaurants": verified_restaurants,
+                "verification_success": True,
+                "verification_stats": {
+                    "total": original_count,
+                    "verified": verified_count,
+                    "rejected": rejected_count,
+                    "with_place_id": place_id_count
+                },
+                "step_completed": "verification"
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Verification step failed: {e}")
+            # Don't fail the pipeline - continue with unverified restaurants
+            logger.warning("⚠️ Continuing with unverified restaurants")
+            return {
+                **pipeline_input,
+                "verified_restaurants": pipeline_input.get("filtered_restaurants", []),
+                "verification_success": False,
+                "verification_error": str(e),
+                "step_completed": "verification"
+            }
+    
     async def _enhanced_verification_step(self, pipeline_input: Dict[str, Any]) -> Dict[str, Any]:
         """
         Step 4b: Enhanced Verification (Maps + Media)
@@ -750,7 +857,7 @@ class LocationOrchestrator:
         self,
         query: str,
         location_data: LocationData,
-        cancel_check_fn: Optional[callable] = None,
+        cancel_check_fn: Optional[Callable] = None,
         maps_only: bool = False
     ) -> Dict[str, Any]:
         """
@@ -842,7 +949,7 @@ class LocationOrchestrator:
         query: str,
         coordinates: Tuple[float, float],
         location_desc: str,
-        cancel_check_fn: Optional[callable] = None
+        cancel_check_fn: Optional[Callable] = None
     ) -> Dict[str, Any]:
         """
         Process a "more results" query - goes directly to Google Maps
@@ -897,7 +1004,7 @@ class LocationOrchestrator:
         query: str,
         coordinates: Tuple[float, float],
         location_desc: str,
-        cancel_check_fn: Optional[callable] = None
+        cancel_check_fn: Optional[Callable] = None
     ) -> Dict[str, Any]:
         """
         LEGACY METHOD: Complete media verification for venues
@@ -952,7 +1059,7 @@ class LocationOrchestrator:
         query: str,
         coordinates: Tuple[float, float],
         exclude_places: Optional[List[str]] = None,
-        cancel_check_fn: Optional[callable] = None
+        cancel_check_fn: Optional[Callable] = None
     ) -> Dict[str, Any]:
         """
         Legacy method: Search for more results with exclusions
