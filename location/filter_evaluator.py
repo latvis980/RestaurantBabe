@@ -79,9 +79,9 @@ IMPORTANT: Only include restaurants that are very good matches or none.
 
         # ENHANCED EVALUATION PROMPT - More demanding criteria
         self.eval_prompt = ChatPromptTemplate.from_template("""
-USER QUERY: "{{query}}"
-LOCATION: {{location_description}}
-FOUND: {{count}} specifically matching restaurants in database
+        USER QUERY: "{query}"
+        LOCATION: {location_description}
+        FOUND: {count} specifically matching restaurants in database
 
 EVALUATION TASK: 
 Determine if these SPECIFIC matches are sufficient to answer the user's query immediately.
