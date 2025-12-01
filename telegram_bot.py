@@ -1,13 +1,18 @@
-# telegram_bot.py - COMPLETE: AI Chat Layer + Location Button + All Features
+# telegram_bot.py - AI-FIRST ROUTING
 """
-Telegram Bot with Enhanced Search Messages and Location Button Support
+Telegram Bot with AI-First Message Routing
+
+KEY ARCHITECTURE:
+- ALL messages go to AI Chat Layer first - NO EXCEPTIONS
+- AI decides whether message is a location answer, new query, or conversation
+- Location button state managed by AI Chat Layer (single source of truth)
+- Telegram bot is a pure I/O layer - no routing logic
 
 Features:
 - AI Chat Layer for intelligent conversation flow
 - AI-generated search messages with videos
 - Location button for "near me" queries
 - Voice message support
-- Confirmation messages before searches
 - Memory and conversation context
 """
 
@@ -55,9 +60,6 @@ voice_handler = VoiceMessageHandler() if hasattr(config, 'OPENAI_API_KEY') and c
 # Cancellation tracking
 active_searches = {}  # user_id -> Event
 
-# Location tracking
-users_awaiting_location = {}  # user_id -> {"query": str, "timestamp": float}
-
 # Welcome message
 WELCOME_MESSAGE = (
     "🍸 Hello! I'm Restaurant Babe. I know all about the most delicious restaurants worldwide.\n\n"
@@ -72,13 +74,10 @@ WELCOME_MESSAGE = (
 # ============================================================================
 
 def fix_telegram_html(text: str) -> str:
-    """
-    Fix HTML formatting for Telegram - preserve HTML tags for proper formatting
-    """
+    """Fix HTML formatting for Telegram - preserve HTML tags for proper formatting"""
     if not text:
         return text
 
-    # Preserve HTML, just ensure balanced tags
     text = re.sub(r'&(?!amp;|lt;|gt;|quot;|#\d+;|#x[0-9a-fA-F]+;)', '&amp;', text)
 
     open_tags = []
@@ -105,7 +104,6 @@ def fix_telegram_html(text: str) -> str:
 
     result.append(text[last_pos:])
 
-    # Close any unclosed tags
     for tag in reversed(open_tags):
         result.append(f'</{tag}>')
 
@@ -161,7 +159,6 @@ def split_message_for_telegram(message: str, max_length: int = 4096) -> List[str
     if current_chunk:
         chunks.append(current_chunk)
 
-    # If any chunk is still too long, split by sentences
     final_chunks = []
     for chunk in chunks:
         if len(chunk) <= max_length:
@@ -186,7 +183,7 @@ def split_message_for_telegram(message: str, max_length: int = 4096) -> List[str
     return final_chunks
 
 # ============================================================================
-# CORE MESSAGE PROCESSING
+# CORE MESSAGE PROCESSING - AI FIRST!
 # ============================================================================
 
 async def process_user_message(
@@ -197,15 +194,18 @@ async def process_user_message(
     message_type: str = "text"
 ) -> None:
     """
-    Process any user message through AI Chat Layer with location button support
+    Process ANY user message through AI Chat Layer.
+
+    This is the SINGLE ENTRY POINT for all message processing.
+    AI decides everything: is it a location answer? new query? conversation?
     """
     try:
         # Show typing indicator
         bot.send_chat_action(chat_id, 'typing')
 
-        logger.info(f"🎯 Processing message for user {user_id}: '{message_text[:50]}...'")
+        logger.info(f"🎯 Processing message for user {user_id}: '{message_text[:50]}...' (gps={gps_coordinates is not None})")
 
-        # Call unified agent with bot instance for confirmation messages
+        # Call unified agent - AI makes ALL decisions
         result = await unified_agent.process_message(
             query=message_text,
             user_id=user_id,
@@ -217,21 +217,21 @@ async def process_user_message(
 
         # Check if location button is needed
         if result.get("needs_location_button"):
-            logger.info(f"🔘 Location button needed for user {user_id}")
+            logger.info(f"🔘 AI requests location button for user {user_id}")
 
-            users_awaiting_location[user_id] = {
-                "query": message_text,
-                "timestamp": time.time()
-            }
+            # Get the AI response to show with the button
+            ai_response = result.get("ai_response", "")
 
-            location_msg = (
-                f"📍 <b>I'd love to help you find great {message_text} near you!</b>\n\n"
-                "To give you the best recommendations, I need to know where you are:\n\n"
-                "🗺️ <b>Option 1:</b> Tell me your neighborhood, street, or nearby landmark\n"
-                "📍 <b>Option 2:</b> Use the button below to send your exact coordinates\n\n"
-                "<i>Examples: \"I'm in Chinatown\", \"Near Times Square\", \"On Rua da Rosa in Lisbon\"</i>\n\n"
-                "💡 <b>Don't worry:</b> I only use your location to find nearby places. I don't store it."
-            )
+            # Build location request message
+            location_msg = ai_response or "📍 Please share your location or tell me your neighborhood."
+
+            # Add instructions if not already included
+            if "Option" not in location_msg and "share" not in location_msg.lower():
+                location_msg += (
+                    "\n\n🗺️ <b>Option 1:</b> Tell me your neighborhood, street, or nearby landmark\n"
+                    "📍 <b>Option 2:</b> Use the button below to send your exact coordinates\n\n"
+                    "<i>Examples: \"I'm in Chinatown\", \"Near Times Square\", \"Alfama in Lisbon\"</i>"
+                )
 
             bot.send_message(
                 chat_id,
@@ -260,20 +260,23 @@ async def process_user_message(
                         chat_id,
                         fix_telegram_html(chunk),
                         parse_mode='HTML',
-                        disable_web_page_preview=True
+                        disable_web_page_preview=True,
+                        reply_markup=remove_location_button()  # Always clear location button
                     )
             else:
                 bot.send_message(
                     chat_id,
                     fix_telegram_html(ai_response),
                     parse_mode='HTML',
-                    disable_web_page_preview=True
+                    disable_web_page_preview=True,
+                    reply_markup=remove_location_button()  # Always clear location button
                 )
         elif not search_triggered:
             bot.send_message(
                 chat_id,
                 "I'm here to help you find amazing restaurants! What are you looking for?",
-                parse_mode='HTML'
+                parse_mode='HTML',
+                reply_markup=remove_location_button()
             )
 
         # Log success
@@ -281,21 +284,15 @@ async def process_user_message(
         reasoning = result.get("reasoning", "No reasoning provided")
 
         if search_triggered:
-            # FIXED: Read restaurant_count from the nested search_result dict
             search_result = result.get("search_result", {})
-
-            # Try to get restaurant_count from search_result
             if search_result:
                 restaurants_count = search_result.get("restaurant_count", 0)
-                # Fallback: count from final_restaurants if restaurant_count not set
                 if restaurants_count == 0 and search_result.get("final_restaurants"):
                     restaurants_count = len(search_result["final_restaurants"])
             else:
-                # Last resort: try top-level (shouldn't happen but just in case)
                 restaurants_count = result.get("restaurant_count", 0)
 
             logger.info(f"✅ Search completed in {processing_time}s - Found {restaurants_count} restaurants")
-        
         else:
             logger.info(f"✅ Conversation continued in {processing_time}s - Action: {action_taken}")
             logger.info(f"🤖 AI Reasoning: {reasoning}")
@@ -307,7 +304,8 @@ async def process_user_message(
         bot.send_message(
             chat_id,
             "I'm having a bit of trouble right now. Could you try asking again in a moment?",
-            parse_mode='HTML'
+            parse_mode='HTML',
+            reply_markup=remove_location_button()
         )
 
 # ============================================================================
@@ -322,10 +320,15 @@ def handle_start(message):
 
     logger.info(f"📱 New user {user_id} started conversation")
 
+    # Clear any pending state for fresh start
+    if hasattr(unified_agent, 'ai_chat_layer'):
+        unified_agent.ai_chat_layer.clear_pending_gps(user_id)
+
     bot.send_message(
         chat_id,
         WELCOME_MESSAGE,
-        parse_mode='HTML'
+        parse_mode='HTML',
+        reply_markup=remove_location_button()
     )
 
 @bot.message_handler(commands=['cancel'])
@@ -340,21 +343,16 @@ def handle_cancel(message):
         event.set()
         cleanup_search(user_id)
 
-    # Cancel location request
-    if user_id in users_awaiting_location:
-        del users_awaiting_location[user_id]
-        bot.send_message(
-            chat_id,
-            "🛑 Cancelled! What else can I help you find?",
-            parse_mode='HTML',
-            reply_markup=remove_location_button()
-        )
-    else:
-        bot.send_message(
-            chat_id,
-            "🛑 No active search to cancel. What are you looking for?",
-            parse_mode='HTML'
-        )
+    # Clear pending GPS state in AI Chat Layer
+    if hasattr(unified_agent, 'ai_chat_layer'):
+        unified_agent.ai_chat_layer.clear_pending_gps(user_id)
+
+    bot.send_message(
+        chat_id,
+        "🛑 Cancelled! What else can I help you find?",
+        parse_mode='HTML',
+        reply_markup=remove_location_button()
+    )
 
 @bot.message_handler(func=lambda message: message.text == "❌ Cancel")
 def handle_location_cancel_button(message):
@@ -362,8 +360,9 @@ def handle_location_cancel_button(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
 
-    if user_id in users_awaiting_location:
-        del users_awaiting_location[user_id]
+    # Clear pending GPS state in AI Chat Layer
+    if hasattr(unified_agent, 'ai_chat_layer'):
+        unified_agent.ai_chat_layer.clear_pending_gps(user_id)
 
     bot.send_message(
         chat_id,
@@ -374,140 +373,80 @@ def handle_location_cancel_button(message):
 
 @bot.message_handler(content_types=['location'])
 def handle_location_message(message):
-    """Handle GPS location messages"""
+    """Handle GPS location messages - send to AI with coordinates"""
     user_id = message.from_user.id
     chat_id = message.chat.id
 
     latitude = message.location.latitude
     longitude = message.location.longitude
 
-    logger.info(f"📍 Location message from user {user_id}: {latitude}, {longitude}")
+    logger.info(f"📍 GPS location from user {user_id}: {latitude}, {longitude}")
 
-    # Check if user was awaiting location
-    awaiting_data = users_awaiting_location.get(user_id)
+    # Get pending cuisine from AI Chat Layer (if any)
+    pending_cuisine = None
+    if hasattr(unified_agent, 'ai_chat_layer'):
+        pending_state = unified_agent.ai_chat_layer.get_pending_gps_state(user_id)
+        pending_cuisine = pending_state.get('pending_gps_cuisine')
 
-    if awaiting_data:
-        # User was asked for location - retrieve parsed cuisine from AI Chat Layer
-        original_query = awaiting_data.get("query", "restaurants")
-        del users_awaiting_location[user_id]
-
-        # FIXED: Get the already-parsed cuisine from AI Chat Layer session
-        try:
-            ai_chat_layer = unified_agent.ai_chat_layer if hasattr(unified_agent, 'ai_chat_layer') else None
-
-            if ai_chat_layer:
-                session = ai_chat_layer.user_sessions.get(user_id, {})
-                parsed_cuisine = session.get('current_cuisine') or session.get('accumulated_state', {}).get('cuisine')
-                requirements = session.get('accumulated_state', {}).get('requirements', [])
-
-                # Build clean query from parsed data
-                if parsed_cuisine:
-                    if requirements:
-                        clean_query = f"{' '.join(requirements)} {parsed_cuisine}"
-                    else:
-                        clean_query = parsed_cuisine
-                    logger.info(f"📝 Using parsed cuisine from AI Chat Layer: '{original_query}' → '{clean_query}'")
-                else:
-                    clean_query = original_query
-                    logger.warning(f"⚠️ No parsed cuisine found in session, using original query")
-            else:
-                clean_query = original_query
-                logger.warning(f"⚠️ AI Chat Layer not available, using original query")
-
-        except Exception as e:
-            logger.error(f"Error retrieving parsed cuisine: {e}")
-            clean_query = original_query
-
-        bot.send_message(
-            chat_id,
-            f"📍 <b>Perfect! Searching for {clean_query} near your location...</b>",
-            parse_mode='HTML',
-            reply_markup=remove_location_button()
-        )
-
-        # Process with coordinates using CLEAN QUERY
-        asyncio.run(process_user_message(
-            user_id=user_id,
-            chat_id=chat_id,
-            message_text=clean_query,
-            gps_coordinates=(latitude, longitude),
-            message_type="location"
-        ))
+    # Build message for AI
+    if pending_cuisine:
+        # User was asked for location - tell AI they provided GPS
+        message_for_ai = f"[User shared GPS location for: {pending_cuisine}]"
     else:
-        # Unsolicited location - ask what they're looking for
-        bot.send_message(
-            chat_id,
-            "📍 Got your location! What kind of restaurants are you looking for nearby?",
-            parse_mode='HTML'
-        )
+        # Unsolicited GPS - ask what they want
+        message_for_ai = "[User shared GPS location]"
+
+    # Remove location button immediately
+    bot.send_message(
+        chat_id,
+        "📍 Got your location!",
+        parse_mode='HTML',
+        reply_markup=remove_location_button()
+    )
+
+    # Process through AI with GPS coordinates
+    asyncio.run(process_user_message(
+        user_id=user_id,
+        chat_id=chat_id,
+        message_text=message_for_ai,
+        gps_coordinates=(latitude, longitude),
+        message_type="location"
+    ))
 
 @bot.message_handler(content_types=['text'])
 def handle_text_message(message):
-    """Handle text messages"""
+    """
+    Handle ALL text messages - route to AI first, no exceptions.
+
+    AI Chat Layer decides if this is:
+    - A location answer (when GPS was pending)
+    - A new complete query
+    - A follow-up request
+    - General conversation
+    """
     user_id = message.from_user.id
     chat_id = message.chat.id
     message_text = message.text
 
     logger.info(f"📝 Text message from user {user_id}: '{message_text[:50]}...'")
 
-    if user_id in users_awaiting_location:
-        # User providing text location instead of GPS
-        awaiting_data = users_awaiting_location[user_id]
-        original_query = awaiting_data.get("query", "restaurants")
-        del users_awaiting_location[user_id]
-
-        # FIXED: Get the already-parsed cuisine from AI Chat Layer session
-        try:
-            ai_chat_layer = unified_agent.ai_chat_layer if hasattr(unified_agent, 'ai_chat_layer') else None
-
-            if ai_chat_layer:
-                session = ai_chat_layer.user_sessions.get(user_id, {})
-                parsed_cuisine = session.get('current_cuisine') or session.get('accumulated_state', {}).get('cuisine')
-                requirements = session.get('accumulated_state', {}).get('requirements', [])
-
-                # Build clean query from parsed data
-                if parsed_cuisine:
-                    if requirements:
-                        clean_query = f"{' '.join(requirements)} {parsed_cuisine}"
-                    else:
-                        clean_query = parsed_cuisine
-                    logger.info(f"📝 Using parsed cuisine from AI Chat Layer: '{original_query}' → '{clean_query}'")
-                else:
-                    clean_query = original_query
-                    logger.warning(f"⚠️ No parsed cuisine found in session, using original query")
-            else:
-                clean_query = original_query
-                logger.warning(f"⚠️ AI Chat Layer not available, using original query")
-
-        except Exception as e:
-            logger.error(f"Error retrieving parsed cuisine: {e}")
-            clean_query = original_query
-
-        # Combine clean query with location
-        combined_query = f"{clean_query} in {message_text}"
-
+    # Check for active search
+    if user_id in active_searches:
         bot.send_message(
             chat_id,
-            f"📍 <b>Got it! Searching for {clean_query} in {message_text}...</b>",
-            parse_mode='HTML',
-            reply_markup=remove_location_button()
+            "⏳ I'm currently searching for you. Please wait or type /cancel to stop.",
+            parse_mode='HTML'
         )
+        return
 
-        asyncio.run(process_user_message(
-            user_id=user_id,
-            chat_id=chat_id,
-            message_text=combined_query,
-            message_type="text"
-        ))
-
-    else:
-        # Normal message processing through AI Chat Layer
-        asyncio.run(process_user_message(
-            user_id=user_id,
-            chat_id=chat_id,
-            message_text=message_text,
-            message_type="text"
-        ))
+    # ALL messages go to AI - no bypasses!
+    # AI Chat Layer knows about pending GPS state and will handle appropriately
+    asyncio.run(process_user_message(
+        user_id=user_id,
+        chat_id=chat_id,
+        message_text=message_text,
+        message_type="text"
+    ))
 
 @bot.message_handler(content_types=['voice'])
 def handle_voice_message(message):
@@ -574,11 +513,10 @@ def main():
     """Start the Telegram bot with all features"""
     global ai_message_generator
 
-    logger.info("🤖 Starting Telegram bot with AI Chat Layer + Location Button")
-    logger.info("✅ Enhanced unified agent with AI Chat Layer initialized")
-    logger.info("📍 Location button support enabled for 'near me' queries")
-    logger.info("🎯 All messages processed through AI Chat Layer")
-    logger.info("🔧 Confirmation messages sent before searches")
+    logger.info("🤖 Starting Telegram bot with AI-FIRST routing")
+    logger.info("✅ All messages routed through AI Chat Layer")
+    logger.info("📍 Location state managed by AI (single source of truth)")
+    logger.info("🚫 No message bypasses - AI decides everything")
 
     try:
         # Initialize AI message generator

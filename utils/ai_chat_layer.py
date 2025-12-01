@@ -9,6 +9,7 @@ Key Features:
 - Context enrichment for neighborhoods
 - Explicit needs_gps flag in handoffs
 - Personalized responses based on user history
+- PENDING GPS STATE MANAGEMENT (new) - AI controls when to show/clear location button
 """
 
 import json
@@ -51,6 +52,7 @@ class AIChatLayer:
     - Decide when to search
     - Use memory context for personalized responses
     - Return structured handoffs with explicit flags
+    - MANAGE PENDING GPS STATE - single source of truth
     """
 
     def __init__(self, config):
@@ -81,26 +83,10 @@ class AIChatLayer:
         # Build prompts
         self._build_prompts()
 
-        logger.info("✅ AI Chat Layer initialized with memory support")
-
-    """
-    NEW AI CHAT LAYER PROMPTS - Clean Rewrite
-
-    Key Changes:
-    1. Simplified prompt structure - removed redundant sections
-    2. Clearer action definitions with explicit conditions
-    3. Better GPS flow handling - when GPS is received, TRIGGER SEARCH immediately
-    4. State accumulation works across conversation turns
-    5. Removed unused variables
-
-    CRITICAL FIX: When has_gps=Yes AND cuisine is known, trigger search immediately.
-    The previous prompt kept asking for GPS even when it was already available.
-
-    TO APPLY: Replace the `_build_prompts` method in utils/ai_chat_layer.py
-    """
+        logger.info("✅ AI Chat Layer initialized with memory support and pending GPS management")
 
     def _build_prompts(self):
-        """Build AI prompts - CLEAN REWRITE for proper state accumulation"""
+        """Build AI prompts with pending GPS awareness"""
 
         from langchain_core.prompts import ChatPromptTemplate
 
@@ -109,6 +95,7 @@ class AIChatLayer:
 
     ## YOUR ROLE
     Analyze user messages, accumulate search parameters across turns, and decide when to trigger a search.
+    You are the SINGLE SOURCE OF TRUTH for conversation state - you decide everything.
 
     ## REQUIRED PARAMETERS FOR SEARCH
     A search can only be triggered when you have BOTH:
@@ -118,54 +105,63 @@ class AIChatLayer:
        - City name (e.g., "Tokyo", "Paris")  
        - Neighborhood/landmark that can be geocoded (e.g., "SoHo NYC", "near Eiffel Tower")
 
-    ## OPTIONAL PARAMETERS
-    - Requirements: Additional preferences (e.g., "romantic", "outdoor seating", "budget-friendly")
+    ## PENDING GPS STATE (CRITICAL!)
+    
+    When pending_gps=Yes, the user was previously asked for their location (location button is shown).
+    The pending_gps_cuisine tells you what they were originally looking for.
+    
+    **RULES FOR PENDING GPS:**
+    
+    1. **User provides LOCATION ANSWER** (neighborhood, street, area name):
+       Examples: "Chinatown", "near Times Square", "Alfama", "downtown", "Lapa"
+       → Use pending_gps_cuisine + this location
+       → trigger_search with search_mode="coordinates_search"
+       → Set clear_pending_gps=true
+    
+    2. **User provides NEW COMPLETE QUERY** (has BOTH cuisine AND city):
+       Examples: "find bakeries in Bangkok", "sushi in Tokyo", "pizza in Rome"
+       → IGNORE pending GPS state, this is a fresh search
+       → trigger_search with the new query
+       → Set clear_pending_gps=true
+    
+    3. **User provides GPS coordinates** (has_gps=Yes):
+       → Use pending_gps_cuisine + GPS
+       → trigger_search with search_mode="gps_search"
+       → Set clear_pending_gps=true
+    
+    4. **User says something off-topic or wants to cancel**:
+       Examples: "never mind", "cancel", "what's the weather", "hello"
+       → Clear pending state, respond appropriately
+       → Set clear_pending_gps=true
+    
+    5. **User provides ONLY cuisine** (no location):
+       Examples: "actually, I want pizza", "sushi instead"
+       → Update pending_gps_cuisine to new cuisine
+       → Keep asking for location (pending_gps stays true)
+       → Set clear_pending_gps=false
 
     ## ACTIONS (choose exactly one)
 
     **request_gps**: User wants nearby search but no GPS yet
-    - Use when: "near me", "nearby", "close by", "around here" AND has_gps=No
+    - Use when: "near me", "nearby", "close by", "around here" AND has_gps=No AND pending_gps=No
     - NEVER use when: has_gps=Yes (you already have location!)
+    - NEVER use when: pending_gps=Yes (already waiting for location!)
 
     **collect_info**: Need more information before searching
-    - Use when: Missing cuisine OR missing location
+    - Use when: Missing cuisine OR missing location (and not a "near me" request)
     - Ask naturally, don't interrogate
 
     **trigger_search**: Ready to search - have both cuisine AND location
     - Use when: You have cuisine AND (has_gps=Yes OR city_name OR geocodable_location)
     - Set is_complete=true
     - Set appropriate search_mode:
-      - "gps_search" if using GPS coordinates (user shared location)
-      - "city_search" if searching entire city by name (e.g., "Tokyo", "Paris") - uses web scraping
-      - "coordinates_search" if neighborhood/area needs geocoding first (e.g., "Alfama", "SoHo") - will be geocoded then proximity search
+      - "gps_search" if using GPS coordinates
+      - "city_search" if searching entire city by name (e.g., "Tokyo", "Paris")
+      - "coordinates_search" if neighborhood/area needs geocoding (e.g., "Alfama", "SoHo")
       - "follow_up_more_results" if user wants more options from previous search
-
-    IMPORTANT: 
-    - city_search = web scraping for best restaurants in a CITY
-    - coordinates_search = geocode neighborhood/landmark, then proximity search around those coordinates
 
     **chat_response**: Answer questions, greet, or redirect
     - Use for: greetings, questions about shown results, off-topic queries
-
-    ## CRITICAL RULES
-
-    1. **WHEN GPS IS AVAILABLE (has_gps=Yes)**:
-       - If cuisine is known → IMMEDIATELY trigger_search with search_mode="gps_search"
-       - If cuisine unknown → collect_info to ask what food they want
-       - NEVER request_gps when has_gps=Yes
-
-    2. **ACCUMULATE STATE ACROSS TURNS**:
-       - If user said "Italian" before and now shares GPS → cuisine is still "Italian"
-       - Read current_cuisine and current_destination - these are already extracted!
-
-    3. **DON'T RE-ASK FOR INFO YOU ALREADY HAVE**:
-       - If current_cuisine is set, don't ask "what cuisine?"
-       - If current_destination is set, don't ask "where?"
-       - If has_gps=Yes, don't ask for location
-
-    4. **PERSONALIZATION FROM MEMORY**:
-       - Reference user's past preferences when relevant
-       - Avoid recommending restaurants from their history
 
     ## RESPONSE FORMAT (JSON only, no markdown)
 
@@ -173,106 +169,95 @@ class AIChatLayer:
         "action": "request_gps" | "collect_info" | "trigger_search" | "chat_response",
         "response_text": "Your message to the user",
         "state_update": {{
-            "cuisine": "extracted cuisine type or null (e.g., 'natural wine', 'sushi', 'Italian')",
-            "destination": "city/neighborhood/landmark or null (e.g., 'Tokyo', 'Alfama, Lisbon')", 
+            "cuisine": "extracted cuisine type or null",
+            "destination": "city/neighborhood/landmark or null", 
             "search_mode": "gps_search|city_search|coordinates_search|follow_up_more_results|null",
             "needs_gps": true | false,
             "is_complete": true | false,
-            "requirements": ["outdoor", "romantic", "budget-friendly", "good wine list", etc.],
-            "raw_query": "the original user message for context preservation"
+            "requirements": ["outdoor", "romantic", etc.],
+            "raw_query": "original user message",
+            "clear_pending_gps": true | false
         }},
         "reasoning": "Brief explanation of your decision"
     }}
 
-    IMPORTANT FIELDS:
-    - cuisine: The TYPE of food/drink (natural wine, pizza, sushi, brunch) - NOT the full query
-    - destination: The LOCATION only (Tokyo, Alfama, SoHo NYC) - NOT the full query  
-    - requirements: Additional preferences extracted from the query
-    - raw_query: Store the original user message to preserve context
-
     ## EXAMPLES
 
-    **Example 1: User shares GPS after asking for nearby restaurants**
-    Current state: cuisine="natural wine", has_gps=Yes
+    **Example 1: User provides location when GPS was pending**
+    Pending GPS: Yes, Cuisine: "coffee"
+    User message: "I'm in Chinatown"
+    → {{
+        "action": "trigger_search",
+        "response_text": "Finding great coffee spots in Chinatown! ☕",
+        "state_update": {{"cuisine": "coffee", "destination": "Chinatown", "search_mode": "coordinates_search", "is_complete": true, "clear_pending_gps": true}},
+        "reasoning": "User answered location question - combine with pending cuisine"
+    }}
+
+    **Example 2: User starts NEW query while GPS was pending**
+    Pending GPS: Yes, Cuisine: "coffee"
+    User message: "find best bakeries in Bangkok"
+    → {{
+        "action": "trigger_search",
+        "response_text": "Finding the best bakeries in Bangkok! 🥐",
+        "state_update": {{"cuisine": "bakeries", "destination": "Bangkok", "search_mode": "city_search", "is_complete": true, "clear_pending_gps": true}},
+        "reasoning": "Complete NEW query - ignore pending GPS, start fresh city search"
+    }}
+
+    **Example 3: User shares GPS after being asked**
+    Pending GPS: Yes, Cuisine: "pizza", has_gps: Yes
     User message: "[Location shared]"
     → {{
         "action": "trigger_search",
-        "response_text": "Perfect! Let me find natural wine bars near you! 🍷",
-        "state_update": {{"cuisine": "natural wine", "search_mode": "gps_search", "is_complete": true}},
-        "reasoning": "Have cuisine from previous turn and GPS now available"
+        "response_text": "Perfect! Finding pizza near you! 🍕",
+        "state_update": {{"cuisine": "pizza", "search_mode": "gps_search", "is_complete": true, "clear_pending_gps": true}},
+        "reasoning": "GPS received - search with pending cuisine"
     }}
 
-    **Example 2: User wants nearby food, no GPS yet**
-    Current state: cuisine=None, has_gps=No
+    **Example 4: User wants nearby food (no pending GPS yet)**
+    Pending GPS: No, has_gps: No
     User message: "Find good pizza near me"
     → {{
         "action": "request_gps",
-        "response_text": "I'd love to find great pizza nearby! 📍 Please share your location.",
-        "state_update": {{"cuisine": "pizza", "search_mode": "gps_search", "needs_gps": true, "raw_query": "Find good pizza near me"}},
-        "reasoning": "Extracted cuisine=pizza, need GPS for 'near me' search"
+        "response_text": "I'd love to find pizza nearby! 📍 Please share your location or tell me your neighborhood.",
+        "state_update": {{"cuisine": "pizza", "needs_gps": true, "clear_pending_gps": false}},
+        "reasoning": "Need location for 'near me' - request GPS"
     }}
 
-    **Example 3: City search with complete info**
-    Current state: cuisine=None, has_gps=No
+    **Example 5: Complete city query (no GPS needed)**
+    Pending GPS: No, has_gps: No
     User message: "Best ramen in Tokyo"
     → {{
         "action": "trigger_search",
-        "response_text": "Finding the best ramen in Tokyo for you! 🍜",
-        "state_update": {{"cuisine": "ramen", "destination": "Tokyo", "search_mode": "city_search", "is_complete": true, "raw_query": "Best ramen in Tokyo"}},
-        "reasoning": "Complete query - cuisine=ramen, city=Tokyo"
+        "response_text": "Finding the best ramen in Tokyo! 🍜",
+        "state_update": {{"cuisine": "ramen", "destination": "Tokyo", "search_mode": "city_search", "is_complete": true, "clear_pending_gps": false}},
+        "reasoning": "Complete query - cuisine + city"
     }}
 
-    **Example 4: Neighborhood search**
-    Current state: cuisine=None, has_gps=No  
-    User message: "Wine bars in Alfama, Lisbon"
-    → {{
-        "action": "trigger_search",
-        "response_text": "Searching for wine bars in Alfama! 🍷",
-        "state_update": {{"cuisine": "wine bars", "destination": "Alfama, Lisbon", "search_mode": "coordinates_search", "is_complete": true, "raw_query": "Wine bars in Alfama, Lisbon"}},
-        "reasoning": "Alfama is a neighborhood - needs geocoding"
-    }}
-
-    **Example 5: Missing cuisine, have GPS**
-    Current state: cuisine=None, has_gps=Yes
-    User message: "[User just shared location without prior context]"
-    → {{
-        "action": "collect_info",
-        "response_text": "Got your location! What kind of food are you in the mood for?",
-        "state_update": {{"needs_gps": false}},
-        "reasoning": "Have GPS but need cuisine preference"
-    }}
-
-    **Example 6: Follow-up request**
-    Current state: cuisine="Italian", has_gps=Yes (results were shown)
-    User message: "Show me more options"
-    → {{
-        "action": "trigger_search",
-        "response_text": "Let me find more Italian restaurants for you!",
-        "state_update": {{"search_mode": "follow_up_more_results", "is_complete": true, "raw_query": "Show me more options"}},
-        "reasoning": "User wants more results in same area"
-    }}
-
-    **Example 7: Query with requirements**
-    Current state: cuisine=None, has_gps=No
-    User message: "Romantic Italian restaurant with outdoor seating in Paris"
-    → {{
-        "action": "trigger_search",
-        "response_text": "Finding romantic Italian spots with outdoor seating in Paris! 🇫🇷",
-        "state_update": {{"cuisine": "Italian", "destination": "Paris", "search_mode": "city_search", "is_complete": true, "requirements": ["romantic", "outdoor seating"], "raw_query": "Romantic Italian restaurant with outdoor seating in Paris"}},
-        "reasoning": "Complete query with cuisine, destination, and requirements"
-    }}
-
-    **Example 8: Off-topic question**  
-    Current state: cuisine=None, has_gps=No
-    User message: "What's the weather like?"
+    **Example 6: User cancels/changes mind**
+    Pending GPS: Yes, Cuisine: "coffee"
+    User message: "never mind" or "cancel"
     → {{
         "action": "chat_response",
-        "response_text": "I'm specialized in restaurant recommendations! But I can definitely help you find a great place to eat. What cuisine are you in the mood for?",
-        "state_update": {{}},
-        "reasoning": "Off-topic - redirect to food while being friendly"
+        "response_text": "No problem! What else can I help you find?",
+        "state_update": {{"clear_pending_gps": true}},
+        "reasoning": "User cancelled - clear pending state"
+    }}
+
+    **Example 7: User changes cuisine while GPS pending**
+    Pending GPS: Yes, Cuisine: "coffee"
+    User message: "actually pizza"
+    → {{
+        "action": "chat_response",
+        "response_text": "Pizza sounds great! 🍕 Where are you located?",
+        "state_update": {{"cuisine": "pizza", "needs_gps": true, "clear_pending_gps": false}},
+        "reasoning": "Updated cuisine, still need location"
     }}
     """),
             ("human", """## CURRENT STATE
+
+    **Pending GPS Request:**
+    - GPS Button Shown: {pending_gps}
+    - Pending Cuisine: {pending_gps_cuisine}
 
     **Memory Context (user's history):**
     {memory_context}
@@ -283,8 +268,8 @@ class AIChatLayer:
     - GPS Available: {has_gps}
     - Stored Location Context: {stored_location}
 
-    **Optional parameters**
-    - Additional requirements: {requirements}: athmosphere, budget, dietary resctrictions, etc.
+    **Optional parameters:**
+    - Additional requirements: {requirements}
 
     **Recent Conversation:**
     {conversation_history}
@@ -292,17 +277,71 @@ class AIChatLayer:
     **Current Message:**
     {user_message}
 
-    DECISION RULES:
-    1. If has_gps=Yes AND current_cuisine is NOT "None" → trigger_search with search_mode="gps_search"
-    2. If has_gps=Yes AND current_cuisine="None" → collect_info to ask for cuisine
-    3. If has_gps=No AND user wants "nearby" → request_gps
-    4. Don't re-ask for info you already have
-
     Respond with valid JSON only, no markdown code blocks.""")
         ])
 
         self.conversation_chain = self.conversation_prompt | self.llm
 
+    # ============================================================================
+    # PENDING GPS STATE MANAGEMENT
+    # ============================================================================
+
+    def set_pending_gps(self, user_id: int, cuisine: str) -> None:
+        """
+        Set pending GPS state when location button is shown.
+        Called by Telegram bot when showing location button.
+        """
+        session = self._get_or_create_session(user_id, f"pending_{user_id}")
+        session['pending_gps'] = True
+        session['pending_gps_cuisine'] = cuisine
+        session['pending_gps_timestamp'] = time.time()
+        logger.info(f"📍 Set pending GPS for user {user_id}: cuisine='{cuisine}'")
+
+    def clear_pending_gps(self, user_id: int) -> None:
+        """
+        Clear pending GPS state.
+        Called when user provides location, completes search, or cancels.
+        """
+        session = self.user_sessions.get(user_id)
+        if session:
+            was_pending = session.get('pending_gps', False)
+            session['pending_gps'] = False
+            session['pending_gps_cuisine'] = None
+            session['pending_gps_timestamp'] = None
+            if was_pending:
+                logger.info(f"🗑️ Cleared pending GPS for user {user_id}")
+
+    def get_pending_gps_state(self, user_id: int) -> Dict[str, Any]:
+        """
+        Get current pending GPS state for a user.
+        Returns dict with pending_gps, pending_gps_cuisine, age_minutes
+        """
+        session = self.user_sessions.get(user_id)
+        if not session:
+            return {'pending_gps': False, 'pending_gps_cuisine': None, 'age_minutes': None}
+
+        pending = session.get('pending_gps', False)
+        cuisine = session.get('pending_gps_cuisine')
+        timestamp = session.get('pending_gps_timestamp')
+
+        # Check expiry (15 minutes)
+        if pending and timestamp:
+            age_minutes = (time.time() - timestamp) / 60
+            if age_minutes > 15:
+                logger.info(f"⏰ Pending GPS expired for user {user_id} ({age_minutes:.1f} min)")
+                self.clear_pending_gps(user_id)
+                return {'pending_gps': False, 'pending_gps_cuisine': None, 'age_minutes': None}
+            return {'pending_gps': True, 'pending_gps_cuisine': cuisine, 'age_minutes': age_minutes}
+
+        return {'pending_gps': pending, 'pending_gps_cuisine': cuisine, 'age_minutes': None}
+
+    def is_pending_gps(self, user_id: int) -> bool:
+        """Quick check if GPS is pending for user"""
+        return self.get_pending_gps_state(user_id)['pending_gps']
+
+    # ============================================================================
+    # MEMORY CONTEXT FORMATTING
+    # ============================================================================
 
     def _format_memory_context(self, user_context: Optional[Dict[str, Any]]) -> str:
         """Format user memory context for AI prompt"""
@@ -347,19 +386,16 @@ class AIChatLayer:
 
         return "\n".join(parts)
 
+    # ============================================================================
+    # MESSAGE HANDLING
+    # ============================================================================
+
     def add_message(self, user_id: int, role: str, content: str) -> None:
         """
         Add a message to conversation history.
 
         Primary: In-memory session (fast)
         Backup: Supabase (survives restarts)
-
-        Call this for:
-        - User messages (role="user")
-        - Bot responses (role="assistant") 
-        - Search results sent to user (role="assistant")
-
-        This ensures the AI sees everything shown in Telegram.
         """
         session = self._get_or_create_session(user_id, f"msg_{user_id}")
 
@@ -381,9 +417,6 @@ class AIChatLayer:
     def add_search_results(self, user_id: int, formatted_results: str, search_context: Optional[Dict] = None) -> None:
         """
         Add search results to conversation history.
-
-        Call this after sending results to the user in Telegram.
-        The formatted_results should be the exact text sent to the user.
         """
         self.add_message(user_id, 'assistant', formatted_results)
 
@@ -402,20 +435,12 @@ class AIChatLayer:
         user_message: str,
         gps_coordinates: Optional[Tuple[float, float]] = None,
         thread_id: Optional[str] = None,
-        user_context: Optional[Dict[str, Any]] = None  # NEW: Memory context from supervisor
+        user_context: Optional[Dict[str, Any]] = None
     ) -> HandoffMessage:
         """
-        Process user message with memory context for personalized responses.
+        Process user message with full context awareness including pending GPS state.
 
-        Args:
-            user_id: Telegram user ID
-            user_message: The user's message
-            gps_coordinates: Optional GPS coordinates if provided
-            thread_id: Thread ID for session tracking
-            user_context: Memory context from supervisor (preferences, history, patterns)
-
-        Returns:
-            HandoffMessage with command and context
+        This is the SINGLE DECISION POINT for all user messages.
         """
         try:
             # Get or create session
@@ -423,27 +448,29 @@ class AIChatLayer:
                 thread_id = f"chat_{user_id}_{int(time.time())}"
 
             session = self._get_or_create_session(user_id, thread_id)
-            # Load history from DB if app just restarted (non-blocking after first call)
             await self._ensure_history_loaded(user_id)
 
             # Handle GPS coordinates - with 30-minute expiry
             current_gps = gps_coordinates
             if gps_coordinates:
                 session['gps_coordinates'] = gps_coordinates
-                session['gps_timestamp'] = time.time()  # Track when GPS was received
+                session['gps_timestamp'] = time.time()
                 logger.info(f"📍 Received GPS coordinates: {gps_coordinates[0]:.4f}, {gps_coordinates[1]:.4f}")
             elif session.get('gps_coordinates'):
-                # Check if stored GPS is still fresh (< 30 minutes)
                 gps_age = time.time() - session.get('gps_timestamp', 0)
                 if gps_age < 1800:  # 30 minutes
                     current_gps = session['gps_coordinates']
                     logger.info(f"📍 Using stored GPS: {current_gps[0]:.4f}, {current_gps[1]:.4f} ({gps_age/60:.0f} min old)")
                 else:
-                    # GPS expired - clear it
                     logger.info(f"⏰ Stored GPS expired ({gps_age/60:.0f} min old), clearing")
                     del session['gps_coordinates']
                     if 'gps_timestamp' in session:
                         del session['gps_timestamp']
+
+            # Get pending GPS state
+            pending_state = self.get_pending_gps_state(user_id)
+            pending_gps = pending_state['pending_gps']
+            pending_gps_cuisine = pending_state['pending_gps_cuisine']
 
             # Check for stored location context
             stored_location = self.get_location_context(user_id)
@@ -457,7 +484,7 @@ class AIChatLayer:
                 else:
                     stored_location_text = f"{loc} - {age_min:.0f} min ago"
 
-            # Add user message to in-memory history (also backs up to Supabase)
+            # Add user message to history
             self.add_message(user_id, 'user', user_message)
 
             # Get accumulated state
@@ -466,21 +493,13 @@ class AIChatLayer:
             # Format memory context for AI
             memory_context_text = self._format_memory_context(user_context)
 
-            # Log memory context usage
-            if user_context and user_context.get("preferences"):
-                logger.info(f"🧠 Using memory context for user {user_id}")
-            else:
-                logger.info(f"🆕 No memory context for user {user_id} (new user)")
-
-            # Get current cuisine and destination from accumulated state
+            # Get current cuisine and destination
             current_cuisine = accumulated_state.get('cuisine') or session.get('current_cuisine') or 'None'
             current_destination = accumulated_state.get('destination') or session.get('current_destination') or 'None'
 
-            # Prepare prompt variables - include ALL context the AI needs
-            # Get requirements from accumulated state or user preferences
+            # Get requirements
             current_requirements = accumulated_state.get('requirements', [])
             if not current_requirements and user_context:
-                # Pull from memory if available
                 prefs = user_context.get("preferences")
                 if prefs:
                     if hasattr(prefs, 'dietary_restrictions') and prefs.dietary_restrictions:
@@ -490,7 +509,10 @@ class AIChatLayer:
 
             requirements_text = ', '.join(current_requirements) if current_requirements else 'None'
 
+            # Prepare prompt variables
             prompt_vars = {
+                'pending_gps': 'Yes' if pending_gps else 'No',
+                'pending_gps_cuisine': pending_gps_cuisine or 'None',
                 'memory_context': memory_context_text,
                 'conversation_history': self._format_conversation_context(session),
                 'current_cuisine': current_cuisine,
@@ -529,9 +551,17 @@ class AIChatLayer:
             response_text = decision.get('response_text', '')
             reasoning = decision.get('reasoning', '')
 
+            # Handle clear_pending_gps signal
+            clear_pending = state_update.get('clear_pending_gps', False)
+            if clear_pending:
+                self.clear_pending_gps(user_id)
+
             # Update session state
             if state_update:
-                accumulated_state.update({k: v for k, v in state_update.items() if v is not None})
+                # Filter out control signals from accumulated state
+                state_for_accumulation = {k: v for k, v in state_update.items() 
+                                         if v is not None and k not in ['clear_pending_gps', 'needs_gps', 'is_complete']}
+                accumulated_state.update(state_for_accumulation)
                 session['accumulated_state'] = accumulated_state
 
             # Extract key fields
@@ -541,10 +571,9 @@ class AIChatLayer:
             requirements = state_update.get('requirements', [])
             preferences = state_update.get('preferences', {})
             is_complete = state_update.get('is_complete', False)
-            needs_clarification = state_update.get('needs_clarification', False)
             needs_gps = state_update.get('needs_gps', False)
 
-            # Store cuisine for location button flow
+            # Store cuisine for follow-up
             if cuisine:
                 session['current_cuisine'] = cuisine
 
@@ -555,14 +584,19 @@ class AIChatLayer:
                 'timestamp': time.time()
             })
 
-            logger.info(f"🤖 AI decision: action={action}, mode={search_mode}, complete={is_complete}")
- 
+            logger.info(f"🤖 AI decision: action={action}, mode={search_mode}, complete={is_complete}, clear_pending={clear_pending}")
+
             # ================================================================
             # RETURN APPROPRIATE HANDOFF
             # ================================================================
 
-            # Handle GPS request
-            if action == 'request_gps' or (search_mode == 'gps_required' and not current_gps):
+            # Handle GPS request - set pending state
+            if action == 'request_gps':
+                # Set pending GPS state with cuisine
+                extracted_cuisine = cuisine or pending_gps_cuisine or current_cuisine
+                if extracted_cuisine and extracted_cuisine != 'None':
+                    self.set_pending_gps(user_id, extracted_cuisine)
+                
                 return HandoffMessage(
                     command=HandoffCommand.CONTINUE_CONVERSATION,
                     conversation_response=response_text or "I need your location to find nearby restaurants.",
@@ -571,12 +605,12 @@ class AIChatLayer:
                 )
 
             # Handle clarification requests
-            if action in ['chat_response', 'collect_info'] or needs_clarification:
+            if action in ['chat_response', 'collect_info']:
                 return HandoffMessage(
                     command=HandoffCommand.CONTINUE_CONVERSATION,
                     conversation_response=response_text or "How can I help?",
                     reasoning=reasoning,
-                    needs_gps=False
+                    needs_gps=needs_gps
                 )
 
             # Handle search trigger
@@ -629,7 +663,7 @@ class AIChatLayer:
                 final_coordinates = current_gps or geocoded_coordinates
 
                 # Determine search type
-                if search_mode in ['gps_required', 'coordinates_search']:
+                if search_mode in ['gps_search', 'coordinates_search']:
                     search_type_hint = SearchType.LOCATION_SEARCH
                 else:
                     search_type_hint = SearchType.CITY_SEARCH
@@ -673,9 +707,8 @@ class AIChatLayer:
     # ============================================================================
 
     def _get_or_create_session(self, user_id: int, thread_id: str) -> Dict[str, Any]:
-        """Get or create user session, loading persistent history if available"""
+        """Get or create user session with pending GPS fields"""
         if user_id not in self.user_sessions:
-            # Create new session
             self.user_sessions[user_id] = {
                 'user_id': user_id,
                 'thread_id': thread_id,
@@ -686,11 +719,15 @@ class AIChatLayer:
                 'current_destination': None,
                 'current_cuisine': None,
                 'gps_coordinates': None,
-            
+                'gps_timestamp': None,
                 'last_search_time': None,
                 'last_search_thread_id': None,
                 'current_location': None,
-                    'history_loaded': False  # Track if we loaded from DB
+                'history_loaded': False,
+                # Pending GPS state
+                'pending_gps': False,
+                'pending_gps_cuisine': None,
+                'pending_gps_timestamp': None,
             }
 
             # Load persistent conversation history from Supabase
@@ -699,12 +736,10 @@ class AIChatLayer:
                     import asyncio
                     loop = asyncio.get_event_loop()
                     if loop.is_running():
-                        # Schedule loading for later if we're in async context
                         asyncio.create_task(self._load_persistent_history(user_id))
                     else:
                         loop.run_until_complete(self._load_persistent_history(user_id))
                 except RuntimeError:
-                    # No event loop, create one
                     asyncio.run(self._load_persistent_history(user_id))
                 except Exception as e:
                     logger.warning(f"Could not load persistent history: {e}")
@@ -723,12 +758,11 @@ class AIChatLayer:
             logger.error(f"Error loading persistent history: {e}")
 
     async def _ensure_history_loaded(self, user_id: int) -> None:
-        """Load history from Supabase if not already loaded (only happens after restart)"""
+        """Load history from Supabase if not already loaded"""
         session = self.user_sessions.get(user_id)
         if not session or session.get('history_loaded'):
             return
 
-        # Only load if memory is empty (app just restarted)
         if not session['conversation_history'] and self.memory_store:
             try:
                 history = await self.memory_store.get_conversation_history(user_id, limit=10)
@@ -741,13 +775,12 @@ class AIChatLayer:
         session['history_loaded'] = True
 
     def _save_message_async(self, user_id: int, role: str, message: str) -> None:
-        """Save message to Supabase in background (non-blocking fallback storage)"""
+        """Save message to Supabase in background"""
         if not self.memory_store:
             return
 
         import asyncio
 
-        # Store reference to avoid None check issues
         memory_store = self.memory_store
 
         async def _save():
@@ -757,7 +790,6 @@ class AIChatLayer:
             except Exception as e:
                 logger.warning(f"Background save failed: {e}")
 
-        # Schedule the coroutine to actually run
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
@@ -765,24 +797,22 @@ class AIChatLayer:
             else:
                 loop.run_until_complete(_save())
         except RuntimeError:
-            # No event loop - try creating one
             try:
                 asyncio.run(_save())
             except Exception as e:
                 logger.debug(f"Could not schedule background save: {e}")
 
     def _format_conversation_context(self, session: Dict[str, Any]) -> str:
-        """Format conversation history for AI - includes everything shown in Telegram"""
+        """Format conversation history for AI"""
         history = session.get('conversation_history', [])
         if not history:
             return "No previous conversation."
 
         formatted = []
-        for msg in history[-10:]:  # Last 10 messages
+        for msg in history[-10:]:
             role = msg.get('role', 'user').upper()
             content = msg.get('message', '')
 
-            # Truncate very long content (like search results) but keep enough for context
             if len(content) > 2000:
                 content = content[:2000] + "\n... [truncated]"
 
@@ -813,28 +843,15 @@ class AIChatLayer:
         coordinates: Optional[Tuple[float, float]] = None,
         search_type: str = "city_search"
     ) -> None:
-        """
-        Store location context with automatic 30-minute expiry
-
-        This is the SINGLE SOURCE OF TRUTH for current location.
-        All layers check this method for valid location context.
-
-        Args:
-            user_id: User ID
-            location: Location name/description (e.g., "Paris", "Tokyo", "Berlin")
-            coordinates: Optional GPS coordinates (lat, lng)
-            search_type: 'city_search' or 'coordinates_search'
-        """
+        """Store location context with automatic 30-minute expiry"""
         session = self.user_sessions.get(user_id)
         if not session:
-            # Create minimal session if doesn't exist
             session = {
                 'user_id': user_id,
                 'created_at': time.time()
             }
             self.user_sessions[user_id] = session
 
-        # Store location context with timestamp in session
         session['current_location'] = {
             'location': location,
             'coordinates': coordinates,
@@ -842,26 +859,15 @@ class AIChatLayer:
             'stored_at': time.time()
         }
 
-        # Also store in separate dict for compatibility
         self.location_contexts[user_id] = session['current_location']
 
         coord_str = f" ({coordinates[0]:.4f}, {coordinates[1]:.4f})" if coordinates else ""
         logger.info(f"📍 Stored location for user {user_id}: {location}{coord_str} (expires in 30 min)")
 
     def get_location_context(self, user_id: int, max_age_minutes: int = 30) -> Optional[Dict[str, Any]]:
-        """
-        Get current location context if still valid (< 30 minutes)
-
-        This is the SINGLE CHECK for location validity across all layers.
-        Returns None if expired or not found.
-
-        Returns:
-            Dict with keys: location, coordinates, search_type, stored_at
-            or None if expired/not found
-        """
+        """Get current location context if still valid"""
         session = self.user_sessions.get(user_id)
         if not session:
-            # Check separate storage as fallback
             context = self.location_contexts.get(user_id)
             if context:
                 age_minutes = (time.time() - context['stored_at']) / 60
@@ -875,7 +881,6 @@ class AIChatLayer:
         if not location_ctx:
             return None
 
-        # Check if expired (default 30 minutes = 1800 seconds)
         stored_at = location_ctx.get('stored_at', 0)
         age_seconds = time.time() - stored_at
         max_age_seconds = max_age_minutes * 60
@@ -883,42 +888,24 @@ class AIChatLayer:
         if age_seconds > max_age_seconds:
             age_minutes = age_seconds / 60
             logger.info(f"⏰ Location context expired for user {user_id} ({age_minutes:.1f} min old)")
-            # Clean up expired location
             del session['current_location']
             return None
 
-        age_minutes = age_seconds / 60
-        logger.info(f"✅ Location context valid for user {user_id}: {location_ctx['location']} ({age_minutes:.1f} min old)")
         return location_ctx
 
     def clear_location_context(self, user_id: int) -> None:
-        """
-        Clear stored location context (e.g., when destination changes)
-
-        Call this when:
-        - AI detects destination change
-        - User explicitly changes location
-        - Manual reset needed
-        """
+        """Clear stored location context"""
         session = self.user_sessions.get(user_id)
         if session and 'current_location' in session:
             old_location = session['current_location'].get('location', 'unknown')
             del session['current_location']
             logger.info(f"🗑️ Cleared location context for user {user_id} (was: {old_location})")
-        else:
-            logger.debug(f"ℹ️ No location context to clear for user {user_id}")
 
-        # Also clear from separate storage if exists
         if user_id in self.location_contexts:
             del self.location_contexts[user_id]
 
     def get_location_age_minutes(self, user_id: int) -> Optional[float]:
-        """
-        Get age of stored location in minutes
-
-        Returns:
-            Age in minutes, or None if no location stored
-        """
+        """Get age of stored location in minutes"""
         session = self.user_sessions.get(user_id)
         if not session:
             return None
@@ -935,16 +922,18 @@ class AIChatLayer:
         """Clear user session but keep location context"""
         if user_id in self.user_sessions:
             session = self.user_sessions[user_id]
-            # Keep the location context (has 30-min expiry)
             location_context = session.get('current_location')
 
-            # Clear everything else
             session['current_destination'] = None
             session['current_cuisine'] = None
             session['state'] = ConversationState.GREETING
             session['accumulated_state'] = {}
             session['last_search_time'] = None
             session['conversation_history'] = []
+            # Also clear pending GPS
+            session['pending_gps'] = False
+            session['pending_gps_cuisine'] = None
+            session['pending_gps_timestamp'] = None
 
             if location_context:
                 loc_name = location_context.get('location', 'unknown')
@@ -957,14 +946,7 @@ class AIChatLayer:
         return self.user_sessions.get(user_id)
 
     def _extract_city_from_destination(self, destination: str) -> Optional[str]:
-        """
-        Extract city name from destination string for context storage
-
-        Examples:
-        "Lapa, Lisbon" → "Lisbon"
-        "SoHo, New York" → "New York"
-        "Paris" → "Paris"
-        """
+        """Extract city name from destination string"""
         if not destination:
             return None
 
