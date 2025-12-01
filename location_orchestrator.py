@@ -167,12 +167,19 @@ class LocationOrchestrator:
             self.filter_chain
         )
 
+        # ✅ DEFINE maps_only_pipeline FIRST (before it's used)
+        self.maps_only_pipeline = (
+            self.geocoding_chain |
+            self.enhanced_verification_chain |
+            self.formatting_chain
+        )
+
         # Branch after filtering: database sufficient OR maps needed
         self.post_filter_branch = RunnableBranch(
             # If sufficient database results → verification → description editing → formatting
             (
-                lambda x: isinstance(x, dict) and x.get("maps_only", False),
-                self.maps_only_pipeline
+                lambda x: isinstance(x, dict) and x.get("sufficient_results", False),
+                self.verification_chain | self.description_editing_chain | self.formatting_chain
             ),
             # Default: insufficient results → enhanced verification → formatting
             self.enhanced_verification_chain | self.formatting_chain
@@ -181,19 +188,12 @@ class LocationOrchestrator:
         # Complete normal pipeline
         self.normal_pipeline = self.database_flow_sequence | self.post_filter_branch
 
-        # Maps-only pipeline (skip database entirely, for "show more" requests)
-        self.maps_only_pipeline = (
-            self.geocoding_chain |
-            self.enhanced_verification_chain |
-            self.formatting_chain
-        )
-
         # Top-level branch based on maps_only flag
         self.pipeline = RunnableBranch(
             # If maps_only=True → skip database, go directly to Google Maps
             (
                 lambda x: isinstance(x, dict) and x.get("maps_only", False),
-                self.maps_only_pipeline
+                self.maps_only_pipeline  # ✅ Now it's defined!
             ),
             # Default: normal flow with database search first
             self.normal_pipeline
