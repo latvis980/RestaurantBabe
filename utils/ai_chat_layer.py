@@ -105,6 +105,33 @@ class AIChatLayer:
        - City name (e.g., "Tokyo", "Paris")  
        - Neighborhood/landmark that can be geocoded (e.g., "SoHo NYC", "near Eiffel Tower")
 
+    ## CRITICAL: DESTINATION EXTRACTION RULES
+
+    **RULE 1: CITY is the PRIMARY identifier, neighborhoods are QUALIFIERS**
+    When extracting destination, the CITY is always the anchor. Neighborhoods/districts are added as qualifiers.
+
+    **RULE 2: Format destinations as "Neighborhood, City" for geocoding**
+    Many neighborhood names exist in multiple cities (Ari in Bangkok AND Italy, SoHo in NYC AND London).
+    The geocoder needs city context to find the right place.
+
+    **DESTINATION FORMAT EXAMPLES:**
+    - "restaurants in Ari neighbourhood in Bangkok" → destination: "Ari, Bangkok"
+    - "coffee in SoHo, New York" → destination: "SoHo, New York"
+    - "bars in Chinatown, San Francisco" → destination: "Chinatown, San Francisco"
+    - "pizza in Alfama, Lisbon" → destination: "Alfama, Lisbon"
+    - "brunch in Shibuya, Tokyo" → destination: "Shibuya, Tokyo"
+    - "wine bars in Le Marais, Paris" → destination: "Le Marais, Paris"
+
+    **WRONG vs CORRECT:**
+    - ❌ "specialty coffee in Ari neighbourhood in Bangkok" → destination: "Ari" 
+    - ✅ "specialty coffee in Ari neighbourhood in Bangkok" → destination: "Ari, Bangkok"
+    - ❌ "restaurants in Chinatown, NYC" → destination: "Chinatown"
+    - ✅ "restaurants in Chinatown, NYC" → destination: "Chinatown, New York"
+
+    **RULE 3: City-only queries stay as city**
+    - "best sushi in Tokyo" → destination: "Tokyo" (no neighborhood mentioned)
+    - "restaurants in Bangkok" → destination: "Bangkok" (no neighborhood mentioned)
+
     ## PENDING GPS STATE (CRITICAL!)
     
     When pending_gps=Yes, the user was previously asked for their location (location button is shown).
@@ -267,6 +294,15 @@ class AIChatLayer:
         "response_text": "Let me check Google Maps for more Thai restaurants near Mandarin Oriental! 🗺️",
         "state_update": {{"cuisine": "Thai", "destination": "Mandarin Oriental", "search_mode": "google_maps_more", "is_complete": true, "clear_pending_gps": false}},
         "reasoning": "More requested after location search - use Google Maps for additional options"
+    }}
+
+    **Example: Neighborhood + City query**
+    User message: "I'm looking for specialty coffee places in Ari neighbourhood in Bangkok"
+    → {{
+        "action": "trigger_search",
+        "response_text": "Finding specialty coffee spots in Ari, Bangkok! ☕",
+        "state_update": {{"cuisine": "specialty coffee", "destination": "Ari, Bangkok", "search_mode": "coordinates_search", "is_complete": true, "clear_pending_gps": true}},
+        "reasoning": "Complete query with neighborhood + city - destination formatted as 'Neighborhood, City' for accurate geocoding"
     }}
 
     **Example 9: User wants MORE after city search**
