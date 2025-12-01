@@ -73,43 +73,47 @@ class TextCleanerAgent:
 
         logger.info(f"✅ Text Cleaner initialized with CONCURRENT processing: {self.max_concurrent_files} files at once")
 
-    def _initialize_model(self, model_type: str):
-        """Initialize AI model with INCREASED token limits"""
-        logger.info(f"🤖 Initializing OPTIMIZED Text Cleaner with {model_type} model")
+    def _initialize_model(self, model_type: str) -> Any:
+        """Initialize AI model with current 2025 versions"""
+        logger.info(f"🤖 Initializing Text Cleaner with {model_type} model")
 
         if model_type == 'openai':
             from langchain_openai import ChatOpenAI
-            return ChatOpenAI(
-                temperature=0.1,
+            return ChatOpenAI(  # type: ignore[call-arg]
                 model="gpt-4o-mini",
-                max_tokens=16000,  # INCREASED: was 8000, now 16000
+                temperature=0.1,
+                max_tokens=16000,
                 max_retries=3
             )
+
         elif model_type == 'deepseek':
             from langchain_openai import ChatOpenAI
-            return ChatOpenAI(
-                temperature=0.1,
-                openai_api_base="https://api.deepseek.com",
-                openai_api_key=self.config.DEEPSEEK_API_KEY,
+            return ChatOpenAI(  # type: ignore[call-arg]
                 model="deepseek-chat",
-                max_tokens=16000,  # INCREASED: was 8000, now 16000
+                base_url="https://api.deepseek.com",
+                api_key=self.config.DEEPSEEK_API_KEY,
+                temperature=0.1,
+                max_tokens=16000,
                 max_retries=3
             )
+
         elif model_type == 'claude':
             from langchain_anthropic import ChatAnthropic
-            return ChatAnthropic(
+            return ChatAnthropic(  # type: ignore[call-arg]
+                model="claude-sonnet-4-5-20250929",
                 temperature=0.1,
-                model="claude-3-5-sonnet-20241022",
-                max_tokens=8000,  # INCREASED: was 4000, now 8000
+                max_tokens=8000,
                 max_retries=3
             )
+
         else:
-            logger.warning(f"Unknown model type: {model_type}, defaulting to OpenAI")
+            logger.warning(f"⚠️ Unknown model type: {model_type}, defaulting to OpenAI")
             from langchain_openai import ChatOpenAI
-            return ChatOpenAI(
-                temperature=0.1,
+            return ChatOpenAI(  # type: ignore[call-arg]
                 model="gpt-4o-mini",
-                max_tokens=16000
+                temperature=0.1,
+                max_tokens=16000,
+                max_retries=3
             )
 
     def _setup_directories(self):
@@ -126,7 +130,12 @@ class TextCleanerAgent:
             logger.error(f"❌ Error creating directories: {e}")
 
     # NEW METHOD: Main entry point called by orchestrator
-    async def process_scraped_results_individually(self, scraped_results: List[Dict[str, Any]], query: str = "") -> str:
+    async def process_scraped_results_individually(
+        self,
+        scraped_results: List[Dict[str, Any]],
+        query: str,
+        destination: Optional[str] = None
+    ) -> str:
         """
         OPTIMIZED: Process each scraped result individually with CONCURRENT execution
 
@@ -152,7 +161,12 @@ class TextCleanerAgent:
         final_file_path = self._create_final_combined_file(deduplicated_restaurants, query, scraped_results)
 
         # Step 5: Upload final combined file to Supabase
-        await self._upload_final_file_to_supabase(final_file_path, deduplicated_restaurants, query)
+        await self._upload_final_file_to_supabase(
+            final_file_path=final_file_path,
+            restaurants=deduplicated_restaurants,
+            query=query,
+            destination=destination  # PASS IT HERE
+        )
 
         # Step 6: Update stats
         self._update_final_stats(individual_results, combined_restaurants, deduplicated_restaurants)
@@ -350,7 +364,13 @@ Return ONLY the JSON array, no other text.
 
             # Process with AI model
             response = await self.model.ainvoke([{"role": "user", "content": enhanced_prompt}])
-            response_text = response.content.strip()
+            # Handle different response content types
+            if isinstance(response.content, str):
+                response_text = response.content.strip()
+            elif isinstance(response.content, list):
+                response_text = str(response.content[0]) if response.content else ""
+            else:
+                response_text = str(response.content)
 
             # Parse JSON response
             try:
@@ -545,7 +565,7 @@ Return ONLY the JSON array, no other text.
             filepath = combined_dir / filename
 
             # Format header
-            file_content = f"COMBINED RESTAURANT FILE\n"
+            file_content = "COMBINED RESTAURANT FILE\n"
             file_content += f"QUERY: {query}\n"
             file_content += f"CITY: {city}\n"
             file_content += f"COUNTRY: {country}\n"
@@ -643,7 +663,7 @@ Return ONLY the JSON array, no other text.
 
         return 'unknown'
 
-    async def _upload_final_file_to_supabase(self, final_file_path: str, restaurants: List[Dict[str, Any]], query: str) -> bool:
+    async def _upload_final_file_to_supabase(self, final_file_path: str, restaurants: List[Dict[str, Any]], query: str, destination: Optional[str] = None) -> bool:
         """
         Upload the final combined file to Supabase storage with RB naming convention
 
@@ -651,6 +671,7 @@ Return ONLY the JSON array, no other text.
             final_file_path: Path to the local final combined file
             restaurants: List of deduplicated restaurants
             query: Original search query
+            destination: The actual destination/city being searched (NEW)
 
         Returns:
             bool: True if upload successful, False otherwise
@@ -668,15 +689,15 @@ Return ONLY the JSON array, no other text.
                 logger.warning("⚠️ Final file is empty, skipping Supabase upload")
                 return False
 
-            # Extract city from restaurants for metadata
-            cities = set()
-            for restaurant in restaurants:
-                city = restaurant.get('City', '').strip()
-                if city and city.lower() not in ['n/a', 'not specified', 'unknown']:
-                    cities.add(city)
+            # FIXED: Use destination from pipeline, NOT from restaurant data
+            # This ensures filename matches the actual search city
+            primary_city = destination if destination else self._extract_city_from_restaurants(restaurants)
 
-            # Use first city found, or extract from query, or default to 'unknown'
-            primary_city = next(iter(cities)) if cities else self._extract_city_from_query(query)
+            if not primary_city or primary_city == 'unknown':
+                # Last resort: try extracting from query
+                primary_city = self._extract_city_from_query(query)
+
+            logger.info(f"📍 Using city for filename: {primary_city} (from: {'destination' if destination else 'restaurants/query'})")
 
             # Prepare metadata for Supabase storage with cleanedRB naming
             metadata = {
@@ -692,7 +713,7 @@ Return ONLY the JSON array, no other text.
             # Import and use the Supabase storage utility with RB naming convention
             from utils.supabase_storage import upload_content_to_bucket
 
-            logger.info(f"📤 Uploading final combined file to Supabase with cleanedRB naming...")
+            logger.info("📤 Uploading final combined file to Supabase with cleanedRB naming...")
             logger.info(f"   📊 Content size: {len(file_content)} characters")
             logger.info(f"   🍽️ Restaurants: {len(restaurants)}")
             logger.info(f"   🏙️ Primary city: {primary_city}")

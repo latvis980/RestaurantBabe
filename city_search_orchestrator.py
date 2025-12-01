@@ -504,8 +504,13 @@ class CitySearchOrchestrator:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
+                    destination = pipeline_input.get("destination", "")  # GET DESTINATION
                     return loop.run_until_complete(
-                        self.text_cleaner.process_scraped_results_individually(scraped_results, query)
+                        self.text_cleaner.process_scraped_results_individually(
+                            scraped_results, 
+                            query,
+                            destination  # PASS DESTINATION
+                        )
                     )
                 finally:
                     loop.close()
