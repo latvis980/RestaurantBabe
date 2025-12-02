@@ -639,6 +639,16 @@ class LocationOrchestrator:
 
             logger.info(f"🗺️ Maps search found {len(map_venues)} venues")
 
+            # Sub-step 1.5: Enrich with reviews
+            if map_venues:
+                logger.info("📖 Sub-step 1.5: Enriching venues with Google reviews")
+                enriched_venues = await self._enrich_venues_with_reviews(map_venues[:10])
+                map_venues[:len(enriched_venues)] = enriched_venues
+
+                venues_with_reviews = sum(1 for v in map_venues if hasattr(v, 'google_reviews') and v.google_reviews)
+                total_reviews = sum(len(v.google_reviews) for v in map_venues if hasattr(v, 'google_reviews'))
+                logger.info(f"✅ {venues_with_reviews}/{len(map_venues)} venues have reviews ({total_reviews} total)")
+            
             if not map_venues:
                 return {
                     **pipeline_input,
@@ -768,6 +778,32 @@ class LocationOrchestrator:
                 "enhanced_verification_metadata": {"error": str(e)},
                 "step_completed": "enhanced_verification"
             }
+
+    async def _enrich_venues_with_reviews(self, venues: List) -> List:
+        """Fetch Google reviews for venues"""
+        if not venues:
+            return venues
+
+        logger.info(f"📖 Enriching {len(venues)} venues with reviews")
+        enriched = []
+
+        for venue in venues:
+            try:
+                if venue.place_id and self.map_search_agent.gmaps_client:
+                    details = self.map_search_agent.gmaps_client.place(
+                        place_id=venue.place_id,
+                        fields=['reviews']
+                    )
+                    if details and 'result' in details:
+                        venue.google_reviews = details['result'].get('reviews', [])
+                        if venue.google_reviews:
+                            logger.info(f"✅ {venue.name}: {len(venue.google_reviews)} reviews")
+                enriched.append(venue)
+            except Exception as e:
+                logger.warning(f"Failed: {venue.name}: {e}")
+                enriched.append(venue)
+
+        return enriched
 
     async def _formatting_step(self, pipeline_input: Dict[str, Any]) -> Dict[str, Any]:
         """
