@@ -17,7 +17,8 @@ from enum import Enum
 class SearchType(Enum):
     """Search types - decided by supervisor, executed by workers"""
     CITY_SEARCH = "city_search"
-    LOCATION_SEARCH = "location_search"
+    LOCATION_SEARCH = "location_search"  # Database first, then maps if insufficient
+    LOCATION_MAPS_SEARCH = "location_maps_search"  # Maps only (for "more results" after DB)
 
 
 class HandoffCommand(Enum):

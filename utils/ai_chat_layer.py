@@ -291,9 +291,9 @@ class AIChatLayer:
     User message: "show me more options"
     → {{
         "action": "trigger_search",
-        "response_text": "Let me check Google Maps for more Thai restaurants near Mandarin Oriental! 🗺️",
+        "response_text": "Let me search Google Maps for more Thai restaurants near Mandarin Oriental! 🗺️",
         "state_update": {{"cuisine": "Thai", "destination": "Mandarin Oriental", "search_mode": "google_maps_more", "is_complete": true, "clear_pending_gps": false}},
-        "reasoning": "More requested after location search - use Google Maps for additional options"
+        "reasoning": "More requested after location search - MUST use google_maps_more to search Google Maps directly (database already exhausted)"
     }}
 
     **Example: Neighborhood + City query**
@@ -869,16 +869,16 @@ class AIChatLayer:
                     return create_search_handoff(
                         destination=last_destination or "nearby",
                         cuisine=last_cuisine,
-                        search_type=SearchType.LOCATION_SEARCH,
+                        search_type=SearchType.LOCATION_MAPS_SEARCH,  # Use maps-only type
                         user_query=f"more {last_cuisine} near {last_destination}",
                         user_id=user_id,
                         thread_id=thread_id,
                         gps_coordinates=stored_gps,
                         requirements=requirements,
-                        preferences={'use_google_maps': True, 'is_more_request': True},
+                        preferences={},  # Type is explicit now
                         clear_previous=False,
                         is_new_destination=False,
-                        reasoning=f"Google Maps search for more options: {reasoning}"
+                        reasoning=f"Maps-only search for more options: {reasoning}"
                     )
 
                 # Store for follow-up

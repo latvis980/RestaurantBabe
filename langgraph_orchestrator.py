@@ -462,8 +462,19 @@ class LangGraphSupervisor:
         # ROUTE TO APPROPRIATE LCEL PIPELINE
         # ================================================================
         try:
-            if search_ctx.search_type == SearchType.LOCATION_SEARCH:
-                # ----- LOCATION SEARCH (GPS-based) -----
+            if search_ctx.search_type == SearchType.LOCATION_MAPS_SEARCH:
+                # ----- MAPS-ONLY SEARCH (for "more results") -----
+                result = await self._execute_location_maps_search(
+                    search_query=search_query,
+                    search_ctx=search_ctx,
+                    gps_coordinates=search_gps,
+                    cancel_check_fn=cancel_check_fn,
+                    start_time=start_time
+                )
+                # No session update needed - this is a follow-up search
+
+            elif search_ctx.search_type == SearchType.LOCATION_SEARCH:
+                # ----- LOCATION SEARCH (database first, then maps) -----
                 result = await self._execute_location_search(
                     search_query=search_query,
                     search_ctx=search_ctx,
@@ -747,6 +758,79 @@ class LangGraphSupervisor:
                 "processing_time": round(time.time() - start_time, 2)
             }
 
+    @traceable(run_type="chain", name="execute_location_maps_search")
+    async def _execute_location_maps_search(
+        self,
+        search_query: str,
+        search_ctx: SearchContext,
+        gps_coordinates: Optional[Tuple[float, float]],
+        cancel_check_fn: Optional[Callable],
+        start_time: float
+    ) -> Dict[str, Any]:
+        """Execute maps-only location search (skip database, go directly to Google Maps)
+
+        Used when user requests "more results" after database results were shown.
+        """
+        self.stats["location_searches"] += 1
+
+        logger.info(f"🗺️ Executing MAPS-ONLY location search: '{search_query}'")
+
+        if not gps_coordinates:
+            return {
+                "success": True,
+                "ai_response": f"To search for more options, I need your location. Could you share it?",
+                "needs_location_button": True,
+                "search_triggered": False,
+                "processing_time": round(time.time() - start_time, 2)
+            }
+
+        try:
+            # Create LocationData from coordinates
+            location_data = LocationData(
+                latitude=gps_coordinates[0],
+                longitude=gps_coordinates[1],
+                description=search_ctx.destination or f"GPS: {gps_coordinates[0]:.4f}, {gps_coordinates[1]:.4f}"
+            )
+
+            # Execute the LCEL pipeline with maps_only=True
+            result = await self.location_pipeline.process_location_query(
+                query=search_query,
+                location_data=location_data,
+                cancel_check_fn=cancel_check_fn,
+                maps_only=True  # KEY: Skip database, go directly to Google Maps
+            )
+
+            processing_time = round(time.time() - start_time, 2)
+
+            # Extract restaurants for memory
+            restaurants = result.get("results", []) or result.get("final_restaurants", [])
+
+            return {
+                "success": result.get("success", False),
+                "ai_response": result.get("location_formatted_results", ""),
+                "langchain_formatted_results": result.get("location_formatted_results", ""),
+                "location_formatted_results": result.get("location_formatted_results", ""),
+                "action_taken": "location_maps_search",
+                "search_triggered": True,
+                "processing_time": processing_time,
+                "coordinates": gps_coordinates,
+                "source": "google_maps",
+                "restaurant_count": result.get("restaurant_count", 0),
+                "final_restaurants": restaurants
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Location maps search error: {e}")
+            return {
+                "success": False,
+                "error_message": str(e),
+                "ai_response": "Sorry, there was an error searching Google Maps. Please try again.",
+                "location_formatted_results": "Sorry, there was an error searching. Please try again.",
+                "action_taken": "location_maps_search_error",
+                "search_triggered": True,
+                "processing_time": round(time.time() - start_time, 2)
+            }  
+
     # ============================================================================
     # UTILITY METHODS
     # ============================================================================
@@ -831,16 +915,20 @@ class LangGraphSupervisor:
         if gps_coordinates or location_data:
             if location_data:
                 loc_data = location_data
-            else:
+            elif gps_coordinates:  # Explicit check narrows type for PyRight
                 loc_data = LocationData(
                     latitude=gps_coordinates[0],
                     longitude=gps_coordinates[1],
                     description=f"GPS: {gps_coordinates[0]:.4f}, {gps_coordinates[1]:.4f}"
                 )
+            else:
+                # Shouldn't reach here, but satisfies type checker
+                raise ValueError("No GPS coordinates or location data provided")
 
-            result = await self.location_pipeline.process_location_query_async(
+            result = await self.location_pipeline.process_location_query(
                 query=query,
                 location_data=loc_data,
+                cancel_check_fn=None,
                 maps_only=False
             )
 
