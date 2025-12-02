@@ -554,8 +554,12 @@ class LangGraphSupervisor:
             # Build caption based on search type
             if search_type == SearchType.LOCATION_SEARCH:
                 video_path = 'media/vicinity_search.mp4'
-                if cuisine and destination:
-                    caption = f"📍 <b>Searching for {cuisine} near {destination}...</b>\n\n⏱ Checking my curated collection and finding the best places nearby."
+                # Treat "unknown" as no destination (GPS-only)
+                if destination and destination.lower() != "unknown":
+                    if cuisine:
+                        caption = f"📍 <b>Searching for {cuisine} near {destination}...</b>\n\n⏱ Checking my curated collection and finding the best places nearby."
+                    else:
+                        caption = f"📍 <b>Searching for restaurants near {destination}...</b>\n\n⏱ Checking my curated collection and finding the best places nearby."
                 elif cuisine:
                     caption = f"📍 <b>Searching for {cuisine} near you...</b>\n\n⏱ Checking my curated collection and finding the best places nearby."
                 else:
@@ -778,7 +782,7 @@ class LangGraphSupervisor:
         if not gps_coordinates:
             return {
                 "success": True,
-                "ai_response": f"To search for more options, I need your location. Could you share it?",
+                "ai_response": "To search for more options, I need your location. Could you share it?",
                 "needs_location_button": True,
                 "search_triggered": False,
                 "processing_time": round(time.time() - start_time, 2)
