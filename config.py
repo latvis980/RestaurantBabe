@@ -308,8 +308,16 @@ ENHANCED_GOOGLE_MAPS_FIELDS = [
 ]
 
 # Review analysis settings
-MAX_REVIEWS_FOR_ANALYSIS = 5  # Number of Google reviews to analyze per restaurant
+MAX_REVIEWS_FOR_ANALYSIS = 5  # Number of Google reviews to fetch from API (API max limit)
+MAX_REVIEWS_FOR_CONTEXT = 5   # Number of reviews to use in AI editor context (use all available)
+REVIEW_CHARS_PER_REVIEW = 4600  # Character limit per review text (increased from 200)
 REVIEW_QUALITY_THRESHOLD = 6.0  # Minimum quality score (0-10) for venue selection
+
+# AI Editor temperature settings
+DESCRIPTION_TEMPERATURE = 0.1  # LOWERED from 0.3 - prevents hallucination of details not in reviews
+DESCRIPTION_MAX_LENGTH = 150  # Max characters for descriptions
+ENABLE_MEDIA_MENTION = False  # Whether to mention media sources in descriptions
+
 
 # Media verification settings (existing but may need updates)
 TAVILY_SEARCH_MAX_RESULTS = 10  # Results per Tavily search

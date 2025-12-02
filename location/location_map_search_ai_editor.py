@@ -29,6 +29,12 @@ from langsmith import traceable
 from formatters.google_links import build_google_maps_url
 from location.location_data_logger import LocationDataLogger
 
+from location.location_review_logger import (
+    log_google_reviews_to_langsmith,
+    build_review_context_with_logging,
+    log_reviews_before_ai_processing
+)
+
 logger = logging.getLogger(__name__)
 
 # FIXED: Define CombinedVenueData locally with proper field defaults
@@ -141,6 +147,7 @@ class LocationMapSearchAIEditor:
                 venues_after_selection=selected_venues,
                 user_query=user_query
             )
+            log_reviews_before_ai_processing(selected_venues)
 
             if cancel_check_fn and cancel_check_fn():
                 return []
@@ -222,16 +229,14 @@ class LocationMapSearchAIEditor:
                 # Get canonical Google Maps URL
                 maps_link = build_google_maps_url(place_id, name) if place_id else getattr(map_result, 'google_maps_url', '')
 
-                # FIXED: Extract review context from google_reviews if available
+                # Extract review context - USE ALL 5 REVIEWS with MORE text
                 google_reviews = getattr(map_result, 'google_reviews', []) or []
-                review_context = ""
                 if google_reviews:
-                    # Combine first few review snippets
-                    review_texts = []
-                    for review in google_reviews[:3]:  # First 3 reviews
-                        if isinstance(review, dict) and 'text' in review:
-                            review_texts.append(review['text'][:100])
-                    review_context = " | ".join(review_texts)
+                    log_google_reviews_to_langsmith(name, google_reviews, max_reviews=5)
+                    # Use all 5 reviews with 400 chars each for better context
+                    review_context = build_review_context_with_logging(name, google_reviews, max_reviews=5)
+                else:
+                    review_context = ""
 
                 # Find matching media verification
                 media_match = media_lookup.get(name.lower())
@@ -461,6 +466,7 @@ Select restaurants that would create memorable experiences, not just satisfy hun
     ) -> List[MapSearchRestaurantDescription]:
         """
         Generate descriptions for MAP SEARCH results with media integration
+        STRICT: Only use facts from review_context, never invent details
         """
         if not venues:
             return []
@@ -479,22 +485,38 @@ Select restaurants that would create memorable experiences, not just satisfy hun
                 "distance_km": venue.distance_km,
                 "has_media_coverage": venue.has_media_coverage,
                 "media_publications": venue.media_publications,
-                "review_context": venue.review_context,
+                "review_context": venue.review_context,  # THIS IS THE ONLY SOURCE OF TRUTH
             }
             all_restaurants_data.append(restaurant_data)
 
         # Generate description for all restaurants at once
         restaurants_text = json.dumps(all_restaurants_data, indent=2)
 
-        # Instruction for description generation based on Google reviews
-        media_instruction = """Use the review_context from Google reviews to write authentic descriptions. 
-        Focus on what real diners say about the atmosphere, food quality, and unique character of each place.
-        If media_publications are available, mention them naturally (e.g., "featured in Time Out").
-        """
+        # STRICT instruction - no invention allowed
+        strict_instruction = """CRITICAL RULES - READ CAREFULLY:
 
-        # Import typing utilities at the start
+    1. ONLY use information from the "review_context" field for each restaurant
+    2. If review_context is empty or has no details, write: "No detailed reviews available yet."
+    3. NEVER mention specific dishes, ingredients, or menu items unless explicitly stated in review_context
+    4. NEVER mention atmosphere details (cozy, intimate, spacious, etc.) unless in review_context
+    5. NEVER mention price range, service quality, or ambiance unless in review_context
+    6. If media_publications exist, you MAY mention them (e.g., "Featured in Time Out")
+
+    WHAT TO DO:
+    - Paraphrase what real customers said in their reviews
+    - Use general terms if reviews lack specifics: "praised for food quality" not "known for truffle pasta"
+    - Keep it short and factual
+
+    WHAT NOT TO DO:
+    - ❌ "Known for handmade pasta" (unless reviews specifically mention handmade pasta)
+    - ❌ "Cozy atmosphere with candlelit tables" (unless reviews mention candles/coziness)
+    - ❌ "Specializes in seasonal ingredients" (unless reviews mention this)
+    - ✅ "Highly rated for Italian cuisine" (if reviews praise Italian food)
+    - ✅ "Customers praise the authentic flavors" (if reviews say this)"""
+
+        # Import typing utilities
         from typing import cast, Any
-        
+
         try:
             from openai.types.chat import (
                 ChatCompletionUserMessageParam,
@@ -504,77 +526,75 @@ Select restaurants that would create memorable experiences, not just satisfy hun
             messages = [
                 ChatCompletionSystemMessageParam(
                     role="system",
-                    content=f"""You are an expert food writer creating engaging restaurant descriptions for MAP SEARCH results.
+                    content=f"""You are a restaurant description writer who ONLY uses verified information from customer reviews.
 
-{media_instruction}
+    {strict_instruction}
 
-Write a brief, engaging descriptions that highlight:
-- Unique character and ambiance
-- Standout dishes or specialties 
-- What makes each place special
-- Don't invent facts, don;t guess - don't write what's not mentioned in the data
+    Your descriptions MUST be:
+    - Based ONLY on review_context content
+    - Short (1-2 sentences maximum)
+    - Factual, not creative or imaginative
+    - Honest about lack of detail if reviews are sparse
 
-- Mention concrete details from reviews when available
-- Avoid generic praise, focus on specific details
-- Be short, laconic, down-to-business
-
-Keep descriptions concise but evocative (2-3 sentences max).
-Return ONLY a JSON array with this structure:
-[
-  {{
+    Return ONLY a JSON array:
+    [
+    {{
     "index": 1,
-    "description": "Intimate bistro known for exceptional pasta and cozy candlelit atmosphere. Featured in Food & Wine as one of the best Italian restaurants in the city.",
-    "selection_score": 0.95
-  }}
-]"""
+    "description": "Brief factual description based only on review_context",
+    "selection_score": 0.9
+    }}
+    ]"""
                     ),
                     ChatCompletionUserMessageParam(
                         role="user", 
-                        content=f"""Create descriptions for these MAP SEARCH restaurants based on user query: "{user_query}"
+                        content=f"""Write descriptions for these restaurants based ONLY on their review_context.
 
-Restaurants data:
-{restaurants_text}
+    User query: "{user_query}"
 
-Generate engaging descriptions for each restaurant."""
+    Restaurants data:
+    {restaurants_text}
+
+    Remember: ONLY use facts from review_context. If a restaurant has little/no review detail, say so."""
                     )
                 ]
         except ImportError:
-            # Fallback for older OpenAI versions - use cast to bypass type checking
             messages = cast(Any, [
-                {"role": "system", "content": f"""You are an expert food writer creating engaging restaurant descriptions for MAP SEARCH results.
+                {"role": "system", "content": f"""You are a restaurant description writer who ONLY uses verified information from customer reviews.
 
-{media_instruction}
+    {strict_instruction}
 
-Write a brief, engaging descriptions that highlight:
-- Unique character and ambiance
-- Standout dishes or specialties 
-- What makes each place special
-- Media coverage when available
+    Your descriptions MUST be:
+    - Based ONLY on review_context content  
+    - Short (1-2 sentences maximum)
+    - Factual, not creative or imaginative
+    - Honest about lack of detail if reviews are sparse
 
-- Mention concrete details from reviews when available
-- Avoid generic praise, focus on specific details
-- Be short, laconic, down-to-business
-- Mention the media references in the text if aavailable. If not, skip.
-
-Keep descriptions concise but evocative (2-3 sentences max).
-Return ONLY a JSON array with this structure:
-[
-  {{
+    Return ONLY a JSON array:
+    [
+    {{
     "index": 1,
-    "description": "Intimate bistro known for exceptional pasta and cozy candlelit atmosphere. Featured in Food & Wine as one of the best Italian restaurants in the city.",
-    "selection_score": 0.95
-}}
-]"""}
+    "description": "Brief factual description based only on review_context",
+    "selection_score": 0.9
+    }}
+    ]"""},
+                {"role": "user", "content": f"""Write descriptions for these restaurants based ONLY on their review_context.
+
+    User query: "{user_query}"
+
+    Restaurants data:
+    {restaurants_text}
+
+    Remember: ONLY use facts from review_context. If a restaurant has little/no review detail, say so."""}
             ])
 
         response = await self.openai_client.chat.completions.create(
             model=self.openai_model,
             messages=messages,
-            temperature=self.description_temperature,
+            temperature=0.1,  # LOWERED from 0.3 - less creative = less hallucination
             max_tokens=2000
         )
 
-        # FIXED: Handle potential None return
+        # Rest of the method stays the same...
         response_content = response.choices[0].message.content
         if not response_content:
             logger.warning("Empty response from AI description generation")
@@ -628,7 +648,7 @@ Return ONLY a JSON array with this structure:
 
             except (KeyError, ValueError, TypeError) as e:
                 logger.error(f"Error generating map search descriptions: {e}")
-        
+
         return descriptions
 
     # DEPRECATED methods - redirect to maintain compatibility
