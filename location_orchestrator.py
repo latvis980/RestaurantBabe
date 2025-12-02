@@ -789,8 +789,8 @@ class LocationOrchestrator:
 
         for venue in venues:
             try:
-                if venue.place_id and self.map_search_agent.gmaps_client:
-                    details = self.map_search_agent.gmaps_client.place(
+                if venue.place_id and self.map_search_agent.gmaps:
+                    details = self.map_search_agent.gmaps.place(  # type: ignore[attr-defined]
                         place_id=venue.place_id,
                         fields=['reviews']
                     )
