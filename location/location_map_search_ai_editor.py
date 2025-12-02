@@ -497,22 +497,14 @@ Select restaurants that would create memorable experiences, not just satisfy hun
 
     1. ONLY use information from the "review_context" field for each restaurant
     2. If review_context is empty or has no details, write: "No detailed reviews available yet."
-    3. NEVER mention specific dishes, ingredients, or menu items unless explicitly stated in review_context
-    4. NEVER mention atmosphere details (cozy, intimate, spacious, etc.) unless in review_context
-    5. NEVER mention price range, service quality, or ambiance unless in review_context
-    6. If media_publications exist, you MAY mention them (e.g., "Featured in Time Out")
-
+    3. Mention specific dishes, ingredients, or menu items explicitly stated in review_context
+    4. Mention atmosphere details (cozy, intimate, spacious, etc.) mentioned in review_context
+    5. Mention price range, service quality, or ambiance from review_context
+    
     WHAT TO DO:
     - Paraphrase what real customers said in their reviews
-    - Use general terms if reviews lack specifics: "praised for food quality" not "known for truffle pasta"
-    - Keep it short and factual
-
-    WHAT NOT TO DO:
-    - ❌ "Known for handmade pasta" (unless reviews specifically mention handmade pasta)
-    - ❌ "Cozy atmosphere with candlelit tables" (unless reviews mention candles/coziness)
-    - ❌ "Specializes in seasonal ingredients" (unless reviews mention this)
-    - ✅ "Highly rated for Italian cuisine" (if reviews praise Italian food)
-    - ✅ "Customers praise the authentic flavors" (if reviews say this)"""
+    - Give preferrence to concrete details rather than generic statements
+    - Keep it short and factual"""
 
         # Import typing utilities
         from typing import cast, Any
