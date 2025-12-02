@@ -621,18 +621,98 @@ class LangGraphSupervisor:
         """
         Handle RESUME_WITH_DECISION command.
         Used for follow-up requests like "show more".
+
+        Gets the last search context from AI Chat Layer and triggers
+        a maps-only search to get more results.
         """
         logger.info("🔄 Resume with decision (follow-up)")
 
-        # For now, return a response asking for more context
-        # This can be enhanced later to actually resume previous searches
-        return {
-            "success": True,
-            "ai_response": "I'd be happy to show you more options! Could you remind me what you were looking for?",
-            "action_taken": "resume_requested",
-            "search_triggered": False,
-            "processing_time": round(time.time() - start_time, 2)
-        }
+        # Get last search context from AI Chat Layer
+        last_context = self.ai_chat_layer.get_last_search_context(user_id)
+
+        if not last_context or not last_context.get('search_type'):
+            logger.warning(f"⚠️ No last search context found for user {user_id}")
+            return {
+                "success": True,
+                "ai_response": "I couldn't find your previous search. What are you looking for?",
+                "action_taken": "resume_no_context",
+                "search_triggered": False,
+                "processing_time": round(time.time() - start_time, 2)
+            }
+
+        search_type = last_context.get('search_type')
+        cuisine = last_context.get('cuisine') or 'restaurants'
+        destination = last_context.get('destination') or 'nearby'
+        shown_restaurants = last_context.get('shown_restaurants', [])
+
+        logger.info(f"🔄 Resuming search: type={search_type}, cuisine={cuisine}, dest={destination}")
+
+        # Get stored GPS from AI Chat Layer session
+        session = self.ai_chat_layer.user_sessions.get(user_id, {})
+        stored_gps = gps_coordinates or session.get('gps_coordinates')
+
+        # Build search query
+        search_query = f"more {cuisine}" if cuisine else "more restaurants"
+
+        # Create search context
+        search_ctx = SearchContext(
+            cuisine=cuisine,
+            destination=destination,
+            search_type=SearchType.LOCATION_MAPS_SEARCH if search_type == 'location_search' else SearchType.CITY_SEARCH,
+            user_query=search_query,
+            requirements=[],
+            preferences={}
+        )
+
+        # Execute appropriate search based on last search type
+        if search_type == 'location_search':
+            # For location searches, use maps-only to get fresh results
+            if not stored_gps:
+                return {
+                    "success": True,
+                    "ai_response": "I need your location to find more options. Could you share it?",
+                    "needs_location_button": True,
+                    "action_taken": "resume_needs_location",
+                    "search_triggered": False,
+                    "processing_time": round(time.time() - start_time, 2)
+                }
+
+            result = await self._execute_location_maps_search(
+                search_query=search_query,
+                search_ctx=search_ctx,
+                gps_coordinates=stored_gps,
+                cancel_check_fn=cancel_check_fn,
+                start_time=start_time
+            )
+
+            # Update action taken
+            result["action_taken"] = "resume_location_more"
+
+        else:
+            # For city searches, run another city search
+            result = await self._execute_city_search(
+                search_query=f"{cuisine} in {destination}",
+                search_ctx=search_ctx,
+                cancel_check_fn=cancel_check_fn,
+                start_time=start_time
+            )
+
+            # Update action taken
+            result["action_taken"] = "resume_city_more"
+
+        # Update search context for next follow-up
+        if result.get("success"):
+            restaurants = result.get("final_restaurants", [])
+            self.ai_chat_layer.update_last_search_context(
+                user_id=user_id,
+                search_type=search_type,
+                cuisine=cuisine,
+                destination=destination,
+                restaurants=restaurants,
+                coordinates=stored_gps
+            )
+
+        return result
 
     # ============================================================================
     # SEARCH EXECUTION
