@@ -313,6 +313,7 @@ REVIEW_QUALITY_THRESHOLD = 6.0  # Minimum quality score (0-10) for venue selecti
 
 # Media verification settings (existing but may need updates)
 TAVILY_SEARCH_MAX_RESULTS = 10  # Results per Tavily search
+ENABLE_MEDIA_VERIFICATION = False  # Set to False to skip Tavily/media verification
 MEDIA_SEARCH_TIMEOUT = 30.0  # Timeout for media searches
 MAX_PROFESSIONAL_SOURCES = 3  # Max professional sources to scrape per venue
 

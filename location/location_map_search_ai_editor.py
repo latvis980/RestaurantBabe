@@ -486,11 +486,11 @@ Select restaurants that would create memorable experiences, not just satisfy hun
         # Generate description for all restaurants at once
         restaurants_text = json.dumps(all_restaurants_data, indent=2)
 
-        # Instruction block for media mentions
-        media_instruction = (
-            "Include specific media mentions when available. Use publication names like "
-            '"featured in Time Out" or "recommended by Eater" naturally in descriptions.'
-        )
+        # Instruction for description generation based on Google reviews
+        media_instruction = """Use the review_context from Google reviews to write authentic descriptions. 
+        Focus on what real diners say about the atmosphere, food quality, and unique character of each place.
+        If media_publications are available, mention them naturally (e.g., "featured in Time Out").
+        """
 
         # Import typing utilities at the start
         from typing import cast, Any
@@ -512,12 +512,11 @@ Write a brief, engaging descriptions that highlight:
 - Unique character and ambiance
 - Standout dishes or specialties 
 - What makes each place special
-- Media coverage when available
+- Don't invent facts, don;t guess - don't write what's not mentioned in the data
 
 - Mention concrete details from reviews when available
 - Avoid generic praise, focus on specific details
 - Be short, laconic, down-to-business
-- Mention the media references in the text if aavailable. If not, skip.
 
 Keep descriptions concise but evocative (2-3 sentences max).
 Return ONLY a JSON array with this structure:

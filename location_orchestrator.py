@@ -651,18 +651,22 @@ class LocationOrchestrator:
                     "step_completed": "enhanced_verification"
                 }
 
-            # Sub-step 2: Media verification
-            logger.info("📱 Sub-step 2: Media verification")
+            # Sub-step 2: Media verification (conditional based on config)
+            media_verification_results = []
 
-            try:
-                media_verification_results = await self.media_verification_agent.verify_venues_media_coverage(
-                    venues=map_venues[:self.max_venues_to_verify],
-                    query=query,
-                    cancel_check_fn=cancel_check_fn
-                )
-            except Exception as media_error:
-                logger.warning(f"⚠️ Media verification failed: {media_error}")
-                media_verification_results = []
+            if getattr(self.config, 'ENABLE_MEDIA_VERIFICATION', False):
+                logger.info("📱 Sub-step 2: Media verification")
+                try:
+                    media_verification_results = await self.media_verification_agent.verify_venues_media_coverage(
+                        venues=map_venues[:self.max_venues_to_verify],
+                        query=query,
+                        cancel_check_fn=cancel_check_fn
+                    )
+                except Exception as media_error:
+                    logger.warning(f"⚠️ Media verification failed: {media_error}")
+                    media_verification_results = []
+            else:
+                logger.info("📱 Sub-step 2: Media verification SKIPPED (disabled in config)")
 
             if cancel_check_fn and cancel_check_fn():
                 return {
