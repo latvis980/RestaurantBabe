@@ -52,12 +52,13 @@ class Database:
                 # Update existing record with new score (keep the highest score)
                 current_score = existing.data[0].get('score', 0.0)
                 new_score = max(current_score, score)
+                current_mention_count = int(existing.data[0].get('mention_count', 0))
 
                 self.supabase.table('source_quality')\
                     .update({
                         'score': new_score,
                         'last_updated': datetime.now(timezone.utc).isoformat(),
-                        'mention_count': existing.data[0].get('mention_count', 0) + 1
+                        'mention_count': current_mention_count + 1
                     })\
                     .eq('id', existing.data[0]['id'])\
                     .execute()
@@ -204,7 +205,7 @@ class Database:
             logger.error(f"Error finding existing restaurant: {e}")
             return None
 
-    def get_restaurants_by_city(self, city: str, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_restaurants_by_city(self, city: str, limit: int = 700) -> List[Dict[str, Any]]:
         """Get all restaurants for a city, ordered by mention count"""
         try:
             result = self.supabase.table('restaurants')\
@@ -220,7 +221,7 @@ class Database:
             logger.error(f"Error getting restaurants for {city}: {e}")
             return []
 
-    def search_restaurants_by_cuisine(self, city: str, cuisine_tags: List[str], limit: int = 20) -> List[Dict[str, Any]]:
+    def search_restaurants_by_cuisine(self, city: str, cuisine_tags: List[str], limit: int = 100) -> List[Dict[str, Any]]:
         """Search restaurants by city and cuisine tags using array overlap"""
         try:
             result = self.supabase.table('restaurants')\
@@ -260,7 +261,7 @@ class Database:
         except Exception as e:
             logger.error(f"Error updating geodata: {e}")
 
-    def get_restaurants_by_preference_tags(self, city: str, preference_tags: List[str], limit: int = 20) -> List[Dict[str, Any]]:
+    def get_restaurants_by_preference_tags(self, city: str, preference_tags: List[str], limit: int = 100) -> List[Dict[str, Any]]:
         """Get restaurants that match any of the preference tags"""
         try:
             result = self.supabase.table('restaurants')\
@@ -277,7 +278,7 @@ class Database:
             logger.error(f"Error getting restaurants by preference tags: {e}")
             return []
 
-    def get_restaurants_by_coordinates(self, center: Tuple[float, float], radius_km: float, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_restaurants_by_coordinates(self, center: Tuple[float, float], radius_km: float, limit: int = 100) -> List[Dict[str, Any]]:
         """
         Get restaurants within radius of coordinates using PostGIS spatial search
 
@@ -424,11 +425,11 @@ def save_restaurant_data(restaurant_data: Dict[str, Any]) -> Optional[str]:
     """Save restaurant data"""
     return get_database().save_restaurant(restaurant_data)
 
-def get_restaurants_by_city(city: str, limit: int = 50) -> List[Dict[str, Any]]:
+def get_restaurants_by_city(city: str, limit: int = 700) -> List[Dict[str, Any]]:
     """Get restaurants for a city"""
     return get_database().get_restaurants_by_city(city, limit)
 
-def search_restaurants_by_cuisine(city: str, cuisine_tags: List[str], limit: int = 20) -> List[Dict[str, Any]]:
+def search_restaurants_by_cuisine(city: str, cuisine_tags: List[str], limit: int = 100) -> List[Dict[str, Any]]:
     """Search restaurants by cuisine tags"""
     return get_database().search_restaurants_by_cuisine(city, cuisine_tags, limit)
 
