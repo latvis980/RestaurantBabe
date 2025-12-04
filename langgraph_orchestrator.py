@@ -624,6 +624,9 @@ class LangGraphSupervisor:
 
         Gets the last search context from AI Chat Layer and triggers
         a maps-only search to get more results.
+
+        NEW: Now includes supervisor_instructions and exclude_restaurants
+        for smarter follow-up filtering.
         """
         logger.info("🔄 Resume with decision (follow-up)")
 
@@ -646,6 +649,7 @@ class LangGraphSupervisor:
         shown_restaurants = last_context.get('shown_restaurants', [])
 
         logger.info(f"🔄 Resuming search: type={search_type}, cuisine={cuisine}, dest={destination}")
+        logger.info(f"🔄 Excluding {len(shown_restaurants)} previously shown restaurants")
 
         # Get stored GPS from AI Chat Layer session
         session = self.ai_chat_layer.user_sessions.get(user_id, {})
@@ -654,65 +658,28 @@ class LangGraphSupervisor:
         # Build search query
         search_query = f"more {cuisine}" if cuisine else "more restaurants"
 
-        # Create search context
+        # NEW: Generate supervisor instructions for downstream agents
+        supervisor_instructions = None
+        if shown_restaurants:
+            exclude_list = ", ".join(shown_restaurants[:10])  # Limit to first 10 for prompt size
+            supervisor_instructions = (
+                f"User wants MORE results. EXCLUDE already shown restaurants: {exclude_list}. "
+                f"Find DIFFERENT {cuisine} options in the same area."
+            )
+
+        # Create search context with follow-up fields
         search_ctx = SearchContext(
             cuisine=cuisine,
             destination=destination,
             search_type=SearchType.LOCATION_MAPS_SEARCH if search_type == 'location_search' else SearchType.CITY_SEARCH,
             user_query=search_query,
             requirements=[],
-            preferences={}
+            preferences={},
+            # NEW: Follow-up context
+            supervisor_instructions=supervisor_instructions,
+            exclude_restaurants=shown_restaurants,
+            is_follow_up=True
         )
-
-        # Execute appropriate search based on last search type
-        if search_type == 'location_search':
-            # For location searches, use maps-only to get fresh results
-            if not stored_gps:
-                return {
-                    "success": True,
-                    "ai_response": "I need your location to find more options. Could you share it?",
-                    "needs_location_button": True,
-                    "action_taken": "resume_needs_location",
-                    "search_triggered": False,
-                    "processing_time": round(time.time() - start_time, 2)
-                }
-
-            result = await self._execute_location_maps_search(
-                search_query=search_query,
-                search_ctx=search_ctx,
-                gps_coordinates=stored_gps,
-                cancel_check_fn=cancel_check_fn,
-                start_time=start_time
-            )
-
-            # Update action taken
-            result["action_taken"] = "resume_location_more"
-
-        else:
-            # For city searches, run another city search
-            result = await self._execute_city_search(
-                search_query=f"{cuisine} in {destination}",
-                search_ctx=search_ctx,
-                cancel_check_fn=cancel_check_fn,
-                start_time=start_time
-            )
-
-            # Update action taken
-            result["action_taken"] = "resume_city_more"
-
-        # Update search context for next follow-up
-        if result.get("success"):
-            restaurants = result.get("final_restaurants", [])
-            self.ai_chat_layer.update_last_search_context(
-                user_id=user_id,
-                search_type=search_type,
-                cuisine=cuisine,
-                destination=destination,
-                restaurants=restaurants,
-                coordinates=stored_gps
-            )
-
-        return result
 
     # ============================================================================
     # SEARCH EXECUTION
@@ -802,12 +769,15 @@ class LangGraphSupervisor:
                 description=search_ctx.destination or f"GPS: {gps_coordinates[0]:.4f}, {gps_coordinates[1]:.4f}"
             )
 
-            # Execute the LCEL pipeline
+            # Execute the LCEL pipeline with maps_only=True
+            # NEW: Pass supervisor_instructions and exclude_restaurants for smarter filtering
             result = await self.location_pipeline.process_location_query(
                 query=search_query,
                 location_data=location_data,
                 cancel_check_fn=cancel_check_fn,
-                maps_only=False
+                maps_only=True,  # KEY: Skip database, go directly to Google Maps
+                supervisor_instructions=search_ctx.supervisor_instructions,
+                exclude_restaurants=search_ctx.exclude_restaurants
             )
 
             processing_time = round(time.time() - start_time, 2)
@@ -920,7 +890,16 @@ class LangGraphSupervisor:
     # ============================================================================
 
     def _build_search_query(self, search_ctx: SearchContext) -> str:
-        """Build a search query string from SearchContext"""
+        """Build a search query string from SearchContext
+
+        NEW: Uses modified_query if AI Chat Layer provided one (e.g., user said
+        "lunch not brunch" so modified_query would be "lunch restaurants")
+        """
+        # NEW: If AI provided a modified query, use it
+        if search_ctx.modified_query:
+            logger.info(f"🔄 Using AI-modified query: '{search_ctx.modified_query}'")
+            return search_ctx.modified_query
+
         parts = []
 
         if search_ctx.cuisine:

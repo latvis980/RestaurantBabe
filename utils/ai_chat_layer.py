@@ -314,6 +314,84 @@ class AIChatLayer:
         "state_update": {{"cuisine": "ramen", "destination": "Tokyo", "search_mode": "follow_up_more_results", "is_complete": true, "clear_pending_gps": false}},
         "reasoning": "More requested after city search - use follow-up mode"
     }}
+
+    **CRITICAL: FOLLOW-UP REQUESTS WITH USER MODIFICATIONS**
+
+    When user asks for "more" but includes modifications (different cuisine, closer, specific requirements),
+    you MUST generate supervisor_instructions to guide downstream agents.
+
+    **Example 10: User wants more but with modifications**
+    Last Search Type: location_search, Last Cuisine: "brunch", Last Destination: "near me"
+    Already Shown Restaurants: Cafe Luna, The Brunch House, Morning Glory
+    User message: "show me more, but lunch not brunch and somewhere closer"
+    → {{
+        "action": "trigger_search",
+        "response_text": "Looking for lunch spots closer to you! 🍽️",
+        "state_update": {{
+            "cuisine": "lunch", 
+            "destination": "near me", 
+            "search_mode": "google_maps_more", 
+            "is_complete": true, 
+            "clear_pending_gps": false,
+            "modified_query": "lunch restaurants",
+            "supervisor_instructions": "User previously searched for BRUNCH but now specifically wants LUNCH (not brunch). They also want places CLOSER to their location - previous results may have been too far. EXCLUDE already shown: Cafe Luna, The Brunch House, Morning Glory. Prioritize proximity and lunch-appropriate venues.",
+            "exclude_restaurants": ["Cafe Luna", "The Brunch House", "Morning Glory"],
+            "is_follow_up": true
+        }},
+        "reasoning": "Follow-up with modifications - generate supervisor_instructions for downstream filtering"
+    }}
+
+    **Example 11: Simple "more" without modifications**
+    Last Search Type: location_search, Last Cuisine: "Italian", Last Destination: "SoHo"
+    Already Shown Restaurants: Emilio's, Pasta Palace, Trattoria Roma
+    User message: "any other options?"
+    → {{
+        "action": "trigger_search",
+        "response_text": "Finding more Italian spots in SoHo! 🍝",
+        "state_update": {{
+            "cuisine": "Italian", 
+            "destination": "SoHo", 
+            "search_mode": "google_maps_more", 
+            "is_complete": true, 
+            "clear_pending_gps": false,
+            "supervisor_instructions": "User wants MORE Italian restaurants in SoHo. EXCLUDE already shown: Emilio's, Pasta Palace, Trattoria Roma. Same criteria as before, just different results.",
+            "exclude_restaurants": ["Emilio's", "Pasta Palace", "Trattoria Roma"],
+            "is_follow_up": true
+        }},
+        "reasoning": "Simple follow-up - exclude previously shown restaurants"
+    }}
+
+    **Example 12: User wants more with specific new requirement**
+    Last Search Type: location_search, Last Cuisine: "restaurants", Last Destination: "Williamsburg"
+    Already Shown Restaurants: The Commodore, Lilia, Maison Premiere
+    User message: "more options but with outdoor seating"
+    → {{
+        "action": "trigger_search",
+        "response_text": "Looking for places with outdoor seating in Williamsburg! 🌞",
+        "state_update": {{
+            "cuisine": "restaurants", 
+            "destination": "Williamsburg", 
+            "search_mode": "google_maps_more", 
+            "is_complete": true,
+            "requirements": ["outdoor seating"],
+            "supervisor_instructions": "User wants MORE restaurants but specifically with OUTDOOR SEATING. Previous results didn't emphasize this. EXCLUDE: The Commodore, Lilia, Maison Premiere. Prioritize venues that mention patios, terraces, gardens, or outdoor dining.",
+            "exclude_restaurants": ["The Commodore", "Lilia", "Maison Premiere"],
+            "is_follow_up": true
+        }},
+        "reasoning": "Follow-up with new requirement - add to supervisor_instructions"
+    }}
+
+    ## SUPERVISOR_INSTRUCTIONS RULES
+
+    When generating supervisor_instructions for follow-up requests:
+    1. **Always mention what changed** - what the user wants differently from before
+    2. **Always list exclusions** - restaurants already shown that should be filtered out  
+    3. **Include the original context** - so downstream agents understand the full picture
+    4. **Be specific about priorities** - closer, cheaper, outdoor, etc.
+    5. **Use natural language** - downstream AI will interpret this, not code
+
+    For INITIAL searches (not follow-ups), supervisor_instructions should be null or omitted.
+    
     """),
             ("human", """## CURRENT STATE
 
@@ -325,6 +403,7 @@ class AIChatLayer:
     - Last Search Type: {last_search_type}
     - Last Cuisine: {last_search_cuisine}
     - Last Destination: {last_search_destination}
+    - Already Shown Restaurants: {last_shown_restaurants}
 
     **Memory Context (user's history):**
     {memory_context}
@@ -733,7 +812,8 @@ class AIChatLayer:
                 'stored_location': stored_location_text,
                 'has_gps': 'Yes' if current_gps else 'No',
                 'user_message': user_message,
-                'requirements': requirements_text
+                'requirements': requirements_text, 
+                'last_shown_restaurants': ', '.join(session.get('last_shown_restaurants', [])) or 'None'
             }
 
             # Get AI decision

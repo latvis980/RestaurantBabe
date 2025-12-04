@@ -689,15 +689,37 @@ class LocationOrchestrator:
             logger.info(f"📱 Media verification complete: {len(media_verification_results)} results")
 
             # Sub-step 3: AI description generation using LocationMapSearchAIEditor DIRECTLY
+            # Sub-step 3: AI description generation using LocationMapSearchAIEditor DIRECTLY
             logger.info("✏️ Sub-step 3: AI description generation")
+
+            # NEW: Get supervisor instructions for context-aware filtering
+            supervisor_instructions = pipeline_input.get("supervisor_instructions")
+            exclude_restaurants = pipeline_input.get("exclude_restaurants", [])
+
+            # NEW: Apply exclusions BEFORE AI processing
+            venues_to_process = map_venues[:self.max_venues_to_verify]
+            if exclude_restaurants:
+                original_count = len(venues_to_process)
+                venues_to_process = [
+                    v for v in venues_to_process 
+                    if not any(
+                        excluded.lower() in (getattr(v, 'name', '') or '').lower() 
+                        for excluded in exclude_restaurants
+                    )
+                ]
+                excluded_count = original_count - len(venues_to_process)
+                if excluded_count > 0:
+                    logger.info(f"🚫 Excluded {excluded_count} previously shown restaurants")
 
             try:
                 # DIRECT call to LocationMapSearchAIEditor (not wrapper)
+                # NEW: Pass supervisor_instructions for context-aware descriptions
                 final_descriptions = await self.map_ai_editor.create_descriptions_for_map_search_results(
-                    map_search_results=map_venues[:self.max_venues_to_verify],
+                    map_search_results=venues_to_process,
                     media_verification_results=media_verification_results,
                     user_query=query,
-                    cancel_check_fn=cancel_check_fn
+                    cancel_check_fn=cancel_check_fn,
+                    supervisor_instructions=supervisor_instructions  # NEW
                 )
 
                 # Convert dataclass objects to dicts if needed
@@ -898,19 +920,25 @@ class LocationOrchestrator:
         query: str,
         location_data: LocationData,
         cancel_check_fn: Optional[Callable] = None,
-        maps_only: bool = False
+        maps_only: bool = False,
+        # NEW: Follow-up context from supervisor
+        supervisor_instructions: Optional[str] = None,
+        exclude_restaurants: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Process a location search query through the LCEL pipeline (ASYNC)
-        
+
         This is the main entry point for location searches.
-        
+
         Args:
             query: User's search query
             location_data: LocationData object with coordinates/description
             cancel_check_fn: Optional function to check if search should be cancelled
             maps_only: If True, skip database and go directly to Google Maps
-            
+            supervisor_instructions: Natural language instructions from AI Chat Layer
+                                     for filtering/editing (e.g., "User wants lunch not brunch")
+            exclude_restaurants: List of restaurant names to exclude (already shown)
+
         Returns:
             Dict with location_formatted_results and metadata
         """
@@ -920,6 +948,12 @@ class LocationOrchestrator:
             flow_type = "MAPS-ONLY" if maps_only else "NORMAL"
             logger.info(f"🚀 Starting location search pipeline: '{query[:50]}...' | Flow: {flow_type}")
 
+            # NEW: Log supervisor context if present
+            if supervisor_instructions:
+                logger.info(f"📋 Supervisor instructions: {supervisor_instructions[:100]}...")
+            if exclude_restaurants:
+                logger.info(f"🚫 Excluding {len(exclude_restaurants)} restaurants")
+
             # Prepare pipeline input
             pipeline_input = {
                 "query": query,
@@ -927,57 +961,10 @@ class LocationOrchestrator:
                 "location_data": location_data,
                 "cancel_check_fn": cancel_check_fn,
                 "maps_only": maps_only,
-                "start_time": start_time
-            }
-
-            # Execute the pipeline with tracing
-            result = await self.pipeline.ainvoke(
-                pipeline_input,
-                config={
-                    "run_name": f"location_search_{{query='{query[:30]}...'}}",
-                    "metadata": {
-                        "user_query": query,
-                        "location_type": getattr(location_data, 'location_type', 'unknown') if location_data else 'raw',
-                        "maps_only": maps_only,
-                        "pipeline_version": "merged_v1.0"
-                    },
-                    "tags": ["location_search", "lcel_pipeline"]
-                }
-            )
-
-            # Add timing metadata
-            processing_time = round(time.time() - start_time, 2)
-            result["processing_time"] = processing_time
-            result["pipeline_type"] = "langchain_lcel"
-
-            # Flush traces
-            try:
-                wait_for_all_tracers()
-            except Exception as flush_error:
-                logger.warning(f"⚠️ Failed to flush traces: {flush_error}")
-
-            # Update statistics
-            self._update_stats(result, processing_time, maps_only)
-
-            logger.info(f"✅ Location search pipeline complete in {processing_time}s")
-
-            return result
-
-        except Exception as e:
-            logger.error(f"❌ Pipeline error: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-
-            processing_time = round(time.time() - start_time, 2)
-
-            return {
-                "success": False,
-                "error": str(e),
-                "location_formatted_results": f"😔 Location search failed: {str(e)}",
-                "restaurants": [],
-                "restaurant_count": 0,
-                "processing_time": processing_time,
-                "pipeline_type": "langchain_lcel"
+                "start_time": start_time,
+                # NEW: Follow-up context
+                "supervisor_instructions": supervisor_instructions,
+                "exclude_restaurants": exclude_restaurants or []
             }
 
     # ============================================================================
@@ -989,25 +976,36 @@ class LocationOrchestrator:
         query: str,
         coordinates: Tuple[float, float],
         location_desc: str,
-        cancel_check_fn: Optional[Callable] = None
+        cancel_check_fn: Optional[Callable] = None,
+        # NEW: Follow-up context from supervisor
+        supervisor_instructions: Optional[str] = None,
+        exclude_restaurants: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Process a "more results" query - goes directly to Google Maps
-        
+
         This is called by telegram_bot.py when user wants more results 
         after seeing database results.
-        
+
         Args:
             query: User's search query
             coordinates: GPS coordinates tuple (lat, lng)
             location_desc: Description of the location
             cancel_check_fn: Function to check if search should be cancelled
-            
+            supervisor_instructions: Natural language instructions from AI Chat Layer
+            exclude_restaurants: List of restaurant names to exclude (already shown)
+
         Returns:
             Dict with search results and metadata
         """
         try:
             logger.info(f"🔍 Processing 'more results' query: '{query}' (maps-only)")
+
+            # NEW: Log context
+            if supervisor_instructions:
+                logger.info(f"📋 With supervisor instructions: {supervisor_instructions[:80]}...")
+            if exclude_restaurants:
+                logger.info(f"🚫 Excluding {len(exclude_restaurants)} restaurants: {exclude_restaurants[:3]}...")
 
             # Create a LocationData object for the pipeline
             location_data = LocationData(
@@ -1017,26 +1015,17 @@ class LocationOrchestrator:
                 location_type="gps"
             )
 
-            # Use the maps-only flow (skip database)
+            # Use the maps-only flow (skip database) with follow-up context
             result = await self.process_location_query(
                 query=query,
                 location_data=location_data,
                 cancel_check_fn=cancel_check_fn,
-                maps_only=True
+                maps_only=True,
+                supervisor_instructions=supervisor_instructions,
+                exclude_restaurants=exclude_restaurants
             )
 
             return result
-
-        except Exception as e:
-            logger.error(f"❌ More results query error: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "location_formatted_results": f"😔 More results search failed: {str(e)}",
-                "restaurant_count": 0,
-                "results": [],
-                "coordinates": coordinates
-            }
 
     async def complete_media_verification(
         self,
@@ -1099,18 +1088,21 @@ class LocationOrchestrator:
         query: str,
         coordinates: Tuple[float, float],
         exclude_places: Optional[List[str]] = None,
-        cancel_check_fn: Optional[Callable] = None
+        cancel_check_fn: Optional[Callable] = None,
+        # NEW: Supervisor instructions for smarter filtering
+        supervisor_instructions: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Legacy method: Search for more results with exclusions
         Used by "show more" functionality
-        
+
         Args:
             query: User's search query
             coordinates: GPS coordinates tuple
             exclude_places: List of place names to exclude from results
             cancel_check_fn: Function to check if search should be cancelled
-            
+            supervisor_instructions: Natural language instructions for filtering
+
         Returns:
             Dict with search results
         """
@@ -1125,36 +1117,15 @@ class LocationOrchestrator:
                 location_type="gps"
             )
 
-            # Use maps_only flow
+            # Use maps_only flow with exclusions and supervisor instructions
             result = await self.process_location_query(
                 query=query,
                 location_data=location_data,
                 cancel_check_fn=cancel_check_fn,
-                maps_only=True
+                maps_only=True,
+                supervisor_instructions=supervisor_instructions,
+                exclude_restaurants=exclude_places
             )
-
-            # Apply exclusions if provided
-            if exclude_places and result.get("results"):
-                filtered_restaurants = []
-                for restaurant in result["results"]:
-                    restaurant_name = restaurant.get("name", "").lower() if isinstance(restaurant, dict) else getattr(restaurant, 'name', '').lower()
-                    if not any(excluded.lower() in restaurant_name for excluded in exclude_places):
-                        filtered_restaurants.append(restaurant)
-
-                result["results"] = filtered_restaurants
-                result["restaurant_count"] = len(filtered_restaurants)
-
-                # Re-format if we filtered some out
-                if filtered_restaurants:
-                    try:
-                        formatted = self.formatter.format_google_maps_results(
-                            venues=filtered_restaurants,
-                            query=query,
-                            location_description=f"GPS: {coordinates[0]:.4f}, {coordinates[1]:.4f}"
-                        )
-                        result["location_formatted_results"] = formatted.get("message", "")
-                    except Exception:
-                        pass
 
             return result
 

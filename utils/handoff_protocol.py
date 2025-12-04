@@ -7,6 +7,9 @@ This replaces raw text passing with structured messages for:
 - Context management
 - Destination change detection
 - Type safety
+
+UPDATED: Added supervisor_instructions, exclude_restaurants, modified_query, is_follow_up
+for smarter follow-up handling with AI-driven filtering.
 """
 
 from dataclasses import dataclass, asdict
@@ -52,6 +55,23 @@ class SearchContext:
     requirements: List[str] = None  # ["quality", "modern", "local"]
     preferences: Dict[str, Any] = None  # {"price": "moderate", "atmosphere": "casual"}
 
+    # ==========================================================================
+    # AI-generated follow-up context (for "more results" and modifications)
+    # ==========================================================================
+    supervisor_instructions: Optional[str] = None  
+    # Natural language instructions from AI Chat Layer to downstream agents.
+    # Example: "User saw 3 brunch spots but now wants LUNCH options, closer to location."
+
+    exclude_restaurants: List[str] = None  
+    # Restaurant names to exclude (already shown to user)
+
+    modified_query: Optional[str] = None  
+    # AI may modify the search query based on conversation context.
+    # Example: Original was "brunch" but user said "lunch not brunch" -> modified to "lunch"
+
+    is_follow_up: bool = False
+    # Flag indicating this is a follow-up search (user asked for "more")
+
     # Metadata
     user_id: int = 0
     thread_id: str = ""
@@ -62,6 +82,8 @@ class SearchContext:
             self.requirements = []
         if self.preferences is None:
             self.preferences = {}
+        if self.exclude_restaurants is None:
+            self.exclude_restaurants = []
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for passing between components"""
@@ -95,9 +117,8 @@ class HandoffMessage:
     decision: Optional[str] = None
     thread_id: Optional[str] = None
 
-    # NEW: GPS requirement flag (EXPLICIT)
+    # GPS requirement flag (EXPLICIT)
     needs_gps: bool = False  # True if GPS coordinates required for location button
-
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -105,7 +126,7 @@ class HandoffMessage:
             'command': self.command.value,
             'search_context': self.search_context.to_dict() if self.search_context else None,
             'conversation_response': self.conversation_response,
-            'timestamp': self.timestamp,
+            'needs_gps': self.needs_gps,
             'reasoning': self.reasoning
         }
 
@@ -135,7 +156,12 @@ def create_search_handoff(
     preferences: Dict[str, Any] = None,
     clear_previous: bool = False,
     is_new_destination: bool = False,
-    reasoning: str = ""
+    reasoning: str = "",
+    # NEW: Follow-up context parameters
+    supervisor_instructions: Optional[str] = None,
+    exclude_restaurants: List[str] = None,
+    modified_query: Optional[str] = None,
+    is_follow_up: bool = False
 ) -> HandoffMessage:
     """Create a search handoff message from supervisor to search pipeline"""
     search_context = SearchContext(
@@ -149,14 +175,18 @@ def create_search_handoff(
         requirements=requirements or [],
         preferences=preferences or {},
         user_id=user_id,
-        thread_id=thread_id
+        thread_id=thread_id,
+        # NEW: Follow-up context
+        supervisor_instructions=supervisor_instructions,
+        exclude_restaurants=exclude_restaurants or [],
+        modified_query=modified_query,
+        is_follow_up=is_follow_up
     )
 
     return HandoffMessage(
         command=HandoffCommand.EXECUTE_SEARCH,
         search_context=search_context,
         reasoning=reasoning
-        # timestamp will use default value 0.0 - no need to pass it
     )
 
 
@@ -166,7 +196,6 @@ def create_conversation_handoff(response: str, reasoning: str = "") -> HandoffMe
         command=HandoffCommand.CONTINUE_CONVERSATION,
         conversation_response=response,
         reasoning=reasoning
-        # timestamp will use default value 0.0 - no need to pass it
     )
 
 
@@ -181,34 +210,4 @@ def create_resume_handoff(
         reasoning=reasoning,
         decision=decision,
         thread_id=thread_id
-        # timestamp will use default value 0.0 - no need to pass it
     )
-
-# =============================================================================
-# EXAMPLE USAGE
-# =============================================================================
-
-if __name__ == "__main__":
-    # Example 1: Create search handoff
-    handoff = create_search_handoff(
-        destination="Lisbon",
-        cuisine="Portuguese",
-        search_type=SearchType.LOCATION_SEARCH,
-        user_query="find good restaurants in Sao Bento",
-        user_id=176556234,
-        thread_id="chat_176556234_1234567890",
-        requirements=["quality", "local"],
-        clear_previous=True,
-        is_new_destination=True,
-        reasoning="User changed from Bermeo to Lisbon - starting fresh search"
-    )
-
-    print("Search Handoff:", handoff.to_dict())
-
-    # Example 2: Create conversation handoff
-    conv_handoff = create_conversation_handoff(
-        response="Great! I'll find Portuguese restaurants in Sao Bento for you.",
-        reasoning="Have all info needed, confirming before search"
-    )
-
-    print("\nConversation Handoff:", conv_handoff.to_dict())
