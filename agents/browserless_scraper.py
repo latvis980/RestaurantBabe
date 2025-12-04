@@ -210,6 +210,11 @@ class BrowserlessRestaurantScraper:
         OPTIMIZATION: Create a single persistent browser connection
         """
         try:
+            # FIX: Ensure playwright is initialized
+            if not self.playwright:
+                logger.error(f"❌ Playwright not initialized for {browser_id}")
+                return None
+
             browser_options = {
                 "headless": True,
                 "args": [
@@ -269,6 +274,7 @@ class BrowserlessRestaurantScraper:
     async def _scrape_single_url_optimized(self, result: Dict, browser_index: int) -> Dict:
         """
         OPTIMIZED: Scrape individual URL using persistent browser
+        FIX: Added overall timeout wrapper to prevent infinite hangs
         """
         url = result.get("url", "")
         if not url:
@@ -283,18 +289,61 @@ class BrowserlessRestaurantScraper:
             logger.warning(f"⚠️ Browser index {browser_index} out of range, using browser 0")
             browser_index = 0
 
-        browser = self.browser_pool[browser_index]
         context = self.browser_contexts[browser_index]
 
+        # FIX: Wrap entire operation with timeout to prevent infinite hangs
+        overall_timeout = 45.0  # 45 second hard limit per URL
+
+        try:
+            return await asyncio.wait_for(
+                self._scrape_url_with_timeout(url, browser_index, context, original_result, start_time),
+                timeout=overall_timeout
+            )
+        except asyncio.TimeoutError:
+            processing_time = time.time() - start_time
+            logger.error(f"⏰ TIMEOUT after {processing_time:.1f}s for browser-{browser_index}: {url}")
+            result = original_result.copy()
+            result.update({
+                "content": "",
+                "scraping_success": False,
+                "scraping_failed": True,
+                "error": f"Overall timeout after {processing_time:.1f}s",
+                "processing_time": processing_time,
+                "browser_id": browser_index
+            })
+            return result
+        except Exception as e:
+            processing_time = time.time() - start_time
+            logger.error(f"❌ ERROR with browser-{browser_index}: {url} - {e}")
+            result = original_result.copy()
+            result.update({
+                "content": "",
+                "scraping_success": False,
+                "scraping_failed": True,
+                "error": str(e),
+                "processing_time": processing_time,
+                "browser_id": browser_index
+            })
+            return result
+
+
+    async def _scrape_url_with_timeout(self, url: str, browser_index: int, context: BrowserContext, original_result: Dict, start_time: float) -> Dict:
+        """
+        FIX: Inner scraping logic separated for timeout wrapper
+        """
+        page = None
         try:
             logger.info(f"🎯 Scraping with browser-{browser_index}: {url}")
 
-            # Create new page in existing context
-            page = await context.new_page()
+            # FIX: Add timeout to page creation
+            page = await asyncio.wait_for(context.new_page(), timeout=10.0)
 
             try:
                 # Configure page for optimization
-                await self._configure_page_optimized(page)
+                await asyncio.wait_for(
+                    self._configure_page_optimized(page),
+                    timeout=5.0
+                )
 
                 # Get domain-specific timeout
                 domain = urlparse(url).netloc.lower()
@@ -304,8 +353,11 @@ class BrowserlessRestaurantScraper:
                 await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
                 await asyncio.sleep(self.load_wait_time)
 
-                # Extract content
-                content = await self._extract_structured_content_optimized(page)
+                # FIX: Add timeout to content extraction
+                content = await asyncio.wait_for(
+                    self._extract_structured_content_optimized(page),
+                    timeout=15.0
+                )
 
                 if content and len(content.strip()) > 100:
                     content = self._clean_restaurant_content(content)
@@ -339,18 +391,25 @@ class BrowserlessRestaurantScraper:
                     return result
 
             finally:
-                # OPTIMIZATION: Close page but keep browser/context alive
-                try:
-                    await page.close()
-                except Exception as e:
-                    logger.debug(f"Page close error (non-critical): {e}")
+                # FIX: Safe page close with timeout
+                if page:
+                    try:
+                        await asyncio.wait_for(page.close(), timeout=3.0)
+                    except Exception:
+                        pass  # Page close failed, but continue
 
         except Exception as e:
             processing_time = time.time() - start_time
-            logger.error(f"❌ FAILED with browser-{browser_index}: {url} in {processing_time:.2f}s - {e}")
-
+            logger.error(f"❌ Scraping error with browser-{browser_index}: {url} - {e}")
+            # FIX: Try to close page even on error
+            if page:
+                try:
+                    await asyncio.wait_for(page.close(), timeout=2.0)
+                except Exception:
+                    pass
             result = original_result.copy()
             result.update({
+                "content": "",
                 "scraping_success": False,
                 "scraping_failed": True,
                 "error": str(e),
@@ -458,7 +517,7 @@ class BrowserlessRestaurantScraper:
             try:
                 fallback_content = await page.inner_text('body')
                 return fallback_content[:3000] if fallback_content else ""
-            except:
+            except Exception:
                 return ""
 
     async def _quick_dismiss_overlays(self, page: Page):
@@ -477,7 +536,7 @@ class BrowserlessRestaurantScraper:
             try:
                 await page.click(selector, timeout=1000)
                 break
-            except:
+            except Exception:
                 continue
 
     def _clean_restaurant_content(self, content: str) -> str:
