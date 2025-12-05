@@ -675,11 +675,29 @@ class LangGraphSupervisor:
             user_query=search_query,
             requirements=[],
             preferences={},
+            gps_coordinates=stored_gps,
             # NEW: Follow-up context
             supervisor_instructions=supervisor_instructions,
             exclude_restaurants=shown_restaurants,
             is_follow_up=True
         )
+
+        # Now execute the search based on type
+        if search_ctx.search_type == SearchType.LOCATION_MAPS_SEARCH:
+            return await self._execute_location_maps_search(
+                search_query=search_query,
+                search_ctx=search_ctx,
+                gps_coordinates=stored_gps,
+                cancel_check_fn=cancel_check_fn,
+                start_time=start_time
+            )
+        else:
+            return await self._execute_city_search(
+                search_query=search_query,
+                search_ctx=search_ctx,
+                cancel_check_fn=cancel_check_fn,
+                start_time=start_time
+            )
 
     # ============================================================================
     # SEARCH EXECUTION
