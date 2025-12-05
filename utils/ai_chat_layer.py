@@ -928,7 +928,7 @@ class AIChatLayer:
                     # Use last search context
                     last_cuisine = session.get('last_search_cuisine') or cuisine
                     last_destination = session.get('last_search_destination') or destination
-                    
+
                     # Get stored GPS or location context
                     stored_gps = current_gps or session.get('gps_coordinates')
                     if not stored_gps:
@@ -936,29 +936,56 @@ class AIChatLayer:
                         loc_ctx = self.get_location_context(user_id)
                         if loc_ctx and loc_ctx.get('coordinates'):
                             stored_gps = loc_ctx['coordinates']
-                    
+
                     if not stored_gps and last_destination:
                         # Geocode the last destination
                         try:
                             stored_gps = geocode_location(last_destination)
                         except Exception as e:
                             logger.warning(f"Could not geocode {last_destination}: {e}")
-                    
+
+                    # NEW: Extract follow-up context from AI decision
+                    supervisor_instructions = state_update.get('supervisor_instructions')
+                    exclude_restaurants = state_update.get('exclude_restaurants', [])
+                    modified_query = state_update.get('modified_query')
+                    is_follow_up = state_update.get('is_follow_up', True)  # Default True for "more" requests
+
+                    # If AI didn't provide exclude list, use session's shown restaurants
+                    if not exclude_restaurants:
+                        exclude_restaurants = session.get('last_shown_restaurants', [])
+
+                    # If AI didn't provide supervisor_instructions but we have exclusions, generate basic ones
+                    if not supervisor_instructions and exclude_restaurants:
+                        exclude_list = ', '.join(exclude_restaurants[:10])
+                        supervisor_instructions = f"User wants MORE {last_cuisine} options. EXCLUDE already shown: {exclude_list}. Find DIFFERENT restaurants."
+
+                    # Use modified_query if AI provided one, otherwise build default
+                    final_query = modified_query or f"more {last_cuisine} near {last_destination}"
+
                     logger.info(f"🗺️ Google Maps MORE: cuisine={last_cuisine}, dest={last_destination}, gps={stored_gps is not None}")
-                    
+                    if supervisor_instructions:
+                        logger.info(f"📋 Supervisor instructions: {supervisor_instructions[:80]}...")
+                    if exclude_restaurants:
+                        logger.info(f"🚫 Excluding {len(exclude_restaurants)} restaurants")
+
                     return create_search_handoff(
                         destination=last_destination or "nearby",
                         cuisine=last_cuisine,
                         search_type=SearchType.LOCATION_MAPS_SEARCH,  # Use maps-only type
-                        user_query=f"more {last_cuisine} near {last_destination}",
+                        user_query=final_query,
                         user_id=user_id,
                         thread_id=thread_id,
                         gps_coordinates=stored_gps,
                         requirements=requirements,
-                        preferences={},  # Type is explicit now
+                        preferences={},
                         clear_previous=False,
                         is_new_destination=False,
-                        reasoning=f"Maps-only search for more options: {reasoning}"
+                        reasoning=f"Maps-only search for more options: {reasoning}",
+                        # NEW: Follow-up context for downstream agents
+                        supervisor_instructions=supervisor_instructions,
+                        exclude_restaurants=exclude_restaurants,
+                        modified_query=modified_query,
+                        is_follow_up=is_follow_up
                     )
 
                 # Store for follow-up
