@@ -967,6 +967,56 @@ class LocationOrchestrator:
                 "exclude_restaurants": exclude_restaurants or []
             }
 
+        # Execute the pipeline with tracing
+            result = await self.pipeline.ainvoke(
+                pipeline_input,
+                config={
+                    "run_name": f"location_search_{{query='{query[:30]}...'}}",
+                    "metadata": {
+                        "user_query": query,
+                        "location_type": getattr(location_data, 'location_type', 'unknown') if location_data else 'raw',
+                        "maps_only": maps_only,
+                        "pipeline_version": "merged_v1.0"
+                    },
+                    "tags": ["location_search", "lcel_pipeline"]
+                }
+            )
+
+            # Add timing metadata
+            processing_time = round(time.time() - start_time, 2)
+            result["processing_time"] = processing_time
+            result["pipeline_type"] = "langchain_lcel"
+
+            # Flush traces
+            try:
+                wait_for_all_tracers()
+            except Exception as flush_error:
+                logger.warning(f"⚠️ Failed to flush traces: {flush_error}")
+
+            # Update statistics
+            self._update_stats(result, processing_time, maps_only)
+
+            logger.info(f"✅ Location search pipeline complete in {processing_time}s")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"❌ Pipeline error: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+
+            processing_time = round(time.time() - start_time, 2)
+
+            return {
+                "success": False,
+                "error": str(e),
+                "location_formatted_results": f"😔 Location search failed: {str(e)}",
+                "restaurants": [],
+                "restaurant_count": 0,
+                "processing_time": processing_time,
+                "pipeline_type": "langchain_lcel"
+            }
+
     # ============================================================================
     # LEGACY COMPATIBILITY METHODS (for telegram_bot.py)
     # ============================================================================
@@ -1026,6 +1076,17 @@ class LocationOrchestrator:
             )
 
             return result
+
+        except Exception as e:
+            logger.error(f"❌ More results query error: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "location_formatted_results": f"😔 More results search failed: {str(e)}",
+                "restaurant_count": 0,
+                "results": [],
+                "coordinates": coordinates
+            }
 
     async def complete_media_verification(
         self,
