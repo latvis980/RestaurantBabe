@@ -11,7 +11,7 @@ ARCHITECTURE:
 
 Key Features:
 - Memory context integration (preferences, past restaurants, patterns)
-- Search mode detection (GPS vs city vs neighborhood)
+- FIXED: Search mode detection (GPS vs city vs neighborhood) - comma = neighborhood search
 - Context-aware parameter tracking with explicit change detection
 - AI-driven parameter modification (no hardcoded keyword matching)
 - Pending GPS state management
@@ -137,34 +137,36 @@ YOUR TASK
 1. **DETERMINE CONTEXT DECISION** (how to handle parameters):
 
    **CONTINUE**: User is continuing with the same search context
-   - Examples: "show more", "any other options", "what else", "different neighborhood"
    - Keep ALL active context parameters unchanged
+   - User says: "show more", "any other options", "what else"
 
    **MODIFY**: User changed ONE OR MORE specific parameters
-   - Examples: 
-     * "actually I want pizza" → cuisine changed, destination stays
-     * "closer to me" → radius decreased, cuisine and destination stay
-     * "I meant lunch, not brunch" → cuisine modified
-     * "what about dinner instead" → meal type modified
    - Update changed parameters, keep others from active context
+   - User says: "actually I want pizza", "closer to me", "I meant lunch not brunch"
 
    **NEW**: Completely new search or topic
-   - Examples: "now show me bars in Paris", "best sushi in Tokyo"
    - Fresh parameter extraction, ignore old active context
+   - User says: "best sushi in Tokyo", "now show me bars in Paris"
 
 2. **EXTRACT ALL PARAMETERS** (you MUST provide all parameters):
 
    Even if CONTINUING, you must provide all parameters (copy from active context).
 
    - **destination**: Extract from message OR infer from active context OR infer from conversation
-   - **cuisine**: Extract from message OR infer from active context OR infer from conversation  
+     * If user mentions BOTH neighborhood AND city, format as "Neighborhood, City"
+     * If user mentions ONLY city, format as "City"
+     * The COMMA is critical for distinguishing city-wide vs neighborhood searches
+
+   - **cuisine**: Extract from message OR infer from active context OR infer from conversation
+
    - **search_radius_km**: Extract if mentioned OR use active context OR default 1.5
      * "within 5 min walk" → ~0.4km
      * "within 10 min walk" → ~0.8km
-     * "nearby" → 1.5km (default)
-     * "walking distance" → 1.5km
+     * "nearby" / "walking distance" → 1.5km (default)
      * "closer" (when modifying) → reduce by 50%
+
    - **requirements**: Extract new ones OR keep from active context
+
    - **preferences**: Any additional filters (price, atmosphere, etc.)
 
 3. **DETERMINE ACTION**:
@@ -175,42 +177,25 @@ YOUR TASK
 
 4. **SEARCH MODE DETECTION** (for execute_search):
 
-   **CITY_SEARCH** (web scraping):
-   - "best sushi in Tokyo"
-   - "top restaurants in Paris"
-   - No GPS coordinates, city-wide search
+   **CITY_SEARCH**: Searching an entire city with NO specific neighborhood/area
+   - Destination is ONLY a city name (no neighborhood, no landmark)
+   - User wants city-wide recommendations
+   - Uses web scraping
 
-   **LOCATION_SEARCH** (database + optional Maps):
-   - "ramen in Shibuya" (neighborhood)
-   - "pizza near Times Square" (landmark)
-   - GPS coordinates provided
-   - Searches database first, then Maps if needed
+   **LOCATION_SEARCH**: Searching a specific area within a city
+   - Destination includes neighborhood + city (comma-separated)
+   - Destination is a landmark or specific area
+   - GPS coordinates are provided
+   - Searches database first, then Google Maps if needed
 
-5. **HANDLE IMPLICIT CONTEXT** (critical examples):
+   **CRITICAL LOGIC**:
+   - If destination format is "Neighborhood, City" → LOCATION_SEARCH
+   - If destination format is "City" alone → CITY_SEARCH
+   - If destination has a comma → usually LOCATION_SEARCH
+   - If GPS coordinates provided → LOCATION_SEARCH
+   - "near [landmark]" → LOCATION_SEARCH
 
-   ✅ Active context: {{destination: "Tokyo", cuisine: "ramen"}}
-   User: "show me more"
-   → Decision: CONTINUE
-   → Parameters: {{destination: "Tokyo", cuisine: "ramen", radius: 1.5}} (same as active)
-
-   ✅ Active context: {{destination: "Tokyo", cuisine: "ramen"}}
-   User: "actually I want sushi"
-   → Decision: MODIFY
-   → Parameters: {{destination: "Tokyo", cuisine: "sushi", radius: 1.5}}
-   → Modifications: {{cuisine: {{from: "ramen", to: "sushi"}}}}
-
-   ✅ Active context: {{destination: "Tokyo", cuisine: "ramen", radius: 1.5}}
-   User: "show me places closer to my hotel"
-   → Decision: MODIFY
-   → Parameters: {{destination: "Tokyo", cuisine: "ramen", radius: 0.7}}
-   → Modifications: {{radius: {{from: 1.5, to: 0.7, reason: "user wants closer"}}}}
-
-   ✅ Active context: {{destination: "Tokyo", cuisine: "ramen"}}
-   User: "best pizza in Rome"
-   → Decision: NEW
-   → Parameters: {{destination: "Rome", cuisine: "pizza", radius: 1.5}}
-
-6. **GPS HANDLING**:
+5. **GPS HANDLING**:
 
    If user says "near me", "around me", "close to me" WITHOUT providing GPS:
    - Action: request_gps
@@ -222,7 +207,7 @@ YOUR TASK
    - Search mode: LOCATION_SEARCH
    - Use provided coordinates
 
-7. **AMBIGUITY HANDLING**:
+6. **AMBIGUITY HANDLING**:
 
    If location is ambiguous (Springfield, Cambridge, etc.) and you can't determine from context:
    - Ask for clarification
@@ -271,6 +256,7 @@ IMPORTANT RULES:
 - Be smart about modifications ("closer" means reduce radius, keep other params)
 - Don't ask unnecessary questions if context is clear
 - Use memory context to personalize responses
+- PAY ATTENTION to destination format: comma means neighborhood search, no comma means city search
 """
 
         self.conversation_prompt = ChatPromptTemplate.from_messages([
@@ -357,8 +343,9 @@ IMPORTANT RULES:
                 self.conversation_prompt.format_messages(**prompt_vars)
             )
 
-            # Parse response
-            decision = self._parse_ai_response(response.content)
+            # Parse response - handle AIMessage type
+            response_content = response.content if hasattr(response, 'content') else str(response)
+            decision = self._parse_ai_response(response_content)
 
             # Extract decision fields
             action = decision.get('action', 'chat_response')
@@ -374,7 +361,7 @@ IMPORTANT RULES:
             if state_update.get('clear_pending_gps'):
                 self.clear_pending_gps(user_id)
 
-            logger.info(f"🤖 AI Decision: action={action}, context={context_type}, destination={parameters.get('destination')}, cuisine={parameters.get('cuisine')}")
+            logger.info(f"🤖 AI Decision: action={action}, context={context_type}, destination={parameters.get('destination')}, cuisine={parameters.get('cuisine')}, mode={parameters.get('search_mode')}")
 
             # ================================================================
             # UPDATE ACTIVE CONTEXT based on context decision
@@ -599,7 +586,7 @@ IMPORTANT RULES:
     # ============================================================================
 
     def add_message(self, user_id: int, role: str, content: str) -> None:
-        """Add a message to conversation history"""
+        """Add a message to conversation history (in-memory only)"""
         session = self._get_or_create_session(user_id, f"msg_{user_id}")
 
         session['conversation_history'].append({
@@ -612,29 +599,9 @@ IMPORTANT RULES:
         if len(session['conversation_history']) > 10:
             session['conversation_history'] = session['conversation_history'][-10:]
 
-        # Backup to Supabase (async, non-blocking)
-        try:
-            asyncio.create_task(self._save_message_to_supabase(user_id, role, content))
-        except:
-            pass  # Don't block on backup failure
-
     def add_search_results(self, user_id: int, formatted_results: str, search_context: Optional[Dict] = None) -> None:
         """Add search results to conversation history"""
         self.add_message(user_id, 'assistant', formatted_results)
-
-    async def _save_message_to_supabase(self, user_id: int, role: str, content: str):
-        """Backup message to Supabase (non-blocking)"""
-        try:
-            from utils.database import execute_query
-
-            query = """
-            INSERT INTO conversation_messages (user_id, role, message, created_at)
-            VALUES (%s, %s, %s, NOW())
-            """
-
-            await execute_query(query, (user_id, role, content[:5000]))  # Truncate long messages
-        except Exception as e:
-            logger.debug(f"Could not backup message to Supabase: {e}")
 
     # ============================================================================
     # GPS STATE MANAGEMENT
