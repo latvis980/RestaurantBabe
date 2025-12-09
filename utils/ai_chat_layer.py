@@ -1,20 +1,27 @@
 # utils/ai_chat_layer.py
 """
-AI Chat Layer with Memory Integration - Single Source of Truth for Conversation Management
+AI Chat Layer with Context-Aware Parameter Management
+
+ARCHITECTURE:
+- Conversation history provides implicit context (last 10 messages)
+- Active context tracks current search parameters (destination, cuisine, radius, etc.)
+- AI explicitly decides: CONTINUE, MODIFY, or NEW context
+- AI provides ALL parameters on every turn (no blind accumulation)
+- Balance: Remember what we're discussing BUT allow easy parameter changes
 
 Key Features:
 - Memory context integration (preferences, past restaurants, patterns)
-- Search mode detection ("around me" vs "around [place]")
-- Integrated ambiguity handling
-- Context enrichment for neighborhoods
-- Explicit needs_gps flag in handoffs
+- Search mode detection (GPS vs city vs neighborhood)
+- Context-aware parameter tracking with explicit change detection
+- AI-driven parameter modification (no hardcoded keyword matching)
+- Pending GPS state management
 - Personalized responses based on user history
-- PENDING GPS STATE MANAGEMENT (new) - AI controls when to show/clear location button
 """
 
 import json
 import logging
 import time
+import asyncio
 from typing import Dict, List, Any, Optional, Tuple
 from enum import Enum
 
@@ -22,8 +29,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
 from utils.handoff_protocol import (
-    HandoffMessage, SearchContext, SearchType, HandoffCommand,
-    create_search_handoff, create_conversation_handoff, create_resume_handoff
+    HandoffMessage, SearchContext, SearchType, HandoffCommand
 )
 from location.geocoding import geocode_location
 
@@ -33,26 +39,31 @@ logger = logging.getLogger(__name__)
 class ConversationState(Enum):
     """Internal conversation states"""
     GREETING = "greeting"
-    COLLECTING_CUISINE = "collecting_cuisine"
-    COLLECTING_LOCATION = "collecting_location"
-    COLLECTING_PREFERENCES = "collecting_preferences"
+    COLLECTING_INFO = "collecting_info"
     READY_TO_SEARCH = "ready_to_search"
     SHOWING_RESULTS = "showing_results"
     FOLLOW_UP = "follow_up"
 
 
+class ContextDecisionType(Enum):
+    """AI's decision about context handling"""
+    CONTINUE = "CONTINUE"  # Same search context
+    MODIFY = "MODIFY"      # Update specific parameters
+    NEW = "NEW"            # Fresh context
+
+
 class AIChatLayer:
     """
-    AI Chat Layer with Memory Integration
+    AI Chat Layer with Context-Aware Parameter Management
 
-    Responsibilities:
+    Core Responsibilities:
+    - Track active search context (what we're currently discussing)
+    - Let AI decide to CONTINUE/MODIFY/NEW context
+    - Provide conversation history for implicit context
     - Detect search modes (GPS vs city vs neighborhood)
     - Handle ambiguous locations
-    - Enrich with context
-    - Decide when to search
-    - Use memory context for personalized responses
-    - Return structured handoffs with explicit flags
-    - MANAGE PENDING GPS STATE - single source of truth
+    - Manage pending GPS state
+    - Use memory for personalized responses
     """
 
     def __init__(self, config):
@@ -68,698 +79,208 @@ class AIChatLayer:
         # User sessions (in-memory for current conversation)
         self.user_sessions: Dict[int, Dict[str, Any]] = {}
 
-        # Location context storage (for follow-up searches)
+        # Location contexts (for 30-minute expiry tracking)
         self.location_contexts: Dict[int, Dict[str, Any]] = {}
 
-        # Initialize Supabase memory store for persistent conversation history
-        self.memory_store = None
-        try:
-            from utils.supabase_memory_system import create_supabase_memory_store
-            self.memory_store = create_supabase_memory_store(config)
-            logger.info("✅ AI Chat Layer connected to persistent memory store")
-        except Exception as e:
-            logger.warning(f"⚠️ Could not initialize memory store: {e}")
-
         # Build prompts
-        self._build_prompts()
+        self._build_conversation_prompt()
 
-        logger.info("✅ AI Chat Layer initialized with memory support and pending GPS management")
+        logger.info("✅ AI Chat Layer initialized with context-aware parameter management")
 
-    def _build_prompts(self):
-        """Build AI prompts with pending GPS awareness"""
+    def _build_conversation_prompt(self):
+        """Build the main conversation prompt with context-aware parameter tracking"""
 
-        from langchain_core.prompts import ChatPromptTemplate
+        system_prompt = """You are an AI conversation manager for a restaurant recommendation bot.
+
+Your job is to analyze user messages and decide what to do based on the current conversation context.
+
+═══════════════════════════════════════════════════════════════════════════════
+CONVERSATION CONTEXT (for reference - provides implicit understanding)
+═══════════════════════════════════════════════════════════════════════════════
+
+RECENT CONVERSATION (last 10 messages):
+{conversation_history}
+
+USER PREFERENCES FROM MEMORY:
+{memory_context}
+
+ACTIVE SEARCH CONTEXT (what we're currently discussing):
+- Destination: {active_destination}
+- Cuisine: {active_cuisine}
+- Search radius: {active_radius}km
+- Requirements: {active_requirements}
+- Established: {context_age}
+- Searches performed: {search_count}
+
+LAST SEARCH RESULTS (shown {time_ago}):
+- Restaurants shown: {shown_restaurants}
+
+STORED LOCATION (if user shared location previously):
+{stored_location}
+
+PENDING GPS STATE:
+- Waiting for GPS: {pending_gps}
+- For cuisine: {pending_gps_cuisine}
+
+═══════════════════════════════════════════════════════════════════════════════
+CURRENT USER MESSAGE
+═══════════════════════════════════════════════════════════════════════════════
+
+"{user_message}"
+
+GPS Coordinates provided now: {has_gps}
+
+═══════════════════════════════════════════════════════════════════════════════
+YOUR TASK
+═══════════════════════════════════════════════════════════════════════════════
+
+1. **DETERMINE CONTEXT DECISION** (how to handle parameters):
+
+   **CONTINUE**: User is continuing with the same search context
+   - Examples: "show more", "any other options", "what else", "different neighborhood"
+   - Keep ALL active context parameters unchanged
+
+   **MODIFY**: User changed ONE OR MORE specific parameters
+   - Examples: 
+     * "actually I want pizza" → cuisine changed, destination stays
+     * "closer to me" → radius decreased, cuisine and destination stay
+     * "I meant lunch, not brunch" → cuisine modified
+     * "what about dinner instead" → meal type modified
+   - Update changed parameters, keep others from active context
+
+   **NEW**: Completely new search or topic
+   - Examples: "now show me bars in Paris", "best sushi in Tokyo"
+   - Fresh parameter extraction, ignore old active context
+
+2. **EXTRACT ALL PARAMETERS** (you MUST provide all parameters):
+
+   Even if CONTINUING, you must provide all parameters (copy from active context).
+
+   - **destination**: Extract from message OR infer from active context OR infer from conversation
+   - **cuisine**: Extract from message OR infer from active context OR infer from conversation  
+   - **search_radius_km**: Extract if mentioned OR use active context OR default 1.5
+     * "within 5 min walk" → ~0.4km
+     * "within 10 min walk" → ~0.8km
+     * "nearby" → 1.5km (default)
+     * "walking distance" → 1.5km
+     * "closer" (when modifying) → reduce by 50%
+   - **requirements**: Extract new ones OR keep from active context
+   - **preferences**: Any additional filters (price, atmosphere, etc.)
+
+3. **DETERMINE ACTION**:
+
+   - **execute_search**: User wants restaurant recommendations
+   - **chat_response**: Need more info, casual chat, or clarification
+   - **request_gps**: Need user's physical location (for "near me" queries)
+
+4. **SEARCH MODE DETECTION** (for execute_search):
+
+   **CITY_SEARCH** (web scraping):
+   - "best sushi in Tokyo"
+   - "top restaurants in Paris"
+   - No GPS coordinates, city-wide search
+
+   **LOCATION_SEARCH** (database + optional Maps):
+   - "ramen in Shibuya" (neighborhood)
+   - "pizza near Times Square" (landmark)
+   - GPS coordinates provided
+   - Searches database first, then Maps if needed
+
+5. **HANDLE IMPLICIT CONTEXT** (critical examples):
+
+   ✅ Active context: {destination: "Tokyo", cuisine: "ramen"}
+   User: "show me more"
+   → Decision: CONTINUE
+   → Parameters: {destination: "Tokyo", cuisine: "ramen", radius: 1.5} (same as active)
+
+   ✅ Active context: {destination: "Tokyo", cuisine: "ramen"}
+   User: "actually I want sushi"
+   → Decision: MODIFY
+   → Parameters: {destination: "Tokyo", cuisine: "sushi", radius: 1.5}
+   → Modifications: {cuisine: {from: "ramen", to: "sushi"}}
+
+   ✅ Active context: {destination: "Tokyo", cuisine: "ramen", radius: 1.5}
+   User: "show me places closer to my hotel"
+   → Decision: MODIFY
+   → Parameters: {destination: "Tokyo", cuisine: "ramen", radius: 0.7}
+   → Modifications: {radius: {from: 1.5, to: 0.7, reason: "user wants closer"}}
+
+   ✅ Active context: {destination: "Tokyo", cuisine: "ramen"}
+   User: "best pizza in Rome"
+   → Decision: NEW
+   → Parameters: {destination: "Rome", cuisine: "pizza", radius: 1.5}
+
+6. **GPS HANDLING**:
+
+   If user says "near me", "around me", "close to me" WITHOUT providing GPS:
+   - Action: request_gps
+   - Extract cuisine from message
+   - Set needs_gps: true
+
+   If GPS coordinates are provided ({has_gps} = Yes):
+   - Action: execute_search
+   - Search mode: LOCATION_SEARCH
+   - Use provided coordinates
+
+7. **AMBIGUITY HANDLING**:
+
+   If location is ambiguous (Springfield, Cambridge, etc.) and you can't determine from context:
+   - Ask for clarification
+   - Suggest known options if available
+
+═══════════════════════════════════════════════════════════════════════════════
+OUTPUT FORMAT (JSON only)
+═══════════════════════════════════════════════════════════════════════════════
+
+{{
+  "action": "execute_search" | "chat_response" | "request_gps",
+
+  "context_decision": {{
+    "type": "CONTINUE" | "MODIFY" | "NEW",
+    "reasoning": "brief explanation of decision"
+  }},
+
+  "parameters": {{
+    "destination": "city or neighborhood name (REQUIRED)",
+    "cuisine": "cuisine type or null (REQUIRED)",
+    "search_mode": "CITY_SEARCH" | "LOCATION_SEARCH",
+    "search_radius_km": 1.5,
+    "requirements": ["requirement1", "requirement2"],
+    "preferences": {{}},
+    "modifications": {{
+      // Only if context_decision.type = MODIFY
+      "cuisine": {{"from": "ramen", "to": "sushi", "reason": "user explicitly changed"}},
+      "radius": {{"from": 1.5, "to": 0.7, "reason": "user wants closer"}}
+    }}
+  }},
+
+  "response_text": "your response to the user",
+  "reasoning": "internal reasoning for your decision",
+  "needs_gps": false,
+
+  "state_update": {{
+    // Only include if you want to clear pending GPS
+    "clear_pending_gps": false
+  }}
+}}
+
+IMPORTANT RULES:
+- ALWAYS provide ALL parameters (destination, cuisine, search_mode, search_radius_km)
+- Use active context to fill in parameters user didn't explicitly mention
+- Be smart about implicit continuation ("show more" means same parameters)
+- Be smart about modifications ("closer" means reduce radius, keep other params)
+- Don't ask unnecessary questions if context is clear
+- Use memory context to personalize responses
+"""
 
         self.conversation_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are the conversation manager for a restaurant recommendation bot.
-
-    ## YOUR ROLE
-    Analyze user messages, accumulate search parameters across turns, and decide when to trigger a search.
-    You are the SINGLE SOURCE OF TRUTH for conversation state - you decide everything.
-
-    ## REQUIRED PARAMETERS FOR SEARCH
-    A search can only be triggered when you have BOTH:
-    1. **CUISINE/TYPE**: What kind of food (e.g., "sushi", "Italian", "natural wine", "brunch")
-    2. **LOCATION**: One of these:
-       - GPS coordinates (when has_gps=Yes)
-       - City name (e.g., "Tokyo", "Paris")  
-       - Neighborhood/landmark that can be geocoded (e.g., "SoHo NYC", "near Eiffel Tower")
-
-    ## CRITICAL: DESTINATION EXTRACTION RULES
-
-    **RULE 1: CITY is the PRIMARY identifier, neighborhoods are QUALIFIERS**
-    When extracting destination, the CITY is always the anchor. Neighborhoods/districts are added as qualifiers.
-
-    **RULE 2: Format destinations as "Neighborhood, City" for geocoding**
-    Many neighborhood names exist in multiple cities (Ari in Bangkok AND Italy, SoHo in NYC AND London).
-    The geocoder needs city context to find the right place.
-
-    **DESTINATION FORMAT EXAMPLES:**
-    - "restaurants in Ari neighbourhood in Bangkok" → destination: "Ari, Bangkok"
-    - "coffee in SoHo, New York" → destination: "SoHo, New York"
-    - "bars in Chinatown, San Francisco" → destination: "Chinatown, San Francisco"
-    - "pizza in Alfama, Lisbon" → destination: "Alfama, Lisbon"
-    - "brunch in Shibuya, Tokyo" → destination: "Shibuya, Tokyo"
-    - "wine bars in Le Marais, Paris" → destination: "Le Marais, Paris"
-
-    **WRONG vs CORRECT:**
-    - ❌ "specialty coffee in Ari neighbourhood in Bangkok" → destination: "Ari" 
-    - ✅ "specialty coffee in Ari neighbourhood in Bangkok" → destination: "Ari, Bangkok"
-    - ❌ "restaurants in Chinatown, NYC" → destination: "Chinatown"
-    - ✅ "restaurants in Chinatown, NYC" → destination: "Chinatown, New York"
-
-    **RULE 3: City-only queries stay as city**
-    - "best sushi in Tokyo" → destination: "Tokyo" (no neighborhood mentioned)
-    - "restaurants in Bangkok" → destination: "Bangkok" (no neighborhood mentioned)
-
-    ## PENDING GPS STATE (CRITICAL!)
-    
-    When pending_gps=Yes, the user was previously asked for their location (location button is shown).
-    The pending_gps_cuisine tells you what they were originally looking for.
-    
-    **RULES FOR PENDING GPS:**
-    
-    1. **User provides LOCATION ANSWER** (neighborhood, street, area name):
-       Examples: "Chinatown", "near Times Square", "Alfama", "downtown", "Lapa"
-       → Use pending_gps_cuisine + this location
-       → trigger_search with search_mode="coordinates_search"
-       → Set clear_pending_gps=true
-    
-    2. **User provides NEW COMPLETE QUERY** (has BOTH cuisine AND city):
-       Examples: "find bakeries in Bangkok", "sushi in Tokyo", "pizza in Rome"
-       → IGNORE pending GPS state, this is a fresh search
-       → trigger_search with the new query
-       → Set clear_pending_gps=true
-    
-    3. **User provides GPS coordinates** (has_gps=Yes):
-       → Use pending_gps_cuisine + GPS
-       → trigger_search with search_mode="gps_search"
-       → Set clear_pending_gps=true
-    
-    4. **User says something off-topic or wants to cancel**:
-       Examples: "never mind", "cancel", "what's the weather", "hello"
-       → Clear pending state, respond appropriately
-       → Set clear_pending_gps=true
-    
-    5. **User provides ONLY cuisine** (no location):
-       Examples: "actually, I want pizza", "sushi instead"
-       → Update pending_gps_cuisine to new cuisine
-       → Keep asking for location (pending_gps stays true)
-       → Set clear_pending_gps=false
-
-    ## ACTIONS (choose exactly one)
-
-    **request_gps**: User wants nearby search but no GPS yet
-    - Use when: "near me", "nearby", "close by", "around here" AND has_gps=No AND pending_gps=No
-    - NEVER use when: has_gps=Yes (you already have location!)
-    - NEVER use when: pending_gps=Yes (already waiting for location!)
-
-    **collect_info**: Need more information before searching
-    - Use when: Missing cuisine OR missing location (and not a "near me" request)
-    - Ask naturally, don't interrogate
-
-    **trigger_search**: Ready to search - have both cuisine AND location
-    - Use when: You have cuisine AND (has_gps=Yes OR city_name OR geocodable_location)
-    - Set is_complete=true
-    - Set appropriate search_mode:
-      - "gps_search" if using GPS coordinates
-      - "city_search" if searching entire city by name (e.g., "Tokyo", "Paris")
-      - "coordinates_search" if neighborhood/area needs geocoding (e.g., "Alfama", "SoHo")
-      - "google_maps_more" if user wants MORE options after a LOCATION-based search (uses Google Maps)
-      - "follow_up_more_results" if user wants more options after a CITY-based search
-    
-    **IMPORTANT - "MORE" REQUESTS:**
-    - Check last_search_type to decide which mode to use!
-    - If last_search_type="location_search" → use "google_maps_more"
-    - If last_search_type="city_search" → use "follow_up_more_results"
-
-    **chat_response**: Answer questions, greet, or redirect
-    - Use for: greetings, questions about shown results, off-topic queries
-
-    ## RESPONSE FORMAT (JSON only, no markdown)
-
-    {{
-        "action": "request_gps" | "collect_info" | "trigger_search" | "chat_response",
-        "response_text": "Your message to the user",
-        "state_update": {{
-            "cuisine": "extracted cuisine type or null",
-            "destination": "city/neighborhood/landmark or null", 
-            "search_mode": "gps_search|city_search|coordinates_search|follow_up_more_results|null",
-            "needs_gps": true | false,
-            "is_complete": true | false,
-            "requirements": ["outdoor", "romantic", etc.],
-            "raw_query": "original user message",
-            "clear_pending_gps": true | false,
-            "search_radius_km": <number or null>
-        }},
-        "reasoning": "Brief explanation of your decision"
-    }}
-
-    ## EXAMPLES
-
-    **Example 1: User provides location when GPS was pending**
-    Pending GPS: Yes, Cuisine: "coffee"
-    User message: "I'm in Chinatown"
-    → {{
-        "action": "trigger_search",
-        "response_text": "Finding great coffee spots in Chinatown! ☕",
-        "state_update": {{"cuisine": "coffee", "destination": "Chinatown", "search_mode": "coordinates_search", "is_complete": true, "clear_pending_gps": true}},
-        "reasoning": "User answered location question - combine with pending cuisine"
-    }}
-
-    **Example 2: User starts NEW query while GPS was pending**
-    Pending GPS: Yes, Cuisine: "coffee"
-    User message: "find best bakeries in Bangkok"
-    → {{
-        "action": "trigger_search",
-        "response_text": "Finding the best bakeries in Bangkok! 🥐",
-        "state_update": {{"cuisine": "bakeries", "destination": "Bangkok", "search_mode": "city_search", "is_complete": true, "clear_pending_gps": true}},
-        "reasoning": "Complete NEW query - ignore pending GPS, start fresh city search"
-    }}
-
-    **Example 3: User shares GPS after being asked**
-    Pending GPS: Yes, Cuisine: "pizza", has_gps: Yes
-    User message: "[Location shared]"
-    → {{
-        "action": "trigger_search",
-        "response_text": "Perfect! Finding pizza near you! 🍕",
-        "state_update": {{"cuisine": "pizza", "search_mode": "gps_search", "is_complete": true, "clear_pending_gps": true}},
-        "reasoning": "GPS received - search with pending cuisine"
-    }}
-
-    **Example 4: User wants nearby food (no pending GPS yet)**
-    Pending GPS: No, has_gps: No
-    User message: "Find good pizza near me"
-    → {{
-        "action": "request_gps",
-        "response_text": "I'd love to find pizza nearby! 📍 Please share your location or tell me your neighborhood.",
-        "state_update": {{"cuisine": "pizza", "needs_gps": true, "clear_pending_gps": false}},
-        "reasoning": "Need location for 'near me' - request GPS"
-    }}
-
-    **Example 5: Complete city query (no GPS needed)**
-    Pending GPS: No, has_gps: No
-    User message: "Best ramen in Tokyo"
-    → {{
-        "action": "trigger_search",
-        "response_text": "Finding the best ramen in Tokyo! 🍜",
-        "state_update": {{"cuisine": "ramen", "destination": "Tokyo", "search_mode": "city_search", "is_complete": true, "clear_pending_gps": false}},
-        "reasoning": "Complete query - cuisine + city"
-    }}
-
-    **Example 6: User cancels/changes mind**
-    Pending GPS: Yes, Cuisine: "coffee"
-    User message: "never mind" or "cancel"
-    → {{
-        "action": "chat_response",
-        "response_text": "No problem! What else can I help you find?",
-        "state_update": {{"clear_pending_gps": true}},
-        "reasoning": "User cancelled - clear pending state"
-    }}
-
-    **Example 7: User changes cuisine while GPS pending**
-    Pending GPS: Yes, Cuisine: "coffee"
-    User message: "actually pizza"
-    → {{
-        "action": "chat_response",
-        "response_text": "Pizza sounds great! 🍕 Where are you located?",
-        "state_update": {{"cuisine": "pizza", "needs_gps": true, "clear_pending_gps": false}},
-        "reasoning": "Updated cuisine, still need location"
-    }}
-
-    **Example 8: User wants MORE after location search**
-    Last Search Type: location_search, Last Cuisine: "Thai", Last Destination: "Mandarin Oriental"
-    User message: "show me more options"
-    → {{
-        "action": "trigger_search",
-        "response_text": "Let me search Google Maps for more Thai restaurants near Mandarin Oriental! 🗺️",
-        "state_update": {{"cuisine": "Thai", "destination": "Mandarin Oriental", "search_mode": "google_maps_more", "is_complete": true, "clear_pending_gps": false}},
-        "reasoning": "More requested after location search - MUST use google_maps_more to search Google Maps directly (database already exhausted)"
-    }}
-
-    **Example: Neighborhood + City query**
-    User message: "I'm looking for specialty coffee places in Ari neighbourhood in Bangkok"
-    → {{
-        "action": "trigger_search",
-        "response_text": "Finding specialty coffee spots in Ari, Bangkok! ☕",
-        "state_update": {{"cuisine": "specialty coffee", "destination": "Ari, Bangkok", "search_mode": "coordinates_search", "is_complete": true, "clear_pending_gps": true}},
-        "reasoning": "Complete query with neighborhood + city - destination formatted as 'Neighborhood, City' for accurate geocoding"
-    }}
-
-    **Example 9: User wants MORE after city search**
-    Last Search Type: city_search, Last Cuisine: "ramen", Last Destination: "Tokyo"
-    User message: "any other options?"
-    → {{
-        "action": "trigger_search",
-        "response_text": "Let me find more ramen spots in Tokyo! 🍜",
-        "state_update": {{"cuisine": "ramen", "destination": "Tokyo", "search_mode": "follow_up_more_results", "is_complete": true, "clear_pending_gps": false}},
-        "reasoning": "More requested after city search - use follow-up mode"
-    }}
-
-    **CRITICAL: FOLLOW-UP REQUESTS WITH USER MODIFICATIONS**
-
-    When user asks for "more" but includes modifications (different cuisine, closer, specific requirements),
-    you MUST generate supervisor_instructions to guide downstream agents.
-
-    **Example 10: User wants more but with modifications**
-    Last Search Type: location_search, Last Cuisine: "brunch", Last Destination: "near me"
-    Already Shown Restaurants: Cafe Luna, The Brunch House, Morning Glory
-    User message: "show me more, but lunch not brunch and somewhere closer"
-    → {{
-        "action": "trigger_search",
-        "response_text": "Looking for lunch spots closer to you! 🍽️",
-        "state_update": {{
-            "cuisine": "lunch", 
-            "destination": "near me", 
-            "search_mode": "google_maps_more", 
-            "is_complete": true, 
-            "clear_pending_gps": false,
-            "modified_query": "lunch restaurants",
-            "supervisor_instructions": "User previously searched for BRUNCH but now specifically wants LUNCH (not brunch). They also want places CLOSER to their location - previous results may have been too far. EXCLUDE already shown: Cafe Luna, The Brunch House, Morning Glory. Prioritize proximity and lunch-appropriate venues.",
-            "exclude_restaurants": ["Cafe Luna", "The Brunch House", "Morning Glory"],
-            "is_follow_up": true
-        }},
-        "reasoning": "Follow-up with modifications - generate supervisor_instructions for downstream filtering"
-    }}
-
-    **Example 11: Simple "more" without modifications**
-    Last Search Type: location_search, Last Cuisine: "Italian", Last Destination: "SoHo"
-    Already Shown Restaurants: Emilio's, Pasta Palace, Trattoria Roma
-    User message: "any other options?"
-    → {{
-        "action": "trigger_search",
-        "response_text": "Finding more Italian spots in SoHo! 🍝",
-        "state_update": {{
-            "cuisine": "Italian", 
-            "destination": "SoHo", 
-            "search_mode": "google_maps_more", 
-            "is_complete": true, 
-            "clear_pending_gps": false,
-            "supervisor_instructions": "User wants MORE Italian restaurants in SoHo. EXCLUDE already shown: Emilio's, Pasta Palace, Trattoria Roma. Same criteria as before, just different results.",
-            "exclude_restaurants": ["Emilio's", "Pasta Palace", "Trattoria Roma"],
-            "is_follow_up": true
-        }},
-        "reasoning": "Simple follow-up - exclude previously shown restaurants"
-    }}
-
-    **Example 12: User wants more with specific new requirement**
-    Last Search Type: location_search, Last Cuisine: "restaurants", Last Destination: "Williamsburg"
-    Already Shown Restaurants: The Commodore, Lilia, Maison Premiere
-    User message: "more options but with outdoor seating"
-    → {{
-        "action": "trigger_search",
-        "response_text": "Looking for places with outdoor seating in Williamsburg! 🌞",
-        "state_update": {{
-            "cuisine": "restaurants", 
-            "destination": "Williamsburg", 
-            "search_mode": "google_maps_more", 
-            "is_complete": true,
-            "requirements": ["outdoor seating"],
-            "supervisor_instructions": "User wants MORE restaurants but specifically with OUTDOOR SEATING. Previous results didn't emphasize this. EXCLUDE: The Commodore, Lilia, Maison Premiere. Prioritize venues that mention patios, terraces, gardens, or outdoor dining.",
-            "exclude_restaurants": ["The Commodore", "Lilia", "Maison Premiere"],
-            "is_follow_up": true
-        }},
-        "reasoning": "Follow-up with new requirement - add to supervisor_instructions"
-    }}
-
-    ## SUPERVISOR_INSTRUCTIONS RULES
-
-    When generating supervisor_instructions for follow-up requests:
-    1. **Always mention what changed** - what the user wants differently from before
-    2. **Always list exclusions** - restaurants already shown that should be filtered out  
-    3. **Include the original context** - so downstream agents understand the full picture
-    4. **Be specific about priorities** - closer, cheaper, outdoor, etc.
-    5. **Use natural language** - downstream AI will interpret this, not code
-
-    For INITIAL searches (not follow-ups), supervisor_instructions should be null or omitted.
-
-    ## SEARCH_RADIUS_KM RULES (for location-based searches only)
-
-    The search_radius_km field controls how far to search from the user's location.
-    YOU must analyze the user's message and determine the appropriate radius.
-
-    **Default (1.5 km):** Use when user says generic things like:
-    - "nearby", "around me", "around here", "close by", "in this area"
-    - No specific distance mentioned
-    - Example: "find coffee nearby" → search_radius_km: 1.5
-
-    **Calculate from user input:** Convert user's distance hints to kilometers:
-    - "5 minute walk" → 0.4 km (assume 80m/min walking speed)
-    - "10 minute walk" → 0.8 km
-    - "15 minute walk" → 1.2 km
-    - "within 1 km" → 1.0 km
-    - "within 500 meters" → 0.5 km
-    - "within 2 km" → 2.0 km
-    - "very close" → 0.5 km
-    - "a bit further" → 2.5 km
-
-    **For "closer" follow-up requests:** When user wants CLOSER results after seeing initial ones:
-    - Check the previous_search_radius_km value
-    - Set search_radius_km to roughly HALF of the previous radius
-    - Minimum: 0.3 km (can't go below this)
-    - Example: Previous was 1.5 km, user says "closer" → search_radius_km: 0.75
-
-    **For "further" follow-up requests:** When user wants results FURTHER away:
-    - Set search_radius_km to roughly 1.5x-2x of the previous radius
-    - Maximum: 5.0 km
-    - Example: Previous was 1.5 km, user says "further" → search_radius_km: 2.5
-
-    **When to set null:** 
-    - City searches (not GPS-based) → search_radius_km: null
-    - When user explicitly mentions a neighborhood/area name without GPS
-    
-    """),
-            ("human", """## CURRENT STATE
-
-    **Pending GPS Request:**
-    - GPS Button Shown: {pending_gps}
-    - Pending Cuisine: {pending_gps_cuisine}
-
-    **Last Search Context (for "more" requests):**
-    - Last Search Type: {last_search_type}
-    - Last Cuisine: {last_search_cuisine}
-    - Last Destination: {last_search_destination}
-    - Already Shown Restaurants: {last_shown_restaurants}
-    - Previous Search Radius (km): {previous_search_radius_km}
-
-    **Memory Context (user's history):**
-    {memory_context}
-
-    **Accumulated Parameters:**
-    - Cuisine: {current_cuisine}
-    - Destination: {current_destination}  
-    - GPS Available: {has_gps}
-    - Stored Location Context: {stored_location}
-
-    **Optional parameters:**
-    - Additional requirements: {requirements}
-
-    **Recent Conversation:**
-    {conversation_history}
-
-    **Current Message:**
-    {user_message}
-
-    Respond with valid JSON only, no markdown code blocks.
-    
-    """)
+            ("system", system_prompt),
+            ("human", "Analyze the message above and provide your decision in JSON format.")
         ])
 
-        self.conversation_chain = self.conversation_prompt | self.llm
-
     # ============================================================================
-    # PENDING GPS STATE MANAGEMENT
+    # CORE MESSAGE PROCESSING
     # ============================================================================
-
-    def set_pending_gps(self, user_id: int, cuisine: str) -> None:
-        """
-        Set pending GPS state when location button is shown.
-        Called by Telegram bot when showing location button.
-        """
-        session = self._get_or_create_session(user_id, f"pending_{user_id}")
-        session['pending_gps'] = True
-        session['pending_gps_cuisine'] = cuisine
-        session['pending_gps_timestamp'] = time.time()
-        logger.info(f"📍 Set pending GPS for user {user_id}: cuisine='{cuisine}'")
-
-    def clear_pending_gps(self, user_id: int) -> None:
-        """
-        Clear pending GPS state.
-        Called when user provides location, completes search, or cancels.
-        """
-        session = self.user_sessions.get(user_id)
-        if session:
-            was_pending = session.get('pending_gps', False)
-            session['pending_gps'] = False
-            session['pending_gps_cuisine'] = None
-            session['pending_gps_timestamp'] = None
-            if was_pending:
-                logger.info(f"🗑️ Cleared pending GPS for user {user_id}")
-
-    def get_pending_gps_state(self, user_id: int) -> Dict[str, Any]:
-        """
-        Get current pending GPS state for a user.
-        Returns dict with pending_gps, pending_gps_cuisine, age_minutes
-        """
-        session = self.user_sessions.get(user_id)
-        if not session:
-            return {'pending_gps': False, 'pending_gps_cuisine': None, 'age_minutes': None}
-
-        pending = session.get('pending_gps', False)
-        cuisine = session.get('pending_gps_cuisine')
-        timestamp = session.get('pending_gps_timestamp')
-
-        # Check expiry (15 minutes)
-        if pending and timestamp:
-            age_minutes = (time.time() - timestamp) / 60
-            if age_minutes > 15:
-                logger.info(f"⏰ Pending GPS expired for user {user_id} ({age_minutes:.1f} min)")
-                self.clear_pending_gps(user_id)
-                return {'pending_gps': False, 'pending_gps_cuisine': None, 'age_minutes': None}
-            return {'pending_gps': True, 'pending_gps_cuisine': cuisine, 'age_minutes': age_minutes}
-
-        return {'pending_gps': pending, 'pending_gps_cuisine': cuisine, 'age_minutes': None}
-
-    def is_pending_gps(self, user_id: int) -> bool:
-        """Quick check if GPS is pending for user"""
-        return self.get_pending_gps_state(user_id)['pending_gps']
-
-    # ============================================================================
-    # SHOWN RESTAURANTS TRACKING (for duplicate detection)
-    # ============================================================================
-
-    def store_shown_restaurants(self, user_id: int, restaurants: List[Dict[str, Any]], search_type: str, cuisine: str = None, destination: str = None) -> None:
-        """
-        Store the restaurants that were just shown to the user.
-        Used to detect duplicates on "more" requests.
-        
-        Args:
-            user_id: User ID
-            restaurants: List of restaurant dicts (must have 'name' key)
-            search_type: 'city_search' or 'location_search'
-            cuisine: The cuisine that was searched
-            destination: The destination that was searched
-        """
-        session = self._get_or_create_session(user_id, f"track_{user_id}")
-        
-        # Extract restaurant names for comparison
-        restaurant_names = []
-        for r in restaurants:
-            name = r.get('name') or r.get('restaurant_name') or r.get('title', '')
-            if name:
-                restaurant_names.append(name.lower().strip())
-        
-        session['last_shown_restaurants'] = restaurant_names
-        session['last_search_type'] = search_type
-        session['last_search_cuisine'] = cuisine
-        session['last_search_destination'] = destination
-        session['last_search_time'] = time.time()
-        
-        logger.info(f"📋 Stored {len(restaurant_names)} shown restaurants for user {user_id} (type={search_type})")
-
-    def check_for_duplicates(self, user_id: int, new_restaurants: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Check if new results are duplicates of what was already shown.
-        
-        Returns:
-            {
-                'has_duplicates': bool,
-                'duplicate_count': int,
-                'new_count': int,
-                'duplicate_percentage': float,
-                'all_duplicates': bool,  # True if ALL results are duplicates
-                'new_restaurants': list  # Only the non-duplicate restaurants
-            }
-        """
-        session = self.user_sessions.get(user_id)
-        if not session:
-            return {'has_duplicates': False, 'duplicate_count': 0, 'new_count': len(new_restaurants), 
-                    'duplicate_percentage': 0.0, 'all_duplicates': False, 'new_restaurants': new_restaurants}
-        
-        shown = set(session.get('last_shown_restaurants', []))
-        if not shown:
-            return {'has_duplicates': False, 'duplicate_count': 0, 'new_count': len(new_restaurants),
-                    'duplicate_percentage': 0.0, 'all_duplicates': False, 'new_restaurants': new_restaurants}
-        
-        duplicates = 0
-        new_restaurants_filtered = []
-        
-        for r in new_restaurants:
-            name = r.get('name') or r.get('restaurant_name') or r.get('title', '')
-            if name and name.lower().strip() in shown:
-                duplicates += 1
-            else:
-                new_restaurants_filtered.append(r)
-        
-        total = len(new_restaurants)
-        duplicate_pct = (duplicates / total * 100) if total > 0 else 0
-        all_dupes = duplicates == total and total > 0
-        
-        result = {
-            'has_duplicates': duplicates > 0,
-            'duplicate_count': duplicates,
-            'new_count': len(new_restaurants_filtered),
-            'duplicate_percentage': duplicate_pct,
-            'all_duplicates': all_dupes,
-            'new_restaurants': new_restaurants_filtered
-        }
-        
-        if duplicates > 0:
-            logger.info(f"🔄 Duplicate check for user {user_id}: {duplicates}/{total} duplicates ({duplicate_pct:.0f}%)")
-        
-        return result
-
-    def get_last_search_context(self, user_id: int) -> Dict[str, Any]:
-        """Get the context from the last search for follow-up requests"""
-        session = self.user_sessions.get(user_id)
-        if not session:
-            return {}
-        
-        return {
-            'search_type': session.get('last_search_type'),
-            'cuisine': session.get('last_search_cuisine'),
-            'destination': session.get('last_search_destination'),
-            'shown_restaurants': session.get('last_shown_restaurants', []),
-            'search_time': session.get('last_search_time')
-        }
-
-    def update_last_search_context(
-        self,
-        user_id: int,
-        search_type: str,  # 'location_search' or 'city_search'
-        cuisine: Optional[str] = None,
-        destination: Optional[str] = None,
-        restaurants: Optional[List[Dict[str, Any]]] = None,
-        coordinates: Optional[Tuple[float, float]] = None,
-        search_radius_km: Optional[float] = None  # Track radius for "closer"/"further"
-    ) -> None:
-        """
-        Update session with last search context for follow-up "more" requests.
-
-        Called by LangGraphSupervisor after successful search completion.
-        """
-        session = self.user_sessions.get(user_id)
-        if not session:
-            session = self._get_or_create_session(user_id, f"search_{user_id}")
-
-        # Update search tracking fields
-        session['last_search_type'] = search_type
-        session['last_search_time'] = time.time()
-
-        if cuisine:
-            session['last_search_cuisine'] = cuisine
-
-        if destination:
-            session['last_search_destination'] = destination
-
-        if coordinates:
-            session['gps_coordinates'] = coordinates
-            session['gps_timestamp'] = time.time()
-
-        if search_radius_km is not None:
-            session['last_search_radius_km'] = search_radius_km
-
-        # Store shown restaurants for duplicate detection
-        if restaurants:
-            restaurant_names = []
-            for r in restaurants[:20]:  # Keep last 20
-                name = r.get('name') or r.get('restaurant_name') or r.get('title', '')
-                if name:
-                    restaurant_names.append(name.lower().strip())
-            session['last_shown_restaurants'] = restaurant_names
-
-        logger.info(f"✅ Updated last search context for user {user_id}: "
-                    f"type={search_type}, cuisine={cuisine}, destination={destination}")
-
-    # ============================================================================
-    # MEMORY CONTEXT FORMATTING
-    # ============================================================================
-
-    def _format_memory_context(self, user_context: Optional[Dict[str, Any]]) -> str:
-        """Format user memory context for AI prompt"""
-        if not user_context:
-            return "No memory available for this user (new user)."
-
-        parts = []
-
-        # Preferences
-        prefs = user_context.get("preferences")
-        if prefs:
-            if hasattr(prefs, 'preferred_cuisines') and prefs.preferred_cuisines:
-                parts.append(f"Preferred cuisines: {', '.join(prefs.preferred_cuisines)}")
-            if hasattr(prefs, 'preferred_cities') and prefs.preferred_cities:
-                parts.append(f"Frequently searched cities: {', '.join(prefs.preferred_cities)}")
-            if hasattr(prefs, 'dietary_restrictions') and prefs.dietary_restrictions:
-                parts.append(f"Dietary restrictions: {', '.join(prefs.dietary_restrictions)}")
-            if hasattr(prefs, 'budget_range') and prefs.budget_range:
-                parts.append(f"Budget preference: {prefs.budget_range}")
-
-        # Restaurant history
-        history = user_context.get("restaurant_history", [])
-        if history:
-            recent = history[:10]  # Last 10 recommendations
-            restaurant_names = [r.restaurant_name if hasattr(r, 'restaurant_name') else r.get('restaurant_name', 'Unknown') 
-                              for r in recent]
-            parts.append(f"Recently recommended restaurants (AVOID REPEATING): {', '.join(restaurant_names)}")
-
-            # Get cities from history
-            cities = list(set([r.city if hasattr(r, 'city') else r.get('city', '') for r in recent if r]))
-            if cities:
-                parts.append(f"Cities searched before: {', '.join(cities)}")
-
-        # Conversation patterns
-        patterns = user_context.get("conversation_patterns")
-        if patterns:
-            style = patterns.user_communication_style if hasattr(patterns, 'user_communication_style') else patterns.get('user_communication_style', 'casual')
-            parts.append(f"Communication style: {style}")
-
-        if not parts:
-            return "User has no stored preferences yet (relatively new user)."
-
-        return "\n".join(parts)
-
-    # ============================================================================
-    # MESSAGE HANDLING
-    # ============================================================================
-
-    def add_message(self, user_id: int, role: str, content: str) -> None:
-        """
-        Add a message to conversation history.
-
-        Primary: In-memory session (fast)
-        Backup: Supabase (survives restarts)
-        """
-        session = self._get_or_create_session(user_id, f"msg_{user_id}")
-
-        session['conversation_history'].append({
-            'role': role,
-            'message': content,
-            'timestamp': time.time()
-        })
-
-        # Keep only last 10 messages in memory
-        if len(session['conversation_history']) > 10:
-            session['conversation_history'] = session['conversation_history'][-10:]
-
-        # Backup to Supabase (non-blocking, survives restarts)
-        self._save_message_async(user_id, role, content)
-
-        logger.debug(f"📝 Added {role} message to history for user {user_id} ({len(content)} chars)")
-
-    def add_search_results(self, user_id: int, formatted_results: str, search_context: Optional[Dict] = None) -> None:
-        """
-        Add search results to conversation history.
-        """
-        self.add_message(user_id, 'assistant', formatted_results)
-
-        if search_context:
-            session = self._get_or_create_session(user_id, f"msg_{user_id}")
-            session['last_search_context'] = {
-                **search_context,
-                'timestamp': time.time()
-            }
-
-        logger.info(f"📋 Added search results to conversation history for user {user_id}")
 
     async def process_message(
         self,
@@ -770,94 +291,65 @@ class AIChatLayer:
         user_context: Optional[Dict[str, Any]] = None
     ) -> HandoffMessage:
         """
-        Process user message with full context awareness including pending GPS state.
+        Process user message with context-aware parameter management.
 
         This is the SINGLE DECISION POINT for all user messages.
         """
         try:
             # Get or create session
-            if not thread_id:
-                thread_id = f"chat_{user_id}_{int(time.time())}"
+            session = self._get_or_create_session(user_id, thread_id or f"chat_{user_id}")
 
-            session = self._get_or_create_session(user_id, thread_id)
-            await self._ensure_history_loaded(user_id)
-
-            # Handle GPS coordinates - with 30-minute expiry
-            current_gps = gps_coordinates
-            if gps_coordinates:
-                session['gps_coordinates'] = gps_coordinates
-                session['gps_timestamp'] = time.time()
-                logger.info(f"📍 Received GPS coordinates: {gps_coordinates[0]:.4f}, {gps_coordinates[1]:.4f}")
-            elif session.get('gps_coordinates'):
-                gps_age = time.time() - session.get('gps_timestamp', 0)
-                if gps_age < 1800:  # 30 minutes
-                    current_gps = session['gps_coordinates']
-                    logger.info(f"📍 Using stored GPS: {current_gps[0]:.4f}, {current_gps[1]:.4f} ({gps_age/60:.0f} min old)")
-                else:
-                    logger.info(f"⏰ Stored GPS expired ({gps_age/60:.0f} min old), clearing")
-                    del session['gps_coordinates']
-                    if 'gps_timestamp' in session:
-                        del session['gps_timestamp']
+            # Get active context
+            active_context = session.get('active_context', {})
 
             # Get pending GPS state
-            pending_state = self.get_pending_gps_state(user_id)
-            pending_gps = pending_state['pending_gps']
-            pending_gps_cuisine = pending_state['pending_gps_cuisine']
+            pending_gps_state = session.get('pending_gps', {})
+            pending_gps = pending_gps_state.get('active', False)
+            pending_gps_cuisine = pending_gps_state.get('cuisine')
 
-            # Check for stored location context
-            stored_location = self.get_location_context(user_id)
-            stored_location_text = 'None'
+            # Get stored location context
+            stored_location = session.get('stored_location', {})
+            stored_location_text = "None"
             if stored_location:
-                loc = stored_location['location']
+                loc = stored_location.get('name', '')
                 coords = stored_location.get('coordinates')
-                age_min = (time.time() - stored_location['stored_at']) / 60
-                if coords:
-                    stored_location_text = f"{loc} ({coords[0]:.4f}, {coords[1]:.4f}) - {age_min:.0f} min ago"
-                else:
-                    stored_location_text = f"{loc} - {age_min:.0f} min ago"
+                age_min = (time.time() - stored_location.get('stored_at', 0)) / 60
+                if age_min < 30:  # Only show if less than 30 min old
+                    if coords:
+                        stored_location_text = f"{loc} ({coords[0]:.4f}, {coords[1]:.4f}) - {int(age_min)} min ago"
+                    else:
+                        stored_location_text = f"{loc} - {int(age_min)} min ago"
 
             # Add user message to history
             self.add_message(user_id, 'user', user_message)
 
-            # Get accumulated state
-            accumulated_state = session.get('accumulated_state', {})
+            # Get last search info
+            last_search = session.get('last_search', {})
+            last_search_timestamp = last_search.get('timestamp', 0)
+            time_since_search = time.time() - last_search_timestamp
+            time_ago_text = self._format_time_ago(time_since_search) if last_search_timestamp else "None"
+            shown_restaurants = last_search.get('shown_restaurants', [])
 
-            # Format memory context for AI
+            # Format memory context
             memory_context_text = self._format_memory_context(user_context)
-
-            # Get current cuisine and destination
-            current_cuisine = accumulated_state.get('cuisine') or session.get('current_cuisine') or 'None'
-            current_destination = accumulated_state.get('destination') or session.get('current_destination') or 'None'
-
-            # Get requirements
-            current_requirements = accumulated_state.get('requirements', [])
-            if not current_requirements and user_context:
-                prefs = user_context.get("preferences")
-                if prefs:
-                    if hasattr(prefs, 'dietary_restrictions') and prefs.dietary_restrictions:
-                        current_requirements.extend(prefs.dietary_restrictions)
-                    if hasattr(prefs, 'budget_range') and prefs.budget_range:
-                        current_requirements.append(f"budget: {prefs.budget_range}")
-
-            requirements_text = ', '.join(current_requirements) if current_requirements else 'None'
 
             # Prepare prompt variables
             prompt_vars = {
+                'conversation_history': self._format_conversation_context(session),
+                'memory_context': memory_context_text,
+                'active_destination': active_context.get('destination') or 'None',
+                'active_cuisine': active_context.get('cuisine') or 'None',
+                'active_radius': active_context.get('search_radius_km', 1.5),
+                'active_requirements': ', '.join(active_context.get('requirements', [])) or 'None',
+                'context_age': self._format_time_ago(time.time() - active_context.get('established_at', time.time())) if active_context else 'None',
+                'search_count': active_context.get('search_count', 0),
+                'time_ago': time_ago_text,
+                'shown_restaurants': ', '.join(shown_restaurants[:10]) if shown_restaurants else 'None',
+                'stored_location': stored_location_text,
                 'pending_gps': 'Yes' if pending_gps else 'No',
                 'pending_gps_cuisine': pending_gps_cuisine or 'None',
-                'last_search_type': session.get('last_search_type') or 'None',
-                'last_search_cuisine': session.get('last_search_cuisine') or 'None',
-                'last_search_destination': session.get('last_search_destination') or 'None',
-                'previous_search_radius_km': str(session.get('last_search_radius_km')) if session.get('last_search_radius_km') else 'None',
-                'memory_context': memory_context_text,
-                'conversation_history': self._format_conversation_context(session),
-                'current_cuisine': current_cuisine,
-                'current_destination': current_destination,
-                'stored_location': stored_location_text,
-                'has_gps': 'Yes' if current_gps else 'No',
                 'user_message': user_message,
-                'requirements': requirements_text, 
-                'last_shown_restaurants': ', '.join(session.get('last_shown_restaurants', [])) or 'None'
+                'has_gps': 'Yes' if gps_coordinates else 'No'
             }
 
             # Get AI decision
@@ -866,240 +358,136 @@ class AIChatLayer:
             )
 
             # Parse response
-            if hasattr(response, 'content'):
-                response_content = str(response.content)
-            else:
-                response_content = str(response)
-
-            try:
-                decision = self._parse_ai_response(response_content)
-            except json.JSONDecodeError:
-                logger.error(f"JSON parse error: {response_content}")
-                return HandoffMessage(
-                    command=HandoffCommand.CONTINUE_CONVERSATION,
-                    conversation_response="How can I help you find restaurants?",
-                    reasoning="JSON parse error",
-                    needs_gps=False
-                )
+            decision = self._parse_ai_response(response.content)
 
             # Extract decision fields
             action = decision.get('action', 'chat_response')
-            state_update = decision.get('state_update', {})
+            context_decision = decision.get('context_decision', {})
+            context_type = context_decision.get('type', 'NEW')
+            parameters = decision.get('parameters', {})
             response_text = decision.get('response_text', '')
             reasoning = decision.get('reasoning', '')
+            needs_gps = decision.get('needs_gps', False)
+            state_update = decision.get('state_update', {})
 
             # Handle clear_pending_gps signal
-            clear_pending = state_update.get('clear_pending_gps', False)
-            if clear_pending:
+            if state_update.get('clear_pending_gps'):
                 self.clear_pending_gps(user_id)
 
-            # Update session state
-            if state_update:
-                # Filter out control signals from accumulated state
-                state_for_accumulation = {k: v for k, v in state_update.items() 
-                                         if v is not None and k not in ['clear_pending_gps', 'needs_gps', 'is_complete']}
-                accumulated_state.update(state_for_accumulation)
-                session['accumulated_state'] = accumulated_state
+            logger.info(f"🤖 AI Decision: action={action}, context={context_type}, destination={parameters.get('destination')}, cuisine={parameters.get('cuisine')}")
 
-            # Extract key fields
-            search_mode = state_update.get('search_mode', '')
-            destination = state_update.get('destination', '')
-            cuisine = state_update.get('cuisine', '')
-            requirements = state_update.get('requirements', [])
-            preferences = state_update.get('preferences', {})
-            is_complete = state_update.get('is_complete', False)
-            needs_gps = state_update.get('needs_gps', False)
+            # ================================================================
+            # UPDATE ACTIVE CONTEXT based on context decision
+            # ================================================================
 
-            # Extract search radius (AI-determined)
-            search_radius_km = state_update.get('search_radius_km')
-            if search_radius_km is not None:
-                session['last_search_radius_km'] = search_radius_km
-                logger.info(f"📏 Search radius set to: {search_radius_km}km")
+            if action == 'execute_search':
+                if context_type == 'NEW':
+                    # Fresh context - replace everything
+                    session['active_context'] = {
+                        'destination': parameters.get('destination'),
+                        'cuisine': parameters.get('cuisine'),
+                        'search_radius_km': parameters.get('search_radius_km', 1.5),
+                        'requirements': parameters.get('requirements', []),
+                        'preferences': parameters.get('preferences', {}),
+                        'established_at': time.time(),
+                        'last_modified': time.time(),
+                        'search_count': 0
+                    }
+                    logger.info(f"🆕 NEW context: {parameters.get('destination')}, {parameters.get('cuisine')}")
 
-            # Store cuisine for follow-up
-            if cuisine:
-                session['current_cuisine'] = cuisine
+                elif context_type == 'MODIFY':
+                    # Update specific parameters, keep others
+                    if not active_context:
+                        active_context = {}
 
-            # Add assistant response to history
-            session['conversation_history'].append({
-                'role': 'assistant',
-                'message': response_text,
-                'timestamp': time.time()
-            })
+                    active_context.update({
+                        'destination': parameters.get('destination'),
+                        'cuisine': parameters.get('cuisine'),
+                        'search_radius_km': parameters.get('search_radius_km', 1.5),
+                        'requirements': parameters.get('requirements', active_context.get('requirements', [])),
+                        'preferences': parameters.get('preferences', active_context.get('preferences', {})),
+                        'last_modified': time.time()
+                    })
+                    session['active_context'] = active_context
 
-            logger.info(f"🤖 AI decision: action={action}, mode={search_mode}, complete={is_complete}, clear_pending={clear_pending}")
+                    modifications = parameters.get('modifications', {})
+                    logger.info(f"✏️ MODIFIED context: {modifications}")
+
+                elif context_type == 'CONTINUE':
+                    # Increment search count, keep everything else
+                    if active_context:
+                        active_context['search_count'] = active_context.get('search_count', 0) + 1
+                        session['active_context'] = active_context
+                    logger.info(f"➡️ CONTINUING context: {active_context.get('destination')}, {active_context.get('cuisine')}")
 
             # ================================================================
             # RETURN APPROPRIATE HANDOFF
             # ================================================================
 
-            # Handle GPS request - set pending state
+            # Handle GPS request
             if action == 'request_gps':
-                # Set pending GPS state with cuisine
-                extracted_cuisine = cuisine or pending_gps_cuisine or current_cuisine
-                if extracted_cuisine and extracted_cuisine != 'None':
-                    self.set_pending_gps(user_id, extracted_cuisine)
-                
+                # Set pending GPS state
+                cuisine = parameters.get('cuisine')
+                if cuisine:
+                    self.set_pending_gps(user_id, cuisine)
+
                 return HandoffMessage(
                     command=HandoffCommand.CONTINUE_CONVERSATION,
-                    conversation_response=response_text or "I need your location to find nearby restaurants.",
+                    conversation_response=response_text or "Please share your location to find nearby restaurants.",
                     reasoning=reasoning,
                     needs_gps=True
                 )
 
-            # Handle clarification requests
-            if action in ['chat_response', 'collect_info']:
+            # Handle chat response
+            if action == 'chat_response':
+                # Add assistant message to history
+                self.add_message(user_id, 'assistant', response_text)
+
                 return HandoffMessage(
                     command=HandoffCommand.CONTINUE_CONVERSATION,
-                    conversation_response=response_text or "How can I help?",
+                    conversation_response=response_text or "How can I help you find restaurants?",
                     reasoning=reasoning,
                     needs_gps=needs_gps
                 )
 
-            # Handle search trigger
-            if action == 'trigger_search' and is_complete:
-                # Check if follow-up request for city search
-                if search_mode == 'follow_up_more_results':
-                    original_thread_id = session.get('last_search_thread_id')
-                    if not original_thread_id:
-                        return HandoffMessage(
-                            command=HandoffCommand.CONTINUE_CONVERSATION,
-                            conversation_response="I couldn't find your previous search. What are you looking for?",
-                            reasoning="Missing original thread_id",
-                            needs_gps=False
-                        )
-                    return create_resume_handoff(
-                        thread_id=original_thread_id,
-                        decision="yes"
-                    )
-
-                # Handle Google Maps "more" for location searches
-                if search_mode == 'google_maps_more':
-                    # Use last search context
-                    last_cuisine = session.get('last_search_cuisine') or cuisine
-                    last_destination = session.get('last_search_destination') or destination
-
-                    # Get stored GPS or location context
-                    stored_gps = current_gps or session.get('gps_coordinates')
-                    if not stored_gps:
-                        # Try to get from location context
-                        loc_ctx = self.get_location_context(user_id)
-                        if loc_ctx and loc_ctx.get('coordinates'):
-                            stored_gps = loc_ctx['coordinates']
-
-                    if not stored_gps and last_destination:
-                        # Geocode the last destination
-                        try:
-                            stored_gps = geocode_location(last_destination)
-                        except Exception as e:
-                            logger.warning(f"Could not geocode {last_destination}: {e}")
-
-                    # NEW: Extract follow-up context from AI decision
-                    supervisor_instructions = state_update.get('supervisor_instructions')
-                    exclude_restaurants = state_update.get('exclude_restaurants', [])
-                    modified_query = state_update.get('modified_query')
-                    is_follow_up = state_update.get('is_follow_up', True)  # Default True for "more" requests
-
-                    # If AI didn't provide exclude list, use session's shown restaurants
-                    if not exclude_restaurants:
-                        exclude_restaurants = session.get('last_shown_restaurants', [])
-
-                    # If AI didn't provide supervisor_instructions but we have exclusions, generate basic ones
-                    if not supervisor_instructions and exclude_restaurants:
-                        exclude_list = ', '.join(exclude_restaurants[:10])
-                        supervisor_instructions = f"User wants MORE {last_cuisine} options. EXCLUDE already shown: {exclude_list}. Find DIFFERENT restaurants."
-
-                    # Use modified_query if AI provided one, otherwise build default
-                    final_query = modified_query or f"more {last_cuisine} near {last_destination}"
-
-                    logger.info(f"🗺️ Google Maps MORE: cuisine={last_cuisine}, dest={last_destination}, gps={stored_gps is not None}")
-                    if supervisor_instructions:
-                        logger.info(f"📋 Supervisor instructions: {supervisor_instructions[:80]}...")
-                    if exclude_restaurants:
-                        logger.info(f"🚫 Excluding {len(exclude_restaurants)} restaurants")
-
-                    return create_search_handoff(
-                        destination=last_destination or "nearby",
-                        cuisine=last_cuisine,
-                        search_type=SearchType.LOCATION_MAPS_SEARCH,  # Use maps-only type
-                        user_query=final_query,
-                        user_id=user_id,
-                        thread_id=thread_id,
-                        gps_coordinates=stored_gps,
-                        requirements=requirements,
-                        preferences={},
-                        clear_previous=False,
-                        is_new_destination=False,
-                        reasoning=f"Maps-only search for more options: {reasoning}",
-                        # Follow-up context for downstream agents
-                        supervisor_instructions=supervisor_instructions,
-                        exclude_restaurants=exclude_restaurants,
-                        modified_query=modified_query,
-                        is_follow_up=is_follow_up,
-                        search_radius_km=search_radius_km  # Dynamic radius
-                    )
-
-                # Store for follow-up
-                session['last_search_time'] = time.time()
-                session['last_search_thread_id'] = thread_id
-
-                # Store location context
-                if destination:
-                    self.store_location_context(
-                        user_id=user_id,
-                        location=destination,
-                        coordinates=current_gps,
-                        search_type=search_mode
-                    )
-
-                # Handle geocoding for coordinates_search
-                geocoded_coordinates = None
-                if search_mode == 'coordinates_search' and destination and not current_gps:
-                    try:
-                        geocoded_coordinates = geocode_location(destination)
-                        if geocoded_coordinates:
-                            logger.info(f"📍 Geocoded '{destination}' to {geocoded_coordinates}")
-                    except Exception as geocoding_error:
-                        logger.warning(f"⚠️ Geocoding failed for '{destination}': {geocoding_error}")
-                        return HandoffMessage(
-                            command=HandoffCommand.CONTINUE_CONVERSATION,
-                            conversation_response=f"I couldn't find the exact location for '{destination}'. Could you be more specific?",
-                            reasoning=f"Geocoding failed: {str(geocoding_error)}",
-                            needs_gps=True
-                        )
-
-                # Determine final coordinates
-                final_coordinates = current_gps or geocoded_coordinates
-
+            # Handle execute_search
+            if action == 'execute_search':
                 # Determine search type
-                if search_mode in ['gps_search', 'coordinates_search']:
-                    search_type_hint = SearchType.LOCATION_SEARCH
+                search_mode = parameters.get('search_mode', 'CITY_SEARCH')
+
+                if search_mode == 'CITY_SEARCH':
+                    search_type = SearchType.CITY_SEARCH
                 else:
-                    search_type_hint = SearchType.CITY_SEARCH
+                    search_type = SearchType.LOCATION_SEARCH
 
-                logger.info(f"🔍 Creating search handoff: mode={search_mode}, type={search_type_hint.value}")
-
-                return create_search_handoff(
-                    destination=destination or "unknown",
-                    cuisine=cuisine,
-                    search_type=search_type_hint,
+                # Build search context
+                search_context = SearchContext(
+                    destination=parameters.get('destination', ''),
+                    cuisine=parameters.get('cuisine'),
+                    search_type=search_type,
+                    gps_coordinates=gps_coordinates,
+                    search_radius_km=parameters.get('search_radius_km', 1.5),
+                    requirements=parameters.get('requirements', []),
+                    preferences=parameters.get('preferences', {}),
                     user_query=user_message,
+                    is_follow_up=(context_type == 'CONTINUE'),
+                    exclude_restaurants=shown_restaurants if context_type == 'CONTINUE' else [],
                     user_id=user_id,
-                    thread_id=thread_id,
-                    gps_coordinates=final_coordinates,
-                    requirements=requirements,
-                    preferences=preferences,
-                    clear_previous=False,
-                    is_new_destination=False,
-                    reasoning=reasoning,
-                    search_radius_km=search_radius_km  # Dynamic radius
+                    thread_id=thread_id or f"chat_{user_id}",
+                    supervisor_instructions=f"Context decision: {context_type}. {context_decision.get('reasoning', '')}"
                 )
 
-            # Unknown action - fallback
+                return HandoffMessage(
+                    command=HandoffCommand.EXECUTE_SEARCH,
+                    search_context=search_context,
+                    reasoning=reasoning
+                )
+
+            # Fallback
             return HandoffMessage(
                 command=HandoffCommand.CONTINUE_CONVERSATION,
-                conversation_response=response_text or "Let me help you find restaurants.",
-                reasoning=f"Unknown action: {action}",
+                conversation_response="How can I help you find restaurants?",
+                reasoning="Unknown action",
                 needs_gps=False
             )
 
@@ -1117,108 +505,193 @@ class AIChatLayer:
     # ============================================================================
 
     def _get_or_create_session(self, user_id: int, thread_id: str) -> Dict[str, Any]:
-        """Get or create user session with pending GPS fields"""
+        """Get or create user session with active context tracking"""
         if user_id not in self.user_sessions:
             self.user_sessions[user_id] = {
                 'user_id': user_id,
                 'thread_id': thread_id,
                 'created_at': time.time(),
-                'state': ConversationState.GREETING,
                 'conversation_history': [],
-                'accumulated_state': {},
-                'current_destination': None,
-                'current_cuisine': None,
-                'gps_coordinates': None,
-                'gps_timestamp': None,
-                'last_search_time': None,
-                'last_search_thread_id': None,
-                'current_location': None,
-                'history_loaded': False,
-                # Pending GPS state
-                'pending_gps': False,
-                'pending_gps_cuisine': None,
-                'pending_gps_timestamp': None,
-                # Last search tracking (for "more" requests and duplicate detection)
-                'last_search_type': None,  # 'city_search' or 'location_search'
-                'last_search_cuisine': None,
-                'last_search_destination': None,
-                'last_shown_restaurants': [],  # List of restaurant names shown
+
+                # Active context (what we're currently discussing)
+                'active_context': {},
+
+                # Last search (for "more results" and exclusions)
+                'last_search': {},
+
+                # Location storage
+                'stored_location': {},
+
+                # GPS state
+                'pending_gps': {
+                    'active': False,
+                    'cuisine': None,
+                    'timestamp': None
+                }
             }
 
-            # Load persistent conversation history from Supabase
-            if self.memory_store:
-                try:
-                    import asyncio
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.create_task(self._load_persistent_history(user_id))
-                    else:
-                        loop.run_until_complete(self._load_persistent_history(user_id))
-                except RuntimeError:
-                    asyncio.run(self._load_persistent_history(user_id))
-                except Exception as e:
-                    logger.warning(f"Could not load persistent history: {e}")
+            logger.info(f"🆕 Created new session for user {user_id}")
 
         return self.user_sessions[user_id]
 
-    async def _load_persistent_history(self, user_id: int) -> None:
-        """Load conversation history from Supabase into session"""
-        try:
-            if self.memory_store:
-                history = await self.memory_store.get_conversation_history(user_id, limit=10)
-                if history and user_id in self.user_sessions:
-                    self.user_sessions[user_id]['conversation_history'] = history
-                    logger.info(f"📜 Loaded {len(history)} messages from history for user {user_id}")
-        except Exception as e:
-            logger.error(f"Error loading persistent history: {e}")
-
-    async def _ensure_history_loaded(self, user_id: int) -> None:
-        """Load history from Supabase if not already loaded"""
+    def update_last_search(
+        self,
+        user_id: int,
+        search_type: str,
+        cuisine: Optional[str] = None,
+        destination: Optional[str] = None,
+        coordinates: Optional[Tuple[float, float]] = None,
+        search_radius_km: Optional[float] = None,
+        restaurants: Optional[List[Dict]] = None
+    ) -> None:
+        """Update last search metadata after successful search"""
         session = self.user_sessions.get(user_id)
-        if not session or session.get('history_loaded'):
+        if not session:
             return
 
-        if not session['conversation_history'] and self.memory_store:
-            try:
-                history = await self.memory_store.get_conversation_history(user_id, limit=10)
-                if history:
-                    session['conversation_history'] = history
-                    logger.info(f"📜 Restored {len(history)} messages from DB for user {user_id}")
-            except Exception as e:
-                logger.warning(f"Could not load history from DB: {e}")
+        # Extract restaurant names for exclusion
+        shown_restaurants = []
+        if restaurants:
+            for r in restaurants[:20]:  # Keep last 20
+                name = r.get('name') or r.get('restaurant_name') or r.get('title', '')
+                if name:
+                    shown_restaurants.append(name.lower().strip())
 
-        session['history_loaded'] = True
+        # Update last search
+        session['last_search'] = {
+            'timestamp': time.time(),
+            'type': search_type,
+            'parameters': {
+                'cuisine': cuisine,
+                'destination': destination,
+                'coordinates': coordinates,
+                'search_radius_km': search_radius_km
+            },
+            'shown_restaurants': shown_restaurants
+        }
 
-    def _save_message_async(self, user_id: int, role: str, message: str) -> None:
-        """Save message to Supabase in background"""
-        if not self.memory_store:
-            return
+        logger.info(f"✅ Updated last search for user {user_id}: {search_type}, {cuisine}, {destination}")
 
-        import asyncio
+    # ============================================================================
+    # MESSAGE HANDLING
+    # ============================================================================
 
-        memory_store = self.memory_store
+    def add_message(self, user_id: int, role: str, content: str) -> None:
+        """Add a message to conversation history"""
+        session = self._get_or_create_session(user_id, f"msg_{user_id}")
 
-        async def _save():
-            try:
-                await memory_store.add_conversation_message(user_id, role, message)
-                logger.debug(f"💾 Backed up {role} message to Supabase for user {user_id}")
-            except Exception as e:
-                logger.warning(f"Background save failed: {e}")
+        session['conversation_history'].append({
+            'role': role,
+            'message': content,
+            'timestamp': time.time()
+        })
 
+        # Keep only last 10 messages in memory
+        if len(session['conversation_history']) > 10:
+            session['conversation_history'] = session['conversation_history'][-10:]
+
+        # Backup to Supabase (async, non-blocking)
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(_save())
-            else:
-                loop.run_until_complete(_save())
-        except RuntimeError:
-            try:
-                asyncio.run(_save())
-            except Exception as e:
-                logger.debug(f"Could not schedule background save: {e}")
+            asyncio.create_task(self._save_message_to_supabase(user_id, role, content))
+        except:
+            pass  # Don't block on backup failure
+
+    def add_search_results(self, user_id: int, formatted_results: str, search_context: Optional[Dict] = None) -> None:
+        """Add search results to conversation history"""
+        self.add_message(user_id, 'assistant', formatted_results)
+
+    async def _save_message_to_supabase(self, user_id: int, role: str, content: str):
+        """Backup message to Supabase (non-blocking)"""
+        try:
+            from utils.database import execute_query
+
+            query = """
+            INSERT INTO conversation_messages (user_id, role, message, created_at)
+            VALUES (%s, %s, %s, NOW())
+            """
+
+            await execute_query(query, (user_id, role, content[:5000]))  # Truncate long messages
+        except Exception as e:
+            logger.debug(f"Could not backup message to Supabase: {e}")
+
+    # ============================================================================
+    # GPS STATE MANAGEMENT
+    # ============================================================================
+
+    def set_pending_gps(self, user_id: int, cuisine: str):
+        """Set pending GPS state - user needs to provide location"""
+        session = self.user_sessions.get(user_id)
+        if not session:
+            session = self._get_or_create_session(user_id, f"gps_{user_id}")
+
+        session['pending_gps'] = {
+            'active': True,
+            'cuisine': cuisine,
+            'timestamp': time.time()
+        }
+
+        logger.info(f"📍 Set pending GPS for user {user_id}: {cuisine}")
+
+    def clear_pending_gps(self, user_id: int):
+        """Clear pending GPS state"""
+        session = self.user_sessions.get(user_id)
+        if session:
+            session['pending_gps'] = {
+                'active': False,
+                'cuisine': None,
+                'timestamp': None
+            }
+            logger.info(f"✅ Cleared pending GPS for user {user_id}")
+
+    def get_pending_gps_state(self, user_id: int) -> Dict[str, Any]:
+        """Get pending GPS state"""
+        session = self.user_sessions.get(user_id)
+        if not session:
+            return {'pending_gps': False}
+
+        pending = session.get('pending_gps', {})
+
+        # Check if expired (30 minutes)
+        if pending.get('active') and pending.get('timestamp'):
+            age = time.time() - pending['timestamp']
+            if age > 1800:  # 30 minutes
+                self.clear_pending_gps(user_id)
+                return {'pending_gps': False}
+
+        return {
+            'pending_gps': pending.get('active', False),
+            'pending_gps_cuisine': pending.get('cuisine')
+        }
+
+    # ============================================================================
+    # LOCATION CONTEXT
+    # ============================================================================
+
+    def store_location_context(
+        self,
+        user_id: int,
+        location: str,
+        coordinates: Optional[Tuple[float, float]] = None
+    ) -> None:
+        """Store location context with 30-minute expiry"""
+        session = self.user_sessions.get(user_id)
+        if not session:
+            session = self._get_or_create_session(user_id, f"loc_{user_id}")
+
+        session['stored_location'] = {
+            'name': location,
+            'coordinates': coordinates,
+            'stored_at': time.time()
+        }
+
+        logger.info(f"📍 Stored location for user {user_id}: {location}")
+
+    # ============================================================================
+    # FORMATTING HELPERS
+    # ============================================================================
 
     def _format_conversation_context(self, session: Dict[str, Any]) -> str:
-        """Format conversation history for AI"""
+        """Format conversation history for prompt"""
         history = session.get('conversation_history', [])
         if not history:
             return "No previous conversation."
@@ -1228,12 +701,57 @@ class AIChatLayer:
             role = msg.get('role', 'user').upper()
             content = msg.get('message', '')
 
+            # Truncate very long messages
             if len(content) > 2000:
                 content = content[:2000] + "\n... [truncated]"
 
             formatted.append(f"[{role}]: {content}")
 
         return "\n\n".join(formatted)
+
+    def _format_memory_context(self, user_context: Optional[Dict[str, Any]]) -> str:
+        """Format user memory context for AI prompt"""
+        if not user_context:
+            return "No memory available for this user (new user)."
+
+        parts = []
+
+        # Preferences
+        prefs = user_context.get("preferences")
+        if prefs:
+            if hasattr(prefs, 'preferred_cuisines') and prefs.preferred_cuisines:
+                parts.append(f"Preferred cuisines: {', '.join(prefs.preferred_cuisines)}")
+            if hasattr(prefs, 'dietary_restrictions') and prefs.dietary_restrictions:
+                parts.append(f"Dietary restrictions: {', '.join(prefs.dietary_restrictions)}")
+            if hasattr(prefs, 'budget_range') and prefs.budget_range:
+                parts.append(f"Budget preference: {prefs.budget_range}")
+
+        # Restaurant history
+        history = user_context.get("restaurant_history", [])
+        if history:
+            recent = history[:10]
+            restaurant_names = [r.restaurant_name if hasattr(r, 'restaurant_name') else r.get('restaurant_name', 'Unknown') 
+                              for r in recent]
+            parts.append(f"Recently recommended (AVOID repeating): {', '.join(restaurant_names)}")
+
+        if not parts:
+            return "User has no stored preferences yet."
+
+        return "\n".join(parts)
+
+    def _format_time_ago(self, seconds: float) -> str:
+        """Format time ago in human-readable format"""
+        if seconds < 60:
+            return "just now"
+        elif seconds < 3600:
+            mins = int(seconds / 60)
+            return f"{mins} min ago"
+        elif seconds < 86400:
+            hours = int(seconds / 3600)
+            return f"{hours} hour{'s' if hours > 1 else ''} ago"
+        else:
+            days = int(seconds / 86400)
+            return f"{days} day{'s' if days > 1 else ''} ago"
 
     def _parse_ai_response(self, response_text: str) -> Dict[str, Any]:
         """Parse AI response (handles markdown code blocks)"""
@@ -1248,126 +766,26 @@ class AIChatLayer:
         return json.loads(cleaned)
 
     # ============================================================================
-    # LOCATION CONTEXT MANAGEMENT
+    # SESSION CLEANUP
     # ============================================================================
-
-    def store_location_context(
-        self,
-        user_id: int,
-        location: str,
-        coordinates: Optional[Tuple[float, float]] = None,
-        search_type: str = "city_search"
-    ) -> None:
-        """Store location context with automatic 30-minute expiry"""
-        session = self.user_sessions.get(user_id)
-        if not session:
-            session = {
-                'user_id': user_id,
-                'created_at': time.time()
-            }
-            self.user_sessions[user_id] = session
-
-        session['current_location'] = {
-            'location': location,
-            'coordinates': coordinates,
-            'search_type': search_type,
-            'stored_at': time.time()
-        }
-
-        self.location_contexts[user_id] = session['current_location']
-
-        coord_str = f" ({coordinates[0]:.4f}, {coordinates[1]:.4f})" if coordinates else ""
-        logger.info(f"📍 Stored location for user {user_id}: {location}{coord_str} (expires in 30 min)")
-
-    def get_location_context(self, user_id: int, max_age_minutes: int = 30) -> Optional[Dict[str, Any]]:
-        """Get current location context if still valid"""
-        session = self.user_sessions.get(user_id)
-        if not session:
-            context = self.location_contexts.get(user_id)
-            if context:
-                age_minutes = (time.time() - context['stored_at']) / 60
-                if age_minutes > max_age_minutes:
-                    del self.location_contexts[user_id]
-                    return None
-                return context
-            return None
-
-        location_ctx = session.get('current_location')
-        if not location_ctx:
-            return None
-
-        stored_at = location_ctx.get('stored_at', 0)
-        age_seconds = time.time() - stored_at
-        max_age_seconds = max_age_minutes * 60
-
-        if age_seconds > max_age_seconds:
-            age_minutes = age_seconds / 60
-            logger.info(f"⏰ Location context expired for user {user_id} ({age_minutes:.1f} min old)")
-            del session['current_location']
-            return None
-
-        return location_ctx
-
-    def clear_location_context(self, user_id: int) -> None:
-        """Clear stored location context"""
-        session = self.user_sessions.get(user_id)
-        if session and 'current_location' in session:
-            old_location = session['current_location'].get('location', 'unknown')
-            del session['current_location']
-            logger.info(f"🗑️ Cleared location context for user {user_id} (was: {old_location})")
-
-        if user_id in self.location_contexts:
-            del self.location_contexts[user_id]
-
-    def get_location_age_minutes(self, user_id: int) -> Optional[float]:
-        """Get age of stored location in minutes"""
-        session = self.user_sessions.get(user_id)
-        if not session:
-            return None
-
-        location_ctx = session.get('current_location')
-        if not location_ctx:
-            return None
-
-        stored_at = location_ctx.get('stored_at', 0)
-        age_seconds = time.time() - stored_at
-        return age_seconds / 60
 
     def clear_session(self, user_id: int):
         """Clear user session but keep location context"""
         if user_id in self.user_sessions:
             session = self.user_sessions[user_id]
-            location_context = session.get('current_location')
+            location_context = session.get('stored_location')
 
-            session['current_destination'] = None
-            session['current_cuisine'] = None
-            session['state'] = ConversationState.GREETING
-            session['accumulated_state'] = {}
-            session['last_search_time'] = None
+            # Clear active context and history
+            session['active_context'] = {}
             session['conversation_history'] = []
-            # Also clear pending GPS
-            session['pending_gps'] = False
-            session['pending_gps_cuisine'] = None
-            session['pending_gps_timestamp'] = None
+            session['last_search'] = {}
+            session['pending_gps'] = {'active': False, 'cuisine': None, 'timestamp': None}
 
             if location_context:
-                loc_name = location_context.get('location', 'unknown')
-                logger.info(f"🧹 Cleared session for user {user_id} (kept location context: {loc_name})")
+                logger.info(f"🧹 Cleared session for user {user_id} (kept location context)")
             else:
                 logger.info(f"🧹 Cleared session for user {user_id}")
 
     def get_session_info(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get current session info"""
         return self.user_sessions.get(user_id)
-
-    def _extract_city_from_destination(self, destination: str) -> Optional[str]:
-        """Extract city name from destination string"""
-        if not destination:
-            return None
-
-        parts = [p.strip() for p in destination.split(',')]
-
-        if len(parts) > 1:
-            return parts[-1]
-
-        return parts[0]
