@@ -439,7 +439,7 @@ class LangGraphSupervisor:
         logger.info(f"🔍 Search requested: type={search_ctx.search_type.value}, "
                f"destination='{search_ctx.destination}', cuisine='{search_ctx.cuisine}'")
         if search_ctx.search_radius_km:
-        logger.info(f"📏 Search radius: {search_ctx.search_radius_km}km (AI-determined)")
+            logger.info(f"📏 Search radius: {search_ctx.search_radius_km}km (AI-determined)")
 
 
         # Build search query from context
