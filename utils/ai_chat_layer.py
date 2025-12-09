@@ -158,6 +158,10 @@ YOUR TASK
      * The COMMA is critical for distinguishing city-wide vs neighborhood searches
 
    - **cuisine**: Extract from message OR infer from active context OR infer from conversation
+     * Include ALL food/drink types: restaurants, bars, cafes, bakeries, wine bars, cocktail bars, etc.
+     * "cocktail bars" → "cocktail bars"
+     * "coffee shops" → "coffee shops"
+     * "wine bars" → "wine bars"
 
    - **search_radius_km**: Extract if mentioned OR use active context OR default 1.5
      * "within 5 min walk" → ~0.4km
