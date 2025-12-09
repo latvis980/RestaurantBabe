@@ -534,7 +534,7 @@ IMPORTANT RULES:
 
         return self.user_sessions[user_id]
 
-    def update_last_search(
+    def update_last_search_context(
         self,
         user_id: int,
         search_type: str,
@@ -571,6 +571,28 @@ IMPORTANT RULES:
         }
 
         logger.info(f"✅ Updated last search for user {user_id}: {search_type}, {cuisine}, {destination}")
+
+    def get_last_search_context(self, user_id: int) -> Dict[str, Any]:
+        """Get last search context for follow-up requests"""
+        session = self.user_sessions.get(user_id)
+        if not session:
+            return {}
+
+        last_search = session.get('last_search', {})
+        if not last_search:
+            return {}
+
+        # Return in format expected by orchestrator
+        params = last_search.get('parameters', {})
+        return {
+            'search_type': last_search.get('type'),
+            'cuisine': params.get('cuisine'),
+            'destination': params.get('destination'),
+            'coordinates': params.get('coordinates'),
+            'search_radius_km': params.get('search_radius_km'),
+            'shown_restaurants': last_search.get('shown_restaurants', []),
+            'timestamp': last_search.get('timestamp')
+        }
 
     # ============================================================================
     # MESSAGE HANDLING
