@@ -437,7 +437,10 @@ class LangGraphSupervisor:
             }
 
         logger.info(f"🔍 Search requested: type={search_ctx.search_type.value}, "
-                   f"destination='{search_ctx.destination}', cuisine='{search_ctx.cuisine}'")
+               f"destination='{search_ctx.destination}', cuisine='{search_ctx.cuisine}'")
+        if search_ctx.search_radius_km:
+        logger.info(f"📏 Search radius: {search_ctx.search_radius_km}km (AI-determined)")
+
 
         # Build search query from context
         search_query = self._build_search_query(search_ctx)
@@ -483,7 +486,7 @@ class LangGraphSupervisor:
                     start_time=start_time
                 )
 
-                # ✅ NEW: Update AI Chat Layer session for follow-up "more" requests
+                # Update AI Chat Layer session for follow-up "more" requests
                 if result.get("success"):
                     restaurants = result.get("final_restaurants", [])
                     self.ai_chat_layer.update_last_search_context(
@@ -492,7 +495,8 @@ class LangGraphSupervisor:
                         cuisine=search_ctx.cuisine,
                         destination=search_ctx.destination,
                         restaurants=restaurants,
-                        coordinates=search_gps
+                        coordinates=search_gps,
+                        search_radius_km=search_ctx.search_radius_km  # Track radius for "closer"/"further"
                     )
             else:
                 # ----- CITY SEARCH (city-wide) -----
@@ -793,9 +797,10 @@ class LangGraphSupervisor:
                 query=search_query,
                 location_data=location_data,
                 cancel_check_fn=cancel_check_fn,
-                maps_only=True,  # KEY: Skip database, go directly to Google Maps
+                maps_only=False,  # Normal flow: database first, then maps if needed
                 supervisor_instructions=search_ctx.supervisor_instructions,
-                exclude_restaurants=search_ctx.exclude_restaurants
+                exclude_restaurants=search_ctx.exclude_restaurants,
+                search_radius_km=search_ctx.search_radius_km  # Dynamic radius from AI
             )
 
             processing_time = round(time.time() - start_time, 2)
@@ -869,7 +874,10 @@ class LangGraphSupervisor:
                 query=search_query,
                 location_data=location_data,
                 cancel_check_fn=cancel_check_fn,
-                maps_only=True  # KEY: Skip database, go directly to Google Maps
+                maps_only=True,  # KEY: Skip database, go directly to Google Maps
+                supervisor_instructions=search_ctx.supervisor_instructions if search_ctx else None,
+                exclude_restaurants=search_ctx.exclude_restaurants if search_ctx else None,
+                search_radius_km=search_ctx.search_radius_km if search_ctx else None  # Dynamic radius
             )
 
             processing_time = round(time.time() - start_time, 2)

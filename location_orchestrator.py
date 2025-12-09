@@ -98,7 +98,7 @@ class LocationOrchestrator:
         self.verification_agent = FollowUpSearchAgent(config)
 
         # Pipeline settings
-        self.db_search_radius = getattr(config, 'DB_PROXIMITY_RADIUS_KM', 2.0)
+        self.db_search_radius = getattr(config, 'DB_PROXIMITY_RADIUS_KM', 1.5)  # Default 1.5km
         self.min_db_matches = 2
         self.max_venues_to_verify = getattr(config, 'MAX_LOCATION_RESULTS', 8)
 
@@ -306,7 +306,7 @@ class LocationOrchestrator:
     async def _database_search_step(self, pipeline_input: Dict[str, Any]) -> Dict[str, Any]:
         """
         Step 2: Database Proximity Search
-        
+
         Searches for restaurants within radius of coordinates.
         Delegates to LocationDatabaseService.search_by_proximity()
         """
@@ -317,12 +317,15 @@ class LocationOrchestrator:
 
             coordinates = pipeline_input["coordinates"]
 
-            logger.info(f"🗃️ Step 2: Database search within {self.db_search_radius}km")
+            # Use dynamic radius from pipeline_input (AI-determined or default)
+            search_radius = pipeline_input.get("search_radius_km", self.db_search_radius)
+
+            logger.info(f"🗃️ Step 2: Database search within {search_radius}km")
 
             # Delegate to LocationDatabaseService (synchronous call)
             db_restaurants = self.database_service.search_by_proximity(
                 coordinates=coordinates,
-                radius_km=self.db_search_radius,
+                radius_km=search_radius,
                 extract_descriptions=True
             )
 
@@ -623,10 +626,13 @@ class LocationOrchestrator:
             # Sub-step 1: Google Maps search
             logger.info("🗺️ Sub-step 1: Google Maps search")
 
+            search_radius = pipeline_input.get("search_radius_km", self.db_search_radius)
+
             map_venues = await self.map_search_agent.search_venues_with_ai_analysis(
                 coordinates=coordinates,
                 query=query,
-                cancel_check_fn=cancel_check_fn
+                cancel_check_fn=cancel_check_fn,
+                search_radius_km=search_radius
             )
 
             if cancel_check_fn and cancel_check_fn():
@@ -914,16 +920,17 @@ class LocationOrchestrator:
     # PUBLIC API - MAIN ENTRY POINTS
     # ============================================================================
 
-    @traceable(run_type="chain", name="location_search_pipeline", metadata={"pipeline_type": "langchain_lcel"})
     async def process_location_query(
         self,
         query: str,
         location_data: LocationData,
         cancel_check_fn: Optional[Callable] = None,
         maps_only: bool = False,
-        # NEW: Follow-up context from supervisor
+        # Follow-up context from supervisor
         supervisor_instructions: Optional[str] = None,
-        exclude_restaurants: Optional[List[str]] = None
+        exclude_restaurants: Optional[List[str]] = None,
+        # Dynamic search radius (AI-determined)
+        search_radius_km: Optional[float] = None
     ) -> Dict[str, Any]:
         """
         Process a location search query through the LCEL pipeline (ASYNC)
@@ -948,13 +955,17 @@ class LocationOrchestrator:
             flow_type = "MAPS-ONLY" if maps_only else "NORMAL"
             logger.info(f"🚀 Starting location search pipeline: '{query[:50]}...' | Flow: {flow_type}")
 
-            # NEW: Log supervisor context if present
+            # Determine effective search radius
+            effective_radius = search_radius_km if search_radius_km is not None else self.db_search_radius
+            logger.info(f"📏 Search radius: {effective_radius}km" + (" (AI-specified)" if search_radius_km else " (default)"))
+
+            # Log supervisor context if present
             if supervisor_instructions:
                 logger.info(f"📋 Supervisor instructions: {supervisor_instructions[:100]}...")
             if exclude_restaurants:
                 logger.info(f"🚫 Excluding {len(exclude_restaurants)} restaurants")
 
-            # Prepare pipeline input
+
             pipeline_input = {
                 "query": query,
                 "raw_query": query,
@@ -962,9 +973,11 @@ class LocationOrchestrator:
                 "cancel_check_fn": cancel_check_fn,
                 "maps_only": maps_only,
                 "start_time": start_time,
-                # NEW: Follow-up context
+                # Follow-up context
                 "supervisor_instructions": supervisor_instructions,
-                "exclude_restaurants": exclude_restaurants or []
+                "exclude_restaurants": exclude_restaurants or [],
+                # Dynamic search radius
+                "search_radius_km": effective_radius
             }
 
         # Execute the pipeline with tracing
@@ -986,6 +999,8 @@ class LocationOrchestrator:
             processing_time = round(time.time() - start_time, 2)
             result["processing_time"] = processing_time
             result["pipeline_type"] = "langchain_lcel"
+            
+            result["search_radius_km"] = effective_radius
 
             # Flush traces
             try:
@@ -1027,9 +1042,11 @@ class LocationOrchestrator:
         coordinates: Tuple[float, float],
         location_desc: str,
         cancel_check_fn: Optional[Callable] = None,
-        # NEW: Follow-up context from supervisor
+        # Follow-up context from supervisor
         supervisor_instructions: Optional[str] = None,
-        exclude_restaurants: Optional[List[str]] = None
+        exclude_restaurants: Optional[List[str]] = None,
+        # Dynamic search radius
+        search_radius_km: Optional[float] = None
     ) -> Dict[str, Any]:
         """
         Process a "more results" query - goes directly to Google Maps
@@ -1072,7 +1089,8 @@ class LocationOrchestrator:
                 cancel_check_fn=cancel_check_fn,
                 maps_only=True,
                 supervisor_instructions=supervisor_instructions,
-                exclude_restaurants=exclude_restaurants
+                exclude_restaurants=exclude_restaurants,
+                search_radius_km=search_radius_km
             )
 
             return result

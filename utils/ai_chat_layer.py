@@ -209,7 +209,8 @@ class AIChatLayer:
             "is_complete": true | false,
             "requirements": ["outdoor", "romantic", etc.],
             "raw_query": "original user message",
-            "clear_pending_gps": true | false
+            "clear_pending_gps": true | false,
+            "search_radius_km": <number or null>
         }},
         "reasoning": "Brief explanation of your decision"
     }}
@@ -391,6 +392,41 @@ class AIChatLayer:
     5. **Use natural language** - downstream AI will interpret this, not code
 
     For INITIAL searches (not follow-ups), supervisor_instructions should be null or omitted.
+
+    ## SEARCH_RADIUS_KM RULES (for location-based searches only)
+
+    The search_radius_km field controls how far to search from the user's location.
+    YOU must analyze the user's message and determine the appropriate radius.
+
+    **Default (1.5 km):** Use when user says generic things like:
+    - "nearby", "around me", "around here", "close by", "in this area"
+    - No specific distance mentioned
+    - Example: "find coffee nearby" → search_radius_km: 1.5
+
+    **Calculate from user input:** Convert user's distance hints to kilometers:
+    - "5 minute walk" → 0.4 km (assume 80m/min walking speed)
+    - "10 minute walk" → 0.8 km
+    - "15 minute walk" → 1.2 km
+    - "within 1 km" → 1.0 km
+    - "within 500 meters" → 0.5 km
+    - "within 2 km" → 2.0 km
+    - "very close" → 0.5 km
+    - "a bit further" → 2.5 km
+
+    **For "closer" follow-up requests:** When user wants CLOSER results after seeing initial ones:
+    - Check the previous_search_radius_km value
+    - Set search_radius_km to roughly HALF of the previous radius
+    - Minimum: 0.3 km (can't go below this)
+    - Example: Previous was 1.5 km, user says "closer" → search_radius_km: 0.75
+
+    **For "further" follow-up requests:** When user wants results FURTHER away:
+    - Set search_radius_km to roughly 1.5x-2x of the previous radius
+    - Maximum: 5.0 km
+    - Example: Previous was 1.5 km, user says "further" → search_radius_km: 2.5
+
+    **When to set null:** 
+    - City searches (not GPS-based) → search_radius_km: null
+    - When user explicitly mentions a neighborhood/area name without GPS
     
     """),
             ("human", """## CURRENT STATE
@@ -404,6 +440,7 @@ class AIChatLayer:
     - Last Cuisine: {last_search_cuisine}
     - Last Destination: {last_search_destination}
     - Already Shown Restaurants: {last_shown_restaurants}
+    - Previous Search Radius (km): {previous_search_radius_km}
 
     **Memory Context (user's history):**
     {memory_context}
@@ -423,7 +460,9 @@ class AIChatLayer:
     **Current Message:**
     {user_message}
 
-    Respond with valid JSON only, no markdown code blocks.""")
+    Respond with valid JSON only, no markdown code blocks.
+    
+    """)
         ])
 
         self.conversation_chain = self.conversation_prompt | self.llm
@@ -591,7 +630,8 @@ class AIChatLayer:
         cuisine: Optional[str] = None,
         destination: Optional[str] = None,
         restaurants: Optional[List[Dict[str, Any]]] = None,
-        coordinates: Optional[Tuple[float, float]] = None
+        coordinates: Optional[Tuple[float, float]] = None,
+        search_radius_km: Optional[float] = None  # Track radius for "closer"/"further"
     ) -> None:
         """
         Update session with last search context for follow-up "more" requests.
@@ -615,6 +655,9 @@ class AIChatLayer:
         if coordinates:
             session['gps_coordinates'] = coordinates
             session['gps_timestamp'] = time.time()
+
+        if search_radius_km is not None:
+            session['last_search_radius_km'] = search_radius_km
 
         # Store shown restaurants for duplicate detection
         if restaurants:
@@ -805,6 +848,7 @@ class AIChatLayer:
                 'last_search_type': session.get('last_search_type') or 'None',
                 'last_search_cuisine': session.get('last_search_cuisine') or 'None',
                 'last_search_destination': session.get('last_search_destination') or 'None',
+                'previous_search_radius_km': str(session.get('last_search_radius_km')) if session.get('last_search_radius_km') else 'None',
                 'memory_context': memory_context_text,
                 'conversation_history': self._format_conversation_context(session),
                 'current_cuisine': current_cuisine,
@@ -865,6 +909,12 @@ class AIChatLayer:
             preferences = state_update.get('preferences', {})
             is_complete = state_update.get('is_complete', False)
             needs_gps = state_update.get('needs_gps', False)
+
+            # Extract search radius (AI-determined)
+            search_radius_km = state_update.get('search_radius_km')
+            if search_radius_km is not None:
+                session['last_search_radius_km'] = search_radius_km
+                logger.info(f"📏 Search radius set to: {search_radius_km}km")
 
             # Store cuisine for follow-up
             if cuisine:
@@ -981,11 +1031,12 @@ class AIChatLayer:
                         clear_previous=False,
                         is_new_destination=False,
                         reasoning=f"Maps-only search for more options: {reasoning}",
-                        # NEW: Follow-up context for downstream agents
+                        # Follow-up context for downstream agents
                         supervisor_instructions=supervisor_instructions,
                         exclude_restaurants=exclude_restaurants,
                         modified_query=modified_query,
-                        is_follow_up=is_follow_up
+                        is_follow_up=is_follow_up,
+                        search_radius_km=search_radius_km  # Dynamic radius
                     )
 
                 # Store for follow-up
@@ -1040,7 +1091,8 @@ class AIChatLayer:
                     preferences=preferences,
                     clear_previous=False,
                     is_new_destination=False,
-                    reasoning=reasoning
+                    reasoning=reasoning,
+                    search_radius_km=search_radius_km  # Dynamic radius
                 )
 
             # Unknown action - fallback

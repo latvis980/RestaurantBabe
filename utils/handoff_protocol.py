@@ -10,6 +10,8 @@ This replaces raw text passing with structured messages for:
 
 UPDATED: Added supervisor_instructions, exclude_restaurants, modified_query, is_follow_up
 for smarter follow-up handling with AI-driven filtering.
+
+UPDATED: Added search_radius_km for dynamic distance-based searches.
 """
 
 from dataclasses import dataclass, asdict
@@ -71,6 +73,16 @@ class SearchContext:
 
     is_follow_up: bool = False
     # Flag indicating this is a follow-up search (user asked for "more")
+
+    # ==========================================================================
+    # Dynamic search radius (AI-determined based on user input)
+    # ==========================================================================
+    search_radius_km: Optional[float] = None
+    # Search radius in kilometers. Determined by AI based on user input:
+    # - Default: 1.5 km when user says "nearby", "around", etc.
+    # - Calculated: When user mentions "10 min walk", "within 1 km", etc.
+    # - Reduced: When user asks for "closer" results after initial search
+    # If None, downstream will use its default (1.5 km)
 
     # Metadata
     user_id: int = 0
@@ -157,11 +169,13 @@ def create_search_handoff(
     clear_previous: bool = False,
     is_new_destination: bool = False,
     reasoning: str = "",
-    # NEW: Follow-up context parameters
+    # Follow-up context parameters
     supervisor_instructions: Optional[str] = None,
     exclude_restaurants: List[str] = None,
     modified_query: Optional[str] = None,
-    is_follow_up: bool = False
+    is_follow_up: bool = False,
+    # Dynamic radius parameter
+    search_radius_km: Optional[float] = None
 ) -> HandoffMessage:
     """Create a search handoff message from supervisor to search pipeline"""
     search_context = SearchContext(
@@ -176,11 +190,13 @@ def create_search_handoff(
         preferences=preferences or {},
         user_id=user_id,
         thread_id=thread_id,
-        # NEW: Follow-up context
+        # Follow-up context
         supervisor_instructions=supervisor_instructions,
         exclude_restaurants=exclude_restaurants or [],
         modified_query=modified_query,
-        is_follow_up=is_follow_up
+        is_follow_up=is_follow_up,
+        # Dynamic radius
+        search_radius_km=search_radius_km
     )
 
     return HandoffMessage(
@@ -190,12 +206,13 @@ def create_search_handoff(
     )
 
 
-def create_conversation_handoff(response: str, reasoning: str = "") -> HandoffMessage:
+def create_conversation_handoff(response: str, reasoning: str = "", needs_gps: bool = False) -> HandoffMessage:
     """Create a conversation handoff (no search needed)"""
     return HandoffMessage(
         command=HandoffCommand.CONTINUE_CONVERSATION,
         conversation_response=response,
-        reasoning=reasoning
+        reasoning=reasoning,
+        needs_gps=needs_gps
     )
 
 

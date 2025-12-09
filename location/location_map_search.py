@@ -230,7 +230,8 @@ class LocationMapSearchAgent:
         self, 
         coordinates: Tuple[float, float], 
         query: str, 
-        cancel_check_fn=None
+        cancel_check_fn=None,
+        search_radius_km: Optional[float] = None
     ) -> List[VenueSearchResult]:
         """
         MAIN SEARCH METHOD: Uses classic Google Maps text search with AI-optimized queries
@@ -247,7 +248,10 @@ class LocationMapSearchAgent:
             List of VenueSearchResult objects
         """
         try:
-            logger.info(f"🎯 Starting AI-guided search for '{query}'")
+            # Use provided radius or default
+            effective_radius = search_radius_km if search_radius_km is not None else self.search_radius_km
+
+            logger.info(f"🎯 Starting AI-guided search for '{query}' within {effective_radius}km")
             latitude, longitude = coordinates
 
             # Check for cancellation
@@ -268,14 +272,14 @@ class LocationMapSearchAgent:
 
             # Use GoogleMaps with optimized text search query
             logger.info(f"🔍 Searching with GoogleMaps using text query: '{text_search_query}'")
-            venues = await self._googlemaps_search_with_rotation(latitude, longitude, text_search_query)
+            venues = await self._googlemaps_search_with_rotation(latitude, longitude, text_search_query, effective_radius)
             if cancel_check_fn and cancel_check_fn():
                 return []
             # Ensure results are within search radius
             distance_filtered_venues = [
                 v for v in venues
                 if LocationUtils.is_within_radius(
-                    (latitude, longitude), (v.latitude, v.longitude), self.search_radius_km
+                    (latitude, longitude), (v.latitude, v.longitude), effective_radius
                 )
             ]
 
@@ -311,17 +315,20 @@ class LocationMapSearchAgent:
         self, 
         latitude: float, 
         longitude: float, 
-        query: str
+        query: str,
+        search_radius_km: Optional[float] = None
     ) -> List[VenueSearchResult]:
         """GoogleMaps library search with API key rotation support"""
 
+        effective_radius = search_radius_km if search_radius_km is not None else self.search_radius_km
+
         # Try primary GoogleMaps client first
-        venues = await self._googlemaps_search_internal(latitude, longitude, query, self.gmaps, "primary")
+        venues = await self._googlemaps_search_internal(latitude, longitude, query, self.gmaps, "primary", effective_radius)
 
         # If no results and we have secondary client, try that
         if not venues and self.has_secondary_gmaps and self.gmaps_secondary:
             logger.info("🔄 Trying secondary GoogleMaps API key...")
-            venues = await self._googlemaps_search_internal(latitude, longitude, query, self.gmaps_secondary, "secondary")
+            venues = await self._googlemaps_search_internal(latitude, longitude, query, self.gmaps_secondary, "secondary", effective_radius)
 
         return venues
 
@@ -332,7 +339,8 @@ class LocationMapSearchAgent:
         longitude: float, 
         query: str,
         gmaps_client,
-        key_name: str
+        key_name: str,
+        search_radius_km: Optional[float] = None
     ) -> List[VenueSearchResult]:
         """
         Internal GoogleMaps search method with ENHANCED DEBUG LOGGING
@@ -351,7 +359,8 @@ class LocationMapSearchAgent:
             self.api_usage["gmaps"] += 1
 
             location = f"{latitude},{longitude}"
-            radius_m = int(self.search_radius_km * 1000)
+            effective_radius = search_radius_km if search_radius_km is not None else self.search_radius_km
+            radius_m = int(effective_radius * 1000)
 
             # ENHANCED: Smarter query construction with detailed logging
             search_terms = query.lower()
@@ -370,7 +379,7 @@ class LocationMapSearchAgent:
             logger.info(f"   📥 Original user query: '{query}'")
             logger.info(f"   🎯 Final search query: '{final_query}'")
             logger.info(f"   📍 Location: {latitude:.4f}, {longitude:.4f}")
-            logger.info(f"   📏 Radius: {radius_m}m ({self.search_radius_km}km)")
+            logger.info(f"   📏 Radius: {radius_m}m ({effective_radius}km)")
             logger.info(f"   🏷️  Has venue type: {has_venue_type}")
 
             # Also log at DEBUG level for detailed debugging
@@ -403,7 +412,7 @@ class LocationMapSearchAgent:
             for place in results:
                 try:
                     venue = self._convert_gmaps_result(place, latitude, longitude)
-                    if venue and venue.distance_km <= self.search_radius_km:
+                    if venue and venue.distance_km <= effective_radius:
                         venues.append(venue)
                     elif venue:
                         logger.debug(
