@@ -16,6 +16,7 @@ import googlemaps
 from langsmith import traceable
 from location.location_utils import LocationUtils
 from formatters.google_links import build_google_maps_url
+from utils.api_usage_tracker import record_api_call, check_api_limit, get_tracker
 
 
 logger = logging.getLogger(__name__)
@@ -390,12 +391,20 @@ class LocationMapSearchAgent:
             logger.debug(f"   location='{location}'")
             logger.debug(f"   radius={radius_m}")
 
-            # Execute the search
+            # Check limit before making the call
+            if not check_api_limit("text_search", key_name):
+                logger.warning(f"⚠️ {key_name} over free tier limit for text_search")
+                return []  # Let _googlemaps_search_with_rotation try secondary key
+
+            # Make the API call
             response = gmaps_client.places(
                 query=final_query,
                 location=location,
                 radius=radius_m,
             )
+
+            # Record the call AFTER successful response
+            record_api_call("text_search", key_name)
 
             results = response.get('results', []) if response else []
 
