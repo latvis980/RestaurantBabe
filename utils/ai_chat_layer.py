@@ -188,27 +188,27 @@ YOUR TASK
 
 5. **HANDLE IMPLICIT CONTEXT** (critical examples):
 
-   ✅ Active context: {destination: "Tokyo", cuisine: "ramen"}
+   ✅ Active context: {{destination: "Tokyo", cuisine: "ramen"}}
    User: "show me more"
    → Decision: CONTINUE
-   → Parameters: {destination: "Tokyo", cuisine: "ramen", radius: 1.5} (same as active)
+   → Parameters: {{destination: "Tokyo", cuisine: "ramen", radius: 1.5}} (same as active)
 
-   ✅ Active context: {destination: "Tokyo", cuisine: "ramen"}
+   ✅ Active context: {{destination: "Tokyo", cuisine: "ramen"}}
    User: "actually I want sushi"
    → Decision: MODIFY
-   → Parameters: {destination: "Tokyo", cuisine: "sushi", radius: 1.5}
-   → Modifications: {cuisine: {from: "ramen", to: "sushi"}}
+   → Parameters: {{destination: "Tokyo", cuisine: "sushi", radius: 1.5}}
+   → Modifications: {{cuisine: {{from: "ramen", to: "sushi"}}}}
 
-   ✅ Active context: {destination: "Tokyo", cuisine: "ramen", radius: 1.5}
+   ✅ Active context: {{destination: "Tokyo", cuisine: "ramen", radius: 1.5}}
    User: "show me places closer to my hotel"
    → Decision: MODIFY
-   → Parameters: {destination: "Tokyo", cuisine: "ramen", radius: 0.7}
-   → Modifications: {radius: {from: 1.5, to: 0.7, reason: "user wants closer"}}
+   → Parameters: {{destination: "Tokyo", cuisine: "ramen", radius: 0.7}}
+   → Modifications: {{radius: {{from: 1.5, to: 0.7, reason: "user wants closer"}}}}
 
-   ✅ Active context: {destination: "Tokyo", cuisine: "ramen"}
+   ✅ Active context: {{destination: "Tokyo", cuisine: "ramen"}}
    User: "best pizza in Rome"
    → Decision: NEW
-   → Parameters: {destination: "Rome", cuisine: "pizza", radius: 1.5}
+   → Parameters: {{destination: "Rome", cuisine: "pizza", radius: 1.5}}
 
 6. **GPS HANDLING**:
 
