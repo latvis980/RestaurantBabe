@@ -81,8 +81,10 @@ class LocationMapSearchAgent:
                     logger.error(f"❌ Failed to initialize OpenAI client: {e}")
                     self.openai_client = None
 
-        # Initialize client
+        # Initialize clients with rotation support
         self.gmaps: Optional[googlemaps.Client] = None
+        self.gmaps_secondary: Optional[googlemaps.Client] = None
+        self.has_secondary_gmaps = False
         self.api_usage = {"gmaps": 0}
 
         self._initialize_clients()
