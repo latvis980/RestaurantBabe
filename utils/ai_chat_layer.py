@@ -195,14 +195,19 @@ YOUR TASK
    - If GPS coordinates provided → LOCATION_SEARCH
    - "near [landmark]" → LOCATION_SEARCH
 
-5. **GPS HANDLING**:
+5. **GPS HANDLING** (CRITICAL - when to request GPS):
 
-   If user says "near me", "around me", "close to me" WITHOUT providing GPS:
-   - Action: request_gps
-   - Extract cuisine from message
-   - Set needs_gps: true
+   **ONLY request GPS if:**
+   - User explicitly says "near me", "around me", "close to me", "nearby" WITHOUT specifying a location name
+   - User does NOT mention any neighborhood, street, landmark, or area name
+   - {has_gps} = No
 
-   If GPS coordinates are provided ({has_gps} = Yes):
+   **DO NOT request GPS if:**
+   - User provides a specific location (neighborhood, street, landmark, area)
+   - Examples: "in 18th arrondissement", "in Ari", "in SoHo", "near Times Square"
+   - Instead: execute_search with LOCATION_SEARCH mode and let geocoding handle it
+
+   **When GPS coordinates provided ({has_gps} = Yes):**
    - Action: execute_search
    - Search mode: LOCATION_SEARCH
    - Use provided coordinates
