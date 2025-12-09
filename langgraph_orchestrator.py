@@ -768,39 +768,84 @@ class LangGraphSupervisor:
         cancel_check_fn: Optional[Callable],
         start_time: float
     ) -> Dict[str, Any]:
-        """Execute location-based search using LocationOrchestrator LCEL pipeline"""
+        """Execute location-based search using LocationOrchestrator LCEL pipeline
+
+        CRITICAL: This method should NOT make decisions about requesting GPS.
+        All decision-making happens in AI Chat Layer. This just executes searches.
+
+        If we reach here, AI Chat Layer has decided to search with either:
+        1. GPS coordinates (user shared location)
+        2. A destination to geocode (neighborhood, street, landmark)
+        """
         self.stats["location_searches"] += 1
 
         logger.info(f"📍 Executing location search: '{search_query}'")
 
-        if not gps_coordinates:
-            # No GPS - return response asking for location
+        # ================================================================
+        # GET COORDINATES: GPS or geocode destination
+        # ================================================================
+        final_coordinates = gps_coordinates
+
+        if not final_coordinates and search_ctx and search_ctx.destination:
+            # AI Chat Layer sent us a destination to geocode
+            try:
+                from location.geocoding import geocode_location
+                logger.info(f"🌍 Geocoding destination: '{search_ctx.destination}'")
+
+                geocoded = geocode_location(search_ctx.destination)
+                if geocoded:
+                    final_coordinates = geocoded
+                    logger.info(f"✅ Geocoded '{search_ctx.destination}' to {geocoded[0]:.4f}, {geocoded[1]:.4f}")
+                else:
+                    logger.warning(f"⚠️ Geocoding returned None for: '{search_ctx.destination}'")
+                    return {
+                        "success": False,
+                        "error_message": f"Could not find location: {search_ctx.destination}",
+                        "ai_response": f"I couldn't find '{search_ctx.destination}'. Could you be more specific?",
+                        "search_triggered": False,
+                        "processing_time": round(time.time() - start_time, 2)
+                    }
+            except Exception as e:
+                logger.error(f"❌ Geocoding failed for '{search_ctx.destination}': {e}")
+                return {
+                    "success": False,
+                    "error_message": f"Geocoding error: {str(e)}",
+                    "ai_response": f"I had trouble finding '{search_ctx.destination}'. Could you try again?",
+                    "search_triggered": False,
+                    "processing_time": round(time.time() - start_time, 2)
+                }
+
+        # If we still don't have coordinates, something went wrong
+        if not final_coordinates:
+            logger.error("❌ No coordinates available and no destination to geocode")
             return {
-                "success": True,
-                "ai_response": f"To search for {search_query} near you, I need your location. Could you share it?",
-                "needs_location_button": True,
+                "success": False,
+                "error_message": "No coordinates or destination provided",
+                "ai_response": "I encountered an error. Please try your search again.",
                 "search_triggered": False,
                 "processing_time": round(time.time() - start_time, 2)
             }
 
+        # ================================================================
+        # EXECUTE SEARCH with coordinates
+        # ================================================================
         try:
-            # Create LocationData from coordinates
+            # Create LocationData from final coordinates (GPS or geocoded)
             location_data = LocationData(
-                latitude=gps_coordinates[0],
-                longitude=gps_coordinates[1],
-                description=search_ctx.destination or f"GPS: {gps_coordinates[0]:.4f}, {gps_coordinates[1]:.4f}"
+                latitude=final_coordinates[0],
+                longitude=final_coordinates[1],
+                description=search_ctx.destination if search_ctx else f"GPS: {final_coordinates[0]:.4f}, {final_coordinates[1]:.4f}"
             )
 
-            # Execute the LCEL pipeline with maps_only=True
-            # NEW: Pass supervisor_instructions and exclude_restaurants for smarter filtering
+            # Execute the LCEL pipeline
             result = await self.location_pipeline.process_location_query(
                 query=search_query,
                 location_data=location_data,
                 cancel_check_fn=cancel_check_fn,
-                maps_only=False,  # Normal flow: database first, then maps if needed
-                supervisor_instructions=search_ctx.supervisor_instructions,
-                exclude_restaurants=search_ctx.exclude_restaurants,
-                search_radius_km=search_ctx.search_radius_km  # Dynamic radius from AI
+                maps_only=False,  # Try database first, then maps if needed
+                supervisor_instructions=search_ctx.supervisor_instructions if search_ctx else None,
+                exclude_restaurants=search_ctx.exclude_restaurants if search_ctx else None,
+                search_radius_km=search_ctx.search_radius_km if search_ctx else None
             )
 
             processing_time = round(time.time() - start_time, 2)
@@ -808,7 +853,6 @@ class LangGraphSupervisor:
             # Extract restaurants for memory
             restaurants = result.get("results", []) or result.get("final_restaurants", [])
 
-            # Map result to expected format
             return {
                 "success": result.get("success", False),
                 "ai_response": result.get("location_formatted_results", ""),
@@ -817,10 +861,11 @@ class LangGraphSupervisor:
                 "action_taken": "location_search",
                 "search_triggered": True,
                 "processing_time": processing_time,
-                "coordinates": gps_coordinates,
-                "source": result.get("source", "unknown"),
+                "coordinates": final_coordinates,
+                "source": result.get("source", "database"),
                 "restaurant_count": result.get("restaurant_count", 0),
-                "final_restaurants": restaurants
+                "final_restaurants": restaurants,
+                "offer_more_results": result.get("offer_more_results", False)
             }
 
         except Exception as e:
