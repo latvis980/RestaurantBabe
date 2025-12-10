@@ -237,17 +237,24 @@ class LocationTelegramFormatter:
                 clean_description = self._clean_html(description.strip())
                 description_line = f"💭 {clean_description}\n"
 
-            # UPDATED: Media verification status with domain-only sources
+            # UPDATED: Media verification status with clickable domain links
             sources_line = ""
             if media_verified and sources:
                 domains = self._extract_domains_from_sources(sources)
                 if domains:
-                    sources_text = ", ".join(domains[:3])  # Show up to 3 domains
+                    # Create clickable links for domains
+                    domain_links = []
+                    for domain in domains[:3]:
+                        clean_domain = self._clean_html(domain)
+                        domain_url = f"https://{domain}"
+                        domain_links.append(f'<a href="{escape(domain_url, quote=True)}">{clean_domain}</a>')
+
+                    sources_text = ", ".join(domain_links)
                     if len(domains) > 3:
                         sources_text += f" +{len(domains)-3} more"
-                    sources_line = f"✅ Recommended by {sources_text}\n"
+                    sources_line = f"🔷 Recommended by {sources_text}\n"
             elif media_verified:
-                sources_line = "✅ Verified in professional guides\n"
+                sources_line = "🔷 Verified in professional guides\n"
 
             return f"{formatted_name}{address_line}{distance_line}{rating_line}{description_line}{sources_line}"
 
@@ -302,17 +309,8 @@ class LocationTelegramFormatter:
             if not description:
                 return ""
 
-            # Clean description
+            # Clean description - NO TRUNCATION, show full AI-generated description
             clean_description = self._clean_html(description)
-
-            # UPDATED: Use more content - truncate at 300 chars instead of 150
-            # This gives more detailed descriptions from the database
-            if len(clean_description) > 300:
-                # Find a good breakpoint near 300 chars (at word boundary)
-                truncate_point = clean_description.rfind(' ', 250, 300)
-                if truncate_point == -1:
-                    truncate_point = 300
-                clean_description = clean_description[:truncate_point] + "..."
 
             return f"💭 {clean_description}\n"
 
@@ -363,11 +361,18 @@ class LocationTelegramFormatter:
             logger.info(f"🔍 DEBUG - Extracted domains: {domains}")
 
             if domains:
-                # Show max 3 domains to keep it clean
-                domains_text = ", ".join(domains[:3])
+                # Show max 3 domains as clickable links to main page
+                domain_links = []
+                for domain in domains[:3]:
+                    # Create clickable link to the main page of the guide
+                    clean_domain = self._clean_html(domain)
+                    domain_url = f"https://{domain}"
+                    domain_links.append(f'<a href="{escape(domain_url, quote=True)}">{clean_domain}</a>')
+
+                domains_text = ", ".join(domain_links)
                 if len(domains) > 3:
                     domains_text += f" +{len(domains)-3} more"
-                result = f"📚 Sources: {domains_text}\n"
+                result = f"🔷 Recommended by {domains_text}\n"
                 logger.info(f"🔍 DEBUG - Final sources line: {result}")
                 return result
 

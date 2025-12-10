@@ -208,14 +208,14 @@ Generate enhanced descriptions for each restaurant."""
 
 {sources_instruction}
 
-Write enhanced, engaging descriptions that:
+Write engaging descriptions that:
 - Build upon the existing raw_description 
 - Highlight unique character and specialties
 - Include source attribution when available (use domain names naturally)
-- Keep the authentic voice but make it more engaging
-- Focus on what makes each place special
+- Keep the professional food journalist voice
+- Keep descriptions concise but evocative (2 sentences max)
+- Must be complete sentences, ending in a period
 
-Keep descriptions concise but evocative (2-3 sentences max).
 Return ONLY a JSON array with this structure:
 [
   {{
