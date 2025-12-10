@@ -211,7 +211,6 @@ Generate enhanced descriptions for each restaurant."""
 Write engaging descriptions that:
 - Build upon the existing raw_description 
 - Highlight unique character and specialties
-- Include source attribution when available (use domain names naturally)
 - Keep the professional food journalist voice
 - Keep descriptions concise but evocative (2 sentences max)
 - Must be complete sentences, ending in a period
@@ -288,7 +287,7 @@ Generate enhanced descriptions for each restaurant."""}
             return self._create_fallback_database_descriptions(database_restaurants)
 
     def _extract_sources_from_database_restaurant(self, restaurant: Dict[str, Any]) -> List[str]:
-        """Extract and clean sources from database restaurant, returning domains only"""
+        """Extract sources from database restaurant, returning RAW URLs for linking"""
         try:
             sources_field = restaurant.get('sources', [])
 
@@ -324,60 +323,18 @@ Generate enhanced descriptions for each restaurant."""}
             else:
                 sources_list = []
 
-            # Extract domains from URLs
-            domains = []
+            # Return RAW URLs (deduplicated) - formatter will extract domains and create links
+            unique_sources = []
             for source in sources_list:
-                domain = self._extract_domain_from_url(str(source).strip())
-                if domain and domain not in domains:
-                    domains.append(domain)
+                source_clean = str(source).strip()
+                if source_clean and source_clean not in unique_sources:
+                    unique_sources.append(source_clean)
 
-            return domains[:5]  # Limit to 5 domains max
+            return unique_sources[:5]  # Limit to 5 sources max
 
         except Exception as e:
             logger.error(f"Error extracting sources: {e}")
             return []
-
-    def _extract_domain_from_url(self, url: str) -> Optional[str]:
-        """Extract clean domain name from URL"""
-        try:
-            import re
-            from urllib.parse import urlparse
-
-            if not url:
-                return None
-
-            # Handle cases where it might already be just a domain
-            if not url.startswith(('http://', 'https://')):
-                url = 'https://' + url
-
-            parsed = urlparse(url)
-            domain = parsed.netloc.lower()
-
-            if not domain:
-                return None
-
-            # Remove www. prefix
-            if domain.startswith('www.'):
-                domain = domain[4:]
-
-            # Convert common domains to readable names
-            domain_mapping = {
-                'timeout.com': 'Time Out',
-                'eater.com': 'Eater',
-                'nytimes.com': 'New York Times',
-                'washingtonpost.com': 'Washington Post',
-                'theguardian.com': 'The Guardian',
-                'foodandwine.com': 'Food & Wine',
-                'bonappetit.com': 'Bon Appétit',
-                'zagat.com': 'Zagat',
-                'yelp.com': 'Yelp',
-                'tripadvisor.com': 'TripAdvisor'
-            }
-
-            return domain_mapping.get(domain, domain.replace('.com', '').title())
-
-        except Exception:
-            return None
 
     def _create_fallback_database_descriptions(
         self, 
