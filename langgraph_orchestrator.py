@@ -477,13 +477,14 @@ class LangGraphSupervisor:
                 # No session update needed - this is a follow-up search
 
             elif search_ctx.search_type == SearchType.LOCATION_SEARCH:
-                # ----- LOCATION SEARCH (database first, then maps) -----
+            # ----- LOCATION SEARCH (database first, then maps) -----
                 result = await self._execute_location_search(
                     search_query=search_query,
                     search_ctx=search_ctx,
                     gps_coordinates=search_gps,
                     cancel_check_fn=cancel_check_fn,
-                    start_time=start_time
+                    start_time=start_time,
+                    user_id=user_id
                 )
 
                 # Update AI Chat Layer session for follow-up "more" requests
@@ -766,7 +767,8 @@ class LangGraphSupervisor:
         search_ctx: SearchContext,
         gps_coordinates: Optional[Tuple[float, float]],
         cancel_check_fn: Optional[Callable],
-        start_time: float
+        start_time: float,
+        user_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """Execute location-based search using LocationOrchestrator LCEL pipeline
 
@@ -815,15 +817,36 @@ class LangGraphSupervisor:
                     "processing_time": round(time.time() - start_time, 2)
                 }
 
-        # If we still don't have coordinates, something went wrong
+        # If we still don't have coordinates, try stored coordinates from last search
+        if not final_coordinates:
+            # Check AI Chat Layer for stored coordinates (within 30 min expiry)
+            last_context = self.ai_chat_layer.get_last_search_context(user_id)
+            stored_coords = last_context.get('coordinates') if last_context else None
+
+            if stored_coords and len(stored_coords) == 2:
+                # Check timestamp for 30-minute expiry
+                timestamp = last_context.get('timestamp', 0)
+                age_minutes = (time.time() - timestamp) / 60
+
+                if age_minutes < 30:
+                    try:
+                        final_coordinates = (float(stored_coords[0]), float(stored_coords[1]))
+                        logger.info(f"📍 Using stored coordinates from last search ({age_minutes:.1f} min old): {final_coordinates[0]:.4f}, {final_coordinates[1]:.4f}")
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"⚠️ Invalid stored coordinates: {stored_coords} - {e}")
+                else:
+                    logger.info(f"⏰ Stored coordinates expired ({age_minutes:.1f} min old)")
+
+        # If STILL no coordinates after all fallbacks, fail
         if not final_coordinates:
             logger.error("❌ No coordinates available and no destination to geocode")
             return {
                 "success": False,
                 "error_message": "No coordinates or destination provided",
-                "ai_response": "I encountered an error. Please try your search again.",
+                "ai_response": "I need a location to search. Could you share your location or tell me which area you'd like to search?",
                 "search_triggered": False,
-                "processing_time": round(time.time() - start_time, 2)
+                "processing_time": round(time.time() - start_time, 2),
+                "needs_location_button": True  # Signal to show location button
             }
 
         # ================================================================
