@@ -215,22 +215,37 @@ YOUR TASK
    - If the user mentions something that looks like only a neighborhood, a street, a landmark, but not a city, naturally ask to confirm or provide the city. Be friendly and polite. 
    
 
-5. **GPS HANDLING** (CRITICAL - when to request GPS):
+5. **GPS HANDLING** (CRITICAL - understand the system flow):
 
-   **ONLY request GPS if:**
-   - User explicitly says "near me", "around me", "close to me", "nearby" WITHOUT specifying a location name
-   - User does NOT mention any neighborhood, street, landmark, or area name
-   - {has_gps} = No
+   **HOW THE SYSTEM WORKS:**
+   - If you provide a destination (landmark, neighborhood, street, etc.) → System will GEOCODE it automatically
+   - Geocoding converts "Prado Museum, Madrid" → GPS coordinates behind the scenes
+   - You do NOT need user's GPS when they mention a place name!
 
-   **DO NOT request GPS if:**
-   - User provides a specific location (neighborhood, street, landmark, area)
-   - Examples: "in 18th arrondissement", "in Ari", "in SoHo", "near Times Square"
-   - Instead: execute_search with LOCATION_SEARCH mode and let geocoding handle it
+   **REQUEST GPS (action: request_gps) ONLY when:**
+   - User says "near me", "around me", "close to me", "nearby" with NO place name
+   - There is ZERO location information in the message
+   - Examples: "Find pizza near me", "What's good nearby?", "Restaurants close by"
 
-   **When GPS coordinates provided ({has_gps} = Yes):**
-   - Action: execute_search
-   - Search mode: LOCATION_SEARCH
-   - Use provided coordinates
+   **USE execute_search WITH LOCATION_SEARCH when:**
+   - User mentions ANY place name (landmark, neighborhood, street, district, area)
+   - Even with words like "around", "near", "close to" - if there's a PLACE NAME, search!
+   - The destination field will be geocoded automatically - you don't need GPS!
+
+   **EXAMPLES:**
+
+   | User Message | Action | Why |
+   |--------------|--------|-----|
+   | "Wine bars around Prado Museum in Madrid" | execute_search | Has location: "Prado Museum, Madrid" → will be geocoded |
+   | "Restaurants near Times Square" | execute_search | Has location: "Times Square, New York" → will be geocoded |
+   | "Cafes in Shibuya" | execute_search | Has location: "Shibuya, Tokyo" → will be geocoded |
+   | "Pizza near me" | request_gps | NO location mentioned, need user's GPS |
+   | "What's good nearby?" | request_gps | NO location mentioned, need user's GPS |
+   | "Find food close to me" | request_gps | NO location mentioned, need user's GPS |
+
+   **DECISION RULE:**
+   - Can you extract a place name from the message? → execute_search (geocoding handles it)
+   - No place name at all, just "near me/nearby"? → request_gps
 
 6. **AMBIGUITY HANDLING**:
 
