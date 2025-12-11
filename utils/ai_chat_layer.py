@@ -5,6 +5,7 @@ AI Chat Layer with Context-Aware Parameter Management
 ARCHITECTURE:
 - Conversation history provides implicit context (last 10 messages)
 - Active context tracks current search parameters (destination, cuisine, radius, etc.)
+- Conversation summary provides compressed understanding of user's evolving intent
 - AI explicitly decides: CONTINUE, MODIFY, or NEW context
 - AI provides ALL parameters on every turn (no blind accumulation)
 - Balance: Remember what we're discussing BUT allow easy parameter changes
@@ -16,6 +17,7 @@ Key Features:
 - AI-driven parameter modification (no hardcoded keyword matching)
 - Pending GPS state management
 - Personalized responses based on user history
+- NEW: Conversation summary for better intent tracking
 """
 
 import json
@@ -60,6 +62,7 @@ class AIChatLayer:
     - Track active search context (what we're currently discussing)
     - Let AI decide to CONTINUE/MODIFY/NEW context
     - Provide conversation history for implicit context
+    - Maintain conversation summary for intent tracking
     - Detect search modes (GPS vs city vs neighborhood)
     - Handle ambiguous locations
     - Manage pending GPS state
@@ -84,44 +87,123 @@ class AIChatLayer:
 
         # Build prompts
         self._build_conversation_prompt()
+        self._build_summary_prompt()
 
         logger.info("✅ AI Chat Layer initialized with context-aware parameter management")
+
+    def _build_summary_prompt(self):
+        """Build prompt for updating conversation summary"""
+        
+        summary_prompt = """You are a conversation summarizer for a restaurant recommendation bot.
+
+Your task is to update the conversation summary based on new messages.
+
+CURRENT SUMMARY:
+{current_summary}
+
+NEW MESSAGES:
+{new_messages}
+
+RULES FOR UPDATING SUMMARY:
+1. Preserve key search intent information:
+   - WHAT they're looking for (cuisine type, dining style, specific dishes)
+   - WHERE they want to go (city, neighborhood, specific location, "near me")
+   - WHY/preferences (atmosphere, price range, occasion, dietary needs)
+   - FEEDBACK on results shown (liked/disliked, what was wrong)
+
+2. Track evolution of user intent:
+   - If user refines request, note what changed and what stayed the same
+   - If user expresses dissatisfaction, note what criteria wasn't met
+   - If user asks for "more", "different", "similar", note the comparison basis
+
+3. Keep it concise but informative (2-4 sentences max)
+
+4. Format: "User is looking for [WHAT] in/around [WHERE]. [Additional context about preferences/refinements/feedback]"
+
+EXAMPLES:
+- "User is looking for wine bars around Prado Museum in Madrid. After seeing Michelin-starred options, they want something more casual."
+- "User wants Italian restaurants in SoHo, NYC. They prefer trendy spots with good pasta and moderate prices. Previous suggestions were too expensive."
+- "User is looking for brunch spots near their current GPS location in Brooklyn. They want somewhere with outdoor seating."
+
+Return ONLY the updated summary, nothing else."""
+
+        self.summary_prompt = ChatPromptTemplate.from_messages([
+            ("system", summary_prompt),
+            ("human", "Update the summary based on the new messages above.")
+        ])
 
     def _build_conversation_prompt(self):
         """Build the main conversation prompt with context-aware parameter tracking"""
 
         system_prompt = """You are an AI conversation manager for a restaurant recommendation bot.
 
-Your job is to analyze user messages and decide what to do based on the current conversation context.
+Your job is to analyze user messages and decide what to do based on the FULL conversation context.
 
 ═══════════════════════════════════════════════════════════════════════════════
-CONVERSATION CONTEXT (for reference - provides implicit understanding)
+CRITICAL: CONTEXT PRESERVATION RULES
 ═══════════════════════════════════════════════════════════════════════════════
 
-RECENT CONVERSATION (last 10 messages):
+**BEFORE making any decision, you MUST reason through these questions:**
+
+1. **What is the user's CURRENT search context?** (from active context + conversation history)
+   - Location/area they're interested in
+   - Type of place they're looking for
+   - Any specific requirements or preferences
+
+2. **What is the user EXPLICITLY changing?**
+   - Only consider parameters the user DIRECTLY mentions in their new message
+   - "More casual" = changing STYLE, NOT location or cuisine type
+   - "Closer" = changing DISTANCE, NOT cuisine or style
+   - "Something cheaper" = changing PRICE, NOT location or cuisine
+
+3. **What should STAY THE SAME?**
+   - If user doesn't mention location → KEEP the current location/coordinates
+   - If user doesn't mention cuisine type → KEEP the current cuisine type
+   - If user doesn't mention area → KEEP the current area
+   - NEVER reset parameters that weren't explicitly changed
+
+**MODIFICATION EXAMPLES (learn from these):**
+
+| User said | Previous context | What to MODIFY | What to KEEP |
+|-----------|------------------|----------------|--------------|
+| "More casual" | Wine bars, Prado Museum | Style/atmosphere | Location (Prado), Type (wine bars) |
+| "Closer to me" | Italian, 2km radius | Radius (reduce) | Cuisine (Italian), Location |
+| "Actually, pizza" | Sushi, Tokyo | Cuisine (pizza) | Location (Tokyo) |
+| "In Shibuya instead" | Ramen, Tokyo | Location (Shibuya) | Cuisine (ramen), Style |
+| "Something cheaper" | Fine dining, Paris | Price range | Location (Paris), cuisine |
+| "Show me more" | Coffee shops, Brooklyn | Nothing | Everything (CONTINUE) |
+
+═══════════════════════════════════════════════════════════════════════════════
+CONVERSATION CONTEXT
+═══════════════════════════════════════════════════════════════════════════════
+
+**CONVERSATION SUMMARY (compressed understanding of user's evolving intent):**
+{conversation_summary}
+
+**RECENT CONVERSATION (last 10 messages for detail):**
 {conversation_history}
 
-USER PREFERENCES FROM MEMORY:
+**USER PREFERENCES FROM MEMORY:**
 {memory_context}
 
-ACTIVE SEARCH CONTEXT (what we're currently discussing):
+**ACTIVE SEARCH CONTEXT (current search parameters):**
 - Destination: {active_destination}
-- Cuisine: {active_cuisine}
+- Cuisine/Type: {active_cuisine}
 - Search radius: {active_radius}km
 - Requirements: {active_requirements}
 - Established: {context_age}
 - Searches performed: {search_count}
 
-LAST SEARCH RESULTS (shown {time_ago}):
+**LAST SEARCH RESULTS (shown {time_ago}):**
 - Restaurants shown: {shown_restaurants}
 
-STORED LOCATION (if user shared location previously):
-{stored_location}
-
-LAST SEARCH COORDINATES (from previous location search, valid for 30 min):
+**STORED COORDINATES (from previous location search, valid for 30 min):**
 {last_search_coordinates}
 
-PENDING GPS STATE:
+**STORED LOCATION:**
+{stored_location}
+
+**PENDING GPS STATE:**
 - Waiting for GPS: {pending_gps}
 - For cuisine: {pending_gps_cuisine}
 
@@ -134,177 +216,227 @@ CURRENT USER MESSAGE
 GPS Coordinates provided now: {has_gps}
 
 ═══════════════════════════════════════════════════════════════════════════════
-YOUR TASK
+YOUR DECISION PROCESS (follow this step by step)
 ═══════════════════════════════════════════════════════════════════════════════
 
-1. **DETERMINE CONTEXT DECISION** (how to handle parameters):
+**STEP 1: Analyze what the user is asking**
+- Is this a new search request?
+- Is this a modification of current search?
+- Is this a request for more of the same?
+- Is this a general question or off-topic?
 
-   **CONTINUE**: User is continuing with the same search context
-   - Keep ALL active context parameters unchanged
-   - User says: "show more", "any other options", "what else"
+**STEP 2: If modification or continuation, identify what's preserved**
+Think carefully: The user said "{user_message}"
+- Did they mention a NEW location? If NO → use {active_destination} and coordinates from last search
+- Did they mention a NEW cuisine type? If NO → use {active_cuisine}
+- Did they mention a NEW area/neighborhood? If NO → use stored location/coordinates
+- Did they ask for "more", "different style", "more casual", etc.? → This is MODIFY, NOT new search
 
-   **MODIFY**: User changed ONE OR MORE specific parameters
-   - Update changed parameters, keep others from active context
-   - User says: "actually I want pizza", "closer to me", "I meant lunch not brunch"
+**STEP 3: Determine context decision type**
 
-   **NEW**: Completely new search or topic
-   - Fresh parameter extraction, ignore old active context
-   - User says: "best sushi in Tokyo", "now show me bars in Paris"
+**CONTINUE**: User wants MORE of the same (exact same parameters)
+- Triggers: "show more", "any other options", "what else", "more like these"
+- Action: Keep ALL parameters identical, just get more results
+- CRITICAL: Preserve coordinates/location from last search
 
-2. **EXTRACT ALL PARAMETERS** (you MUST provide all parameters):
+**MODIFY**: User wants to REFINE current search (change 1-2 parameters)
+- Triggers: "more casual", "closer", "cheaper", "different cuisine", "in [new area]"
+- Action: Change ONLY what user explicitly mentioned, PRESERVE everything else
+- CRITICAL: If user says "more casual" but NOT a new location → keep same location/coordinates
+- CRITICAL: If user says "closer" but NOT a new cuisine → keep same cuisine
 
-   Even if CONTINUING, you must provide all parameters (copy from active context).
+**NEW**: Completely different search topic
+- Triggers: New city + new cuisine, unrelated question, explicit restart
+- Action: Fresh parameters, clear old context
+- Only use NEW when user is clearly starting over
 
-   - **destination**: Extract from message OR infer from active context OR infer from conversation
-     * If user mentions BOTH neighborhood AND city, format as "Neighborhood, City"
-     * If user mentions ONLY city, format as "City"
-     * The COMMA is critical for distinguishing city-wide vs neighborhood searches
+**STEP 4: Determine search mode**
+- CITY_SEARCH: City-wide search (just city name, no neighborhood)
+- LOCATION_SEARCH: Specific area search - USE THIS when:
+  * User mentioned neighborhood/landmark ("near Prado Museum", "in SoHo")
+  * User has stored coordinates from previous search
+  * User provided GPS
+  * Previous search was location-based and user is refining
 
-   - **cuisine**: Extract from message OR infer from active context OR infer from conversation
-     * Include ALL food/drink types: restaurants, bars, cafes, bakeries, wine bars, cocktail bars, etc.
-     * "cocktail bars" → "cocktail bars"
-     * "coffee shops" → "coffee shops"
-     * "wine bars" → "wine bars"
+**STEP 5: Handle coordinates properly**
+- If MODIFY or CONTINUE and previous search had coordinates → REUSE those coordinates
+- If user mentions new location → geocode will handle it
+- If user says "near me" without GPS → request_gps
+- NEVER lose coordinates on a MODIFY request
 
-   - **search_radius_km**: Extract if mentioned OR use active context OR default 1.5
-     * "within 5 min walk" → ~0.4km
-     * "within 10 min walk" → ~0.8km
-     * "nearby" / "walking distance" → 1.5km (default)
-     * "closer" (when modifying) → reduce by 50%
+═══════════════════════════════════════════════════════════════════════════════
+SEARCH MODES (critical for correct routing)
+═══════════════════════════════════════════════════════════════════════════════
 
-   - **requirements**: Extract new ones OR keep from active context
+**CITY_SEARCH** (city-wide, uses database + web scraping):
+- "Best sushi in Tokyo"
+- "Wine bars in Madrid"
+- Format destination as: "City" (no comma)
 
-   - **preferences**: Any additional filters (price, atmosphere, etc.)
+**LOCATION_SEARCH** (nearby area, uses database + Google Maps):
+- "Coffee near Prado Museum"
+- "Restaurants around me" (with GPS)
+- "Pizza in SoHo, New York"
+- Format destination as: "Neighborhood, City" OR use stored coordinates
 
-3. **DETERMINE ACTION**:
+**GPS LOGIC:**
+| User says | Location mentioned? | Action |
+|-----------|---------------------|--------|
+| "Find wine bars near Prado Museum" | YES (Prado Museum) | execute_search, LOCATION_SEARCH |
+| "Find food near me" | NO | request_gps |
+| "More casual" (after location search) | NO but have coords | execute_search, LOCATION_SEARCH with stored coords |
 
-   - **execute_search**: User wants restaurant recommendations
-   - **chat_response**: Need more info, casual chat, or clarification
-   - **request_gps**: Need user's physical location (for "near me" queries)
+═══════════════════════════════════════════════════════════════════════════════
+GPS HANDLING (CRITICAL - understand the system flow)
+═══════════════════════════════════════════════════════════════════════════════
 
-4. **SEARCH MODE DETECTION** (for execute_search):
+**HOW THE SYSTEM WORKS:**
+- If you provide a destination (landmark, neighborhood, street, etc.) → System will GEOCODE it automatically
+- Geocoding converts "Prado Museum, Madrid" → GPS coordinates behind the scenes
+- You do NOT need user's GPS when they mention a place name!
 
-   **CITY_SEARCH**: Searching an entire city with NO specific neighborhood/area
-   - Destination is ONLY a city name (no neighborhood, no landmark)
-   - User wants city-wide recommendations
-   - Uses web scraping
+**REQUEST GPS (action: request_gps) ONLY when:**
+- User says "near me", "around me", "close to me", "nearby" with NO place name
+- There is ZERO location information in the message
+- Examples: "Find pizza near me", "What's good nearby?", "Restaurants close by"
 
-   **LOCATION_SEARCH**: Searching a specific area within a city
-   - Destination includes neighborhood + city (comma-separated)
-   - Destination is a landmark or specific area
-   - GPS coordinates are provided
-   - Searches database first, then Google Maps if needed
+**USE execute_search WITH LOCATION_SEARCH when:**
+- User mentions ANY place name (landmark, neighborhood, street, district, area)
+- Even with words like "around", "near", "close to" - if there's a PLACE NAME, search!
+- The destination field will be geocoded automatically - you don't need GPS!
 
-   **IMPORTANT - LOCATION SEARCH COORDINATE RULES:**
-      For LOCATION_SEARCH, coordinates are required. Check availability:
-      1. If user provides GPS now (has_gps = Yes) → Use it, execute search
-      2. If last_search_coordinates is available (not "None") → Use stored coords, execute search
-      3. If user mentions a specific neighborhood/area → Geocoding will handle it, execute search
-      4. If NONE of the above → Request location NATURALLY (don't be robotic)
+**GPS EXAMPLES:**
 
-   **CRITICAL LOGIC**:
-   - If destination format is "Neighborhood, City" → LOCATION_SEARCH
-   - If destination format is "City" alone → CITY_SEARCH
-   - If destination has a comma → usually LOCATION_SEARCH
-   - If GPS coordinates provided → LOCATION_SEARCH
-   - "near [landmark]" → LOCATION_SEARCH
+| User Message | Action | Why |
+|--------------|--------|-----|
+| "Wine bars around Prado Museum in Madrid" | execute_search | Has location: "Prado Museum, Madrid" → will be geocoded |
+| "Restaurants near Times Square" | execute_search | Has location: "Times Square, New York" → will be geocoded |
+| "Cafes in Shibuya" | execute_search | Has location: "Shibuya, Tokyo" → will be geocoded |
+| "Pizza near me" | request_gps | NO location mentioned, need user's GPS |
+| "What's good nearby?" | request_gps | NO location mentioned, need user's GPS |
+| "Find food close to me" | request_gps | NO location mentioned, need user's GPS |
 
-5. **GEOGRAPHICAL AWARENESS**
-   - If user mentions a destination that requires clarification (the name is not widely known), naturally ask to confirm if this is the correct destination
-   - If the location is ambiguous (e.g., "Springfield"), ask for clarification
-   - If the user mentions something that looks like only a neighborhood, a street, a landmark, but not a city, naturally ask to confirm or provide the city. Be friendly and polite. 
-   
+**DECISION RULE:**
+- Can you extract a place name from the message? → execute_search (geocoding handles it)
+- No place name at all, just "near me/nearby"? → request_gps
 
-5. **GPS HANDLING** (CRITICAL - understand the system flow):
-
-   **HOW THE SYSTEM WORKS:**
-   - If you provide a destination (landmark, neighborhood, street, etc.) → System will GEOCODE it automatically
-   - Geocoding converts "Prado Museum, Madrid" → GPS coordinates behind the scenes
-   - You do NOT need user's GPS when they mention a place name!
-
-   **REQUEST GPS (action: request_gps) ONLY when:**
-   - User says "near me", "around me", "close to me", "nearby" with NO place name
-   - There is ZERO location information in the message
-   - Examples: "Find pizza near me", "What's good nearby?", "Restaurants close by"
-
-   **USE execute_search WITH LOCATION_SEARCH when:**
-   - User mentions ANY place name (landmark, neighborhood, street, district, area)
-   - Even with words like "around", "near", "close to" - if there's a PLACE NAME, search!
-   - The destination field will be geocoded automatically - you don't need GPS!
-
-   **EXAMPLES:**
-
-   | User Message | Action | Why |
-   |--------------|--------|-----|
-   | "Wine bars around Prado Museum in Madrid" | execute_search | Has location: "Prado Museum, Madrid" → will be geocoded |
-   | "Restaurants near Times Square" | execute_search | Has location: "Times Square, New York" → will be geocoded |
-   | "Cafes in Shibuya" | execute_search | Has location: "Shibuya, Tokyo" → will be geocoded |
-   | "Pizza near me" | request_gps | NO location mentioned, need user's GPS |
-   | "What's good nearby?" | request_gps | NO location mentioned, need user's GPS |
-   | "Find food close to me" | request_gps | NO location mentioned, need user's GPS |
-
-   **DECISION RULE:**
-   - Can you extract a place name from the message? → execute_search (geocoding handles it)
-   - No place name at all, just "near me/nearby"? → request_gps
-
-6. **AMBIGUITY HANDLING**:
-
-   If location is ambiguous (Springfield, Cambridge, etc.) and you can't determine from context:
-   - Ask for clarification
-   - Suggest known options if available
+**GEOGRAPHICAL AWARENESS:**
+- If user mentions a destination that requires clarification (the name is not widely known), naturally ask to confirm
+- If the location is ambiguous (e.g., "Springfield"), ask for clarification
+- If the user mentions only a neighborhood/street/landmark without city, naturally ask to confirm the city
 
 ═══════════════════════════════════════════════════════════════════════════════
 OUTPUT FORMAT (JSON only)
 ═══════════════════════════════════════════════════════════════════════════════
 
 {{
+  "reasoning_steps": {{
+    "user_intent": "What is the user trying to do?",
+    "explicit_changes": "What parameters did user EXPLICITLY mention changing?",
+    "preserved_params": "What parameters should stay the same from context?",
+    "location_handling": "How am I handling location/coordinates?"
+  }},
+
   "action": "execute_search" | "chat_response" | "request_gps",
 
   "context_decision": {{
     "type": "CONTINUE" | "MODIFY" | "NEW",
-    "reasoning": "brief explanation of decision"
+    "reasoning": "Why this decision - what's being preserved vs changed"
   }},
 
   "parameters": {{
-    "destination": "city or neighborhood name (REQUIRED)",
-    "cuisine": "cuisine type or null (REQUIRED)",
+    "destination": "city OR 'Neighborhood, City' - PRESERVE from context unless explicitly changed",
+    "cuisine": "type of place - PRESERVE from context unless explicitly changed",
     "search_mode": "CITY_SEARCH" | "LOCATION_SEARCH",
     "search_radius_km": 1.5,
-    "requirements": ["requirement1", "requirement2"],
+    "requirements": ["list of requirements - combine existing + new"],
     "preferences": {{}},
     "modifications": {{
-      // Only if context_decision.type = MODIFY
-      "cuisine": {{"from": "ramen", "to": "sushi", "reason": "user explicitly changed"}},
-      "radius": {{"from": 1.5, "to": 0.7, "reason": "user wants closer"}}
+      "changed_field": {{"from": "old", "to": "new", "reason": "user said X"}}
     }}
   }},
 
   "response_text": "your response to the user",
   "reasoning": "internal reasoning for your decision",
-  // Set to true ONLY if LOCATION_SEARCH is needed AND no coordinates available
-  // (no GPS, no last_search_coordinates, no geocodable destination)
   "needs_gps": false,
+  "summary_update": "Brief note for updating conversation summary",
 
   "state_update": {{
-    // Only include if you want to clear pending GPS
     "clear_pending_gps": false
   }}
 }}
 
-IMPORTANT RULES:
-- ALWAYS provide ALL parameters (destination, cuisine, search_mode, search_radius_km)
-- Use active context to fill in parameters user didn't explicitly mention
-- Be smart about implicit continuation ("show more" means same parameters)
-- Be smart about modifications ("closer" means reduce radius, keep other params)
-- Don't ask unnecessary questions if context is clear
-- Use memory context to personalize responses
-- PAY ATTENTION to destination format: comma means neighborhood search, no comma means city search
+═══════════════════════════════════════════════════════════════════════════════
+IMPORTANT RULES
+═══════════════════════════════════════════════════════════════════════════════
+
+1. **NEVER lose location context on modifications**
+   - "More casual" after "wine bars near Prado" → Keep "Prado Museum, Madrid"
+   - "Closer options" after area search → Keep same area, reduce radius
+   - "Different cuisine" after location search → Keep location, change cuisine
+
+2. **ALWAYS fill in parameters from context**
+   - If user doesn't specify destination → use {active_destination}
+   - If user doesn't specify cuisine → use {active_cuisine}
+   - If MODIFY/CONTINUE and we have stored coordinates → use LOCATION_SEARCH
+
+3. **Qualitative modifiers = MODIFY, not NEW**
+   - "more casual", "more upscale", "cheaper", "closer", "different vibe"
+   - These refine the search, they don't start a new one
+   - Preserve location and basic type unless explicitly changed
+
+4. **Use LOCATION_SEARCH when we have coordinates**
+   - Previous search stored coordinates → can reuse for MODIFY/CONTINUE
+   - User mentioned specific place → geocode and search nearby
+   - User provided GPS → use for nearby search
+
+5. **Comma in destination = neighborhood search**
+   - "SoHo, New York" → LOCATION_SEARCH
+   - "Madrid" → CITY_SEARCH
 """
 
         self.conversation_prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
             ("human", "Analyze the message above and provide your decision in JSON format.")
         ])
+
+    # ============================================================================
+    # CONVERSATION SUMMARY MANAGEMENT
+    # ============================================================================
+
+    async def _update_conversation_summary(
+        self,
+        user_id: int,
+        new_messages: List[Dict[str, str]],
+        current_summary: str
+    ) -> str:
+        """Update conversation summary with new messages"""
+        try:
+            if not new_messages:
+                return current_summary
+
+            # Format new messages
+            messages_text = "\n".join([
+                f"[{msg.get('role', 'user').upper()}]: {msg.get('message', '')}"
+                for msg in new_messages
+            ])
+
+            prompt_vars = {
+                'current_summary': current_summary or "No previous summary.",
+                'new_messages': messages_text
+            }
+
+            response = await self.llm.ainvoke(
+                self.summary_prompt.format_messages(**prompt_vars)
+            )
+
+            new_summary = response.content if hasattr(response, 'content') else str(response)
+            logger.info(f"📝 Updated conversation summary for user {user_id}: {new_summary[:100]}...")
+            return new_summary.strip()
+
+        except Exception as e:
+            logger.error(f"Error updating conversation summary: {e}")
+            return current_summary or ""
 
     # ============================================================================
     # CORE MESSAGE PROCESSING
@@ -351,7 +483,7 @@ IMPORTANT RULES:
             # Add user message to history
             self.add_message(user_id, 'user', user_message)
 
-            # Get last search info (MUST be defined before using it below)
+            # Get last search info
             last_search = session.get('last_search', {})
             last_search_timestamp = last_search.get('timestamp', 0)
             time_since_search = time.time() - last_search_timestamp
@@ -367,17 +499,27 @@ IMPORTANT RULES:
                 if age_min < 30:  # 30-minute expiry
                     last_search_coords_text = f"({last_search_coords[0]:.4f}, {last_search_coords[1]:.4f}) - {int(age_min)} min ago"
 
-            # Format memory context
-            memory_context_text = self._format_memory_context(user_context)
-            time_since_search = time.time() - last_search_timestamp
-            time_ago_text = self._format_time_ago(time_since_search) if last_search_timestamp else "None"
-            shown_restaurants = last_search.get('shown_restaurants', [])
+            # Get or update conversation summary
+            conversation_summary = session.get('conversation_summary', '')
+            
+            # Update summary periodically (every 3 messages or on significant changes)
+            messages_since_summary = session.get('messages_since_summary', 0)
+            if messages_since_summary >= 2 or not conversation_summary:
+                recent_messages = session.get('conversation_history', [])[-3:]
+                conversation_summary = await self._update_conversation_summary(
+                    user_id, recent_messages, conversation_summary
+                )
+                session['conversation_summary'] = conversation_summary
+                session['messages_since_summary'] = 0
+            else:
+                session['messages_since_summary'] = messages_since_summary + 1
 
             # Format memory context
             memory_context_text = self._format_memory_context(user_context)
 
             # Prepare prompt variables
             prompt_vars = {
+                'conversation_summary': conversation_summary or "No summary yet - this is the start of conversation.",
                 'conversation_history': self._format_conversation_context(session),
                 'memory_context': memory_context_text,
                 'active_destination': active_context.get('destination') or 'None',
@@ -417,12 +559,16 @@ IMPORTANT RULES:
             reasoning = decision.get('reasoning', '')
             needs_gps = decision.get('needs_gps', False)
             state_update = decision.get('state_update', {})
+            reasoning_steps = decision.get('reasoning_steps', {})
+
+            # Log detailed reasoning
+            logger.info(f"🤖 AI Decision: action={action}, context={context_type}")
+            logger.info(f"   Reasoning steps: {reasoning_steps}")
+            logger.info(f"   Parameters: destination={parameters.get('destination')}, cuisine={parameters.get('cuisine')}, mode={parameters.get('search_mode')}")
 
             # Handle clear_pending_gps signal
             if state_update.get('clear_pending_gps'):
                 self.clear_pending_gps(user_id)
-
-            logger.info(f"🤖 AI Decision: action={action}, context={context_type}, destination={parameters.get('destination')}, cuisine={parameters.get('cuisine')}, mode={parameters.get('search_mode')}")
 
             # ================================================================
             # UPDATE ACTIVE CONTEXT based on context decision
@@ -448,10 +594,13 @@ IMPORTANT RULES:
                     if not active_context:
                         active_context = {}
 
+                    # IMPORTANT: For MODIFY, preserve coordinates from last search if not explicitly changing location
+                    preserved_destination = parameters.get('destination') or active_context.get('destination')
+                    
                     active_context.update({
-                        'destination': parameters.get('destination'),
-                        'cuisine': parameters.get('cuisine'),
-                        'search_radius_km': parameters.get('search_radius_km', 1.5),
+                        'destination': preserved_destination,
+                        'cuisine': parameters.get('cuisine') or active_context.get('cuisine'),
+                        'search_radius_km': parameters.get('search_radius_km', active_context.get('search_radius_km', 1.5)),
                         'requirements': parameters.get('requirements', active_context.get('requirements', [])),
                         'preferences': parameters.get('preferences', active_context.get('preferences', {})),
                         'last_modified': time.time()
@@ -460,6 +609,8 @@ IMPORTANT RULES:
 
                     modifications = parameters.get('modifications', {})
                     logger.info(f"✏️ MODIFIED context: {modifications}")
+                    logger.info(f"   Preserved destination: {preserved_destination}")
+                    logger.info(f"   Preserved cuisine: {active_context.get('cuisine')}")
 
                 elif context_type == 'CONTINUE':
                     # Increment search count, keep everything else
@@ -508,21 +659,41 @@ IMPORTANT RULES:
                 else:
                     search_type = SearchType.LOCATION_SEARCH
 
+                # IMPORTANT: For MODIFY/CONTINUE, try to preserve coordinates from last search
+                effective_gps = gps_coordinates
+                if not effective_gps and context_type in ['MODIFY', 'CONTINUE']:
+                    # Check if we have stored coordinates from last location search
+                    if last_search_coords and (time.time() - last_search_timestamp) < 1800:  # 30 min
+                        effective_gps = tuple(last_search_coords) if isinstance(last_search_coords, list) else last_search_coords
+                        logger.info(f"📍 Reusing coordinates from last search: {effective_gps}")
+
+                # Get effective destination (preserve from context if MODIFY/CONTINUE)
+                effective_destination = parameters.get('destination', '')
+                if not effective_destination and context_type in ['MODIFY', 'CONTINUE']:
+                    effective_destination = active_context.get('destination', '')
+                    logger.info(f"📍 Preserved destination from context: {effective_destination}")
+
+                # Get effective cuisine
+                effective_cuisine = parameters.get('cuisine')
+                if not effective_cuisine and context_type in ['MODIFY', 'CONTINUE']:
+                    effective_cuisine = active_context.get('cuisine')
+                    logger.info(f"🍽️ Preserved cuisine from context: {effective_cuisine}")
+
                 # Build search context
                 search_context = SearchContext(
-                    destination=parameters.get('destination', ''),
-                    cuisine=parameters.get('cuisine'),
+                    destination=effective_destination,
+                    cuisine=effective_cuisine,
                     search_type=search_type,
-                    gps_coordinates=gps_coordinates,
+                    gps_coordinates=effective_gps,
                     search_radius_km=parameters.get('search_radius_km', 1.5),
                     requirements=parameters.get('requirements', []),
                     preferences=parameters.get('preferences', {}),
                     user_query=user_message,
-                    is_follow_up=(context_type == 'CONTINUE'),
+                    is_follow_up=(context_type in ['CONTINUE', 'MODIFY']),
                     exclude_restaurants=shown_restaurants if context_type == 'CONTINUE' else [],
                     user_id=user_id,
                     thread_id=thread_id or f"chat_{user_id}",
-                    supervisor_instructions=f"Context decision: {context_type}. {context_decision.get('reasoning', '')}"
+                    supervisor_instructions=f"Context: {context_type}. {context_decision.get('reasoning', '')}. User wants: {reasoning_steps.get('user_intent', '')}"
                 )
 
                 return HandoffMessage(
@@ -560,6 +731,10 @@ IMPORTANT RULES:
                 'thread_id': thread_id,
                 'created_at': time.time(),
                 'conversation_history': [],
+
+                # Conversation summary (compressed understanding)
+                'conversation_summary': '',
+                'messages_since_summary': 0,
 
                 # Active context (what we're currently discussing)
                 'active_context': {},
@@ -600,50 +775,38 @@ IMPORTANT RULES:
         # Extract restaurant names for exclusion
         shown_restaurants = []
         if restaurants:
-            for r in restaurants[:20]:  # Keep last 20
-                name = r.get('name') or r.get('restaurant_name') or r.get('title', '')
+            for r in restaurants:
+                name = r.get('name') if isinstance(r, dict) else getattr(r, 'name', None)
                 if name:
-                    shown_restaurants.append(name.lower().strip())
+                    shown_restaurants.append(name)
 
-        # Update last search
         session['last_search'] = {
-            'timestamp': time.time(),
-            'type': search_type,
+            'search_type': search_type,
+            'cuisine': cuisine,
+            'destination': destination,
             'parameters': {
-                'cuisine': cuisine,
-                'destination': destination,
                 'coordinates': coordinates,
                 'search_radius_km': search_radius_km
             },
-            'shown_restaurants': shown_restaurants
+            'shown_restaurants': shown_restaurants,
+            'timestamp': time.time()
         }
 
-        logger.info(f"✅ Updated last search for user {user_id}: {search_type}, {cuisine}, {destination}")
+        # Also update active context if this is a location search with coordinates
+        if coordinates and session.get('active_context'):
+            session['active_context']['last_coordinates'] = coordinates
 
-    def get_last_search_context(self, user_id: int) -> Dict[str, Any]:
+        logger.info(f"📝 Updated last search context for user {user_id}: {search_type}, {destination}, {len(shown_restaurants)} restaurants")
+
+    def get_last_search_context(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get last search context for follow-up requests"""
         session = self.user_sessions.get(user_id)
         if not session:
-            return {}
-
-        last_search = session.get('last_search', {})
-        if not last_search:
-            return {}
-
-        # Return in format expected by orchestrator
-        params = last_search.get('parameters', {})
-        return {
-            'search_type': last_search.get('type'),
-            'cuisine': params.get('cuisine'),
-            'destination': params.get('destination'),
-            'coordinates': params.get('coordinates'),
-            'search_radius_km': params.get('search_radius_km'),
-            'shown_restaurants': last_search.get('shown_restaurants', []),
-            'timestamp': last_search.get('timestamp')
-        }
+            return None
+        return session.get('last_search')
 
     # ============================================================================
-    # MESSAGE HANDLING
+    # MESSAGE HISTORY
     # ============================================================================
 
     def add_message(self, user_id: int, role: str, content: str) -> None:
@@ -767,35 +930,36 @@ IMPORTANT RULES:
         parts = []
 
         # Preferences
-        prefs = user_context.get("preferences")
+        prefs = user_context.get('preferences', {})
         if prefs:
-            if hasattr(prefs, 'preferred_cuisines') and prefs.preferred_cuisines:
-                parts.append(f"Preferred cuisines: {', '.join(prefs.preferred_cuisines)}")
-            if hasattr(prefs, 'dietary_restrictions') and prefs.dietary_restrictions:
-                parts.append(f"Dietary restrictions: {', '.join(prefs.dietary_restrictions)}")
-            if hasattr(prefs, 'budget_range') and prefs.budget_range:
-                parts.append(f"Budget preference: {prefs.budget_range}")
+            if prefs.get('preferred_cuisines'):
+                parts.append(f"Favorite cuisines: {', '.join(prefs['preferred_cuisines'])}")
+            if prefs.get('dietary_restrictions'):
+                parts.append(f"Dietary restrictions: {', '.join(prefs['dietary_restrictions'])}")
+            if prefs.get('price_preference'):
+                parts.append(f"Price preference: {prefs['price_preference']}")
+            if prefs.get('atmosphere_preference'):
+                parts.append(f"Atmosphere preference: {prefs['atmosphere_preference']}")
 
-        # Restaurant history
-        history = user_context.get("restaurant_history", [])
+        # Recent restaurants
+        history = user_context.get('restaurant_history', [])
         if history:
-            recent = history[:10]
-            restaurant_names = [r.restaurant_name if hasattr(r, 'restaurant_name') else r.get('restaurant_name', 'Unknown') 
-                              for r in recent]
-            parts.append(f"Recently recommended (AVOID repeating): {', '.join(restaurant_names)}")
+            recent = history[-5:]
+            restaurant_names = [r.get('name', 'Unknown') for r in recent if isinstance(r, dict)]
+            if restaurant_names:
+                parts.append(f"Recent recommendations: {', '.join(restaurant_names)}")
 
-        if not parts:
-            return "User has no stored preferences yet."
-
-        return "\n".join(parts)
+        if parts:
+            return "\n".join(parts)
+        return "User has interacted before but no specific preferences recorded."
 
     def _format_time_ago(self, seconds: float) -> str:
-        """Format time ago in human-readable format"""
+        """Format time difference as human-readable string"""
         if seconds < 60:
             return "just now"
         elif seconds < 3600:
-            mins = int(seconds / 60)
-            return f"{mins} min ago"
+            minutes = int(seconds / 60)
+            return f"{minutes} minute{'s' if minutes > 1 else ''} ago"
         elif seconds < 86400:
             hours = int(seconds / 3600)
             return f"{hours} hour{'s' if hours > 1 else ''} ago"
@@ -803,39 +967,38 @@ IMPORTANT RULES:
             days = int(seconds / 86400)
             return f"{days} day{'s' if days > 1 else ''} ago"
 
+    # ============================================================================
+    # RESPONSE PARSING
+    # ============================================================================
+
     def _parse_ai_response(self, response_text: str) -> Dict[str, Any]:
-        """Parse AI response (handles markdown code blocks)"""
-        cleaned = response_text.strip()
-        if cleaned.startswith("```json"):
-            cleaned = cleaned[7:]
-        if cleaned.startswith("```"):
-            cleaned = cleaned[3:]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
-        return json.loads(cleaned)
+        """Parse AI JSON response with robust error handling"""
+        try:
+            # Clean the response
+            cleaned = response_text.strip()
 
-    # ============================================================================
-    # SESSION CLEANUP
-    # ============================================================================
+            # Remove markdown code blocks if present
+            if cleaned.startswith('```json'):
+                cleaned = cleaned[7:]
+            elif cleaned.startswith('```'):
+                cleaned = cleaned[3:]
+            if cleaned.endswith('```'):
+                cleaned = cleaned[:-3]
 
-    def clear_session(self, user_id: int):
-        """Clear user session but keep location context"""
-        if user_id in self.user_sessions:
-            session = self.user_sessions[user_id]
-            location_context = session.get('stored_location')
+            cleaned = cleaned.strip()
 
-            # Clear active context and history
-            session['active_context'] = {}
-            session['conversation_history'] = []
-            session['last_search'] = {}
-            session['pending_gps'] = {'active': False, 'cuisine': None, 'timestamp': None}
+            # Try to parse JSON
+            return json.loads(cleaned)
 
-            if location_context:
-                logger.info(f"🧹 Cleared session for user {user_id} (kept location context)")
-            else:
-                logger.info(f"🧹 Cleared session for user {user_id}")
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parse error: {e}")
+            logger.debug(f"Raw response: {response_text[:500]}...")
 
-    def get_session_info(self, user_id: int) -> Optional[Dict[str, Any]]:
-        """Get current session info"""
-        return self.user_sessions.get(user_id)
+            # Return safe fallback
+            return {
+                'action': 'chat_response',
+                'context_decision': {'type': 'NEW', 'reasoning': 'Parse error'},
+                'parameters': {},
+                'response_text': "I'd be happy to help you find restaurants. What are you looking for?",
+                'reasoning': f"JSON parse error: {str(e)}"
+            }
