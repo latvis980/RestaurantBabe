@@ -252,26 +252,22 @@ class LangGraphSupervisor:
             logger.info(f"💬 Supervisor processing: '{query[:50]}...' for user {user_id}")
 
             # ================================================================
-            # STEP 1: Load user context from memory
-            # ================================================================
-            user_context = await self._load_user_context(user_id, thread_id)
-
-            # ================================================================
-            # STEP 2: Get structured handoff from AI Chat Layer (with context)
+            # STEP 1: Get structured handoff from AI Chat Layer
+            # (No Supabase fetch needed - AI Chat Layer manages its own session)
             # ================================================================
             handoff: HandoffMessage = await self.ai_chat_layer.process_message(
                 user_id=user_id,
                 user_message=query,
                 gps_coordinates=gps_coordinates,
                 thread_id=thread_id,
-                user_context=user_context  # Pass memory context
+                user_context=None  # Memory context disabled - will add preferences later
             )
 
             logger.info(f"🎯 Handoff Command: {handoff.command.value}")
             logger.info(f"📝 Reasoning: {handoff.reasoning}")
 
             # ================================================================
-            # STEP 3: Route by handoff command
+            # STEP 2: Route by handoff command
             # ================================================================
 
             # ----- COMMAND 1: CONTINUE_CONVERSATION -----
@@ -292,7 +288,7 @@ class LangGraphSupervisor:
                 )
                 
                 # ============================================================
-                # STEP 4: Save results to memory (after successful search)
+                # STEP 3: Save results to memory (after successful search)
                 # ============================================================
                 if result.get("success") and handoff.search_context:
                     # Get restaurants from result
