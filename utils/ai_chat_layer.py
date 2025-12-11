@@ -118,6 +118,9 @@ LAST SEARCH RESULTS (shown {time_ago}):
 STORED LOCATION (if user shared location previously):
 {stored_location}
 
+LAST SEARCH COORDINATES (from previous location search, valid for 30 min):
+{last_search_coordinates}
+
 PENDING GPS STATE:
 - Waiting for GPS: {pending_gps}
 - For cuisine: {pending_gps_cuisine}
@@ -192,12 +195,25 @@ YOUR TASK
    - GPS coordinates are provided
    - Searches database first, then Google Maps if needed
 
+   **IMPORTANT - LOCATION SEARCH COORDINATE RULES:**
+      For LOCATION_SEARCH, coordinates are required. Check availability:
+      1. If user provides GPS now (has_gps = Yes) → Use it, execute search
+      2. If last_search_coordinates is available (not "None") → Use stored coords, execute search
+      3. If user mentions a specific neighborhood/area → Geocoding will handle it, execute search
+      4. If NONE of the above → Request location NATURALLY (don't be robotic)
+
    **CRITICAL LOGIC**:
    - If destination format is "Neighborhood, City" → LOCATION_SEARCH
    - If destination format is "City" alone → CITY_SEARCH
    - If destination has a comma → usually LOCATION_SEARCH
    - If GPS coordinates provided → LOCATION_SEARCH
    - "near [landmark]" → LOCATION_SEARCH
+
+5. **GEOGRAPHICAL AWARENESS**
+   - If user mentions a destination that requires clarification (the name is not widely known), naturally ask to confirm if this is the correct destination
+   - If the location is ambiguous (e.g., "Springfield"), ask for clarification
+   - If the user mentions something that looks like only a neighborhood, a street, a landmark, but not a city, naturally ask to confirm or provide the city. Be friendly and polite. 
+   
 
 5. **GPS HANDLING** (CRITICAL - when to request GPS):
 
@@ -250,6 +266,8 @@ OUTPUT FORMAT (JSON only)
 
   "response_text": "your response to the user",
   "reasoning": "internal reasoning for your decision",
+  // Set to true ONLY if LOCATION_SEARCH is needed AND no coordinates available
+  // (no GPS, no last_search_coordinates, no geocodable destination)
   "needs_gps": false,
 
   "state_update": {{
@@ -318,9 +336,24 @@ IMPORTANT RULES:
             # Add user message to history
             self.add_message(user_id, 'user', user_message)
 
-            # Get last search info
+            # Get last search info (MUST be defined before using it below)
             last_search = session.get('last_search', {})
             last_search_timestamp = last_search.get('timestamp', 0)
+            time_since_search = time.time() - last_search_timestamp
+            time_ago_text = self._format_time_ago(time_since_search) if last_search_timestamp else "None"
+            shown_restaurants = last_search.get('shown_restaurants', [])
+
+            # Get stored coordinates from last search (for LOCATION_SEARCH continuations)
+            last_search_coords_text = "None"
+            last_search_params = last_search.get('parameters', {})
+            last_search_coords = last_search_params.get('coordinates')
+            if last_search_coords and last_search_timestamp:
+                age_min = (time.time() - last_search_timestamp) / 60
+                if age_min < 30:  # 30-minute expiry
+                    last_search_coords_text = f"({last_search_coords[0]:.4f}, {last_search_coords[1]:.4f}) - {int(age_min)} min ago"
+
+            # Format memory context
+            memory_context_text = self._format_memory_context(user_context)
             time_since_search = time.time() - last_search_timestamp
             time_ago_text = self._format_time_ago(time_since_search) if last_search_timestamp else "None"
             shown_restaurants = last_search.get('shown_restaurants', [])
@@ -341,6 +374,7 @@ IMPORTANT RULES:
                 'time_ago': time_ago_text,
                 'shown_restaurants': ', '.join(shown_restaurants[:10]) if shown_restaurants else 'None',
                 'stored_location': stored_location_text,
+                'last_search_coordinates': last_search_coords_text,
                 'pending_gps': 'Yes' if pending_gps else 'No',
                 'pending_gps_cuisine': pending_gps_cuisine or 'None',
                 'user_message': user_message,
@@ -354,6 +388,9 @@ IMPORTANT RULES:
 
             # Parse response - handle AIMessage type
             response_content = response.content if hasattr(response, 'content') else str(response)
+            # Ensure it's a string for parsing
+            if not isinstance(response_content, str):
+                response_content = str(response_content)
             decision = self._parse_ai_response(response_content)
 
             # Extract decision fields
