@@ -63,6 +63,10 @@ DESCRIPTION ANALYSIS:
 - Check for specific features mentioned in descriptions
 - Consider price indicators in descriptions
 
+SOURCE ANALYSIS:
+- The "Recommended by" field shows where this restaurant was featured (e.g., guide.michelin.com, eater.com, timeout.com)
+- If user specifically asks for or excludes certain recommendation sources, respect that
+
 OUTPUT: Return ONLY valid JSON with SPECIFICALLY matching restaurant IDs:
 {{
     "selected_restaurants": [
@@ -79,9 +83,9 @@ IMPORTANT: Only include restaurants that are very good matches or none.
 
         # ENHANCED EVALUATION PROMPT - More demanding criteria
         self.eval_prompt = ChatPromptTemplate.from_template("""
-        USER QUERY: "{query}"
-        LOCATION: {location_description}
-        FOUND: {count} specifically matching restaurants in database
+USER QUERY: "{{query}}"
+LOCATION: {{location_description}}
+FOUND: {{count}} specifically matching restaurants in database
 
 EVALUATION TASK: 
 Determine if these SPECIFIC matches are sufficient to answer the user's query immediately.
@@ -171,7 +175,9 @@ Focus on QUALITY and SPECIFICITY over quantity. Users prefer fewer, more relevan
         self, 
         restaurants: List[Dict[str, Any]], 
         query: str,
-        location_description: str = "GPS location"
+        location_description: str = "GPS location",
+        exclude_restaurants: Optional[List[str]] = None,
+        supervisor_instructions: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Filter database restaurants and evaluate if sufficient for immediate sending
@@ -185,7 +191,10 @@ Focus on QUALITY and SPECIFICITY over quantity. Users prefer fewer, more relevan
                 return self._create_empty_result("No restaurants found in database")
 
             # STEP 1: AI filtering to select SPECIFICALLY relevant restaurants
-            filtered_restaurants = self._filter_restaurants_with_chain(restaurants, query, location_description)
+            filtered_restaurants = self._filter_restaurants_with_chain(
+                restaurants, query, location_description, 
+                exclude_restaurants, supervisor_instructions
+            )
 
             if not filtered_restaurants:
                 return self._create_empty_result("No specifically relevant matches found")
@@ -214,11 +223,24 @@ Focus on QUALITY and SPECIFICITY over quantity. Users prefer fewer, more relevan
         self, 
         restaurants: List[Dict[str, Any]], 
         query: str,
-        location_description: str
+        location_description: str,
+        exclude_restaurants: Optional[List[str]] = None,
+        supervisor_instructions: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Filter restaurants using LangChain chain with ENHANCED specificity"""
         try:
-            # Create restaurant text for AI analysis - ENHANCED VERSION
+            # Pre-filter: Remove excluded restaurants
+            if exclude_restaurants:
+                original_count = len(restaurants)
+                restaurants = [
+                    r for r in restaurants 
+                    if r.get('name', '').lower() not in [ex.lower() for ex in exclude_restaurants]
+                ]
+                excluded_count = original_count - len(restaurants)
+                if excluded_count > 0:
+                    logger.info(f"🚫 Pre-filtered {excluded_count} previously shown restaurants")
+
+            # Create restaurant text for AI analysis - ENHANCED VERSION with SOURCES
             restaurants_text = ""
             for i, restaurant in enumerate(restaurants):
                 name = restaurant.get('name', 'Unknown')
@@ -226,18 +248,28 @@ Focus on QUALITY and SPECIFICITY over quantity. Users prefer fewer, more relevan
                 cuisine_str = ', '.join(cuisine) if cuisine else 'No cuisine info'
 
                 # ENHANCED: Include MORE description for better analysis
-                description = restaurant.get('raw_description', 'No description')[:400]  # Increased from 200
+                description = restaurant.get('raw_description', 'No description')[:400]
                 distance = restaurant.get('distance_km', 'Unknown')
                 mention_count = restaurant.get('mention_count', 1)
 
+                # NEW: Include sources/recommendation info
+                sources_domains = restaurant.get('sources_domains', [])
+                sources_str = ', '.join(sources_domains) if sources_domains else 'No source info'
+
                 restaurants_text += f"{i+1}. ID: {restaurant.get('id')} | {name} ({distance}km)\n"
                 restaurants_text += f"   Cuisine: {cuisine_str}\n"
+                restaurants_text += f"   Recommended by: {sources_str}\n"
                 restaurants_text += f"   Mentions: {mention_count}\n"
                 restaurants_text += f"   Description: {description}...\n\n"
 
+            # Build context-aware query that includes supervisor instructions
+            effective_query = query
+            if supervisor_instructions:
+                effective_query = f"{query}\n\nADDITIONAL CONTEXT: {supervisor_instructions}"
+
             # Use enhanced LangChain chain
             ai_result = self.filter_chain.invoke({
-                "query": query,
+                "query": effective_query,
                 "location_description": location_description,
                 "restaurants_text": restaurants_text
             })

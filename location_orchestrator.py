@@ -385,7 +385,9 @@ class LocationOrchestrator:
             filter_result = self.filter_evaluator.filter_and_evaluate(
                 restaurants=db_restaurants,
                 query=query,
-                location_description=location_desc
+                location_description=location_desc,
+                exclude_restaurants=pipeline_input.get("exclude_restaurants"),
+                supervisor_instructions=pipeline_input.get("supervisor_instructions")
             )
 
             filtered_restaurants = filter_result.get("filtered_restaurants", [])
