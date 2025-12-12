@@ -690,7 +690,7 @@ IMPORTANT RULES
                     preferences=parameters.get('preferences', {}),
                     user_query=user_message,
                     is_follow_up=(context_type in ['CONTINUE', 'MODIFY']),
-                    exclude_restaurants=shown_restaurants if context_type == 'CONTINUE' else [],
+                    exclude_restaurants=shown_restaurants if context_type in ['CONTINUE', 'MODIFY'] else [],
                     user_id=user_id,
                     thread_id=thread_id or f"chat_{user_id}",
                     supervisor_instructions=f"Context: {context_type}. {context_decision.get('reasoning', '')}. User wants: {reasoning_steps.get('user_intent', '')}"
