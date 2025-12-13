@@ -1,6 +1,6 @@
 # ───── Base image ────────────────────────────────────────────
-# FIXED: Updated to match Playwright 1.55.0
-FROM mcr.microsoft.com/playwright/python:v1.55.0-noble
+# FIXED: Updated to match Playwright 1.56.1
+FROM mcr.microsoft.com/playwright/python:v1.56.1-noble
 
 # ───── App setup ─────────────────────────────────────────────
 WORKDIR /app
